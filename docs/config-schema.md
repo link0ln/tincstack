@@ -64,13 +64,28 @@ networks:
                                # present in the peer's accept list is used
                                # (ARCHITECTURE.md §4). Default: [plain].
 
-      # obfuscated-UDP tier (point 6, cheap tier; redesigned mechanism)
-      ObfsJunkPacketCount: 0        # junk datagrams around the handshake (0 = off)
-      ObfsJunkPacketMinSize: 40
-      ObfsJunkPacketMaxSize: 200
-      ObfsInitHeaderJunkSize: 0
-      ObfsInitMagicHeader: 0        # 0 = off, or N, or "MIN-MAX" range
-      # (full obfs surface documented in docs/transports.md)
+      # obfuscated-UDP tier (point 6, cheap tier; redesigned mechanism).
+      # Active only when `obfs' is selected (PreferredTransports: [obfs, plain]);
+      # with obfs unselected and ObfsJunkPacketCount 0 the wire is plain tinc.
+      # All keys are server-scoped, propagate through invitations, and are
+      # re-read on `tinc reload'. Full mechanism in docs/transports.md §5.
+      ObfsJunkPacketCount: 0        # junk datagrams emitted around each handshake
+                                    # (0 = off); never per data packet
+      ObfsJunkPacketMinSize: 40     # min junk datagram size (bytes), 1..1400
+      ObfsJunkPacketMaxSize: 200    # max junk datagram size (bytes), 1..1400
+      ObfsInitHeaderJunkSize: 0     # random tail bytes on handshake-phase frames
+                                    # (AmneziaWG S1), 0..1400
+      ObfsTransportHeaderJunkSize: 0 # random tail bytes on steady-state frames
+                                    # (AmneziaWG S2), 0..1400
+      ObfsInitMagicHeader: 0        # if set, force the first 4 nonce bytes of
+                                    # handshake-phase frames to this value so the
+                                    # leading bytes mimic another protocol
+                                    # (AmneziaWG H1); 0 = random nonce
+      ObfsTransportMagicHeader: 0   # same for steady-state frames (H2)
+      # Runtime CLI: tinc obfs status | enable | disable |
+      #              set <key> <value> | get <key> | tag <c>/<min>/<max>[/<s1>[/<h1>]]
+      # (aliases: junkcount/jc jmin jmax initjunk/s1 transportjunk/s2
+      #           initmagic/h1 transportmagic/h2). Changes persist to this YAML.
 
       # HTTPS-mimicking front (point 6; active-probing resistance)
       HttpsFront: no                # enable the TLS front on the listen port
