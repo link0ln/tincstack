@@ -491,7 +491,7 @@ this order (cheapest / most-contained first). Full wire formats go in
   tinc meta byte stream runs inside TLS, with the link marked TCP-only-equivalent
   so SPTPS data frames ride the same flow (single outward TLS flow, no UDP).
   Registered compiled in `transport_table.c` and wired in `transport.c`. SPTPS
-  untouched. Wire format + authenticator in `docs/transports.md` §7. **Proof:**
+  untouched. Wire format + authenticator in `docs/transports.md` §8. **Proof:**
   `testing/transports/https-carrier-test.sh` (2026-09-16, image ws-g1): node A
   `PreferredTransports: [https, plain]` tunnels to B, ping both ways `0% loss`;
   `tinc dump connections` on both shows `transport https`; tcpdump on the port →
@@ -506,7 +506,7 @@ this order (cheapest / most-contained first). Full wire formats go in
   - Stream Q (2026-09-16): dependency + spike. Library decided: **ngtcp2 1.25.0
     + GnuTLS backend**, not msquic (msquic owns its sockets/threads and cannot
     take datagrams from the M4 front's UDP socket; comparison in
-    docs/transports.md §7.1). `core/Dockerfile.build-quic` builds it from a
+    docs/transports.md §9.1). `core/Dockerfile.build-quic` builds it from a
     sha256-pinned tarball: build stage 60 s (ngtcp2 16 s of it), runtime image
     +5.4 MB (100.3 vs 94.9 MB); pkg-config resolves `libngtcp2` and
     `libngtcp2_crypto_gnutls` 1.25.0. Spike `testing/quic-spike/run.sh`, three
@@ -516,9 +516,9 @@ this order (cheapest / most-contained first). Full wire formats go in
     NAT rebind (server `PATH_VALIDATION success remote=127.0.0.1:<new port>`,
     traffic continues), explicit migration with a fresh CID, clean close; wire
     capture: first packet `c3 00 00 00 01 08 …` (long header, fixed bit, Initial,
-    version 1, 1200 bytes). Design for G3 in docs/transports.md §7. Found: the §3
+    version 1, 1200 bytes). Design for G3 in docs/transports.md §9. Found: the §3
     UDP classifier only catches long headers; 1-RTT short-header packets need a
-    keyed CID lookup (§7.6) before the carrier can work; `active_connection_id_limit`
+    keyed CID lookup (§9.6) before the carrier can work; `active_connection_id_limit`
     must be > 2 (spike: 8) or the second migration fails. Carrier not integrated;
     box stays open.
 - [x] 🟡 Runtime control CLI for obfuscation (`tinc obfs status|set|…`) **with
@@ -563,7 +563,7 @@ this order (cheapest / most-contained first). Full wire formats go in
 - 🟢 **The decoy upstream proxy fetches synchronously with a 3 s timeout**
   (`decoy.c proxy_upstream`), briefly blocking the event loop for one prober,
   rather than an async TCP splice. Acceptable for a low-volume decoy that is torn
-  down immediately; documented in `docs/transports.md` §7.5. If a busy public
+  down immediately; documented in `docs/transports.md` §8.5. If a busy public
   decoy ever needs it, convert to an async splice. Blast radius: up to 3 s of
   loop latency per unauthenticated TLS prober when `HttpsDecoyUpstream` is set.
 - 🟢 **TLS certificate hot-reload is partial.** A new `TlsCert`/`TlsKey` or an

@@ -431,7 +431,110 @@ wire to upstream tinc, and interoperable with an unmodified upstream peer.
 
 ---
 
-## 7. QUIC carrier (design, stream Q)
+## 8. The `https` carrier (M5, G1)
+
+The `https` carrier runs the tinc meta channel **and** the SPTPS data records
+inside one outward TLS flow, and makes the listen port look like an ordinary
+HTTPS server to anything that is not an authenticated tinc peer. It is the
+REALITY-analogue done correctly: no cleartext bearer token, no VPN-shaped bytes
+on the wire, and the certificate is not the trust root — SPTPS/Ed25519 is
+(principle 1). TLS is only a carrier and a decoy.
+
+### 8.1 Certificate
+
+One certificate per node, shared with the future QUIC carrier (decision 1).
+`TlsCert`/`TlsKey` name a real certificate if the operator has one; otherwise the
+daemon generates a self-signed **P-256** X.509v3 certificate at first start
+(`tls.c`) and persists both PEMs — in YAML mode under `keys.tls_cert` /
+`keys.tls_key`, in classic confbase mode as `tls_cert.pem` / `tls_key.pem` — so
+the fingerprint is stable across restarts and the cert is replaceable with no
+other change. The subject/SAN is a generic **`localhost`** on purpose: a scanner
+must not be able to tie the port to a specific mesh node (the tinc-vless front
+leaked its identity with a cert named after itself). The SHA-256 fingerprint is
+shown in `tinc info`/dump and written as `TlsFingerprint` into the node's own
+host record, so M2 propagation carries it in invitations and an invitee pins the
+inviter's certificate.
+
+### 8.2 Dial and certificate pinning
+
+`https_dial` opens a non-blocking TCP connection to the peer's front port and a
+TLS client handshake with a plausible SNI (`HttpsSni`, else the peer's `Address`
+if it is a hostname, else `localhost`). PKI verification is off
+(`SSL_VERIFY_NONE`); instead the peer's certificate is pinned by SHA-256
+fingerprint: if the peer's host record has a `TlsFingerprint`, it must match, or
+the dial fails; if none is pinned, the fingerprint is accepted on first use and
+written to the host record (logged). ALPN offers `http/1.1`.
+
+### 8.3 Authenticator
+
+After the TLS handshake the client sends **one** HTTP/1.1 request that looks like
+an ordinary WebSocket upgrade; the authenticator rides in a `Cookie: sid=<b64url>`
+value. The payload is:
+
+    ver(1) || namelen(1) || node-name || nonce(16) || timestamp_be(8) || Ed25519-sig
+
+where the signature is over
+
+    server-cert-fp(32) || TLS-exporter(32) || nonce(16) || timestamp_be(8)
+
+- **server-cert-fp** is the SHA-256 of the certificate the server just presented
+  (the client uses the fingerprint it verified; the server uses its own
+  `tls_own_fp`). This binds the authenticator to *this server's* identity.
+- **TLS-exporter** is 32 bytes from `SSL_export_keying_material` (RFC 5705) with
+  the label `EXPORTER-tincstack-https-v1`, computed identically by both ends of
+  the TLS session. This binds the authenticator to *this TLS session*: a captured
+  authenticator replayed on any new TLS session has the wrong exporter, so its
+  signature fails and it is treated exactly like a forgery.
+- the signature is made by the client's tinc **Ed25519 node key**; the server
+  verifies it with that node's `Ed25519PublicKey` from its host DB.
+
+The server also checks the node name is known and is not itself, the timestamp is
+within ±90 s, and the nonce has not been seen recently (a small replay cache;
+belt-and-suspenders on top of the exporter binding).
+
+### 8.4 Success and the meta+data flow
+
+On success the server answers `101 Switching Protocols` (a real
+`Sec-WebSocket-Accept` is computed, so the exchange is a textbook WebSocket
+upgrade to any observer that could see inside the TLS). From then on the raw tinc
+meta byte stream runs inside the TLS session: `send_meta*` → `transport_meta_flush`
+→ `https_send` (`SSL_write`), and inbound `SSL_read` → `receive_meta_bytes`. The
+carrier is a pipe; it never inspects a record.
+
+The link is marked **TCP-only-equivalent** (`OPTION_TCPONLY | OPTION_INDIRECT`,
+set before the ACK so it reaches the edge and the peer), so tinc's own data path
+frames the SPTPS **data** datagrams over the meta stream (`send_sptps_tcppacket`)
+instead of a separate UDP flow. The result is a single outward TLS flow (also
+PLAN point 5); `tcpdump` on the port shows only TLS records — no UDP, no
+cleartext tinc ID line. SPTPS itself is unchanged: `https` wraps its records.
+
+### 8.5 Failure = the decoy (probing resistance)
+
+If **anything** fails — not a TLS ClientHello, a completed TLS handshake with no
+valid authenticator, an unknown node, a bad signature, a stale timestamp, a
+replayed nonce — the server serves the decoy (`decoy.c`) and closes, identically
+to any other prober. That identical treatment *is* the active-probing resistance:
+a prober cannot tell a tinc node from a plain web server. The decoy is a static
+page (built-in default, or files under `HttpsDecoyRoot`) or a transparent proxy to
+`HttpsDecoyUpstream` (Host rewritten). The same decoy content is served over
+plain HTTP to a cleartext prober (`decoy_serve_plain`). No response path emits a
+tinc-identifying string.
+
+The client side also falls back: if the dial cannot pin the cert or the server
+answers anything other than `101`, `https_dial`'s connection dies before it
+activates and the outbound selector advances to the next carrier (ending at
+`plain`, §2).
+
+### 8.6 What a middlebox sees
+
+Only TLS records to the standard front port, with a normal-looking certificate
+and (if it could decrypt, which it cannot) a WebSocket upgrade. Whether `101`
+(success) or a static page (decoy) is chosen is invisible on the wire because it
+is inside TLS; `101 Switching Protocols` was chosen for the success case because
+WebSocket-over-HTTPS is ubiquitous and needs no polling. There is no separate
+UDP flow to correlate.
+
+## 9. QUIC carrier (design, stream Q)
 
 Status: **design + de-risking only.** Stream Q (2026-09-16) picked the library,
 made its build reproducible (`core/Dockerfile.build-quic`) and proved every
@@ -440,7 +543,7 @@ carrier itself (`transport_quic.c`) is stream G3's work and is gated on G1's
 certificate automation. This section is written so G3 can implement from it
 without re-deriving anything.
 
-### 7.1 Library decision
+### 9.1 Library decision
 
 | | msquic 2.6.1 | **ngtcp2 1.25.0** (chosen) | quiche |
 |---|---|---|---|
@@ -465,7 +568,7 @@ which ngtcp2 configure+make+install 16 s; +16 MB on the build stage (466 vs
 449 MB), **+5.4 MB on the runtime image** (100.3 vs 94.9 MB: libgnutls30 and
 its dependencies, libngtcp2 + libngtcp2_crypto_gnutls).
 
-### 7.2 Spike results (testing/quic-spike, three consecutive runs, all PASS)
+### 9.2 Spike results (testing/quic-spike, three consecutive runs, all PASS)
 
 | primitive | observed |
 |---|---|
@@ -485,7 +588,7 @@ a session kills the connection with `ERR_CONNECTION_ID_LIMIT`; and (see 7.6)
 handshake; every 1-RTT packet after it is a short header that the table in §3
 would route to the SPTPS path.
 
-### 7.3 Where the carrier sits
+### 9.3 Where the carrier sits
 
 - Registry row: `[TRANSPORT_QUIC] = { .id, .name = "quic", .caps =
   TRANSPORT_CAP_SINGLE_FLOW, .init, .exit, .dial, .send, .close,
@@ -511,7 +614,7 @@ would route to the SPTPS path.
   the timer, and the list of connection ids we issued (for the lookup in 7.6).
   `c->socket = -1` as in SF.
 
-### 7.4 Hook mapping
+### 9.4 Hook mapping
 
 | hook | ngtcp2 / GnuTLS |
 |---|---|
@@ -538,7 +641,7 @@ Settings / transport parameters (from the spike): `initial_max_streams_bidi =
 `max_idle_timeout = 3 x PingTimeout`, `settings.handshake_timeout =
 PingTimeout` (so the library gives up in step with tinc's reaper, §2 step 3).
 
-### 7.5 Framing SPTPS records
+### 9.5 Framing SPTPS records
 
 **Meta path** (ordered bytes: tinc requests, then SPTPS stream records) rides
 **one bidirectional stream**, opened by the dialler in `handshake_completed`
@@ -593,7 +696,7 @@ relay never sees a difference. Hook points:
   1160 bytes (1 flags + 8 DCID + 1-4 packet number + 3 frame header + 16 AEAD
   tag); after PMTUD on Ethernet about 1410. Compare `SF_MAX_PAYLOAD` 1200.
 
-### 7.6 Coexistence on the UDP socket: classifier changes G3 must make
+### 9.6 Coexistence on the UDP socket: classifier changes G3 must make
 
 The §3 rule `(b0 & 0xC0) == 0xC0` + known version claims **long-header packets
 only**: Initial, 0-RTT, Handshake, Retry, Version Negotiation. Header
@@ -628,7 +731,7 @@ stays daemon-free: expose the lookup as a function pointer it calls when set).
 SF (`0x9f...`) and QUIC never overlap (`0x9f & 0xC0 == 0x80`, neither form);
 obfs remains keyed and is checked after QUIC.
 
-### 7.7 Certificate, pinning, identity binding
+### 9.7 Certificate, pinning, identity binding
 
 - The node serves its **own** certificate (G1: `keys.tls_cert` / `tls_key`,
   self-signed EC P-256 at first start, replaceable). Same object as the HTTPS
@@ -649,7 +752,7 @@ obfs remains keyed and is checked after QUIC.
 - No client certificate: the acceptor learns who the peer is from the
   authenticator and the SPTPS handshake, not from TLS.
 
-### 7.8 What the wire shows (for later DPI shaping)
+### 9.8 What the wire shows (for later DPI shaping)
 
 `QuicAlpn` (default `h3`) and `QuicSni` (default: the peer's `Address` when it
 is a DNS name, else the configured value, else no SNI) are the only knobs. The
@@ -660,7 +763,7 @@ packets are padded to 1200 bytes by the library, as browsers do. Both keys are
 `Quic*`-prefixed so M2/M6's invitation copy and the GUI panel pick them up
 without further changes; add them to `docs/config-schema.md` with the code.
 
-### 7.9 Handshake failure and fallback
+### 9.9 Handshake failure and fallback
 
 All of these end in the §2 walk to the next candidate, ending at `plain`,
 because the connection dies before it activates:
@@ -684,7 +787,7 @@ Active migration (`ngtcp2_conn_initiate_immediate_migration`) is only for a
 *local* socket change (Android Wi-Fi -> LTE), which tinc does not do today;
 the spike proves it works when M8 needs it.
 
-### 7.10 Build wiring for G3
+### 9.10 Build wiring for G3
 
 `meson_options.txt`:
 
@@ -726,7 +829,7 @@ credential calls, ~60 lines, the spike's `spike_tls_init`). Keep that in
 `transport_quic_tls.c` so the wolfSSL or BoringSSL backend can replace GnuTLS
 per platform without touching the carrier.
 
-### 7.11 Open risks for G3
+### 9.11 Open risks for G3
 
 1. **Classifier gap** (7.6): short-header packets. Without the keyed CID
    lookup the carrier handshakes and then goes deaf. Must land with the
@@ -750,106 +853,3 @@ TLS ClientHello with the decoy: identical on the tinc wire to upstream tinc for 
 plain/sf peer, and a plausible HTTPS server to everyone else.
 
 ---
-
-## 7. The `https` carrier (M5, G1)
-
-The `https` carrier runs the tinc meta channel **and** the SPTPS data records
-inside one outward TLS flow, and makes the listen port look like an ordinary
-HTTPS server to anything that is not an authenticated tinc peer. It is the
-REALITY-analogue done correctly: no cleartext bearer token, no VPN-shaped bytes
-on the wire, and the certificate is not the trust root — SPTPS/Ed25519 is
-(principle 1). TLS is only a carrier and a decoy.
-
-### 7.1 Certificate
-
-One certificate per node, shared with the future QUIC carrier (decision 1).
-`TlsCert`/`TlsKey` name a real certificate if the operator has one; otherwise the
-daemon generates a self-signed **P-256** X.509v3 certificate at first start
-(`tls.c`) and persists both PEMs — in YAML mode under `keys.tls_cert` /
-`keys.tls_key`, in classic confbase mode as `tls_cert.pem` / `tls_key.pem` — so
-the fingerprint is stable across restarts and the cert is replaceable with no
-other change. The subject/SAN is a generic **`localhost`** on purpose: a scanner
-must not be able to tie the port to a specific mesh node (the tinc-vless front
-leaked its identity with a cert named after itself). The SHA-256 fingerprint is
-shown in `tinc info`/dump and written as `TlsFingerprint` into the node's own
-host record, so M2 propagation carries it in invitations and an invitee pins the
-inviter's certificate.
-
-### 7.2 Dial and certificate pinning
-
-`https_dial` opens a non-blocking TCP connection to the peer's front port and a
-TLS client handshake with a plausible SNI (`HttpsSni`, else the peer's `Address`
-if it is a hostname, else `localhost`). PKI verification is off
-(`SSL_VERIFY_NONE`); instead the peer's certificate is pinned by SHA-256
-fingerprint: if the peer's host record has a `TlsFingerprint`, it must match, or
-the dial fails; if none is pinned, the fingerprint is accepted on first use and
-written to the host record (logged). ALPN offers `http/1.1`.
-
-### 7.3 Authenticator
-
-After the TLS handshake the client sends **one** HTTP/1.1 request that looks like
-an ordinary WebSocket upgrade; the authenticator rides in a `Cookie: sid=<b64url>`
-value. The payload is:
-
-    ver(1) || namelen(1) || node-name || nonce(16) || timestamp_be(8) || Ed25519-sig
-
-where the signature is over
-
-    server-cert-fp(32) || TLS-exporter(32) || nonce(16) || timestamp_be(8)
-
-- **server-cert-fp** is the SHA-256 of the certificate the server just presented
-  (the client uses the fingerprint it verified; the server uses its own
-  `tls_own_fp`). This binds the authenticator to *this server's* identity.
-- **TLS-exporter** is 32 bytes from `SSL_export_keying_material` (RFC 5705) with
-  the label `EXPORTER-tincstack-https-v1`, computed identically by both ends of
-  the TLS session. This binds the authenticator to *this TLS session*: a captured
-  authenticator replayed on any new TLS session has the wrong exporter, so its
-  signature fails and it is treated exactly like a forgery.
-- the signature is made by the client's tinc **Ed25519 node key**; the server
-  verifies it with that node's `Ed25519PublicKey` from its host DB.
-
-The server also checks the node name is known and is not itself, the timestamp is
-within ±90 s, and the nonce has not been seen recently (a small replay cache;
-belt-and-suspenders on top of the exporter binding).
-
-### 7.4 Success and the meta+data flow
-
-On success the server answers `101 Switching Protocols` (a real
-`Sec-WebSocket-Accept` is computed, so the exchange is a textbook WebSocket
-upgrade to any observer that could see inside the TLS). From then on the raw tinc
-meta byte stream runs inside the TLS session: `send_meta*` → `transport_meta_flush`
-→ `https_send` (`SSL_write`), and inbound `SSL_read` → `receive_meta_bytes`. The
-carrier is a pipe; it never inspects a record.
-
-The link is marked **TCP-only-equivalent** (`OPTION_TCPONLY | OPTION_INDIRECT`,
-set before the ACK so it reaches the edge and the peer), so tinc's own data path
-frames the SPTPS **data** datagrams over the meta stream (`send_sptps_tcppacket`)
-instead of a separate UDP flow. The result is a single outward TLS flow (also
-PLAN point 5); `tcpdump` on the port shows only TLS records — no UDP, no
-cleartext tinc ID line. SPTPS itself is unchanged: `https` wraps its records.
-
-### 7.5 Failure = the decoy (probing resistance)
-
-If **anything** fails — not a TLS ClientHello, a completed TLS handshake with no
-valid authenticator, an unknown node, a bad signature, a stale timestamp, a
-replayed nonce — the server serves the decoy (`decoy.c`) and closes, identically
-to any other prober. That identical treatment *is* the active-probing resistance:
-a prober cannot tell a tinc node from a plain web server. The decoy is a static
-page (built-in default, or files under `HttpsDecoyRoot`) or a transparent proxy to
-`HttpsDecoyUpstream` (Host rewritten). The same decoy content is served over
-plain HTTP to a cleartext prober (`decoy_serve_plain`). No response path emits a
-tinc-identifying string.
-
-The client side also falls back: if the dial cannot pin the cert or the server
-answers anything other than `101`, `https_dial`'s connection dies before it
-activates and the outbound selector advances to the next carrier (ending at
-`plain`, §2).
-
-### 7.6 What a middlebox sees
-
-Only TLS records to the standard front port, with a normal-looking certificate
-and (if it could decrypt, which it cannot) a WebSocket upgrade. Whether `101`
-(success) or a static page (decoy) is chosen is invisible on the wire because it
-is inside TLS; `101 Switching Protocols` was chosen for the success case because
-WebSocket-over-HTTPS is ubiquitous and needs no polling. There is no separate
-UDP flow to correlate.
