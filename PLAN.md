@@ -248,28 +248,113 @@ Adopt `tinc-manager` (PySide6) into `platforms/windows/`, ship the M-series core
 
 ## Milestone M8 — Android delivery (point 1b) 🟠
 
-Adopt `tincapp` (Kotlin) into `platforms/android/`.
+Adopt `tincapp` (Kotlin) into `platforms/android/`. Stream E, 2026-09-16,
+branch `worktree-agent-a9d089facc77a096c` (commits `afe0775..`). Everything
+below ran in containers (`ws-e-android-build` image, `wse-*` volumes), the
+host SDK/NDK mounted read-only; no core source or meson change was needed.
 
-- [ ] 🔴 Repoint `app/CMakeLists.txt` at `core/tincd` (currently an absent
+- [x] 🔴 Repoint `app/CMakeLists.txt` at `core/tincd` (currently an absent
   absolute path → last build was vanilla tinc) and **reconcile the build system**
   (tincapp drives autotools; core is meson — provide an autotools-compatible build
   of the core sources for the NDK, or an NDK meson cross-build). **Proof:** debug
   APK builds against the core across the 4 ABIs (`/opt/android-sdk`, NDK 26.1).
-- [ ] 🟠 **App-picker UI** for the existing whitelist/blacklist split routing
+  **Done:** CMake/`main.c` dropped; `platforms/android/native/build-core.sh`
+  does an NDK **meson cross-build** of `../../core/tincd` per ABI (cross file
+  with `system = 'android'`, API 21, `-Dcrypto=openssl` against a static
+  LibreSSL 3.7.3 libcrypto cross-compiled by its own configure, zlib from the
+  NDK sysroot, lzo/lz4/curses/readline/systemd/miniupnpc disabled), strips into
+  `jniLibs/<abi>/libtincd.so|libtinc.so`; Gradle task `buildTincCore` runs it
+  before `preBuild`, `useLegacyPackaging` so the executables are extracted.
+  Proof (from-scratch build, `app/build` deleted first):
+  `docker build -t ws-e-android-build -f platforms/android/docker/Dockerfile.build platforms/android/docker`;
+  `docker run --name wse-clean-build -v "$PWD":/src -v /opt/android-sdk:/opt/android-sdk:ro -v wse-gradle:/root/.gradle -v wse-m2:/root/.m2 -w /src/platforms/android ws-e-android-build ./gradlew --no-daemon assembleDebug testDebugUnitTest`
+  → `BUILD SUCCESSFUL in 2m 7s`, `EXIT=0`; `unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libtinc`
+  lists `lib/{arm64-v8a,armeabi-v7a,x86,x86_64}/libtincd.so` and `libtinc.so`
+  (8 files, 1.06–1.37 MB each; APK 12.6 MB); `llvm-strings` of
+  `x86_64/libtincd.so` contains `1.1pre18` and `tincd %s (%s %s) starting`;
+  `llvm-readelf -d` shows PIE executables needing only libm/libz/libc/libdl.
+  Trade-off: LibreSSL is what tincapp already shipped; `--crypto nolegacy`
+  builds without it (SPTPS-only, no RSA legacy protocol) if the extra 1 MB per
+  ABI is unwanted.
+- [x] 🟠 **App-picker UI** for the existing whitelist/blacklist split routing
   (`AllowApplication`/`DisallowApplication` are parsed & applied; only the picker
   is missing). Enforce single-mode (Android forbids mixing). **Proof:** pick apps
   in the UI → `network.conf` reflects one list → routing honours it.
+  **Done:** Configure → Tools → "Choose which apps use the VPN" →
+  `AppPickerActivity` (mode radio: only-selected / all-except-selected, search,
+  multi-select list with icon/label/package). `SplitRouting.write` puts exactly
+  one key into `tinc.yaml` and removes the other; a file with both is refused.
+  Proof (no emulator on this host; unit + Robolectric instead): `SplitRoutingTest`
+  (5: round trip, one key only, mode switch removes the other, both → refused,
+  empty selection removes the key), `VpnServiceBuilderTest.blacklistWrittenByThePickerIsApplied`
+  (picker output → real `VpnService.Builder` with `disallowedApplications`
+  set and `allowedApplications` null). `testDebugUnitTest`: 23 tests, 0 failures.
+  The screen itself was only compiled, not tapped — awaits a device.
 - [ ] 🟡 Verify invite/join (incl. QR, already present) writes the shared YAML
   schema. **Proof:** join on device produces a schema-conformant config.
-- [ ] 🟠 **One file on Android too** (brief point 2). Today the app keeps a
+  **Blocked on stream A** (core in YAML mode): with the master core
+  (`tincstack/core:dev`) `tinc -c b/tinc.yaml -n mynet join <url>` prints
+  "Configuration stored in: /etc/tincstack/mynet" and writes a **classic tree**
+  (`tinc.conf` with `Name/ConnectTo/Mode`, `hosts/nodeA`, `hosts/nodeB`,
+  `invitation-data`, `*_key.priv`), no `tinc.yaml`, then "Timed out waiting for
+  the server to reply. Invitation cancelled." (exit 1; the inviter's `tincd`
+  was up and had accepted the TCP connection). `tinc init` in YAML mode also
+  writes a classic tree. The app side is done and waits for that: it runs
+  `tinc --config networks/<net>/tinc.yaml --net <net> join <url>` (QR scanner
+  feeds the same path), then folds the invitation's `Ifconfig`/`Route` from
+  `invitation-data` into the YAML options (`VpnInterfaceConfigurationTest.invitationDataAddressingIsFoldedIntoTheYaml`).
+  On-device proof `[ ]` until the core's join emits YAML.
+- [x] 🟠 **One file on Android too** (brief point 2). Today the app keeps a
   second file, `network.conf` (`Address`, `Route`, `DNSServer`,
   `AllowApplication`, `DisallowApplication`). Fold these into the network's
   YAML as ordinary `options:` keys (the daemon ignores keys it does not use;
   the app reads them from the YAML) and delete `network.conf`. The app-picker
   above writes to the YAML. **Proof:** a device with only `tinc.yaml` connects
   with split routing applied; no `network.conf` exists.
+  **Done:** `network.conf`, `tinc.conf` reading, `res/raw/network.conf`,
+  commons-configuration and the key-passphrase machinery are gone; the app
+  reads `Ifconfig`/`Route`/`DNSServer`/`SearchDomain`/`AllowApplication`/
+  `DisallowApplication`/`AllowFamily`/`AllowBypass`/`Blocking`/`MTU`/
+  `ReconnectOnNetworkChange` from `networks/<net>/tinc.yaml` `options:`
+  (`Ifconfig`/`Route` = the keys tinc invitations already carry; `Address`
+  would collide with the host `Address`). Without them: address = own
+  `Subnet` + `AddressPool` prefix, route = `AddressPool`, so a zero-config node
+  connects with nothing Android-specific in the file. Writes are a key-level
+  textual splice (everything else byte-identical) + atomic temp/rename.
+  Documented in `docs/config-schema.md` ("Android interface options").
+  Proof: `VpnServiceBuilderTest` (Robolectric, SDK 34): a directory holding
+  only `tinc.yaml` (asserted: `dir.list() == [tinc.yaml]`) yields a
+  `VpnService.Builder` with the expected addresses, routes, DNS, search
+  domain, MTU and exactly one app list; a zero-config daemon document yields
+  `10.165.0.1/24` + route `10.165.0.0/24`; mixed lists throw before the
+  builder. `TincYamlTest` (9) splices a daemon-materialised document
+  byte-for-byte. Cross-check against the real daemon (`tincstack/core:dev`):
+  a daemon-written `tinc.yaml` spliced with the app keys still starts
+  (`Ready`), `tinc get AllowApplication|Route|Ifconfig` return the values (with
+  "not a known configuration variable" warnings), and the file keeps all keys
+  after the daemon stops. Real `establish()` on a device not run here.
 - **Acceptance:** an Android user joins by invite/QR and chooses which apps use
-  the tunnel.
+  the tunnel. **Status:** the picker and the one-file config are proven on the
+  JVM; the APK is built from the core for all 4 ABIs. Awaits a device: install +
+  `VpnService.establish()`, `tincd` subprocess start via the fd socket, QR scan,
+  and end-to-end join (the last also blocked on stream A, above).
+- **Found during M8:**
+  - 🟠 (core, stream A) `tinc join` and `tinc init` in YAML mode
+    (`-c x/tinc.yaml`) write a classic `tinc.conf`/`hosts/` tree next to the
+    YAML and never the YAML itself; the inviter times out the invitation. Until
+    fixed, joining from the app cannot produce a schema-conformant config.
+  - 🟡 tincapp's `applyIgnoringException` silently dropped the second app list
+    when both `AllowApplication` and `DisallowApplication` were present; the
+    app now refuses such a file (documented in the schema).
+  - 🟡 (core, cosmetic) `tinc get <AndroidKey>` warns "not a known
+    configuration variable" for the Android keys; harmless, but a schema-aware
+    `tinc get` would be cleaner.
+  - 🟢 tincapp's key-passphrase feature (encrypted `*.priv` + unlock dialog)
+    has no equivalent with keys embedded in the YAML; removed, not ported.
+  - 🟢 `app_doc_url_format` / website strings still point at
+    `tincapp.euxane.net`; the crash-report e-mail was emptied (button hidden).
+  - 🟢 The app's Kotlin package is still `org.pacien.tincapp` (applicationId
+    is `net.tincstack.android`); a rename is churn without benefit for now.
 
 ---
 

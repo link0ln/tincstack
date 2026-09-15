@@ -132,24 +132,57 @@ An existing file that does not parse is **refused**, never overwritten. No
 (`cache/`, `invitations/`, pid/socket if `/var/run` is unwritable) go under
 `<dir of file>/<netname>/`.
 
-## Android-specific interface config
+## Android interface options (one file on Android too)
 
-Android's VPN interface parameters (routes, DNS, per-app split routing) do **not**
-map to tinc.conf; they live in the platform's `network.conf`, whose keys the
-Android app already understands:
+Android's VPN interface parameters (interface address, routes, DNS, per-app
+split routing) are ordinary `options:` keys of the network's `tinc.yaml`. The
+daemon ignores keys it does not use (`tinc get` warns "not a known
+configuration variable" but reads them); the app reads them and writes only the
+ones it manages. There is **no second file**: the former `network.conf` is gone.
+On the device each network is a directory `networks/<net>/` holding `tinc.yaml`
+(the daemon's runtime side-files go to `networks/<net>/<net>/`).
 
+```yaml
+networks:
+  <netname>:
+    options:
+      Ifconfig: 10.210.0.3/24          # interface address(es); the key tinc itself uses
+                                       # in invitations. Absent → derived from this
+                                       # node's own Subnet + AddressPool prefix
+      Route:                           # traffic sent through the tunnel; absent →
+        - 10.210.0.0/24                # AddressPool. "prefix [gateway]" as in invitations;
+        - 0.0.0.0/0                    # only the prefix is used on Android
+      DNSServer: [10.210.0.1]          # DNS server(s) for the tunnel
+      SearchDomain: mesh.internal
+      AllowApplication:                # WHITELIST: only these apps use the VPN
+        - org.example.browser
+      DisallowApplication: [org.x]     # BLACKLIST: every app except these
+      AllowFamily: 2                   # AF_INET (2) / AF_INET6 (10)
+      AllowBypass: no                  # let apps bind to the physical network
+      Blocking: no
+      MTU: 1400
+      ReconnectOnNetworkChange: yes
 ```
-Address            = 10.210.0.3/24
-Route              = 10.210.0.0/24
-DNSServer          = 10.210.0.1
-AllowApplication   = com.example.foo   # whitelist mode: only these apps use VPN
-DisallowApplication= com.example.bar   # blacklist mode: all apps except these
-```
 
-`AllowApplication` and `DisallowApplication` are **mutually exclusive** (Android
-rejects mixing them); the app-picker UI must enforce a single mode. These keys are
-already parsed and applied by the app (`VpnServiceBuilder.kt`); the milestone adds
-the picker UI, not the plumbing.
+Rules:
+
+- `AllowApplication` and `DisallowApplication` are **mutually exclusive**
+  (Android forbids mixing them on one `VpnService.Builder`). The app refuses a
+  file that has both, and its app-picker writes exactly one key: saving one
+  mode removes the other. An empty selection means "all apps" (no key).
+- The app writes with a key-level textual splice of the existing document and
+  replaces the file atomically (temp + rename), like the daemon's own
+  write-back: unrelated options, `keys:`, `hosts:` and comments are preserved
+  byte for byte. A change made while that network is connected applies at the
+  next connection.
+- `Ifconfig`/`Route` are what `tinc join` receives in an invitation; when the
+  CLI leaves them in `invitation-data` next to the config, the app folds them
+  into the YAML after joining. With neither present the interface still comes
+  up on a zero-config or freshly joined node: address = own `Subnet` with the
+  `AddressPool` prefix, route = `AddressPool`.
+- Private keys are embedded (`keys:`) and unencrypted; the app's former
+  passphrase feature (encrypted `*.priv` files + unlock dialog) does not apply
+  and was removed.
 
 ## Write-back behaviour (must be preserved cross-platform)
 

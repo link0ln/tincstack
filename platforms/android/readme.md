@@ -1,54 +1,55 @@
-Tinc Mesh VPN
-=============
+tincstack for Android
+=====================
 
-Android binding and user interface for the tinc mesh VPN daemon which does not
-require root privilege.
+Android client for the tincstack mesh VPN: the tincstack core (`core/tincd`, a
+tinc 1.1 fork) run as a subprocess without root, one `tinc.yaml` per network,
+invitation/QR onboarding and per-app split routing. Adopted from
+[Tinc Mesh VPN](https://tincapp.euxane.net) (tincapp) by Euxane P. TRAN-GIRARD.
 
+What changed against tincapp
+----------------------------
 
-Help and documentation
-----------------------
-
-The complete list of features, the quickstart guides and the user manual can be
-found on the project's website: https://tincapp.euxane.net.
-
-Community support is mainly provided through the dedicated Matrix Room and
-IRC channel: `#tincapp:pacien.net` and `#tincapp` on `irc.libera.chat`.
-
-
-Download
---------
-
-Compiled Android packages are available from:
-
-* [F-Droid](https://f-droid.org/packages/org.pacien.tincapp/)
-* [Google Play Store](https://play.google.com/store/apps/details?id=org.pacien.tincapp)
-* [The project's website](https://tincapp.euxane.net)
-
+- **Core**: the bundled `libtincd.so` / `libtinc.so` are the tincstack core
+  cross-compiled with the NDK by `native/build-core.sh` (meson cross files, one
+  per ABI, static LibreSSL libcrypto), not vanilla tinc from an autotools build.
+- **One file**: each network is `networks/<net>/tinc.yaml` (the shared schema,
+  `docs/config-schema.md`). The Android interface settings that used to live in
+  `network.conf` (`Ifconfig`, `Route`, `DNSServer`, `AllowApplication`,
+  `DisallowApplication`, ...) are ordinary `options:` keys of that file.
+  Private keys are embedded in it; the key-passphrase feature is gone.
+- **App picker**: Configure → Tools → "Choose which apps use the VPN" — one
+  mode switch (only selected apps / all apps except selected), search,
+  multi-select; written straight into `tinc.yaml`.
+- **Join**: `tinc join` runs against `tinc.yaml`; the interface addressing an
+  invitation carries is folded into the YAML options.
 
 Build
 -----
 
-The project can be built using the Gradle `build` task, on Linux.
+Everything runs in a container; see the "Build the Android app" section of the
+repository `README.md`. In short:
 
-Requirements:
+```
+docker build -t ws-e-android-build -f docker/Dockerfile.build docker
+docker run --rm -v "$REPO":/src -v /opt/android-sdk:/opt/android-sdk:ro \
+    -v wse-gradle:/root/.gradle -v wse-m2:/root/.m2 -w /src/platforms/android \
+    ws-e-android-build ./gradlew assembleDebug testDebugUnitTest
+```
 
-- Android SDK Platform 33
-- Android NDK r22
-- Android Platform-Tools 34
-- Android SDK Tools 26
-- CMake
-- automake
-- autoconf
-
+Requirements: Android SDK platform 34, build-tools 34.0.0, NDK 26.1.10909125
+(mounted at `/opt/android-sdk`); the container brings JDK 17, meson, ninja,
+pkg-config and make. `native/build-core.sh` can also be run on its own to
+produce `jniLibs/<abi>/libtincd.so` (`--crypto nolegacy` builds without
+LibreSSL: SPTPS/Ed25519 only, no legacy RSA protocol).
 
 License
 -------
 
 Copyright (C) 2017-2024 Euxane P. TRAN-GIRARD and contributors (listed in
-`contributors.md`).
+`contributors.md`); Copyright (C) 2026 tincstack contributors.
 
-_Tinc Mesh VPN_ is distributed under the terms of GNU General Public License v3.0,
-as detailed in the provided `license.md` file.
+Distributed under the terms of the GNU General Public License v3.0, as detailed
+in the provided `license.md` file.
 
 Builds of this software embed and make use of the following libraries:
 
@@ -56,12 +57,10 @@ Builds of this software embed and make use of the following libraries:
 * streamsupport-cfuture, licensed under the GNU General Public License v2.0
 * Material Components for Android, licensed under the Apache v2.0 License
 * ZXing Android Embedded, licensed under the Apache v2.0 License
-* Bouncy Castle PKIX, licensed under the Bouncy Castle License
 * SLF4J, licensed under the MIT License
 * logback-android, licensed under the GNU Lesser General Public License v2.1
-* Apache Commons Configuration, licensed under the Apache v2.0 License
-* Apache Commons BeanUtils, licensed under the Apache v2.0 License
-* LZO, licensed under the GNU General Public License v2.0
+* SnakeYAML, licensed under the Apache v2.0 License
+* Apache Commons IO, licensed under the Apache v2.0 License
 * LibreSSL libcrypto, licensed under the OpenSSL License, ISC License, public
   domain
-* tinc, licensed under the GNU General Public License v2.0
+* tinc (tincstack core), licensed under the GNU General Public License v2.0
