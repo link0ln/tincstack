@@ -481,6 +481,10 @@ bool yamlconf_has_network(yamlconf_t *yc, const char *net) {
 	return n && n->type == Y_MAP;
 }
 
+bool yamlconf_del_network(yamlconf_t *yc, const char *net) {
+	return map_del(map_get(yc->root, "networks"), net);
+}
+
 bool yamlconf_has_option(yamlconf_t *yc, const char *net, const char *key) {
 	return map_get(map_get(net_node(yc, net), "options"), key) != NULL;
 }

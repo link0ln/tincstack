@@ -124,6 +124,7 @@ typedef struct connection_t {
 	time_t last_ping_time;          /* last time we saw some activity from the other end or pinged them */
 
 	splay_tree_t *config_tree;      /* Pointer to configuration tree belonging to him */
+	char *invitation_file;          /* invitation consumed by this connection, until finalised (protocol_auth.c) */
 } connection_t;
 
 extern list_t connection_list;

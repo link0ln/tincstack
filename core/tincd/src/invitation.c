@@ -558,7 +558,9 @@ int cmd_invite(int argc, char *argv[]) {
 	time_t deadline = time(NULL) - 604800; // 1 week in the past
 
 	while((errno = 0, ent = readdir(dir))) {
-		if(strlen(ent->d_name) != 24) {
+		size_t namelen = strlen(ent->d_name);
+
+		if(namelen != 24 && !(namelen == 29 && !strcmp(ent->d_name + 24, ".used"))) {
 			continue;
 		}
 
@@ -949,6 +951,12 @@ static char *split_line(char *l, char **value) {
   never carries (keys, Port, Mode). No tinc.conf, hosts/ tree, *_key.priv or
   tinc-up.invitation is created.
 */
+/* What finalize_join_yaml() changed on disk, so cmd_join() can undo it when
+   the inviter never confirms (the invitee's key is then not stored anywhere,
+   and a retry must start from a clean network). */
+static bool join_yaml_created_file = false;
+static bool join_yaml_wrote_network = false;
+
 static bool finalize_join_yaml(const char *name) {
 	static char line[1024];
 
@@ -998,6 +1006,7 @@ static bool finalize_join_yaml(const char *name) {
 
 		yc = yamlconf_new();
 		yamlconf_global = yc;
+		join_yaml_created_file = true;
 	}
 
 	yamlconf_set_option(yc, netname, "Name", name);
@@ -1133,6 +1142,8 @@ static bool finalize_join_yaml(const char *name) {
 		fprintf(stderr, "Could not write %s\n", yamlconf_path);
 		return false;
 	}
+
+	join_yaml_wrote_network = true;
 
 	/* Send the inviter our new Ed25519 public key. */
 	char *host = yamlconf_host_text(yamlconf_global, netname, name);
@@ -1941,6 +1952,23 @@ exit:
 	closesocket(sock);
 
 	if(!success) {
+		/* YAML mode: leave no half-joined network behind, so the same
+		   invitation can simply be retried. */
+		if(yamlconf_path && join_yaml_wrote_network) {
+			if(join_yaml_created_file) {
+				unlink(yamlconf_path);
+				fprintf(stderr, "Removed %s again (join did not complete).\n", yamlconf_path);
+			} else {
+				yamlconf_t *yc = yamlconf_load(yamlconf_path);
+
+				if(yc && yamlconf_del_network(yc, netname) && yamlconf_save(yc, yamlconf_path)) {
+					fprintf(stderr, "Removed network %s from %s again (join did not complete).\n", netname, yamlconf_path);
+				}
+
+				yamlconf_free(yc);
+			}
+		}
+
 		fprintf(stderr, "Invitation cancelled. Please try again and contact the inviter for assistance if this error persists.\n");
 		return 1;
 	}

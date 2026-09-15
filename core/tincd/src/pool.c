@@ -160,8 +160,11 @@ static void collect_pending(used_list_t *list) {
 	struct dirent *ent;
 
 	while((ent = readdir(dir))) {
-		/* Invitation files are named by an 18-byte urlsafe-base64 hash. */
-		if(strlen(ent->d_name) != 24) {
+		/* Invitation files are named by an 18-byte urlsafe-base64 hash;
+		   "<hash>.used" is one whose join is in flight. */
+		size_t namelen = strlen(ent->d_name);
+
+		if(namelen != 24 && !(namelen == 29 && !strcmp(ent->d_name + 24, ".used"))) {
 			continue;
 		}
 

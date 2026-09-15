@@ -27,6 +27,7 @@
 #include "control_common.h"
 #include "logger.h"
 #include "net.h"
+#include "protocol.h"
 #include "rsa.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -144,6 +145,7 @@ void free_connection(connection_t *c) {
 		}
 	}
 
+	invitation_release(c, false);
 	free(c->name);
 	free(c->hostname);
 

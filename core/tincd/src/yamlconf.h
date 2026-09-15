@@ -55,6 +55,9 @@ yamlconf_t *yamlconf_new(void);
 const char *yamlconf_first_network(yamlconf_t *yc);
 bool yamlconf_has_network(yamlconf_t *yc, const char *net);
 
+/* Remove networks.<net> entirely. Returns true if it existed. */
+bool yamlconf_del_network(yamlconf_t *yc, const char *net);
+
 /* ---- in-memory mutation (call yamlconf_save() to persist) ---------------- */
 
 /* Scalar option networks.<net>.options.<key>, or NULL if absent / not a

@@ -97,7 +97,10 @@ void make_names(bool daemon) {
 		}
 
 		free(dir);
-		mkdir(confbase, 0700);
+		/* Same mode makedirs() applies to a classic confbase, so later CLI
+		   calls do not re-chmod it; secrets live in invitations/ (0700) and
+		   the YAML file itself (0600). */
+		mkdir(confbase, 0755);
 	}
 
 	if(netname && confbase && !yamlconf_path) {

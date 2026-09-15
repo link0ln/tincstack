@@ -117,8 +117,49 @@ bool send_id(connection_t *c) {
 	return send_request(c, "%d %s %d.%d", ID, myself->connection->name, myself->connection->protocol_major, minor);
 }
 
+void invitation_release(connection_t *c, bool completed) {
+	if(!c->invitation_file) {
+		return;
+	}
+
+	if(completed) {
+		unlink(c->invitation_file);
+	} else {
+		/* "<cookie>.used" -> "<cookie>": the invitee can present the same
+		   invitation again once the cause of the failure is fixed. */
+		char *orig = xstrdup(c->invitation_file);
+		size_t n = strlen(orig);
+
+		if(n > 5 && !strcmp(orig + n - 5, ".used")) {
+			orig[n - 5] = 0;
+		}
+
+		if(rename(c->invitation_file, orig)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Could not restore invitation %s: %s", orig, strerror(errno));
+		} else {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Invitation for %s (%s) was not completed; it can be used again", c->name, c->hostname);
+		}
+
+		free(orig);
+	}
+
+	free(c->invitation_file);
+	c->invitation_file = NULL;
+}
+
+static bool store_invitee(connection_t *c, const char *data);
+
 static bool finalize_invitation(connection_t *c, const char *data, uint16_t len) {
 	(void)len;
+
+	/* Only a stored key consumes the invitation; any failure below hands the
+	   invitation back so the invitee can retry instead of needing a new one. */
+	bool ok = store_invitee(c, data);
+	invitation_release(c, ok);
+	return ok;
+}
+
+static bool store_invitee(connection_t *c, const char *data) {
 
 	if(strchr(data, '\n')) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Received invalid key from invited node %s (%s)!\n", c->name, c->hostname);
@@ -369,7 +410,11 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 
 	sptps_send_record(&c->sptps, 1, buf, 0);
 	fclose(f);
-	unlink(usedname);
+
+	/* Keep the claimed (".used") file until the invitee's key is stored; see
+	   invitation_release(). */
+	free(c->invitation_file);
+	c->invitation_file = xstrdup(usedname);
 
 	c->status.invitation_used = true;
 
