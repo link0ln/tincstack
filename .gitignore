@@ -20,3 +20,5 @@ core/tincd/build/
 platforms/android/**/build/
 platforms/android/**/.cxx/
 platforms/android/**/.gradle/
+# M9 lab runtime data (keys/configs generated at run time)
+testing/smoke/run/
