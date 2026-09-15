@@ -38,6 +38,7 @@
 #include "rsagen.h"
 #include "utils.h"
 #include "tincctl.h"
+#include "yamlconf.h"
 #include "top.h"
 #include "version.h"
 #include "subnet.h"
@@ -1681,6 +1682,7 @@ static ecdsa_t *get_pubkey(FILE *f) {
 
 const var_t variables[] = {
 	/* Server configuration */
+	{"AddressDiscovery", VAR_SERVER},
 	{"AddressFamily", VAR_SERVER | VAR_SAFE},
 	{"AddressPool", VAR_SERVER | VAR_SAFE},
 	{"AutoConnect", VAR_SERVER | VAR_SAFE},
@@ -1704,6 +1706,8 @@ const var_t variables[] = {
 	{"Hostnames", VAR_SERVER},
 	{"IffOneQueue", VAR_SERVER},
 	{"Interface", VAR_SERVER},
+	{"InterfaceAddress", VAR_SERVER | VAR_SAFE},
+	{"InterfaceRoute", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
 	{"InvitationExpire", VAR_SERVER},
 	{"KeyExpire", VAR_SERVER | VAR_SAFE},
 	{"ListenAddress", VAR_SERVER | VAR_MULTIPLE},
@@ -1953,11 +1957,20 @@ static int cmd_config(int argc, char *argv[]) {
 		}
 	}
 
-	// Open the right configuration file.
+	// Open the right configuration file. In YAML mode the "file" is the
+	// networks.<net>.options map (server variables) or the hosts.<node> text
+	// (host variables), edited through a temporary stream with exactly the
+	// same line logic and written back into the YAML document.
 	char filename[PATH_MAX];
+	char *yaml_host = NULL;
+	FILE *f = NULL;
 
 	if(node) {
 		size_t wrote = (size_t)snprintf(filename, sizeof(filename), "%s" SLASH "%s", hosts_dir, node);
+
+		if(yamlconf_path) {
+			yaml_host = xstrdup(node);
+		}
 
 		if(node != line) {
 			free(node);
@@ -1966,6 +1979,7 @@ static int cmd_config(int argc, char *argv[]) {
 
 		if(wrote >= sizeof(filename)) {
 			fprintf(stderr, "Filename too long: %s" SLASH "%s\n", hosts_dir, node);
+			free(yaml_host);
 			return 1;
 		}
 
@@ -1973,10 +1987,32 @@ static int cmd_config(int argc, char *argv[]) {
 		snprintf(filename, sizeof(filename), "%s", tinc_conf);
 	}
 
-	FILE *f = fopen(filename, "r");
+	if(yamlconf_path) {
+		if(!yamlconf_global) {
+			fprintf(stderr, "Could not read YAML config %s\n", yamlconf_path);
+			free(yaml_host);
+			return 1;
+		}
+
+		char *text = yaml_host ? yamlconf_host_text(yamlconf_global, netname, yaml_host)
+		             : yamlconf_options_text(yamlconf_global, netname);
+
+		if(!text && action == GET) {
+			fprintf(stderr, "No %s in %s [%s]\n", yaml_host ? "such host" : "options", yamlconf_path, netname);
+			free(yaml_host);
+			return 1;
+		}
+
+		f = yamlconf_content_fp(text ? text : "");
+		free(text);
+		snprintf(filename, sizeof(filename), "%s", yamlconf_path);
+	} else {
+		f = fopen(filename, "r");
+	}
 
 	if(!f) {
 		fprintf(stderr, "Could not open configuration file %s: %s\n", filename, strerror(errno));
+		free(yaml_host);
 		return 1;
 	}
 
@@ -1984,16 +2020,22 @@ static int cmd_config(int argc, char *argv[]) {
 	FILE *tf = NULL;
 
 	if(action != GET) {
-		if((size_t)snprintf(tmpfile, sizeof(tmpfile), "%s.config.tmp", filename) >= sizeof(tmpfile)) {
-			fprintf(stderr, "Filename too long: %s.config.tmp\n", filename);
-			return 1;
-		}
+		if(yamlconf_path) {
+			snprintf(tmpfile, sizeof(tmpfile), "(memory)");
+			tf = yamlconf_content_fp("");
+		} else {
+			if((size_t)snprintf(tmpfile, sizeof(tmpfile), "%s.config.tmp", filename) >= sizeof(tmpfile)) {
+				fprintf(stderr, "Filename too long: %s.config.tmp\n", filename);
+				return 1;
+			}
 
-		tf = fopen(tmpfile, "w");
+			tf = fopen(tmpfile, "w");
+		}
 
 		if(!tf) {
 			fprintf(stderr, "Could not open temporary file %s: %s\n", tmpfile, strerror(errno));
 			fclose(f);
+			free(yaml_host);
 			return 1;
 		}
 	}
@@ -2099,12 +2141,54 @@ static int cmd_config(int argc, char *argv[]) {
 	}
 
 	if(action == GET) {
+		free(yaml_host);
+
 		if(found) {
 			return 0;
 		} else {
 			fprintf(stderr, "No matching configuration variables found.\n");
 			return 1;
 		}
+	}
+
+	if(yamlconf_path) {
+		// Could we find what we had to remove?
+		if(action == DEL && !removed) {
+			fclose(tf);
+			free(yaml_host);
+			fprintf(stderr, "No configuration variables deleted.\n");
+			return 1;
+		}
+
+		// Read the edited text back and store it in the document.
+		fflush(tf);
+		long sz = ftell(tf);
+		rewind(tf);
+		char *text = xmalloc((size_t)(sz > 0 ? sz : 0) + 1);
+		size_t rd = sz > 0 ? fread(text, 1, (size_t)sz, tf) : 0;
+		text[rd] = 0;
+		fclose(tf);
+
+		if(yaml_host) {
+			yamlconf_host_set_text(yamlconf_global, netname, yaml_host, text);
+		} else {
+			yamlconf_set_options_text(yamlconf_global, netname, text);
+		}
+
+		free(text);
+		free(yaml_host);
+
+		if(!yamlconf_save(yamlconf_global, yamlconf_path)) {
+			fprintf(stderr, "Error writing %s: %s\n", yamlconf_path, strerror(errno));
+			return 1;
+		}
+
+		// Silently try notifying a running tincd of changes.
+		if(connect_tincd(false)) {
+			sendline(fd, "%d %d", CONTROL, REQ_RELOAD);
+		}
+
+		return 0;
 	}
 
 	// Make sure we wrote everything...
