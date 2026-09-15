@@ -1,0 +1,115 @@
+/*
+ * Tinc Mesh VPN: Android client and user interface
+ * Copyright (C) 2017-2019 Euxane P. TRAN-GIRARD
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package org.pacien.tincapp.activities
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.annotation.StringRes
+import com.google.android.material.snackbar.Snackbar
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import android.view.*
+import org.pacien.tincapp.R
+import org.pacien.tincapp.context.App
+import org.pacien.tincapp.context.AppInfo
+import org.pacien.tincapp.databinding.BaseActivityBinding
+
+/**
+ * @author euxane
+ */
+abstract class BaseActivity : AppCompatActivity() {
+  val rootView by lazy { BaseActivityBinding.inflate(layoutInflater).root }
+  private var active = false
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    super.setContentView(rootView)
+  }
+
+  override fun onCreateOptionsMenu(m: Menu): Boolean {
+    menuInflater.inflate(R.menu.menu_base, m)
+    return true
+  }
+
+  override fun onStart() {
+    super.onStart()
+    active = true
+  }
+
+  override fun onResume() {
+    super.onResume()
+    active = true
+  }
+
+  override fun onPause() {
+    active = false
+    super.onPause()
+  }
+
+  override fun onStop() {
+    active = false
+    super.onStop()
+  }
+
+  override fun setContentView(layoutResID: Int) {
+    layoutInflater.inflate(layoutResID, rootView)
+  }
+
+  override fun getSupportActionBar() = super.getSupportActionBar()!!
+
+  fun startActivityChooser(target: Intent, title: String) {
+    val intentChooser = Intent.createChooser(target, title)
+    startActivity(intentChooser)
+  }
+
+  @Suppress("UNUSED_PARAMETER")
+  fun aboutDialog(m: MenuItem) {
+    AlertDialog.Builder(this)
+      .setTitle(resources.getString(R.string.app_name))
+      .setMessage(resources.getString(R.string.about_app_short_desc) + "\n\n" +
+        resources.getString(R.string.about_app_copyright) + " " +
+        resources.getString(R.string.about_app_license) + "\n\n" +
+        AppInfo.all())
+      .setNeutralButton(R.string.about_app_open_project_website) { _, _ -> App.openURL(resources.getString(R.string.about_app_website_url)) }
+      .setPositiveButton(R.string.generic_action_close) { _, _ -> }
+      .show()
+  }
+
+  fun runOnUiThread(action: () -> Unit) {
+    if (active) super.runOnUiThread(action)
+  }
+
+  fun notify(@StringRes msg: Int) = Snackbar.make(rootView, msg, Snackbar.LENGTH_LONG).show()
+  fun notify(msg: String) = Snackbar.make(rootView, msg, Snackbar.LENGTH_LONG).show()
+
+  fun showErrorDialog(@StringRes msg: Int, docTopic: String? = null) =
+    showErrorDialog(getString(msg), docTopic)
+
+  fun showErrorDialog(msg: String, docTopic: String? = null): AlertDialog =
+    AlertDialog.Builder(this)
+      .setTitle(R.string.generic_title_error).setMessage(msg)
+      .setPositiveButton(R.string.generic_action_close) { _, _ -> }
+      .apply {
+        if (docTopic != null)
+          setNeutralButton(R.string.notification_error_action_open_manual) { _, _ ->
+            App.openURL(getString(R.string.app_doc_url_format, docTopic))
+        }
+      }
+      .show()
+}

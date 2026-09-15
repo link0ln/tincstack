@@ -1,0 +1,76 @@
+/*
+ * Tinc Mesh VPN: Android client and user interface
+ * Copyright (C) 2017-2024 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package org.pacien.tincapp.context
+
+import org.pacien.tincapp.data.TincYaml
+import java.io.File
+import java.io.FileNotFoundException
+
+/**
+ * @author euxane
+ *
+ * @implNote Logs and PID files are stored in the cache directory for automatic collection.
+ *
+ * Layout of a network `<net>` (one directory per network under `networks/`):
+ *
+ *     networks/<net>/tinc.yaml   the one config file, daemon-owned (docs/config-schema.md)
+ *     networks/<net>/<stanza>/   the daemon's runtime side-files for that YAML stanza
+ *                                (cache/, invitations/, and what `tinc join` leaves behind)
+ */
+object AppPaths {
+  private const val APP_LOGS_DIR = "logs"
+  private const val APP_TINC_RUNTIME_DIR = "run"
+  private const val APP_TINC_NETWORKS_DIR = "networks"
+
+  private const val TINCD_BIN = "libtincd.so"
+  private const val TINC_BIN = "libtinc.so"
+
+  private const val APPLOG_FILE = "tincapp.log"
+  private const val CRASHFLAG_FILE = "crash.flag"
+  private const val LOGFILE_FORMAT = "tinc.%s.log"
+  private const val PIDFILE_FORMAT = "tinc.%s.pid"
+
+  private const val NET_INVITATION_FILE = "invitation-data"
+
+  private val context by lazy { App.getContext() }
+
+  private fun privateCacheDir() = context.cacheDir!!
+  private fun privateFilesDir() = context.filesDir
+  private fun binDir() = File(context.applicationInfo.nativeLibraryDir)
+
+  fun runtimeDir() = withDir(File(privateCacheDir(), APP_TINC_RUNTIME_DIR))
+  fun logsDir() = withDir(File(privateCacheDir(), APP_LOGS_DIR))
+  fun confDir() = withDir(File(privateFilesDir(), APP_TINC_NETWORKS_DIR))
+
+  fun confDir(netName: String) = File(confDir(), netName)
+  fun tincYamlFile(netName: String) = File(confDir(netName), TincYaml.FILE_NAME)
+  fun daemonSideDir(netName: String, stanza: String) = File(confDir(netName), stanza)
+  fun invitationFile(netName: String, stanza: String) = File(daemonSideDir(netName, stanza), NET_INVITATION_FILE)
+  fun logFile(netName: String) = File(logsDir(), String.format(LOGFILE_FORMAT, netName))
+  fun pidFile(netName: String) = File(runtimeDir(), String.format(PIDFILE_FORMAT, netName))
+  fun appLogFile() = File(logsDir(), APPLOG_FILE)
+  fun crashFlagFile() = File(privateCacheDir(), CRASHFLAG_FILE)
+
+  fun existing(f: File) = f.apply { if (!exists()) throw FileNotFoundException(f.absolutePath) }
+  private fun withDir(f: File) = f.apply { if (!exists()) mkdirs() }
+
+  fun tincd() = File(binDir(), TINCD_BIN)
+  fun tinc() = File(binDir(), TINC_BIN)
+}

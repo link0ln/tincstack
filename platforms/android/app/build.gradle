@@ -1,0 +1,155 @@
+/*
+ * Tinc Mesh VPN: Android client and user interface
+ * Copyright (C) 2017-2024 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+plugins {
+  id 'com.android.application'
+  id 'kotlin-android'
+  id 'kotlin-kapt'
+}
+
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreAvailable = keystorePropertiesFile.exists()
+def keystoreProperties = new Properties()
+if (keystoreAvailable) keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+
+// The tincstack core (core/tincd, meson) is cross-compiled for every ABI by
+// native/build-core.sh and packaged as executables named like shared
+// libraries (libtincd.so / libtinc.so) in jniLibs. See that script.
+def coreOutDir = layout.buildDirectory.dir("core")
+def coreAbis = ['arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64']
+def coreMinSdk = 21
+
+android {
+  compileSdkVersion 34
+  ndkVersion '26.1.10909125'
+
+  defaultConfig {
+    applicationId 'net.tincstack.android'
+    minSdkVersion coreMinSdk
+    targetSdkVersion 34
+    multiDexEnabled true
+    versionCode 1
+    versionName '0.1.0'
+    ndk {
+      abiFilters(*coreAbis)
+    }
+  }
+
+  if (keystoreAvailable) signingConfigs {
+    release {
+      keyAlias keystoreProperties['keyAlias']
+      keyPassword keystoreProperties['keyPassword']
+      storeFile file(keystoreProperties['storeFile'])
+      storePassword keystoreProperties['storePassword']
+    }
+  }
+
+  buildTypes {
+    release {
+      if (keystoreAvailable) signingConfig signingConfigs.release
+      minifyEnabled true
+      proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+    }
+  }
+
+  sourceSets {
+    main {
+      jniLibs.srcDir coreOutDir.map { it.dir('jniLibs') }
+    }
+  }
+
+  packagingOptions {
+    jniLibs {
+      // tincd/tinc are executed from nativeLibraryDir: they must be extracted
+      // to disk, not mmap'd from the APK.
+      useLegacyPackaging = true
+    }
+  }
+
+  buildFeatures {
+    buildConfig = true
+    dataBinding = true
+    viewBinding = true
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = '17'
+  }
+
+  testOptions {
+    unitTests {
+      includeAndroidResources = true
+      returnDefaultValues = true
+    }
+  }
+
+  namespace 'org.pacien.tincapp'
+}
+
+tasks.register('buildTincCore', Exec) {
+  description 'Cross-compiles the tincstack core (core/tincd) for every ABI with the NDK.'
+  group 'build'
+  inputs.dir(rootProject.file('../../core/tincd/src'))
+  inputs.file(rootProject.file('../../core/tincd/meson.build'))
+  inputs.file(rootProject.file('native/build-core.sh'))
+  outputs.dir(coreOutDir.map { it.dir('jniLibs') })
+  executable rootProject.file('native/build-core.sh').absolutePath
+  doFirst {
+    args = [
+      '--ndk', android.ndkDirectory.absolutePath,
+      '--out', coreOutDir.get().asFile.absolutePath,
+      '--abis', coreAbis.join(' '),
+      '--api', coreMinSdk.toString(),
+      '--crypto', (project.findProperty('tincCrypto') ?: 'openssl').toString(),
+    ]
+  }
+}
+
+preBuild.dependsOn 'buildTincCore'
+
+dependencies {
+  implementation fileTree(dir: 'libs', include: ['*.jar'])
+
+  implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+  implementation 'net.sourceforge.streamsupport:streamsupport-cfuture:1.7.0'
+  implementation 'androidx.lifecycle:lifecycle-extensions:2.2.0'
+  implementation 'androidx.core:core-ktx:1.13.1'
+  implementation 'com.google.android.material:material:1.12.0'
+  implementation 'com.journeyapps:zxing-android-embedded:3.6.0'
+  implementation 'org.slf4j:slf4j-api:1.7.30'
+  implementation 'com.github.tony19:logback-android:2.0.0'
+  // the one tinc.yaml (docs/config-schema.md) is read with SnakeYAML; writes are
+  // key-level textual splices (see data/TincYaml.kt) so nothing else is rewritten
+  implementation 'org.yaml:snakeyaml:2.2'
+  implementation('commons-io:commons-io:2.13.0') { exclude group: 'commons-logging', module: 'commons-logging' }
+
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'org.robolectric:robolectric:4.11.1'
+  testImplementation 'androidx.test:core:1.5.0'
+}
+
+repositories {
+  mavenCentral()
+  google()
+}
