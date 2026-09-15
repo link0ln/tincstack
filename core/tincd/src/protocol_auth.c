@@ -48,6 +48,7 @@
 
 #include "ed25519/sha512.h"
 #include "keys.h"
+#include "yamlconf.h"
 
 /* If nonzero, use null ciphers and skip all key exchanges. */
 bool bypass_security = false;
@@ -124,24 +125,46 @@ static bool finalize_invitation(connection_t *c, const char *data, uint16_t len)
 		return false;
 	}
 
-	// Create a new host config file
-	char filename[PATH_MAX];
-	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", confbase, c->name);
+	if(yamlconf_path) {
+		// YAML mode: the host record is a hosts.<name> entry in the YAML.
+		// Persist the learned key and the address we promised in the
+		// invitation, so the pool allocator keeps it reserved once the
+		// invitation file is gone and the node is offline.
+		if(yamlconf_global && yamlconf_has_host(yamlconf_global, netname, c->name)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Host record for %s (%s) already exists in %s!", c->name, c->hostname, yamlconf_path);
+			return false;
+		}
 
-	if(!access(filename, F_OK)) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "Host config file for %s (%s) already exists!\n", c->name, c->hostname);
-		return false;
+		if(!append_config_file(c->name, "Ed25519PublicKey", data)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Error trying to store the key of %s in %s: %s", c->name, yamlconf_path, strerror(errno));
+			return false;
+		}
+
+		if(c->config_tree) {
+			for(config_t *cfg = lookup_config(c->config_tree, "Subnet"); cfg; cfg = lookup_config_next(c->config_tree, cfg)) {
+				append_config_file(c->name, "Subnet", cfg->value);
+			}
+		}
+	} else {
+		// Create a new host config file
+		char filename[PATH_MAX];
+		snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", confbase, c->name);
+
+		if(!access(filename, F_OK)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Host config file for %s (%s) already exists!\n", c->name, c->hostname);
+			return false;
+		}
+
+		FILE *f = fopen(filename, "w");
+
+		if(!f) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Error trying to create %s: %s\n", filename, strerror(errno));
+			return false;
+		}
+
+		fprintf(f, "Ed25519PublicKey = %s\n", data);
+		fclose(f);
 	}
-
-	FILE *f = fopen(filename, "w");
-
-	if(!f) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "Error trying to create %s: %s\n", filename, strerror(errno));
-		return false;
-	}
-
-	fprintf(f, "Ed25519PublicKey = %s\n", data);
-	fclose(f);
 
 	logger(DEBUG_CONNECTIONS, LOG_INFO, "Key successfully received from %s (%s)", c->name, c->hostname);
 
@@ -282,6 +305,49 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 
 	free(c->name);
 	c->name = xstrdup(name);
+
+	// Remember the Subnet(s) the invitation assigns to the invitee (first
+	// chunk only, up to the inviter's own "Name" line), so that
+	// finalize_invitation() can persist them next to the learned key.
+	int lineno = 1;
+
+	while(fgets(buf, sizeof(buf), f)) {
+		lineno++;
+		buflen = strlen(buf);
+
+		while(buflen && strchr(" \t\r\n", buf[buflen - 1])) {
+			buf[--buflen] = 0;
+		}
+
+		size_t vlen = strcspn(buf, " \t=");
+
+		if(vlen == 4 && !strncasecmp(buf, "Name", 4)) {
+			break;
+		}
+
+		if(vlen == 6 && !strncasecmp(buf, "Subnet", 6)) {
+			char *value = buf + vlen;
+			value += strspn(value, " \t");
+
+			if(*value == '=') {
+				value++;
+				value += strspn(value, " \t");
+			}
+
+			if(*value) {
+				if(!c->config_tree) {
+					c->config_tree = create_configuration();
+				}
+
+				config_t *cfg = new_config();
+				cfg->variable = xstrdup("Subnet");
+				cfg->value = xstrdup(value);
+				cfg->file = xstrdup("invitation");
+				cfg->line = lineno;
+				config_add(c->config_tree, cfg);
+			}
+		}
+	}
 
 	// Send the node the contents of the invitation file
 	if(fseek(f, 0, SEEK_SET) != 0) {

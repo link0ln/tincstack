@@ -38,10 +38,90 @@
 #include "random.h"
 #include "pidfile.h"
 #include "fs.h"
+#include "pool.h"
+#include "yamlconf.h"
+#include "zeroconf.h"
 
 #include "ed25519/sha512.h"
 
 int addressfamily = AF_UNSPEC;
+
+/*
+  Server options an invitation carries from the inviter to the invitee, so
+  that a joined node's `options` match the inviter's for every network-wide
+  parameter (ARCHITECTURE.md section 8). This table is the single place to
+  extend: an entry ending in '*' matches every option with that prefix, so
+  a transport or front option added elsewhere propagates without touching
+  the invitation code. Per-node preferences (PreferredTransports, Port,
+  ConnectTo, ...) deliberately stay out.
+*/
+const char *const PROPAGATED_OPTIONS[] = {
+	"Mode",
+	"Broadcast",
+	"AddressPool",
+	"Transports",
+	"TlsFingerprint",
+	"Obfs*",
+	"Https*",
+	"Quic*",
+	NULL,
+};
+
+bool invitation_option_propagated(const char *variable) {
+	for(size_t i = 0; PROPAGATED_OPTIONS[i]; i++) {
+		const char *pat = PROPAGATED_OPTIONS[i];
+		size_t n = strlen(pat);
+
+		if(n && pat[n - 1] == '*') {
+			if(!strncasecmp(variable, pat, n - 1)) {
+				return true;
+			}
+		} else if(!strcasecmp(variable, pat)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* First value of `var` in a tinc.conf-style file (YAML-aware), or NULL.
+   Caller frees. */
+static char *conf_get(const char *filename, const char *var) {
+	FILE *f = config_fopen(filename, "r");
+
+	if(!f) {
+		return NULL;
+	}
+
+	char buf[1024];
+	char *result = NULL;
+	size_t varlen = strlen(var);
+
+	while(!result && fgets(buf, sizeof(buf), f)) {
+		char *p = buf + strspn(buf, " \t");
+
+		if(strncasecmp(p, var, varlen) || !strchr(" \t=", p[varlen])) {
+			continue;
+		}
+
+		p += varlen;
+		p += strspn(p, " \t");
+
+		if(*p == '=') {
+			p++;
+			p += strspn(p, " \t");
+		}
+
+		rstrip(p);
+
+		if(*p) {
+			result = xstrdup(p);
+		}
+	}
+
+	fclose(f);
+	return result;
+}
 
 static void scan_for_hostname(const char *filename, char **hostname, char **port) {
 	if(!filename || (*hostname && *port)) {
@@ -172,10 +252,22 @@ static bool get_my_hostname(char **out_address, char **out_port) {
 		goto done;
 	}
 
-	// If that doesn't work, guess externally visible hostname
-	fprintf(stderr, "Trying to discover externally visible hostname...\n");
-	struct addrinfo *ai = str2addrinfo("tinc-vpn.org", "80", SOCK_STREAM);
-	struct addrinfo *aip = ai;
+	// If that doesn't work, guess externally visible hostname -- but only when
+	// asked to (AddressDiscovery = yes): contacting tinc-vpn.org is a network
+	// fingerprint and a stall on a filtered network, and the answer is wrong
+	// for a node whose peers are on the same LAN or container network.
+	struct addrinfo *ai = NULL;
+	struct addrinfo *aip = NULL;
+	char *discovery = conf_get(tinc_conf, "AddressDiscovery");
+	bool do_discovery = discovery && !strcasecmp(discovery, "yes");
+	free(discovery);
+
+	if(do_discovery) {
+		fprintf(stderr, "Trying to discover externally visible hostname...\n");
+		ai = str2addrinfo("tinc-vpn.org", "80", SOCK_STREAM);
+		aip = ai;
+	}
+
 	static const char request[] = "GET http://tinc-vpn.org/host.cgi HTTP/1.0\r\n\r\n";
 
 	while(aip) {
@@ -348,18 +440,30 @@ static bool copy_config_replacing_port(FILE *out, const char *filename, const ch
 	}
 
 	char line[1024];
+	bool port_seen = false;
 
 	while(fgets(line, sizeof(line), in)) {
 		const char *var_beg = line + strspn(line, "\t ");
-		const char *var_end = var_beg + strcspn(var_beg, "\t ");
+		const char *var_end = var_beg + strcspn(var_beg, "\t =");
 
 		// Check the name of the variable we've read. If it's Port, replace it with
 		// a port we'll use in invitation URL. Otherwise, just copy the line.
-		if(var_end > var_beg && !strncasecmp(var_beg, "Port", var_end - var_beg)) {
+		if(var_end - var_beg == 4 && !strncasecmp(var_beg, "Port", 4)) {
 			fprintf(out, "Port = %s\n", port);
+			port_seen = true;
 		} else {
 			fprintf(out, "%s", line);
+
+			if(!strchr(line, '\n')) {
+				fputc('\n', out);
+			}
 		}
+	}
+
+	// Our Port usually lives in tinc.conf (options:), not in the host record;
+	// the invitee still needs it to dial us, so make sure it is there.
+	if(!port_seen) {
+		fprintf(out, "Port = %s\n", port);
 	}
 
 	memzero(line, sizeof(line));
@@ -570,12 +674,42 @@ int cmd_invite(int argc, char *argv[]) {
 
 	b64encode_tinc_urlsafe(cookie, cookie, 18);
 
+	// Assign the invitee an address from our AddressPool (M3). Done before the
+	// invitation file exists so the pending-invitation scan does not see it.
+	char *pool = conf_get(tinc_conf, "AddressPool");
+	char *assigned = NULL;
+	int pool_prefix = 0;
+
+	if(pool) {
+		uint32_t pool_net;
+
+		if(!pool_parse(pool, &pool_net, &pool_prefix)) {
+			fprintf(stderr, "Invalid AddressPool `%s'.\n", pool);
+			free(pool);
+			memzero(cookie, sizeof(cookie));
+			return 1;
+		}
+
+		assigned = pool_allocate(pool);
+
+		if(!assigned) {
+			free(pool);
+			memzero(cookie, sizeof(cookie));
+			return 1;
+		}
+
+		fprintf(stderr, "Assigned address %s/%d to %s.\n", assigned, pool_prefix, argv[1]);
+	}
+
+	free(pool);
+
 	// Create a file containing the details of the invitation.
 	snprintf(filename, sizeof(filename), "%s" SLASH "invitations" SLASH "%s", confbase, cookiehash);
 	int ifd = open(filename, O_RDWR | O_CREAT | O_EXCL, 0600);
 
-	if(!ifd) {
+	if(ifd < 0) {
 		memzero(cookie, sizeof(cookie));
+		free(assigned);
 		fprintf(stderr, "Could not create invitation file %s: %s\n", filename, strerror(errno));
 		return 1;
 	}
@@ -592,6 +726,9 @@ int cmd_invite(int argc, char *argv[]) {
 
 	if(!get_my_hostname(&address, &port)) {
 		memzero(cookie, sizeof(cookie));
+		fclose(f);
+		unlink(filename);
+		free(assigned);
 		return 1;
 	}
 
@@ -611,15 +748,25 @@ int cmd_invite(int argc, char *argv[]) {
 
 	fprintf(f, "ConnectTo = %s\n", myname);
 
-	// Copy Broadcast and Mode
+	// Copy every propagated server option (Mode, Broadcast, AddressPool,
+	// transports, front material, ...) -- see PROPAGATED_OPTIONS.
 	FILE *tc = config_fopen(tinc_conf, "r");
 
 	if(tc) {
 		char buf[1024];
 
 		while(fgets(buf, sizeof(buf), tc)) {
-			if((!strncasecmp(buf, "Mode", 4) && strchr(" \t=", buf[4]))
-			                || (!strncasecmp(buf, "Broadcast", 9) && strchr(" \t=", buf[9]))) {
+			char var[256];
+			size_t len = strcspn(buf, " \t=\r\n");
+
+			if(!len || len >= sizeof(var)) {
+				continue;
+			}
+
+			memcpy(var, buf, len);
+			var[len] = 0;
+
+			if(invitation_option_propagated(var)) {
 				fputs(buf, f);
 
 				// Make sure there is a newline character.
@@ -630,6 +777,15 @@ int cmd_invite(int argc, char *argv[]) {
 		}
 
 		fclose(tc);
+	}
+
+	// The invitee's address: its host record gets the /32 Subnet, and the
+	// Ifconfig line tells it what to put on the interface (pool prefix).
+	if(assigned) {
+		fprintf(f, "Subnet = %s/32\n", assigned);
+		fprintf(f, "Ifconfig = %s/%d\n", assigned, pool_prefix);
+		free(assigned);
+		assigned = NULL;
 	}
 
 	fprintf(f, "#---------------------------------------------------------------#\n");
@@ -769,6 +925,256 @@ static char *grep(const char *data, const char *var) {
 	return xstrdup(value);
 }
 
+/* Split "Var = value" in place; returns the variable (may be empty) and sets
+   *value. Mirrors the parsing in finalize_join(). */
+static char *split_line(char *l, char **value) {
+	size_t len = strcspn(l, "\t =");
+	*value = l + len;
+	*value += strspn(*value, "\t ");
+
+	if(**value == '=') {
+		(*value)++;
+		*value += strspn(*value, "\t ");
+	}
+
+	l[len] = 0;
+	return l;
+}
+
+/*
+  YAML mode: the joined node's whole configuration is written into
+  networks.<netname> of the YAML file -- options inherited from the
+  invitation, our own host record (Subnet, keys), the inviter's host record --
+  and the daemon-side materialiser (zeroconf.c) fills in what an invitation
+  never carries (keys, Port, Mode). No tinc.conf, hosts/ tree, *_key.priv or
+  tinc-up.invitation is created.
+*/
+static bool finalize_join_yaml(const char *name) {
+	static char line[1024];
+
+	/* Network name: an explicit -n wins; else the invitation's NetName; else
+	   the default make_names() picked. Re-run make_names() so the runtime
+	   directory follows the final name. */
+	if(netname_defaulted) {
+		char *net = grep(data, "NetName");
+
+		if(net) {
+			if(!check_netname(net, true)) {
+				fprintf(stderr, "Unsafe NetName found in invitation!\n");
+				free(net);
+				return false;
+			}
+
+			free(netname);
+			netname = net;
+			netname_defaulted = false;
+
+			free(confbase);
+			confbase = xstrdup(yamlconf_path);
+			yamlconf_free(yamlconf_global);
+			yamlconf_global = NULL;
+			make_names(false);
+
+			free(tinc_conf);
+			free(hosts_dir);
+			xasprintf(&tinc_conf, "%s" SLASH "tinc.conf", confbase);
+			xasprintf(&hosts_dir, "%s" SLASH "hosts", confbase);
+		}
+	}
+
+	yamlconf_t *yc = yamlconf_global;
+
+	if(yc && yamlconf_has_network(yc, netname) &&
+	                (yamlconf_get_option(yc, netname, "Name") || yamlconf_key_pem(yc, netname, "ed25519_priv"))) {
+		fprintf(stderr, "Network %s already exists in %s! Use -n to join under another name.\n", netname, yamlconf_path);
+		return false;
+	}
+
+	if(!yc) {
+		if(!access(yamlconf_path, F_OK)) {
+			fprintf(stderr, "Refusing to overwrite unparsable YAML config %s\n", yamlconf_path);
+			return false;
+		}
+
+		yc = yamlconf_new();
+		yamlconf_global = yc;
+	}
+
+	yamlconf_set_option(yc, netname, "Name", name);
+
+	/* First chunk: filter on approved keywords, split between options: and
+	   our own host record. Ifconfig/Route become InterfaceAddress/
+	   InterfaceRoute options for the built-in interface setup. */
+	const char *p = data;
+	char *l, *value = NULL;
+
+	while((l = get_line(line, sizeof(line), &p))) {
+		if(*l == '#') {
+			continue;
+		}
+
+		l = split_line(l, &value);
+
+		if(!*l) {
+			continue;
+		}
+
+		if(!strcasecmp(l, "Name")) {
+			if(strcmp(value, name)) {
+				break;
+			} else {
+				continue;
+			}
+		} else if(!strcasecmp(l, "NetName")) {
+			continue;
+		}
+
+		if(!strcasecmp(l, "Ifconfig")) {
+			if(!strcasecmp(value, "dhcp") || !strcasecmp(value, "dhcp6") || !strcasecmp(value, "slaac")) {
+				fprintf(stderr, "Ignoring Ifconfig = %s: not supported by the built-in interface setup.\n", value);
+			} else {
+				yamlconf_set_option(yc, netname, "InterfaceAddress", value);
+			}
+
+			continue;
+		} else if(!strcasecmp(l, "Route")) {
+			yamlconf_add_option_value(yc, netname, "InterfaceRoute", value);
+			continue;
+		}
+
+		int i;
+		bool found = false;
+
+		for(i = 0; variables[i].name; i++) {
+			if(!strcasecmp(l, variables[i].name)) {
+				found = true;
+				break;
+			}
+		}
+
+		bool propagated = invitation_option_propagated(l);
+
+		if(!found && !propagated) {
+			fprintf(stderr, "Ignoring unknown variable '%s' in invitation.\n", l);
+			continue;
+		}
+
+		if(found && !propagated && !(variables[i].type & VAR_SAFE)) {
+			if(force) {
+				fprintf(stderr, "Warning: unsafe variable '%s' in invitation.\n", l);
+			} else {
+				fprintf(stderr, "Ignoring unsafe variable '%s' in invitation.\n", l);
+				continue;
+			}
+		}
+
+		if(found && (variables[i].type & VAR_HOST)) {
+			yamlconf_host_add_line(yc, netname, name, variables[i].name, value);
+		} else {
+			yamlconf_add_option_value(yc, netname, found ? variables[i].name : l, value);
+		}
+	}
+
+	/* Secondary chunks: one host record per "Name = <peer>" block. */
+	while(l && !strcasecmp(l, "Name")) {
+		if(!check_id(value)) {
+			fprintf(stderr, "Invalid Name found in invitation.\n");
+			return false;
+		}
+
+		if(!strcmp(value, name)) {
+			fprintf(stderr, "Secondary chunk would overwrite our own host config file.\n");
+			return false;
+		}
+
+		char *hostname = xstrdup(value);
+		char *text = xstrdup("");
+		size_t tlen = 0;
+
+		while((l = get_line(line, sizeof(line), &p))) {
+			if(!strcmp(l, "#---------------------------------------------------------------#")) {
+				continue;
+			}
+
+			size_t len = strcspn(l, "\t =");
+
+			if(len == 4 && !strncasecmp(l, "Name", 4)) {
+				l = split_line(l, &value);
+				break;
+			}
+
+			size_t llen = strlen(l);
+			text = xrealloc(text, tlen + llen + 2);
+			memcpy(text + tlen, l, llen);
+			tlen += llen;
+			text[tlen++] = '\n';
+			text[tlen] = 0;
+		}
+
+		yamlconf_host_set_text(yc, netname, hostname, text);
+		free(text);
+		free(hostname);
+	}
+
+	/* Invitee defaults (decision 3): we always dial out, so no stable inbound
+	   port is needed and a fresh UDP mapping after sleep is what we want. */
+	if(!yamlconf_has_option(yc, netname, "Port")) {
+		yamlconf_set_option(yc, netname, "Port", "0");
+	}
+
+	if(!yamlconf_has_option(yc, netname, "UDPRebindOnWake")) {
+		yamlconf_set_option(yc, netname, "UDPRebindOnWake", "yes");
+	}
+
+	/* Keys, Mode, Subnet-if-missing: the same materialiser the daemon runs on
+	   an empty file, so a joined config is exactly a zero-config one plus the
+	   invitation. This also writes the file. */
+	if(!zeroconf_materialise()) {
+		fprintf(stderr, "Could not write %s\n", yamlconf_path);
+		return false;
+	}
+
+	/* Send the inviter our new Ed25519 public key. */
+	char *host = yamlconf_host_text(yamlconf_global, netname, name);
+	char *b64_pubkey = NULL;
+
+	if(host) {
+		const char *q = host;
+
+		while(*q) {
+			const char *eol = strchr(q, '\n');
+			size_t len = eol ? (size_t)(eol - q) : strlen(q);
+
+			if(len < sizeof(line)) {
+				memcpy(line, q, len);
+				line[len] = 0;
+				char *v;
+				char *var = split_line(line, &v);
+
+				if(!strcasecmp(var, "Ed25519PublicKey") && *v) {
+					b64_pubkey = xstrdup(v);
+					break;
+				}
+			}
+
+			q = eol ? eol + 1 : q + len;
+		}
+
+		free(host);
+	}
+
+	if(!b64_pubkey) {
+		fprintf(stderr, "No Ed25519 public key in our own host record after materialisation!\n");
+		return false;
+	}
+
+	sptps_send_record(&sptps, 1, b64_pubkey, strlen(b64_pubkey));
+	free(b64_pubkey);
+
+	fprintf(stderr, "Configuration stored in: %s [%s]\n", yamlconf_path, netname);
+	return true;
+}
+
 static bool finalize_join(void) {
 	const char *name = get_value(data, "Name");
 
@@ -780,6 +1186,10 @@ static bool finalize_join(void) {
 	if(!check_id(name)) {
 		fprintf(stderr, "Invalid Name found in invitation!\n");
 		return false;
+	}
+
+	if(yamlconf_path) {
+		return finalize_join_yaml(name);
 	}
 
 	if(!netname) {
@@ -1274,20 +1684,30 @@ int cmd_join(int argc, char *argv[]) {
 		return 1;
 	}
 
-	// Make sure confbase exists and is accessible.
-	if(!makedirs(DIR_CONFDIR | DIR_CONFBASE)) {
-		return false;
-	}
+	if(yamlconf_path) {
+		// YAML mode: the file may be absent or empty; refuse only when the
+		// explicitly named network is already set up in it.
+		if(!netname_defaulted && yamlconf_global && yamlconf_has_network(yamlconf_global, netname) &&
+		                (yamlconf_get_option(yamlconf_global, netname, "Name") || yamlconf_key_pem(yamlconf_global, netname, "ed25519_priv"))) {
+			fprintf(stderr, "Network %s already exists in %s!\n", netname, yamlconf_path);
+			return 1;
+		}
+	} else {
+		// Make sure confbase exists and is accessible.
+		if(!makedirs(DIR_CONFDIR | DIR_CONFBASE)) {
+			return false;
+		}
 
-	if(access(confbase, R_OK | W_OK | X_OK)) {
-		fprintf(stderr, "No permission to write in directory %s: %s\n", confbase, strerror(errno));
-		return 1;
-	}
+		if(access(confbase, R_OK | W_OK | X_OK)) {
+			fprintf(stderr, "No permission to write in directory %s: %s\n", confbase, strerror(errno));
+			return 1;
+		}
 
-	// If a netname or explicit configuration directory is specified, check for an existing tinc.conf.
-	if((netname || confbasegiven) && !access(tinc_conf, F_OK)) {
-		fprintf(stderr, "Configuration file %s already exists!\n", tinc_conf);
-		return 1;
+		// If a netname or explicit configuration directory is specified, check for an existing tinc.conf.
+		if((netname || confbasegiven) && !access(tinc_conf, F_OK)) {
+			fprintf(stderr, "Configuration file %s already exists!\n", tinc_conf);
+			return 1;
+		}
 	}
 
 	// Either read the invitation from the command line or from stdin.
