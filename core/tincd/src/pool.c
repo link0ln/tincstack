@@ -242,10 +242,29 @@ bool pool_parse(const char *pool, uint32_t *network, int *prefix) {
 	return zeroconf_pool_parse(pool, network, prefix);
 }
 
-static const used_t *find_used(const used_list_t *list, uint32_t candidate) {
+/* A Subnet reserves pool addresses only if it lies inside the pool. A
+   subnet wider than the pool (an exit node's 0.0.0.0/0, a site's /16) is a
+   route, not an address claim: counting it would let one host record --
+   or one authenticated peer announcing such a subnet -- mark the whole
+   pool as used and stop every further invitation. */
+static bool inside_pool(const used_t *u, uint32_t network, int pool_prefix) {
+	if(u->prefix < pool_prefix) {
+		return false;
+	}
+
+	uint32_t pool_mask = 0xffffffffu << (32 - pool_prefix);
+	return (u->address & pool_mask) == network;
+}
+
+static const used_t *find_used(const used_list_t *list, uint32_t candidate, uint32_t network, int pool_prefix) {
 	for(size_t i = 0; i < list->n; i++) {
 		const used_t *u = &list->items[i];
-		uint32_t mask = u->prefix ? 0xffffffffu << (32 - u->prefix) : 0;
+
+		if(!inside_pool(u, network, pool_prefix)) {
+			continue;
+		}
+
+		uint32_t mask = 0xffffffffu << (32 - u->prefix);
 
 		if((candidate & mask) == (u->address & mask)) {
 			return u;
@@ -273,7 +292,7 @@ char *pool_allocate(const char *pool) {
 	char *result = NULL;
 
 	for(uint32_t candidate = network + 1; candidate < broadcast; candidate++) {
-		const used_t *u = find_used(&used, candidate);
+		const used_t *u = find_used(&used, candidate, network, prefix);
 
 		if(!u) {
 			xasprintf(&result, "%u.%u.%u.%u",

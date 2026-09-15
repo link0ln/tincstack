@@ -54,8 +54,15 @@ static char *own_interface_address(void) {
 }
 
 /* Only characters that can appear in an address, prefix or interface name
-   are allowed into the shell command line. */
+   are allowed into the shell command line, and a value may not start with
+   '-' (it would be read by `ip' as an option, not an address). The values
+   come from the YAML and, on a joined node, from the inviter's Ifconfig/
+   Route lines, so they are treated as untrusted here. */
 static bool shell_safe(const char *s) {
+	if(!*s || *s == '-') {
+		return false;
+	}
+
 	for(; *s; s++) {
 		if(!isalnum((uint8_t) *s) && !strchr("./:-_", *s)) {
 			return false;
@@ -63,6 +70,22 @@ static bool shell_safe(const char *s) {
 	}
 
 	return *s == 0;
+}
+
+/* Format into cmd, refusing a command line that did not fit. */
+static bool build(char *cmd, size_t cmdlen, const char *fmt, ...) ATTR_FORMAT(printf, 3, 4);
+static bool build(char *cmd, size_t cmdlen, const char *fmt, ...) {
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(cmd, cmdlen, fmt, ap);
+	va_end(ap);
+
+	if(n < 0 || (size_t)n >= cmdlen) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Built-in tinc-up: command line too long, not run");
+		return false;
+	}
+
+	return true;
 }
 
 static bool run(const char *cmd) {
@@ -99,10 +122,8 @@ bool autoif_up(void) {
 	char cmd[512];
 	bool ok = true;
 
-	snprintf(cmd, sizeof(cmd), "ip addr replace %s dev %s", addr, iface);
-	ok &= run(cmd);
-	snprintf(cmd, sizeof(cmd), "ip link set %s up", iface);
-	ok &= run(cmd);
+	ok &= build(cmd, sizeof(cmd), "ip addr replace %s dev %s", addr, iface) && run(cmd);
+	ok &= build(cmd, sizeof(cmd), "ip link set %s up", iface) && run(cmd);
 
 	for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
 		char *route = xstrdup(cfg->value);
@@ -113,14 +134,18 @@ bool autoif_up(void) {
 			via += strspn(via, " ");
 		}
 
-		if(shell_safe(route) && (!via || shell_safe(via))) {
+		if(shell_safe(route) && (!via || !*via || shell_safe(via))) {
+			bool built;
+
 			if(via && *via) {
-				snprintf(cmd, sizeof(cmd), "ip route replace %s via %s dev %s", route, via, iface);
+				built = build(cmd, sizeof(cmd), "ip route replace %s via %s dev %s", route, via, iface);
 			} else {
-				snprintf(cmd, sizeof(cmd), "ip route replace %s dev %s", route, iface);
+				built = build(cmd, sizeof(cmd), "ip route replace %s dev %s", route, iface);
 			}
 
-			ok &= run(cmd);
+			ok &= built && run(cmd);
+		} else {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': not a route", cfg->value);
 		}
 
 		free(route);
