@@ -51,6 +51,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "obfs.h"
 
 #define SF_CID_LEN 8
 #define SF_WINDOW 32            /* segments in flight */
@@ -70,6 +71,7 @@ typedef struct sf_session_t {
 	uint8_t cid[SF_CID_LEN];
 	sockaddr_t peer;
 	size_t sock;            /* index into listen_socket[] whose UDP socket carries this flow */
+	obfs_link_t *obfs;      /* non-NULL: every frame of this flow is sealed by the obfs carrier */
 	bool initiator;
 	bool established;       /* the peer has acknowledged something (or, as acceptor, sent the SYN) */
 	bool dead;              /* failed; waiting for the reaper to terminate the connection */
@@ -114,7 +116,7 @@ static uint32_t get32(const uint8_t *p) {
 	return ntohl(v);
 }
 
-static void sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len) {
+static void sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init) {
 	uint8_t frame[SF_HDR_LEN + SF_MAX_PAYLOAD];
 
 	memcpy(frame, sf_magic, SF_MAGIC_LEN);
@@ -128,13 +130,32 @@ static void sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid,
 		memcpy(frame + SF_HDR_LEN, payload, len);
 	}
 
-	if(sendto(listen_socket[sock].udp.fd, (void *)frame, SF_HDR_LEN + len, 0, &peer->sa, SALEN(peer->sa)) < 0 && !sockwouldblock(sockerrno)) {
+	const void *out = frame;
+	size_t outlen = SF_HDR_LEN + len;
+
+	/* obfs carrier: seal the whole single-flow frame so the SF magic and the
+	   fixed header never appear on the wire. */
+	uint8_t sealed[OBFS_HDR_LEN + SF_HDR_LEN + SF_MAX_PAYLOAD + OBFS_TAG_LEN + OBFS_MAX_JUNK];
+
+	if(obfs) {
+		size_t slen = obfs_encode(obfs, frame, outlen, sealed, sizeof(sealed), init);
+
+		if(!slen) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "Could not obfs-seal a single-flow frame");
+			return;
+		}
+
+		out = sealed;
+		outlen = slen;
+	}
+
+	if(sendto(listen_socket[sock].udp.fd, (void *)out, outlen, 0, &peer->sa, SALEN(peer->sa)) < 0 && !sockwouldblock(sockerrno)) {
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Error sending single-flow frame: %s", sockstrerror(sockerrno));
 	}
 }
 
 static void sf_send_frame(sf_session_t *s, uint8_t type, uint8_t flags, uint32_t seq, const void *payload, size_t len) {
-	sf_send_raw(s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len);
+	sf_send_raw(s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established);
 }
 
 static struct timeval ms_to_tv(int ms) {
@@ -328,7 +349,7 @@ static sf_session_t *new_session(connection_t *c, size_t sock, const sockaddr_t 
 	return s;
 }
 
-bool sf_dial(connection_t *c) {
+static bool sf_dial_generic(connection_t *c, obfs_link_t *obfs) {
 	int sock = sf_pick_socket(&c->address);
 
 	if(sock < 0) {
@@ -337,19 +358,35 @@ bool sf_dial(connection_t *c) {
 	}
 
 	sf_session_t *s = new_session(c, (size_t)sock, &c->address, true);
+	s->obfs = obfs;
 	randomize(s->cid, SF_CID_LEN);
 
 	c->status.connecting = false;
 	connection_add(c);
 
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Dialling %s (%s) via single-flow UDP", c->name, c->hostname);
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Dialling %s (%s) via %s UDP", c->name, c->hostname, obfs ? "obfuscated single-flow" : "single-flow");
 
 	/* Sends the ID line, which becomes the SYN segment. */
 	finish_connecting(c);
 	return true;
 }
 
-static sf_session_t *sf_accept(listen_socket_t *ls, const uint8_t *cid, const sockaddr_t *addr) {
+bool sf_dial(connection_t *c) {
+	return sf_dial_generic(c, NULL);
+}
+
+/* obfs carrier entry point: a single-flow dial whose frames are obfs-sealed. */
+bool sf_dial_obfs(connection_t *c, obfs_link_t *obfs) {
+	return sf_dial_generic(c, obfs);
+}
+
+/* obfs carrier's close hook needs the link so it can be deactivated. */
+obfs_link_t *sf_connection_obfs(connection_t *c) {
+	sf_session_t *s = c->transport_data;
+	return s ? s->obfs : NULL;
+}
+
+static sf_session_t *sf_accept(listen_socket_t *ls, const uint8_t *cid, const sockaddr_t *addr, obfs_link_t *obfs) {
 	/* Cheap admission control, in the spirit of check_tarpit(): at most
 	   MaxConnectionBurst new sessions per second. */
 	static time_t burst_time;
@@ -371,16 +408,23 @@ static sf_session_t *sf_accept(listen_socket_t *ls, const uint8_t *cid, const so
 	c->address = *addr;
 	c->hostname = sockaddr2hostname(addr);
 	c->last_ping_time = now.tv_sec;
-	c->transport = transport_get(TRANSPORT_SF);
+	c->transport = transport_get(obfs ? TRANSPORT_OBFS : TRANSPORT_SF);
 	c->allow_request = ID;
 
 	sf_session_t *s = new_session(c, (size_t)(ls - listen_socket), addr, false);
 	memcpy(s->cid, cid, SF_CID_LEN);
+	s->obfs = obfs;
 	s->established = true;
 
 	connection_add(c);
 
-	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Connection from %s (single-flow UDP)", c->hostname);
+	if(obfs) {
+		/* Answer with junk of our own around the handshake, then continue
+		   over the obfs-sealed flow. */
+		obfs_send_junk((size_t)(ls - listen_socket), addr);
+	}
+
+	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Connection from %s (%s UDP)", c->hostname, obfs ? "obfuscated single-flow" : "single-flow");
 	return s;
 }
 
@@ -433,7 +477,7 @@ static void sf_deliver(sf_session_t *s, const uint8_t *payload, size_t len) {
 	}
 }
 
-void sf_udp_receive(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
+static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr, obfs_link_t *obfs) {
 	if(len < SF_HDR_LEN) {
 		return;
 	}
@@ -457,7 +501,7 @@ void sf_udp_receive(listen_socket_t *ls, const uint8_t *buf, size_t len, const s
 
 	if(!s) {
 		if(type == SF_TYPE_DATA && (flags & SF_FLAG_SYN) && seq == 0) {
-			s = sf_accept(ls, cid, &addr);
+			s = sf_accept(ls, cid, &addr, obfs);
 
 			if(!s) {
 				return;
@@ -465,12 +509,13 @@ void sf_udp_receive(listen_socket_t *ls, const uint8_t *buf, size_t len, const s
 		} else {
 			/* Unknown session: tell the sender so it fails fast instead of
 			   retransmitting into the void. Rate-limited, unauthenticated
-			   (an off-path attacker still needs the 64-bit cid). */
+			   (an off-path attacker still needs the 64-bit cid). The reset is
+			   sealed with the same obfs key when the frame arrived obfuscated. */
 			static time_t last_reset;
 
 			if(type != SF_TYPE_RESET && now.tv_sec != last_reset) {
 				last_reset = now.tv_sec;
-				sf_send_raw(ls - listen_socket, &addr, cid, SF_TYPE_RESET, 0, 0, 0, NULL, 0);
+				sf_send_raw(ls - listen_socket, &addr, cid, SF_TYPE_RESET, 0, 0, 0, NULL, 0, obfs, true);
 			}
 
 			return;
@@ -532,6 +577,17 @@ void sf_udp_receive(listen_socket_t *ls, const uint8_t *buf, size_t len, const s
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Unknown single-flow frame type %d from %s (%s)", type, c->name, c->hostname);
 		return;
 	}
+}
+
+/* Classifier path: a plain single-flow frame (SF magic on the wire). */
+void sf_udp_receive(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
+	sf_udp_receive_generic(ls, buf, len, vaddr, NULL);
+}
+
+/* obfs path: the frame was unsealed by the obfs carrier; `obfs' is the link it
+   came in on, so a new inbound session and any reset are sealed with it too. */
+void sf_udp_receive_obfs(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr, obfs_link_t *obfs) {
+	sf_udp_receive_generic(ls, buf, len, vaddr, obfs);
 }
 
 void sf_exit(void) {

@@ -166,6 +166,7 @@ src_tincd = [
   'net_setup.c',
   'net_socket.c',
   'node.c',
+  'obfs.c',
   'process.c',
   'protocol.c',
   'protocol_auth.c',

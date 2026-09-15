@@ -402,12 +402,41 @@ Each carrier wraps SPTPS; **SPTPS is never bypassed** (principle 1). Land them i
 this order (cheapest / most-contained first). Full wire formats go in
 `docs/transports.md` as each is built.
 
-- [ ] 🟠 **Obfuscated UDP** (redesign of tinc-obfs). Authenticated junk/real
+- [x] 🟠 **Obfuscated UDP** (redesign of tinc-obfs). Authenticated junk/real
   discriminator (keyed, not a cleartext flag); junk around the handshake, not
   per-packet; cold-start-safe receiver classification; relay-prefix-aware.
-  Config surface per schema. **Proof:** `testing/dpi-proof` shows the SPTPS
-  fingerprint absent on the wire and a tunnel that comes up from cold; relay path
-  intact.
+  Config surface per schema. **Done (G2, 2026-09-16):** new `obfs.c`/`obfs.h`
+  carrier built on the single-flow engine; every UDP datagram of the link (SF
+  meta frames + SPTPS data datagrams) sealed as `nonce(8)|clen(2)|ChaCha20-
+  Poly1305(inner)|tail-junk`, keyed from `SHA-512("tincstack-obfs-v1\0" ||
+  sorted Ed25519 public keys)`. The Poly1305 tag *is* the discriminator (no
+  cleartext flag; junk and forgeries fail it). Junk (`ObfsJunkPacketCount`,
+  `Min/MaxSize`) emitted only at dial/accept. Cold-start classification is the
+  keyed check in `transport_udp_dispatch` (fast path by source address; rate-
+  limited node-key scan otherwise), re-injecting the inner without re-dispatch.
+  Relay: `obfs_wrap_send` re-seals per hop and the receiver strips before the
+  relay logic, so no double-prefix. `obfs` registered compiled in
+  `transport_table.c` (default accept list). SPTPS untouched. Registered UDP
+  classifier ranges unchanged (obfs is keyed, not pattern-matched); docs updated
+  (`docs/transports.md` §5, `docs/config-schema.md`).
+  **Proof** (`testing/transports/obfs-test.sh`, image `ws-g2`, run 2026-09-16):
+  - cold two-node obfs tunnel up **both ways** (A→B and B→A `0% packet loss`
+    from cold, dialer `PreferredTransports: [obfs, plain]`);
+  - **fingerprint gone**: the single-flow magic `9f747366` appears `1×` on the
+    wire in a `SingleFlow`(sf) reference capture but `0×` under obfs (sealed);
+    the SPTPS relay/direct datagram structure (leading `dst|src` ids, SF magic)
+    is inside the ciphertext, so the leading bytes are the random nonce;
+  - **junk around the handshake only**: `16` junk datagrams (distinctive
+    600–650 B window, `ObfsJunkPacketCount 8` × both directions) during the cold
+    handshake, `0` during a 30-packet steady ping flood;
+  - **relay A–R–B intact** with A↔B direct DROP'd: `4/4 received` through R,
+    each hop sealed with its own key (no double-prefix corruption);
+  - **defaults byte-identical**: obfs compiled but not selected +
+    `ObfsJunkPacketCount 0` → tunnel up, `0×` SF magic, plain SPTPS UDP on the
+    wire; `classify-test.sh` (26/0) and `singleflow-test.sh` still pass on ws-g2.
+  - *(the stream-F `testing/dpi-proof` harness is not on master yet, so the
+    before/after tcpdump comparison is done in obfs-test.sh instead, as the brief
+    allows.)*
 - [ ] 🟠 **Certificate automation, shared by HTTPS front and QUIC** (decision 1).
   `TlsCert`/`TlsKey` if set; else generate a self-signed cert at first start
   and persist it in the YAML (`keys.tls_cert`/`keys.tls_key`), reused on every
@@ -433,11 +462,37 @@ this order (cheapest / most-contained first). Full wire formats go in
   shared with the HTTPS front; connection migration for NAT rebind. **Proof:** a
   QUIC-negotiated link tunnels; falls back to a common carrier when one side lacks
   QUIC.
-- [ ] 🟡 Runtime control CLI for obfuscation (`tinc obfs status|set|…`) **with
+- [x] 🟡 Runtime control CLI for obfuscation (`tinc obfs status|set|…`) **with
   persistence** to the YAML (the prototype's changes were lost on reload).
-  **Proof:** a `set` survives `tinc reload`.
+  **Done (G2, 2026-09-16):** `cmd_obfs` in `tincctl.c` implements
+  `tinc obfs status|enable|disable|set <key> <value>|get <key>|tag <spec>` on
+  top of the YAML-aware `cmd_config` path (M2); the `Obfs*` keys are registered
+  in `variables[]`. **Proof** (single node, ws-g2, run 2026-09-16):
+  `tinc obfs enable` → YAML `PreferredTransports: [obfs]` (+`plain`);
+  `tinc obfs set junkcount 5` / `jmin 600` / `jmax 650` → YAML gains
+  `ObfsJunkPacketCount: 5`, `ObfsJunkPacketMinSize: 600`,
+  `ObfsJunkPacketMaxSize: 650`; the daemon auto-reloads (`Got 'reload' command` …
+  `Transports accept=plain,sf,obfs prefer=obfs,plain`); an explicit
+  `tinc reload` re-reads the same; after a **daemon restart** the YAML still
+  carries the values and `tinc obfs status` (which connects the control socket
+  as its live check) reports them — the set survived reload and restart, the
+  exact defect the prototype had.
 - **Acceptance:** each carrier interoperates through the M4 negotiator; with all
   off, behaviour is identical to plain tinc.
+
+- **Found during M5 (G2):**
+  - 🟠 `zeroconf.c` advertised a hard-coded `Transports = plain, sf` in each
+    node's own host record (an M4 stopgap), so once `obfs` was compiled in a
+    peer still never learned this node accepts it and the carrier could not be
+    negotiated. Fixed to advertise `plain, sf, obfs` (the compiled set; the
+    file's own comment already declared it "kept in sync with
+    transport_compiled_mask()"). File outside G2's area — reported. When
+    `https`/`quic` are compiled (G1/QUIC), that literal must be extended the
+    same way.
+  - 🟢 Ed25519 public keys are read lazily (`load_all_nodes` creates the node
+    but not `n->ecdsa`), so obfs had to call `node_read_ecdsa_public_key()`
+    before deriving a link key on dial and in the cold-start scan. Fixed in
+    `obfs.c` (within area).
 
 ---
 

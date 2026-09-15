@@ -199,4 +199,11 @@ bool sf_local_address(struct connection_t *c, sockaddr_t *sa);
 void sf_udp_receive(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr);
 void sf_exit(void);
 
+/* obfs carrier reuses the single-flow engine, sealing every frame
+   (transport_sf.c hooks; the seal itself lives in obfs.c). */
+struct obfs_link_t;
+bool sf_dial_obfs(struct connection_t *c, struct obfs_link_t *obfs);
+void sf_udp_receive_obfs(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr, struct obfs_link_t *obfs);
+struct obfs_link_t *sf_connection_obfs(struct connection_t *c);
+
 #endif /* TINC_TRANSPORT_DAEMON */

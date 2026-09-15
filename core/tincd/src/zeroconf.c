@@ -352,9 +352,9 @@ bool zeroconf_materialise(void) {
 	   options: overrides it at runtime. Kept in sync with
 	   transport_compiled_mask() in transport_table.c. */
 	if(!host_text_has(host, "Transports", NULL)) {
-		yamlconf_host_add_line(yc, netname, name, "Transports", "plain, sf");
+		yamlconf_host_add_line(yc, netname, name, "Transports", "plain, sf, obfs");
 		changed = true;
-		NOTE("Transports=plain,sf ");
+		NOTE("Transports=plain,sf,obfs ");
 	}
 
 	free(host);

@@ -26,6 +26,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "obfs.h"
 
 uint32_t transport_accept_mask;
 transport_id_t transport_pref[TRANSPORT_MAX];
@@ -58,9 +59,21 @@ static const transport_t transports[TRANSPORT_MAX] = {
 		.local_address = sf_local_address,
 		.udp_receive = sf_udp_receive,
 	},
+	/* obfs (M5): the single-flow engine with every frame sealed by an
+	   authenticated obfs frame, plus SPTPS data datagrams sealed on the same
+	   flow. See obfs.c and docs/transports.md. */
+	[TRANSPORT_OBFS]  = {
+		.id = TRANSPORT_OBFS, .name = "obfs",
+		.caps = TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP,
+		.init = obfs_init,
+		.exit = obfs_exit,
+		.dial = obfs_dial,
+		.send = sf_send,
+		.close = obfs_close,
+		.local_address = sf_local_address,
+	},
 	/* M5 fills these in; the names are registered so option parsing and
 	   peer advertisements already know them. */
-	[TRANSPORT_OBFS]  = { .id = TRANSPORT_OBFS,  .name = "obfs",  .caps = TRANSPORT_CAP_SINGLE_FLOW },
 	[TRANSPORT_HTTPS] = { .id = TRANSPORT_HTTPS, .name = "https", .caps = TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_META_TCP },
 	[TRANSPORT_QUIC]  = { .id = TRANSPORT_QUIC,  .name = "quic",  .caps = TRANSPORT_CAP_SINGLE_FLOW },
 #ifdef HAVE_TRANSPORT_TEST
@@ -216,6 +229,11 @@ bool transport_read_config(void) {
 	}
 
 	(void)pmask;
+
+	/* obfs option surface (ObfsJunkPacket*, ObfsInit*, ...): re-read on every
+	   (re)load so `tinc set Obfs... ; tinc reload' takes effect live. */
+	obfs_read_config();
+
 	logger(DEBUG_ALWAYS, LOG_INFO, "Transports accept=%s prefer=%s%s", transport_mask_to_string(transport_accept_mask, buf), pbuf, single_flow ? " (SingleFlow)" : "");
 	return true;
 }
@@ -480,15 +498,17 @@ bool transport_udp_dispatch(listen_socket_t *ls, const uint8_t *buf, size_t len,
 		return true;
 
 	case UDP_CLASS_OBFS:
-		if(transports[TRANSPORT_OBFS].udp_receive) {
-			transports[TRANSPORT_OBFS].udp_receive(ls, buf, len, addr);
+	case UDP_CLASS_SPTPS:
+	default:
+		/* obfs frames look random, so the pattern classifier cannot spot
+		   them; the carrier's keyed check claims them here. It re-injects the
+		   inner datagram straight into the SF or SPTPS receive path (not back
+		   through this dispatcher), so there is no re-entrancy and a plain
+		   SPTPS datagram is never scanned when obfs is not in use. */
+		if((transport_accept_mask & TRANSPORT_BIT(TRANSPORT_OBFS)) && obfs_udp_try(ls, buf, len, addr)) {
 			return true;
 		}
 
-		return false;
-
-	case UDP_CLASS_SPTPS:
-	default:
 		return false;
 	}
 }

@@ -32,7 +32,7 @@ static const struct {
 } transport_table[TRANSPORT_MAX] = {
 	[TRANSPORT_PLAIN] = { "plain", true },
 	[TRANSPORT_SF]    = { "sf",    true },
-	[TRANSPORT_OBFS]  = { "obfs",  false },
+	[TRANSPORT_OBFS]  = { "obfs",  true },
 	[TRANSPORT_HTTPS] = { "https", false },
 	[TRANSPORT_QUIC]  = { "quic",  false },
 #ifdef HAVE_TRANSPORT_TEST

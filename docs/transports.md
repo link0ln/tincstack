@@ -25,7 +25,7 @@ front dispatch), `transport_table.c` (names + classifier, no daemon deps),
 |----|-------|----------|-----------|--------|
 | `TRANSPORT_PLAIN` | `plain` | always | TCP meta connection + UDP SPTPS data (upstream tinc) | done |
 | `TRANSPORT_SF`    | `sf`    | always | one UDP flow carries meta *and* data (single-flow) | done (M4) |
-| `TRANSPORT_OBFS`  | `obfs`  | M5 | obfuscated single UDP flow | reserved |
+| `TRANSPORT_OBFS`  | `obfs`  | always | obfuscated single UDP flow | done (M5) |
 | `TRANSPORT_HTTPS` | `https` | M5 | TLS front, meta+data in one TLS flow | reserved |
 | `TRANSPORT_QUIC`  | `quic`  | M5 | QUIC datagrams + one stream | reserved |
 | `TRANSPORT_TEST`  | `test`  | `-Dtransport_test=true` only | — (dial always fails) | test aid |
@@ -40,7 +40,7 @@ are `1u << id`. Names are matched case-insensitively.
 Two deliberately separate lists (decision 2, 2026-09-16):
 
 - **`Transports` — the accept list.** What this node's listener classifies and
-  answers. **Default: every carrier compiled in** (currently `plain, sf`). It is
+  answers. **Default: every carrier compiled in** (currently `plain, sf, obfs`). It is
   advertised two ways so a peer always learns it:
   1. in the node's **host record** (`Transports = ...`, written by
      `zeroconf.c` into the node's own YAML host entry, so it propagates through
@@ -128,7 +128,7 @@ data path.
 |---|---|---|
 | `len ≥ 24` and bytes `0..5` == the SF magic `9f 74 73 66 6c 77` | `SF` (if accepted) | `sf_udp_receive` |
 | `len ≥ 5`, `(b0 & 0xC0) == 0xC0` and `b1..b4` a known QUIC version | `QUIC` (if accepted) | quic carrier (M5) |
-| obfs keyed marker | `OBFS` (reserved) | obfs carrier's keyed check (M5) |
+| none of the above, obfs accepted, keyed check passes | `OBFS` | `obfs_udp_try` → decap → SF/SPTPS (M5) |
 | otherwise | `SPTPS` | unchanged tinc UDP path (`handle_incoming_vpn_packet`) |
 
 Why these are unambiguous:
@@ -142,6 +142,16 @@ Why these are unambiguous:
   four bytes form a known QUIC version word is a 2⁻³⁴-per-node coincidence; and
   QUIC is only ever claimed when the `quic` carrier is in the accept mask, so a
   node that does not run QUIC never mis-routes a data packet. Documented residual.
+- **obfs** frames carry no magic — they are sealed and look uniformly random, so
+  they cannot be told apart by pattern. They are therefore *not* matched by
+  `transport_classify_udp` (which returns `SPTPS`); instead `transport_udp_dispatch`
+  runs the obfs carrier's keyed check **after** the SF and QUIC pattern tests, so
+  those unambiguous patterns win first and there is no range collision. The keyed
+  check is a single Poly1305 verification for an established peer (looked up by
+  source address) and a rate-limited node-key scan for a cold session. A plain
+  SPTPS datagram fails every obfs key (2⁻¹²⁸) and falls through untouched, so a
+  node with obfs in its accept list but no obfs peer behaves exactly like plain
+  tinc. See §5.
 - A carrier that is not in the accept mask never claims a datagram, so it falls
   through to SPTPS untouched — behaviour is identical to plain tinc when no extra
   carrier is enabled.
@@ -214,7 +224,133 @@ accepts `plain` as well, so a peer can always reach a single-flow node over TCP.
 
 ---
 
-## 5. Carrier contract (what M5 implements)
+## 5. Obfuscated UDP (`obfs`)
+
+Goal (ARCHITECTURE §6, PLAN M5): shape the UDP datagrams so they do not match
+tinc's SPTPS fingerprint, for the cheap tier where a full TLS front is
+unnecessary. This is a redesign of the `tinc-obfs` prototype and fixes its four
+defects. `obfs` is a **UDP-only** carrier: it reuses the single-flow engine
+(§4) for the meta channel and seals every datagram of the flow. SPTPS is never
+touched — obfs seals the bytes SPTPS already produced.
+
+Source: `core/tincd/src/obfs.c` (framing, keys, junk, inbound keyed check),
+`transport_sf.c` (the sealed single-flow hooks), `net_packet.c`
+(`obfs_wrap_send` on the SPTPS data path, `handle_incoming_vpn_packet_decap`
+for re-injection).
+
+### Frame
+
+Every obfs datagram — a sealed single-flow meta frame or a sealed SPTPS data
+datagram — is:
+
+    offset size field
+    0      8    nonce      random; the ChaCha20-Poly1305 IV, also on the wire
+    8      2    clen       length of the ciphertext that follows (network order)
+    10     clen ciphertext ChaCha20-Poly1305(inner)  = inner_len + 16-byte tag
+    10+clen P   tail junk  P random bytes (handshake/steady header-junk knob)
+
+`inner` is the exact datagram that would have been sent in the clear: the
+single-flow frame (which itself begins with the SF magic) or the SPTPS relay/
+direct datagram (`dst-id|src-id|record`). Nothing of tinc's structure is on the
+wire — the nonce and ciphertext are indistinguishable from random, and the SF
+magic and the SPTPS record are inside the sealed region.
+
+### Discriminator derivation (defect 1: authenticated, not a cleartext flag)
+
+The per-link key is
+
+    key(64B) = SHA-512( "tincstack-obfs-v1\0" || lo || "|" || hi )
+
+where `lo`/`hi` are the two nodes' base64 Ed25519 public keys sorted so both
+ends compute the same key. It is used as the ChaCha20-Poly1305 key. The
+**Poly1305 tag is the junk/real discriminator**: a real frame verifies, junk
+(random bytes) and forgeries do not. An on-path censor without the node public
+keys can neither forge a "real" frame nor tell junk from real. The key is
+available before any handshake (the public keys are already in the host
+records), which is what makes cold-start classification possible. The seal
+provides classification and anti-forgery, not confidentiality — SPTPS inside
+provides that — so a random 64-bit nonce is sufficient.
+
+### Junk schedule (defect 2: around the handshake, never per data packet)
+
+`ObfsJunkPacketCount` standalone junk datagrams, each of a random size in
+`[ObfsJunkPacketMinSize, ObfsJunkPacketMaxSize]` filled with random bytes, are
+emitted **once per link (re)establishment**: by the dialer in `obfs_dial` before
+the first real frame, and by the acceptor in `sf_accept` when it adopts the
+flow. They carry no valid tag, so the peer drops them after the keyed check.
+Steady-state data never emits junk (the prototype's 3× amplification is gone).
+
+### Header shaping (the AmneziaWG S1/S2/H1–H4 vocabulary)
+
+- `ObfsInitHeaderJunkSize` / `ObfsTransportHeaderJunkSize` (S1/S2): extra random
+  bytes appended after the ciphertext of handshake-phase / steady-state frames,
+  to change the size distribution. The receiver ignores them (`clen` delimits
+  the ciphertext).
+- `ObfsInitMagicHeader` / `ObfsTransportMagicHeader` (H1/H2): if set, the first
+  four bytes of the nonce are forced to this value, so the leading bytes of the
+  frame can be made to mimic another protocol. Default: fully random nonce.
+
+A frame is in the *handshake phase* until its single-flow session is
+established (the peer has acknowledged); after that it uses the transport-phase
+knobs.
+
+### Cold-start classification (defect 3)
+
+obfs frames look random, so `transport_classify_udp` cannot spot them and
+returns `SPTPS`. `transport_udp_dispatch` then runs `obfs_udp_try`, **after** the
+SF and QUIC pattern tests:
+
+1. **Fast path** — an active link whose remembered source address matches: one
+   Poly1305 verification. On failure it falls through to SPTPS (so a still-plain
+   datagram during the brief setup window, or junk, is handled correctly).
+2. **Cold path** — an unknown, not-yet-confirmed source, obfs accepted: a
+   rate-limited scan (≤ 25/s, like `try_harder`) over the node keys. The first
+   key that verifies identifies the peer and the link is activated.
+
+On success the inner datagram is unsealed and re-injected: an SF frame goes to
+`sf_udp_receive_obfs` (its replies are sealed with the same key), anything else
+to `handle_incoming_vpn_packet_decap` (the SPTPS data path). Re-injection
+bypasses the dispatcher, so the inner bytes are never scanned as obfs again and
+there is no recursion. A plain SPTPS datagram fails every obfs key (2⁻¹²⁸), so a
+node with obfs merely in its accept list behaves exactly like plain tinc.
+
+### Relay handling (defect 4: per-hop, no double prefix)
+
+The seal is a **per-hop** wrapper. On receive, `obfs_udp_try` strips it *before*
+the relay logic in `handle_incoming_vpn_packet` runs, so the relay forwards the
+plain SPTPS record exactly as it always did. On send, `send_sptps_data` calls
+`obfs_wrap_send`, which re-seals for the next hop with **that hop's** key (or
+sends unchanged if the next hop is not an obfs link). A→R→B is therefore
+A—[key AR]→R—[key RB]→B, each hop independently sealed; the prototype's
+double-prefix corruption cannot occur.
+
+### SingleFlow on vs off
+
+- `SingleFlow` / obfs selected (`PreferredTransports: [obfs, plain]`): the meta
+  channel rides the sealed single-flow UDP stream and the SPTPS data datagrams
+  are sealed on the same flow — **one shaped UDP flow, no TCP**.
+- With the meta channel still on plain TCP: obfs seals only the SPTPS **data**
+  datagrams (the `obfs_wrap_send` path); the TCP meta connection stays plain.
+  Data-path sealing follows the obfs link, which is brought up together with the
+  obfs carrier, so in practice enabling obfs gives the single-flow shape above;
+  the data-only sealing is what keeps a relayed hop sealed even when its meta
+  never was.
+
+The TCP `OBFS` class in §3 (first byte `0xA0..0xAF`) is reserved and unused by
+this UDP-only carrier; obfs never sends a TCP preamble, so an inbound match with
+no obfs TCP `accept` hook is simply closed.
+
+### Config surface
+
+See `docs/config-schema.md` for defaults. All `Obfs*` options are server-scoped,
+propagate through invitations (M2 `PROPAGATED_OPTIONS`), and are re-read on every
+`tinc reload` (`obfs_read_config` from `transport_read_config`). The runtime CLI
+is `tinc obfs status|enable|disable|set <key> <value>|get <key>|tag <spec>`,
+which writes through the YAML-aware `tinc set` path so changes persist.
+
+---
+
+## 6. Carrier contract (what M5 implements)
 
 A carrier is a `transport_t` (in `transport.c`'s `transports[]` table) with an id,
 a name, a capability mask, and these optional hooks. Registering a carrier is
@@ -273,13 +409,13 @@ dies before it activates advances to the next candidate automatically (§2).
 
 ---
 
-## 6. Defaults summary
+## 7. Defaults summary
 
 | option | default | meaning |
 |---|---|---|
-| `Transports` | all compiled (`plain, sf`) | accept list; advertised; `plain` always included |
+| `Transports` | all compiled (`plain, sf, obfs`) | accept list; advertised; `plain` always included |
 | `PreferredTransports` | `plain` | dial order; always ends at `plain` |
 | `SingleFlow` | `no` | `yes` = dial `sf` first (TCP kept as fallback) |
 
-With all defaults, a node dials `plain` and accepts `plain,sf`: identical on the
+With all defaults, a node dials `plain` and accepts `plain,sf,obfs`: identical on the
 wire to upstream tinc, and interoperable with an unmodified upstream peer.
