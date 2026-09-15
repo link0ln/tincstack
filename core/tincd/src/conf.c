@@ -442,6 +442,15 @@ void read_config_options(splay_tree_t *config_tree, const char *prefix) {
 bool read_server_config(splay_tree_t *config_tree) {
 	char fname[PATH_MAX];
 
+	/* YAML mode: the file is the source of truth and may have been edited by
+	   the CLI or a GUI since we last looked, so every (re)load of the server
+	   config starts by re-reading it. A file that no longer parses is
+	   refused here rather than half-applied. */
+	if(yamlconf_path && !yamlconf_reload_global()) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Could not re-read YAML config `%s'", yamlconf_path);
+		return false;
+	}
+
 	read_config_options(config_tree, NULL);
 
 	snprintf(fname, sizeof(fname), "%s" SLASH "tinc.conf", confbase);
@@ -496,8 +505,18 @@ bool read_host_config(splay_tree_t *config_tree, const char *name, bool verbose)
 
 bool append_config_file(const char *name, const char *key, const char *value) {
 	if(yamlconf_path && netname) {
-		/* YAML mode: persist the learned line into the host's section. */
-		return yamlconf_append_host_line(yamlconf_path, netname, name, key, value);
+		/* YAML mode: persist the learned line into the host's section, and
+		   mirror it into the in-memory document so config_fopen() serves it
+		   immediately (the daemon only re-reads the file on reload). */
+		if(!yamlconf_append_host_line(yamlconf_path, netname, name, key, value)) {
+			return false;
+		}
+
+		if(yamlconf_global) {
+			yamlconf_host_add_line(yamlconf_global, netname, name, key, value);
+		}
+
+		return true;
 	}
 
 	char fname[PATH_MAX];

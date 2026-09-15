@@ -1,0 +1,139 @@
+/*
+    autoif.c -- built-in interface addressing for YAML-mode nodes.
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+*/
+
+#include "system.h"
+
+#include "autoif.h"
+#include "conf.h"
+#include "device.h"
+#include "logger.h"
+#include "net.h"
+#include "node.h"
+#include "zeroconf.h"
+#include "subnet.h"
+#include "xalloc.h"
+
+/* The address to configure: InterfaceAddress if set, else our first IPv4
+   /32 Subnet with the AddressPool's prefix. Caller frees; NULL if unknown. */
+static char *own_interface_address(void) {
+	char *addr = NULL;
+
+	if(get_config_string(lookup_config(&config_tree, "InterfaceAddress"), &addr)) {
+		return addr;
+	}
+
+	uint32_t pool_net;
+	int prefix;
+
+	if(!address_pool || !zeroconf_pool_parse(address_pool, &pool_net, &prefix)) {
+		return NULL;
+	}
+
+	for splay_each(subnet_t, s, &myself->subnet_tree) {
+		if(s->type != SUBNET_IPV4 || s->net.ipv4.prefixlength != 32) {
+			continue;
+		}
+
+		const uint8_t *x = s->net.ipv4.address.x;
+		xasprintf(&addr, "%u.%u.%u.%u/%d", x[0], x[1], x[2], x[3], prefix);
+		return addr;
+	}
+
+	return NULL;
+}
+
+/* Only characters that can appear in an address, prefix or interface name
+   are allowed into the shell command line. */
+static bool shell_safe(const char *s) {
+	for(; *s; s++) {
+		if(!isalnum((uint8_t) *s) && !strchr("./:-_", *s)) {
+			return false;
+		}
+	}
+
+	return *s == 0;
+}
+
+static bool run(const char *cmd) {
+	logger(DEBUG_STATUS, LOG_INFO, "Built-in tinc-up: %s", cmd);
+	int status = system(cmd);
+
+	if(status == -1 || !WIFEXITED(status) || WEXITSTATUS(status)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Built-in tinc-up command failed: %s", cmd);
+		return false;
+	}
+
+	return true;
+}
+
+bool autoif_up(void) {
+#ifdef HAVE_LINUX
+
+	if(!iface || !shell_safe(iface)) {
+		return false;
+	}
+
+	char *addr = own_interface_address();
+
+	if(!addr) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "No tinc-up script and no address to configure on %s (set InterfaceAddress or AddressPool + Subnet)", iface);
+		return false;
+	}
+
+	if(!shell_safe(addr)) {
+		free(addr);
+		return false;
+	}
+
+	char cmd[512];
+	bool ok = true;
+
+	snprintf(cmd, sizeof(cmd), "ip addr replace %s dev %s", addr, iface);
+	ok &= run(cmd);
+	snprintf(cmd, sizeof(cmd), "ip link set %s up", iface);
+	ok &= run(cmd);
+
+	for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
+		char *route = xstrdup(cfg->value);
+		char *via = strchr(route, ' ');
+
+		if(via) {
+			*via++ = 0;
+			via += strspn(via, " ");
+		}
+
+		if(shell_safe(route) && (!via || shell_safe(via))) {
+			if(via && *via) {
+				snprintf(cmd, sizeof(cmd), "ip route replace %s via %s dev %s", route, via, iface);
+			} else {
+				snprintf(cmd, sizeof(cmd), "ip route replace %s dev %s", route, iface);
+			}
+
+			ok &= run(cmd);
+		}
+
+		free(route);
+	}
+
+	if(ok) {
+		logger(DEBUG_ALWAYS, LOG_INFO, "Interface %s configured with %s (built-in tinc-up)", iface, addr);
+	}
+
+	free(addr);
+	return ok;
+#else
+	logger(DEBUG_ALWAYS, LOG_WARNING, "No tinc-up script found; configure the interface address by other means on this platform");
+	return false;
+#endif
+}

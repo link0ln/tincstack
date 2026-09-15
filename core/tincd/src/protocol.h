@@ -75,6 +75,11 @@ extern bool experimental;
 extern int invitation_lifetime;
 extern ecdsa_t *invitation_key;
 
+/* Release the invitation file a connection consumed: delete it when the
+   invitee's key was stored (completed), otherwise put it back so the same
+   invitation can be retried. Safe to call when none was consumed. */
+extern void invitation_release(struct connection_t *c, bool completed);
+
 /* Maximum size of strings in a request.
  * scanf terminates %2048s with a NUL character,
  * but the NUL character can be written after the 2048th non-NUL character.

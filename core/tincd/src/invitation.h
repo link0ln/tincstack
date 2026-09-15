@@ -27,4 +27,9 @@ int cmd_join(int argc, char *argv[]);
 // true if socket is ready, false on timeout.
 bool wait_socket_recv(int fd);
 
+/* Server options carried from inviter to invitee; see invitation.c. An entry
+   ending in '*' is a prefix. NULL-terminated. */
+extern const char *const PROPAGATED_OPTIONS[];
+extern bool invitation_option_propagated(const char *variable);
+
 #endif

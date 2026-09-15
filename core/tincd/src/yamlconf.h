@@ -55,6 +55,9 @@ yamlconf_t *yamlconf_new(void);
 const char *yamlconf_first_network(yamlconf_t *yc);
 bool yamlconf_has_network(yamlconf_t *yc, const char *net);
 
+/* Remove networks.<net> entirely. Returns true if it existed. */
+bool yamlconf_del_network(yamlconf_t *yc, const char *net);
+
 /* ---- in-memory mutation (call yamlconf_save() to persist) ---------------- */
 
 /* Scalar option networks.<net>.options.<key>, or NULL if absent / not a
@@ -71,8 +74,44 @@ void yamlconf_set_option(yamlconf_t *yc, const char *net, const char *key, const
 /* Set networks.<net>.keys.<which> ("ed25519_priv" | "rsa_priv") to a PEM. */
 void yamlconf_set_key_pem(yamlconf_t *yc, const char *net, const char *which, const char *pem);
 
+/* Every value of networks.<net>.options.<key> as a NULL-terminated array (a
+   scalar yields one entry, a list its items, in order). NULL if the option is
+   absent. Caller frees the array only; the strings are owned by yc. */
+const char **yamlconf_option_values(yamlconf_t *yc, const char *net, const char *key);
+
+/* Add one more value to networks.<net>.options.<key>: an absent option becomes
+   a scalar, a scalar becomes a two-item list, a list grows by one. A value
+   already present is not duplicated. */
+void yamlconf_add_option_value(yamlconf_t *yc, const char *net, const char *key, const char *value);
+
+/* Remove networks.<net>.options.<key> entirely. Returns true if it existed. */
+bool yamlconf_del_option(yamlconf_t *yc, const char *net, const char *key);
+
+/* Replace networks.<net>.options wholesale from tinc.conf-style text
+   ("Key = value" lines; a key that repeats becomes a list, in file order).
+   Blank and '#' lines are dropped. This is the inverse of
+   yamlconf_options_text() and what the CLI's set/add/del use. */
+void yamlconf_set_options_text(yamlconf_t *yc, const char *net, const char *text);
+
 /* True if networks.<net>.hosts.<name> exists. */
 bool yamlconf_has_host(yamlconf_t *yc, const char *net, const char *name);
+
+/* Replace the whole host-file text of networks.<net>.hosts.<name>, creating
+   the entry if needed. Trailing newlines are stripped. */
+void yamlconf_host_set_text(yamlconf_t *yc, const char *net, const char *name, const char *text);
+
+/* Remove networks.<net>.hosts.<name>. Returns true if it existed. */
+bool yamlconf_host_del(yamlconf_t *yc, const char *net, const char *name);
+
+/* NULL-terminated array of script names under networks.<net>.scripts (caller
+   frees the array only), and a script's text (caller frees) or NULL. */
+const char **yamlconf_script_names(yamlconf_t *yc, const char *net);
+char *yamlconf_script_text(yamlconf_t *yc, const char *net, const char *name);
+
+/* Re-read yamlconf_path from disk into yamlconf_global. On a parse error the
+   previous document is kept and false is returned. No-op (true) outside YAML
+   mode. The daemon calls this on every (re)load of its configuration. */
+bool yamlconf_reload_global(void);
 
 /* Append one host-file line ("key = value", or raw text if value is NULL)
    to networks.<net>.hosts.<name>, creating the host entry if needed. */

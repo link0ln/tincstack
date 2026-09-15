@@ -79,6 +79,20 @@ static void seq_add(yval_t *s, yval_t *item) {
 	s->items[s->nitems++] = item;
 }
 
+static bool map_del(yval_t *m, const char *key) {
+	if(!m || m->type != Y_MAP) return false;
+	for(size_t i = 0; i < m->npairs; i++) {
+		if(strcmp(m->keys[i], key)) continue;
+		free(m->keys[i]);
+		yval_free(m->vals[i]);
+		memmove(m->keys + i, m->keys + i + 1, (m->npairs - i - 1) * sizeof(char *));
+		memmove(m->vals + i, m->vals + i + 1, (m->npairs - i - 1) * sizeof(yval_t *));
+		m->npairs--;
+		return true;
+	}
+	return false;
+}
+
 /* ---- line model ---------------------------------------------------------- */
 
 typedef struct { char *raw; int indent; bool skip; } line_t;  /* skip: blank/comment */
@@ -467,6 +481,10 @@ bool yamlconf_has_network(yamlconf_t *yc, const char *net) {
 	return n && n->type == Y_MAP;
 }
 
+bool yamlconf_del_network(yamlconf_t *yc, const char *net) {
+	return map_del(map_get(yc->root, "networks"), net);
+}
+
 bool yamlconf_has_option(yamlconf_t *yc, const char *net, const char *key) {
 	return map_get(map_get(net_node(yc, net), "options"), key) != NULL;
 }
@@ -474,6 +492,39 @@ bool yamlconf_has_option(yamlconf_t *yc, const char *net, const char *key) {
 const char *yamlconf_get_option(yamlconf_t *yc, const char *net, const char *key) {
 	const yval_t *v = map_get(map_get(net_node(yc, net), "options"), key);
 	return (v && v->type == Y_SCALAR) ? v->scalar : NULL;
+}
+
+const char **yamlconf_option_values(yamlconf_t *yc, const char *net, const char *key) {
+	const yval_t *v = map_get(map_get(net_node(yc, net), "options"), key);
+	if(!v) return NULL;
+	size_t n = (v->type == Y_SEQ) ? v->nitems : 1;
+	const char **arr = malloc((n + 1) * sizeof(char *));
+	size_t k = 0;
+	if(v->type == Y_SEQ) {
+		for(size_t i = 0; i < v->nitems; i++)
+			if(v->items[i]->type == Y_SCALAR) arr[k++] = v->items[i]->scalar;
+	} else if(v->type == Y_SCALAR) {
+		arr[k++] = bool_to_tinc(v->scalar);
+	}
+	arr[k] = NULL;
+	return arr;
+}
+
+const char **yamlconf_script_names(yamlconf_t *yc, const char *net) {
+	const yval_t *scripts = map_get(net_node(yc, net), "scripts");
+	size_t n = (scripts && scripts->type == Y_MAP) ? scripts->npairs : 0;
+	const char **arr = malloc((n + 1) * sizeof(char *));
+	size_t k = 0;
+	for(size_t i = 0; i < n; i++)
+		if(scripts->vals[i]->type == Y_SCALAR) arr[k++] = scripts->keys[i];
+	arr[k] = NULL;
+	return arr;
+}
+
+char *yamlconf_script_text(yamlconf_t *yc, const char *net, const char *name) {
+	const yval_t *v = map_get(map_get(net_node(yc, net), "scripts"), name);
+	if(!v || v->type != Y_SCALAR) return NULL;
+	return strdup(v->scalar);
 }
 
 /* ---- emitter (for write-back) ------------------------------------------- */
@@ -578,6 +629,86 @@ void yamlconf_set_option(yamlconf_t *yc, const char *net, const char *key, const
 	map_set_scalar(map_get_or_create_map(net_node_create(yc, net), "options"), key, value);
 }
 
+void yamlconf_add_option_value(yamlconf_t *yc, const char *net, const char *key, const char *value) {
+	yval_t *opts = map_get_or_create_map(net_node_create(yc, net), "options");
+	yval_t *v = map_get(opts, key);
+
+	if(!v) {
+		map_set_scalar(opts, key, value);
+		return;
+	}
+
+	if(v->type == Y_SCALAR) {
+		if(!strcmp(v->scalar, value)) return;
+		yval_t *seq = yval_new(Y_SEQ);
+		seq_add(seq, v);                      /* the old scalar becomes item 0 */
+		for(size_t i = 0; i < opts->npairs; i++)
+			if(opts->vals[i] == v) opts->vals[i] = seq;
+		v = seq;
+	} else if(v->type != Y_SEQ) {
+		map_set_scalar(opts, key, value);
+		return;
+	}
+
+	for(size_t i = 0; i < v->nitems; i++)
+		if(v->items[i]->type == Y_SCALAR && !strcmp(v->items[i]->scalar, value)) return;
+
+	yval_t *it = yval_new(Y_SCALAR);
+	it->scalar = strdup(value);
+	seq_add(v, it);
+}
+
+bool yamlconf_del_option(yamlconf_t *yc, const char *net, const char *key) {
+	yval_t *opts = map_get(map_get(map_get(yc->root, "networks"), net), "options");
+	return map_del(opts, key);
+}
+
+void yamlconf_set_options_text(yamlconf_t *yc, const char *net, const char *text) {
+	/* Clear the map in place so `options:` keeps its position in the file. */
+	yval_t *opts = map_get_or_create_map(net_node_create(yc, net), "options");
+
+	for(size_t i = 0; i < opts->npairs; i++) {
+		free(opts->keys[i]);
+		yval_free(opts->vals[i]);
+	}
+
+	opts->npairs = 0;
+
+	const char *p = text ? text : "";
+
+	while(*p) {
+		const char *eol = strchr(p, '\n');
+		size_t len = eol ? (size_t)(eol - p) : strlen(p);
+		char *line = malloc(len + 1);
+		memcpy(line, p, len);
+		line[len] = 0;
+		p = eol ? eol + 1 : p + len;
+
+		char *l = trim(line);
+
+		if(*l && *l != '#') {
+			char *val = l + strcspn(l, "\t =");
+			char *key = l;
+
+			if(*val) {
+				*val++ = 0;
+				val += strspn(val, "\t ");
+
+				if(*val == '=') {
+					val++;
+					val += strspn(val, "\t ");
+				}
+			}
+
+			if(*key) {
+				yamlconf_add_option_value(yc, net, key, val);
+			}
+		}
+
+		free(line);
+	}
+}
+
 void yamlconf_set_key_pem(yamlconf_t *yc, const char *net, const char *which, const char *pem) {
 	map_set_scalar(map_get_or_create_map(net_node_create(yc, net), "keys"), which, pem);
 }
@@ -620,6 +751,24 @@ void yamlconf_host_add_line(yamlconf_t *yc, const char *net, const char *name,
 	} else {
 		host_add_line(hosts, name, key);
 	}
+}
+
+void yamlconf_host_set_text(yamlconf_t *yc, const char *net, const char *name, const char *text) {
+	yval_t *hosts = map_get_or_create_map(net_node_create(yc, net), "hosts");
+	char *copy = strdup(text ? text : "");
+	size_t n = strlen(copy);
+
+	while(n && (copy[n - 1] == '\n' || copy[n - 1] == '\r')) {
+		copy[--n] = 0;
+	}
+
+	map_set_scalar(hosts, name, copy);
+	free(copy);
+}
+
+bool yamlconf_host_del(yamlconf_t *yc, const char *net, const char *name) {
+	yval_t *hosts = map_get(map_get(map_get(yc->root, "networks"), net), "hosts");
+	return map_del(hosts, name);
 }
 
 /* Serialise and replace `path` atomically. Private keys live in this file, so
@@ -678,4 +827,13 @@ out:
 	if(lockfd >= 0) close(lockfd);
 #endif
 	return ok;
+}
+
+bool yamlconf_reload_global(void) {
+	if(!yamlconf_path) return true;
+	yamlconf_t *fresh = yamlconf_load(yamlconf_path);
+	if(!fresh) return false;
+	yamlconf_free(yamlconf_global);
+	yamlconf_global = fresh;
+	return true;
 }

@@ -27,6 +27,7 @@
 #include "yamlconf.h"
 
 char *netname = NULL;
+bool netname_defaulted = false; /* YAML mode: netname was not given, make_names() picked it */
 char *myname = NULL;
 char *confdir = NULL;           /* base configuration directory */
 char *confbase = NULL;          /* base configuration directory for this instance of tinc */
@@ -69,6 +70,7 @@ void make_names(bool daemon) {
 		if(!netname) {
 			const char *first = yamlconf_global ? yamlconf_first_network(yamlconf_global) : NULL;
 			netname = xstrdup(first ? first : "tincstack");
+			netname_defaulted = true;
 		}
 
 		char *dir = xstrdup(yamlconf_path);
@@ -95,7 +97,10 @@ void make_names(bool daemon) {
 		}
 
 		free(dir);
-		mkdir(confbase, 0700);
+		/* Same mode makedirs() applies to a classic confbase, so later CLI
+		   calls do not re-chmod it; secrets live in invitations/ (0700) and
+		   the YAML file itself (0600). */
+		mkdir(confbase, 0755);
 	}
 
 	if(netname && confbase && !yamlconf_path) {

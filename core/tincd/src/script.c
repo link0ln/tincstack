@@ -141,6 +141,12 @@ void environment_exit(environment_t *env) {
 	free(env->entries);
 }
 
+bool script_exists(const char *name) {
+	char scriptname[PATH_MAX];
+	snprintf(scriptname, sizeof(scriptname), "%s" SLASH "%s%s", confbase, name, scriptextension ? scriptextension : "");
+	return !access(scriptname, F_OK);
+}
+
 bool execute_script(const char *name, environment_t *env) {
 	if(!sandbox_can(START_PROCESSES, RIGHT_NOW)) {
 		return false;
