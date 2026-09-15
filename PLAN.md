@@ -98,6 +98,19 @@ transport/cert material.
 - [ ] 🟠 Inviter persists the invitee's learned Ed25519 key back into its YAML
   (`yamlconf_append_host_line`, already present) — verify it fires in YAML mode.
   **Proof:** after join, inviter's `tinc.yaml` `hosts:` contains the invitee.
+- [ ] 🟠 **Runtime reconfiguration in YAML mode** (brief point 3: "tinc must read
+  *and write* the config on every platform, because parameters are changed
+  online"). `tinc set/add/del/get` and `tinc reload` operate on the YAML
+  (`options:` for server variables, `hosts.<name>` for host variables) instead
+  of the classic tree; the daemon re-reads the YAML on reload. This is the one
+  path the Windows GUI, Android app and obfs/transport controls all use.
+  **Proof:** `tinc -c x.yaml set UDPDiscoveryBurst 7` → YAML updated, no
+  `tinc.conf` created; `tinc reload` → daemon logs the new value.
+- [ ] 🟠 **Invitee NAT defaults** (brief point 4): a node that joins by invite
+  materialises `Port = 0` and `UDPRebindOnWake = yes` (it always dials out, so
+  a stable inbound port is not needed), the founding node keeps a stable port
+  (see Open decisions). **Proof:** joined node's `options:` carry both; the
+  founding node's do not.
 - **Acceptance:** two fresh `docker run` nodes, one invite string pasted to the
   second, mesh reachable (ping across the tunnel) with **no** manual config on
   either side.
@@ -132,6 +145,16 @@ individual carriers.
   its first bytes and routes to the right handler (plain / obfs / TLS / QUIC).
   **Proof:** the classifier's decision table (in `docs/transports.md`) with a test
   feeding each byte pattern to the right handler.
+- [ ] 🟠 **Single-flow mode: meta channel over the data carrier** (brief point 5,
+  independent of the HTTPS front). Today tinc opens a TCP meta connection *and*
+  a UDP data flow — two fingerprints. Provide a mode where the SPTPS meta
+  channel rides the same UDP flow as data (the thing `tinc-obfs` attempted by
+  forcing the handshake onto UDP, but with cold-start identification so a
+  receiver can classify the first datagram, and with the TCP path kept as a
+  fallback when UDP is blocked). The obfs, HTTPS and QUIC carriers then each
+  wrap exactly one flow. **Proof:** tcpdump of a session between two nodes in
+  single-flow mode shows no TCP connection on the tinc port; tunnel up from
+  cold; relay path intact.
 - **Acceptance:** with only `plain` implemented behind it, the scaffold selects
   and dispatches correctly; adding a carrier is a handler registration.
 
@@ -222,6 +245,13 @@ Adopt `tincapp` (Kotlin) into `platforms/android/`.
   in the UI → `network.conf` reflects one list → routing honours it.
 - [ ] 🟡 Verify invite/join (incl. QR, already present) writes the shared YAML
   schema. **Proof:** join on device produces a schema-conformant config.
+- [ ] 🟠 **One file on Android too** (brief point 2). Today the app keeps a
+  second file, `network.conf` (`Address`, `Route`, `DNSServer`,
+  `AllowApplication`, `DisallowApplication`). Fold these into the network's
+  YAML as ordinary `options:` keys (the daemon ignores keys it does not use;
+  the app reads them from the YAML) and delete `network.conf`. The app-picker
+  above writes to the YAML. **Proof:** a device with only `tinc.yaml` connects
+  with split routing applied; no `network.conf` exists.
 - **Acceptance:** an Android user joins by invite/QR and chooses which apps use
   the tunnel.
 
@@ -229,11 +259,19 @@ Adopt `tincapp` (Kotlin) into `platforms/android/`.
 
 ## Milestone M9 — verification harness 🟡
 
-- [ ] 🟡 `testing/nat-sim/`: port the netmaker NAT lab to tinc — Docker gateway
+- [ ] 🟠 `testing/nat-sim/`: port the netmaker NAT lab to tinc — Docker gateway
   containers with `iptables` DNAT/SNAT for cone / restricted-cone, **plus** the
   missing symmetric-NAT and two-tier-CGNAT variants and **TCP-meta handling**,
   with pass/fail exit codes. **Proof:** the burst/rebind NAT features are shown to
   punch through restricted-cone where a baseline build does not.
+- [ ] 🟠 **The laptop scenario is a named regression test** (brief point 4 says
+  "resolved", not "vendored"): node behind two-tier CGNAT, direct UDP up, then
+  (a) peer restarts, (b) the node's clock jumps ≥ 30 s (sleep/resume path that
+  triggers `rebind_udp_sockets`), (c) its NAT mapping is dropped by the lab.
+  Pass = direct UDP re-established within 60 s with no process restart and no
+  `Invalid packet seqno` livelock in the log. Run against the core and against
+  upstream tinc 1.1 to show the delta. **Proof:** the lab's exit code + both
+  logs checked in under `testing/nat-sim/results/`.
 - [ ] 🟡 `testing/dpi-proof/`: tcpdump-based check (netns+veth skeleton from
   `awg-proof.sh`) that each obfuscation tier changes the wire image away from the
   SPTPS fingerprint. **Proof:** captured before/after byte patterns.
@@ -242,6 +280,34 @@ Adopt `tincapp` (Kotlin) into `platforms/android/`.
   cross-node ping.
 
 ---
+
+## Open decisions (the plan deviates from the brief here — owner to confirm)
+
+Found during the 2026-09-16 cross-check of PLAN.md against the original brief.
+Each has a recommendation; none is implemented until confirmed.
+
+1. **HTTPS decoy: default-on or opt-in?** The brief (point 6) reads "when the
+   tinc ports are accessed, *by default* the service answers as an HTTP/HTTPS
+   server". The plan made the whole HTTPS front opt-in (`HttpsFront: no`).
+   These are two different things and should be split: (a) **probe resistance
+   on the listen port** — any non-tinc client gets a TLS handshake + decoy page
+   (self-signed cert auto-generated) — is cheap and can be **default-on**;
+   (b) **carrying the tunnel inside TLS** (meta+data over one TCP/TLS flow) costs
+   the UDP data path and stays **opt-in / negotiated**. *Recommendation:* adopt
+   the split; update ARCHITECTURE §5 and M5 accordingly.
+2. **Transport willingness default.** The brief (point 7) says: tick QUIC on the
+   Windows client and the *other side must follow*. The plan's default
+   `Transports: [plain]` means a peer that never ticked QUIC will refuse it.
+   *Recommendation:* separate **accept list** (what the listener classifies and
+   answers; default = every carrier compiled in) from **dial preference** (what
+   this node initiates; default `plain`). Then one side's tick is enough, which
+   is what the brief asks for. Update ARCHITECTURE §4 / M4.
+3. **Founding node port.** The plan's M1 default `Port = 0` makes the first
+   node's invitations stale after its first restart (Known Issues). The brief
+   only asks for "working defaults". *Recommendation:* a node with no
+   `ConnectTo` materialises a fixed random high port (persisted in the YAML);
+   invitees materialise `Port = 0`. Implement in M2 alongside the invitee
+   defaults.
 
 ## Known Issues / carried-over defects
 

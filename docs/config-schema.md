@@ -38,7 +38,8 @@ networks:
 
       # ── NAT-traversal resilience (Family-A; safe defaults, keep on) ────────
       UDPDiscoveryBurst: 5     # probes per discovery round while unconfirmed
-      UDPRebindOnWake: yes     # rebind UDP to a fresh port after sleep/resume
+      UDPRebindOnWake: yes     # rebind UDP to a fresh port after sleep/resume.
+                               # daemon default is *no*; invitees get *yes* (M2)
       LocalDiscovery: yes
 
       # ── address pool (point 8) ────────────────────────────────────────────
