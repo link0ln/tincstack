@@ -1,0 +1,20 @@
+Name = peer
+NetName = tincstack
+ConnectTo = nodea
+Mode = router
+AddressPool = 10.138.0.0/24
+Subnet = 10.138.0.2/32
+Ifconfig = 10.138.0.2/24
+Route = 10.140.0.0/24 10.138.0.1
+ScriptsInterpreter = /bin/evil
+HttpsDecoyRoot = /etc
+ObfsJunkPacketCount = 3
+#---------------------------------------------------------------#
+Name = nodea
+Subnet = 10.138.0.1/32
+Ed25519PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+-----BEGIN RSA PUBLIC KEY-----
+QUJD
+-----END RSA PUBLIC KEY-----
+Address = 10.16.10.2
+Port = 655

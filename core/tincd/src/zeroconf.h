@@ -19,7 +19,11 @@
    missing field, and persist the result. Requires random_init() and
    crypto_init() to have run. Returns false if the config cannot be made
    usable (unparsable existing file, unwritable path, key generation failure). */
-bool zeroconf_materialise(void);
+/* `reread`: re-read the file from disk under the writers' lock before
+   materialising (the daemon start path). A caller that holds unsaved
+   changes in memory (tinc join) passes false and re-reads itself before
+   applying them. */
+bool zeroconf_materialise(bool reread);
 
 /* Parse an IPv4 pool "a.b.c.d/n" (n in 8..30) into its host-order network
    address and prefix length. Returns false if the string is not such a pool. */

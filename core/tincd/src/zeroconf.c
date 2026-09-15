@@ -250,7 +250,9 @@ int zeroconf_materialise_scripts(void) {
 
 /* ---- materialisation ----------------------------------------------------- */
 
-bool zeroconf_materialise(void) {
+static bool zeroconf_materialise_locked(bool reread);
+
+bool zeroconf_materialise(bool reread) {
 	if(!yamlconf_path) {
 		return true;  /* classic confbase mode: nothing to do here */
 	}
@@ -260,6 +262,20 @@ bool zeroconf_materialise(void) {
 		return false;
 	}
 
+	/* Read-modify-write of a file other writers (a CLI, a GUI, a second
+	   daemon sharing it) may touch: hold the writers' lock from the
+	   re-read to the save. */
+	if(!yamlconf_lock(yamlconf_path)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Could not lock `%s': %s", yamlconf_path, strerror(errno));
+		return false;
+	}
+
+	bool result = zeroconf_materialise_locked(reread);
+	yamlconf_unlock();
+	return result;
+}
+
+static bool zeroconf_materialise_locked(bool reread) {
 	yamlconf_t *yc = yamlconf_global;
 	bool fresh = false;
 
@@ -272,6 +288,16 @@ bool zeroconf_materialise(void) {
 
 		yc = yamlconf_new();
 		fresh = true;
+	} else if(reread && !access(yamlconf_path, F_OK)) {
+		/* Re-read under the lock so we start from what is on disk now
+		   (the daemon's start path; a joiner has unsaved changes in memory
+		   and re-reads before it applies them instead). */
+		if(!yamlconf_reload_global()) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Could not re-read YAML config `%s'", yamlconf_path);
+			return false;
+		}
+
+		yc = yamlconf_global;
 	}
 
 	bool changed = false;

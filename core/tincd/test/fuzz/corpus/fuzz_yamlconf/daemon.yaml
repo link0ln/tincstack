@@ -1,0 +1,26 @@
+networks:
+  tincstack:
+    options:
+      Name: nodea
+      Mode: router
+      Port: 655
+      AddressPool: 10.138.0.0/24
+      ConnectTo: [nodeb, nodec]
+      UDPRebindOnWake: yes
+      Empty: ""
+    keys:
+      ed25519_priv: |
+        -----BEGIN ED25519 PRIVATE KEY-----
+        AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        -----END ED25519 PRIVATE KEY-----
+    scripts:
+      tinc-up: |
+        #!/bin/sh
+        ip link set $INTERFACE up
+    hosts:
+      nodea: |
+        Subnet = 10.138.0.1/32
+        Transports = plain, sf
+        Ed25519PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      nodeb: "Address = 1.2.3.4\nPort = 655\n"
+      nodec: 'Address = 5.6.7.8'
