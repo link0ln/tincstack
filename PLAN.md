@@ -212,17 +212,86 @@ this order (cheapest / most-contained first). Full wire formats go in
 
 ## Milestone M6 — Linux delivery (point 1c) 🟠
 
-- [ ] 🟠 `platforms/linux/docker/`: `docker-compose.yml` + auto-init entrypoint
+- [~] 🟠 `platforms/linux/docker/`: `docker-compose.yml` + auto-init entrypoint
   that relies on M1 (daemon self-configures) rather than templating config in
   shell. Env for the few deploy-time choices (netname, connect target, public
   address). **Proof:** `docker compose up` on a clean checkout brings up a node
   with a generated `tinc.yaml`; a second compose joins by invite.
-- [ ] 🟠 Invite/join helper scripts (`docker compose exec … tinc invite`).
+  **(a) done 2026-09-16:** `docker compose -p wsc-single up -d --build` from the
+  clean tree (compose builds `core/Dockerfile.build` as a build-only service
+  and feeds it to the node image as the named context `core`) → log
+  `Materialised defaults into '/etc/tincstack/tinc.yaml' [tincstack]:
+  Name=2e17e9ec1961 Mode=router Port=655 AddressPool=10.87.0.0/24
+  Subnet=10.87.0.1/32 ed25519_priv Ed25519PublicKey rsa_priv RSA-public` →
+  `tinc-up: tincstack 10.87.0.1/24` → `Ready`; `ip -br addr` in the container:
+  `tincstack UNKNOWN 10.87.0.1/24`; `tinc.yaml` mode 0600 inside the named
+  volume `wsc-single_data`; `docker compose restart` → no second
+  `Materialised` line (idempotent). Env mapping verified in the lab run below:
+  `NODE_NAME=node_a` → `options.Name` (the materialise line then lists no
+  `Name=`/`Port=`, the daemon kept the pre-set values), `PORT=655`,
+  `PUBLIC_ADDRESS=wsc-a-node-1` → entrypoint log `hosts.node_a Address =
+  wsc-a-node-1` and the invitation `wsc-a-node-1:655/<cookie>` with **no**
+  `Trying to discover externally visible hostname` line (no phone-home, no
+  guess). Nothing is templated: values go through `tincstack-yaml`, a
+  stdlib-python helper in the image that edits only the requested key
+  (temporary bridge until `tinc set` is YAML-aware — M2, stream A); `tinc-up`
+  is a marked-removable stopgap until the core addresses the interface.
+  **(b) blocked on stream A** (`two-nodes.sh`, run 2026-09-16, exit 1): the
+  invitation is issued and accepted, then the join fails on both sides —
+  invitee: `Connected to wsc-a-node-1 port 655... Configuration stored in:
+  /etc/tincstack/tincstack` (a classic `tinc.conf`/`hosts/`/`*.priv` tree, no
+  `tinc.yaml`) → `Timed out waiting for the server to reply. Invitation
+  cancelled.`; inviter daemon: `Invitation … successfully sent to node_b` →
+  `ERROR Error trying to create /etc/tincstack/tincstack/hosts/node_b: No such
+  file or directory` → `Closing connection with node_b`. Re-run when A lands:
+  `cd platforms/linux/docker && ./two-nodes.sh` (one command, cleans up).
+- [~] 🟠 Invite/join helper scripts (`docker compose exec … tinc invite`).
   **Proof:** two-host (or two-project) bring-up reachable end to end.
-- [ ] 🟡 No secrets in the tree; keys generated at first run into a named volume.
+  `invite.sh <name>` (`docker compose exec -T node tincstack-cli invite`) and
+  `join.sh <invitation>` (`INVITE=… docker compose up -d`; the entrypoint joins
+  on the first start only and cleans the classic-tree leftovers of a failed
+  attempt so a retry is clean) exist, are shellcheck-clean and were exercised
+  by `two-nodes.sh`: `invite.sh` returned `wsc-a-node-1:655/<cookie>`, `join.sh`'s
+  path ran `tinc join` against it. End-to-end reachability **blocked on stream
+  A** (same observation as above); the ping step of `two-nodes.sh` is in place
+  and has not run.
+- [x] 🟡 No secrets in the tree; keys generated at first run into a named volume.
   **Proof:** `git status` clean of key material; `.gitignore` covers runtime data.
+  Run 2026-09-16: after the single-node bring-up and the two-project lab,
+  `git status --porcelain` listed only the new `platforms/` sources; keys exist
+  only inside `tinc.yaml` (0600) in the project-scoped volumes
+  (`wsc-single_data`, `wsc-a_data`, `wsc-b_data`, all removed by `down -v`).
+  Root `.gitignore` already covered `tinc.yaml`, `*.priv`, `invitations/`;
+  appended `platforms/linux/docker/.env` and `platforms/linux/docker/data/`.
 - **Acceptance:** a Linux user gets a working node from `docker compose up` and
-  onboards peers with one invite string.
+  onboards peers with one invite string. **Half met:** the node, yes; the
+  onboarding waits for M2.
+- **Found during M6** (2026-09-16):
+  - 🔴 **Daemon-side invitation acceptance is not YAML-aware** (for stream A,
+    M2 box 1/3). Reproduction: zero-config node, `tinc invite node_b`, a second
+    node runs `tinc -c tinc.yaml join <invitation>`. Inviter log: `Invitation …
+    successfully sent` then `ERROR Error trying to create
+    /etc/tincstack/tincstack/hosts/node_b: No such file or directory` and the
+    connection is closed; the invitee waits and gives up (`Timed out waiting for
+    the server to reply`). Impact: **every** join against a YAML-mode node fails,
+    and the invitation is consumed by the failed attempt (a retry logs `tried to
+    use non-existing invitation`), so the user must re-invite. Blocks M6 (b).
+  - 🟠 **`tinc set/get` in YAML mode open `<rundir>/tinc.conf`** (`Could not
+    open configuration file /etc/tincstack/tincstack/tinc.conf`, rc=1) — already
+    an M2 box; noted here as the reason the image carries `tincstack-yaml`.
+  - 🟡 **The core never addresses the tun interface on Linux** in YAML mode:
+    without a `tinc-up` the interface stays `DOWN` with no address, and `tinc
+    join` writes its own `tinc-up` into the run dir (overwritten by the
+    entrypoint's). The compose ships a stopgap `tinc-up`; the M2 note "stream A
+    adds a built-in default" is what removes it.
+  - 🟢 `makedirs()` re-chmods the run dir to 0755 on every CLI call, so a 0700
+    run dir cannot be kept; harmless (secrets are in `tinc.yaml` 0600 and
+    `invitations/` 0700), noted so nobody "fixes" it from the entrypoint.
+  - 🟢 `tinc invite` sends `reload` to the daemon (log `Got 'reload' command`
+    on every invitation); the daemon does not re-read the YAML on reload
+    (`yamlconf_load` is called once, in `names.c`), so a post-start file edit is
+    invisible to the daemon until restart. Fine for `Address` (CLI-only field);
+    matters for M2's runtime-reconfiguration box.
 
 ---
 
