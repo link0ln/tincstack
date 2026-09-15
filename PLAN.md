@@ -1252,7 +1252,7 @@ under `corpus/`; `run.sh check` is the gate.
 
 | # | Sev | Where | Finding | Repro | Status |
 |---|-----|-------|---------|-------|--------|
-| R-1 | 🔴 | `transport.c:390-416`, `net_socket.c:616` | front dispatcher returns on NEED_MORE without consuming; level-triggered select → 100 % CPU from one pending byte (`G`, `0`, `16 03`) for `pingtimeout`, repeatable | `printf G \| nc host 655` while watching `-d5` log rate | **open** — stream B/G |
+| R-1 | 🔴 | `transport.c:390-416`, `net_socket.c:616` | front dispatcher returns on NEED_MORE without consuming; level-triggered select → 100 % CPU from one pending byte (`G`, `0`, `16 03`) for `pingtimeout`, repeatable | `printf G \| nc host 655` while watching `-d5` log rate | **open** — stream L |
 | R-2 | 🟠 | `invitation.c:65-83` | `Obfs*/Https*/Quic*` propagation wildcards bypassed VAR_SAFE; on master would copy `HttpsDecoyRoot/Upstream` into every invitee | inviter with `HttpsDecoyRoot` set → `tinc invite` → file | **fixed** (exact allow-list; live step 3) |
 | R-3 | 🟠 | `yamlconf.c:324-460` | parser silently truncated at an unplaceable line; write-back deleted hosts/keys | misindented `weird: 1` in tinc.yaml, start daemon | **fixed** (strict parser; props 1-3, live step 1) |
 | R-4 | 🟠 | `yamlconf.c:693-800` | emitter wrote scalars/keys the parser read back differently (`[`, `\|`, `#`, `: `, key with `:`) | `fuzz_yamlconf` regress-key-with-colon | **fixed** (quoted scalars/keys; props 4-7) |
@@ -1261,24 +1261,24 @@ under `corpus/`; `run.sh check` is the gate.
 | R-7 | 🟡 | `pool.c:250-276` | `Subnet = 0.0.0.0/0` (pending file or any peer's ADD_SUBNET) exhausted the pool | host record with `0.0.0.0/0`, `tinc invite` | **fixed** (only /32 inside the pool count; live step 4). Residual: per-/32 reservation by a peer — `StrictSubnets` |
 | R-8 | 🟡 | `invitation.c:900-930` | `get_line` `abort()` on one control byte from the inviter | regress-ctrl-abort | **fixed** |
 | R-9 | 🟡 | `invitation.c:116-160`, `autoif.c:61-150` | Ifconfig/Route from inviter → `ip` unvalidated; `-` option injection; unchecked snprintf | `Ifconfig = -x` in payload | **fixed** (syntax checks at the boundary, logged) |
-| R-10 | 🟡 | `transport_table.c:227-260` | QUIC/SPTPS-relay overlap is 2⁻¹⁷ per node (drafts + grease), comment says 2⁻³⁴ | arithmetic | **open** — G2/G3 |
+| R-10 | 🟡 | `transport_table.c:227-260` | QUIC/SPTPS-relay overlap is 2⁻¹⁷ per node (drafts + grease), comment says 2⁻³⁴ | arithmetic | **open** — stream O (with G3) |
 | R-11 | 🟢 | `transport_sf.c:352-372` | spoofed SYN amplification < 1.5×, bounded by MaxConnectionBurst | — | informational |
 | R-12 | 🟢 | `net.c:236`, `transport_sf.c:481` | UDPRebindOnWake kills an SF session (re-dial) | sleep/wake | informational, doc note |
 | R-13 | 🟢 | `yamlconf.c:474-500` | Windows temp files hold keys in `%TEMP%` | — | **open** — stream D |
 | R-14 | 🟢 | `protocol_auth.c:280` | expired invitations stay `.used` until the weekly sweep | — | cosmetic |
 | R-15 | 🟢 | `tincd.c:596` | one-line call change `zeroconf_materialise(true)` | — | note for tincd.c owner |
-| R-16 | 🟢 | `tincctl.c cmd_config` | `tinc get Port` reads options while `tinc set Port` writes hosts.<me> | live step 6 (first version) | **open** — stream A |
-| M5-1 | 🔴 | `decoy.c:277-360` | decoy upstream proxy is synchronous on the main loop (DNS unbounded, 3 s per recv, 4 MiB): one failed TLS probe per 3 s freezes the node | set `HttpsDecoyUpstream`, `openssl s_client` twice | **open** — G1 |
-| M5-2 | 🟠 | `obfs.c:87-116` | obfs key from public keys = mesh-wide shared secret; any member classifies/forges every link; never rotates | — | **open** — G2 (session-derived key after handshake) |
-| M5-3 | 🟠 | `obfs.c:190-204` | magic header leaves 32 random nonce bits → reuse at ~2¹⁶ datagrams; 2³² without rotation | — | **open** — G2 |
-| M5-4 | 🟠 | `obfs.c:312-327,344-366` | replayed sealed datagram from any address repoints the link before SF/SPTPS checks; no anti-replay | replay one captured datagram | **open** — G2 |
-| M5-5 | 🟡 | `obfs.c:87-116` | same key both directions → reflected CLOSE/RESET | — | **open** — G2 |
-| M5-6 | 🟡 | `obfs.c:368-402` | cold-scan budget global, restarts at node 1: > 25 nodes never classified; 25 pps starves it | — | **open** — G2 |
-| M5-7 | 🟠 | `https.c:342-345` | TlsFingerprint pinned on first use before SPTPS proves anything → persistent MITM pin / DoS | MITM first dial | **open** — G1 |
-| M5-8 | 🟠 | `decoy.c:380-395` | plain-HTTP decoy `send_all` busy-loops on EAGAIN for a non-reading client | large decoy file + zero-window client | **open** — G1 |
-| M5-9 | 🟡 | `https.c:462-563` | name-existence timing oracle (verify only for known names) | timing | **open** — G1 |
-| M5-10 | 🟡 | `decoy.c:243-275` | failed tinc authenticators forwarded to the upstream in clear HTTP | clock-skewed peer | **open** — G1 |
-| M5-11 | 🟢 | `tls.c:514`, `https.c:278` | key file chmod race (classic mode); no domain separation in signed message | — | **open** — G1 |
+| R-16 | 🟢 | `tincctl.c cmd_config` | `tinc get Port` reads options while `tinc set Port` writes hosts.<me> | live step 6 (first version) | **fixed** in the consolidation pass (fef10b9: `Port` is `VAR_SERVER \| VAR_HOST`, options.Port authoritative for daemon, CLI and invite) |
+| M5-1 | 🔴 | `decoy.c:277-360` | decoy upstream proxy is synchronous on the main loop (DNS unbounded, 3 s per recv, 4 MiB): one failed TLS probe per 3 s freezes the node | set `HttpsDecoyUpstream`, `openssl s_client` twice | **open** — stream L |
+| M5-2 | 🟠 | `obfs.c:87-116` | obfs key from public keys = mesh-wide shared secret; any member classifies/forges every link; never rotates | — | **open** — stream O (session-derived key after handshake) |
+| M5-3 | 🟠 | `obfs.c:190-204` | magic header leaves 32 random nonce bits → reuse at ~2¹⁶ datagrams; 2³² without rotation | — | **open** — stream O |
+| M5-4 | 🟠 | `obfs.c:312-327,344-366` | replayed sealed datagram from any address repoints the link before SF/SPTPS checks; no anti-replay | replay one captured datagram | **open** — stream O |
+| M5-5 | 🟡 | `obfs.c:87-116` | same key both directions → reflected CLOSE/RESET | — | **open** — stream O |
+| M5-6 | 🟡 | `obfs.c:368-402` | cold-scan budget global, restarts at node 1: > 25 nodes never classified; 25 pps starves it | — | **open** — stream O |
+| M5-7 | 🟠 | `https.c:342-345` | TlsFingerprint pinned on first use before SPTPS proves anything → persistent MITM pin / DoS | MITM first dial | **open** — stream L |
+| M5-8 | 🟠 | `decoy.c:380-395` | plain-HTTP decoy `send_all` busy-loops on EAGAIN for a non-reading client | large decoy file + zero-window client | **open** — stream L |
+| M5-9 | 🟡 | `https.c:462-563` | name-existence timing oracle (verify only for known names) | timing | **open** — stream L |
+| M5-10 | 🟡 | `decoy.c:243-275` | failed tinc authenticators forwarded to the upstream in clear HTTP | clock-skewed peer | **open** — stream L |
+| M5-11 | 🟢 | `tls.c:514`, `https.c:278` | key file chmod race (classic mode); no domain separation in signed message | — | **open** — stream L |
 
 Re-run at the end of the review: `testing/transports/classify-test.sh` 26/0,
 `TINCSTACK_TAG=ws-r platforms/linux/docker/two-nodes.sh` PASS.
