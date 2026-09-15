@@ -32,6 +32,7 @@ import org.pacien.tincapp.data.SplitRouting
 import org.pacien.tincapp.data.SplitRoutingMode
 import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.data.VpnInterfaceConfiguration
+import org.pacien.tincapp.data.VpnInterfaceConfigurationTest
 import org.pacien.tincapp.extensions.VpnServiceBuilder.applyCfg
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -107,8 +108,8 @@ class VpnServiceBuilderTest {
       |  mynet:
       |    options:
       |      Name: phone
-      |      Ifconfig: 10.210.0.3/24
-      |      Route:
+      |      InterfaceAddress: 10.210.0.3/24
+      |      InterfaceRoute:
       |        - 10.210.0.0/24
       |        - 192.168.1.0/24
       |      DNSServer: 10.210.0.1
@@ -133,7 +134,7 @@ class VpnServiceBuilderTest {
   @Test
   fun blacklistWrittenByThePickerIsApplied() {
     val dir = tmp.newFolder("net2")
-    val file = File(dir, TincYaml.FILE_NAME).apply { writeText("networks:\n  net2:\n    options:\n      Name: phone\n      Ifconfig: 10.1.0.2/24\n") }
+    val file = File(dir, TincYaml.FILE_NAME).apply { writeText("networks:\n  net2:\n    options:\n      Name: phone\n      InterfaceAddress: 10.1.0.2/24\n") }
     SplitRouting(SplitRoutingMode.BLACKLIST, setOf("org.example.bank")).write(TincYaml(file), "net2")
 
     val cfg = config(TestVpnService().Builder().applyCfg(VpnInterfaceConfiguration.fromTincYaml(file, "net2")))
@@ -159,6 +160,24 @@ class VpnServiceBuilderTest {
     assertEquals(listOf("10.165.0.1/24"), strings(cfg, "addresses"))
     assertEquals(listOf("10.165.0.0/24"), strings(cfg, "routes").map { it.substringBefore(" ") })
     assertTrue(strings(cfg, "dnsServers").isEmpty())
+  }
+
+  /**
+   * Cross-check against the real core: `joined-tinc.yaml` (test resource) is
+   * the file `tinc -c tinc.yaml -n phonenet join <invitation>` of
+   * `tincstack/core` wrote on a docker network after a real `tinc invite`
+   * (keys redacted, nothing else touched). The builder must get the joined
+   * address and both routes without any app-side folding.
+   */
+  @Test
+  fun joinedDocumentFromTheCoreReachesTheBuilder() {
+    val cfg = config(builderFor(VpnInterfaceConfigurationTest.joinedDocument(), "phonenet"))
+    assertEquals(listOf("10.165.0.2/24"), strings(cfg, "addresses"))
+    assertEquals(listOf("10.99.0.0/24", "172.16.0.0/12"), strings(cfg, "routes").map { it.substringBefore(" ") })
+    assertTrue(strings(cfg, "dnsServers").isEmpty())
+    assertNull(field<List<Any>?>(cfg, "allowedApplications"))
+    assertNull(field<List<Any>?>(cfg, "disallowedApplications"))
+    assertEquals("phonenet", field<String>(cfg, "session"))
   }
 
   @Test(expected = TincYaml.InvalidConfigurationException::class)

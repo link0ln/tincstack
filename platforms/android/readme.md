@@ -14,14 +14,17 @@ What changed against tincapp
   per ABI, static LibreSSL libcrypto), not vanilla tinc from an autotools build.
 - **One file**: each network is `networks/<net>/tinc.yaml` (the shared schema,
   `docs/config-schema.md`). The Android interface settings that used to live in
-  `network.conf` (`Ifconfig`, `Route`, `DNSServer`, `AllowApplication`,
-  `DisallowApplication`, ...) are ordinary `options:` keys of that file.
-  Private keys are embedded in it; the key-passphrase feature is gone.
+  `network.conf` (`DNSServer`, `AllowApplication`, `DisallowApplication`, ...)
+  are ordinary `options:` keys of that file; the interface address and routes
+  are the daemon's own `InterfaceAddress` / `InterfaceRoute` keys, the same
+  spellings the Linux built-in tinc-up reads. Private keys are embedded in it;
+  the key-passphrase feature is gone.
 - **App picker**: Configure → Tools → "Choose which apps use the VPN" — one
   mode switch (only selected apps / all apps except selected), search,
   multi-select; written straight into `tinc.yaml`.
-- **Join**: `tinc join` runs against `tinc.yaml`; the interface addressing an
-  invitation carries is folded into the YAML options.
+- **Join**: `tinc join` runs against `tinc.yaml` and the core writes the whole
+  joined network into it, `InterfaceAddress` / `InterfaceRoute` included; the
+  app folds nothing in and reads no side-file (there is no `invitation-data`).
 
 Build
 -----

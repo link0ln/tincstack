@@ -752,6 +752,29 @@ host SDK/NDK mounted read-only; no core source or meson change was needed.
   schema naming). It still works because the app derives the address from
   own `Subnet` + `AddressPool` when `Ifconfig` is absent. The on-device proof
   remains open only for lack of a device.
+  **Update 2026-09-16 (stream H):** the app now reads `InterfaceAddress`
+  (one or more) and `InterfaceRoute` (list, "prefix [gateway]" as
+  `finalize_join_yaml` writes it; only the prefix is used) as its primary
+  keys, the `invitation-data` fold-in (`TincApp.importInvitationAddressing`,
+  `VpnInterfaceConfiguration.fromInvitation`/`writeAddressing`,
+  `AppPaths.invitationFile`) and its test are deleted; the own `Subnet` +
+  `AddressPool` fallback stays. Cross-check against the real core
+  (`tincstack/core:ws-h`, docker network `wsh-fixture`): founding node
+  `node_a` (`tinc set Name/AddressPool/node_a.Address`, daemon `Ready`, an
+  `invitation-created` hook adding `Route = 10.99.0.0/24` and `Route =
+  172.16.0.0/12 10.165.0.1` to the invitee chunk) → `tinc invite phone` →
+  on a second container `tinc -c tinc.yaml -n phonenet join <url>` →
+  `Invitation successfully accepted`, only `tinc.yaml` + an empty `phonenet/`
+  written, options `InterfaceAddress: 10.165.0.2/24`, `InterfaceRoute:
+  [10.99.0.0/24, "172.16.0.0/12 10.165.0.1"]`. That exact file (keys replaced
+  by dummy PEMs) is `app/src/test/resources/joined-tinc.yaml`;
+  `VpnServiceBuilderTest.joinedDocumentFromTheCoreReachesTheBuilder` asserts
+  the real `VpnService.Builder` gets `10.165.0.2/24` and routes
+  `10.99.0.0/24`, `172.16.0.0/12`. `./gradlew --no-daemon testDebugUnitTest
+  assembleDebug` in the `ws-e-android-build` container: `BUILD SUCCESSFUL in
+  2m 35s`, EXIT=0, 25 tests / 0 failures (TincYamlTest 9, SplitRoutingTest 5,
+  VpnInterfaceConfigurationTest 6, VpnServiceBuilderTest 5), APK 12.7 MB.
+  Still open here: only the on-device run.
 - [x] 🟠 **One file on Android too** (brief point 2). Today the app keeps a
   second file, `network.conf` (`Address`, `Route`, `DNSServer`,
   `AllowApplication`, `DisallowApplication`). Fold these into the network's
@@ -865,17 +888,23 @@ milestone as "Found during Mk" (consolidated into Known Issues at merge).
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
 
-- 🟠 **Two names for the interface address in the schema.** Stream A's core
+- ~~🟠 **Two names for the interface address in the schema.**~~ Stream A's core
   writes `InterfaceAddress`/`InterfaceRoute` into the joined node's `options:`
-  (and `autoif.c` reads them on Linux); stream E's Android app reads
-  `Ifconfig`/`Route` from the same `options:` and still looks for the
+  (and `autoif.c` reads them on Linux); stream E's Android app read
+  `Ifconfig`/`Route` from the same `options:` and still looked for the
   `invitation-data` side-file that the YAML-native join no longer produces.
-  Found 2026-09-16 at merge. Impact today: none visible (the app falls back to
-  own `Subnet` + `AddressPool`), but a join that carries extra routes loses them
-  on Android, and the schema doc lists both spellings. Fix in a consolidation
-  pass: pick `InterfaceAddress`/`InterfaceRoute` (the daemon already implements
-  them), make the app read them, delete the `invitation-data` path, update
-  docs/config-schema.md §"Android interface options".
+  Found 2026-09-16 at merge. **Resolved 2026-09-16 (stream H):** the app
+  reads `InterfaceAddress`/`InterfaceRoute` (fallback own `Subnet` +
+  `AddressPool` kept), the `invitation-data` path and its test are gone,
+  docs/config-schema.md §"Android interface options" lists the top-level
+  spellings only. Proof: a real `tinc invite` → `tinc join` with
+  `tincstack/core:ws-h` produced `InterfaceAddress: 10.165.0.2/24` +
+  `InterfaceRoute: [10.99.0.0/24, "172.16.0.0/12 10.165.0.1"]`; that file
+  (keys redacted) is a Robolectric fixture and
+  `VpnServiceBuilderTest.joinedDocumentFromTheCoreReachesTheBuilder` sees
+  address `10.165.0.2/24` and routes `10.99.0.0/24`, `172.16.0.0/12` on the
+  real `VpnService.Builder`; `testDebugUnitTest assembleDebug` → 25 tests,
+  0 failures, EXIT=0 (details in M8).
 - ~~🟠 `Port = 0` on the founding node breaks re-connection after its restart.~~
   **Resolved 2026-09-16** by decision 3: founding node materialises `655`,
   invitees `0` (verified: empty file → listens on 655; `ConnectTo` present →

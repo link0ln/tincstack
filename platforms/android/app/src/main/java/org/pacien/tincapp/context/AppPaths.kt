@@ -47,8 +47,6 @@ object AppPaths {
   private const val LOGFILE_FORMAT = "tinc.%s.log"
   private const val PIDFILE_FORMAT = "tinc.%s.pid"
 
-  private const val NET_INVITATION_FILE = "invitation-data"
-
   private val context by lazy { App.getContext() }
 
   private fun privateCacheDir() = context.cacheDir!!
@@ -62,7 +60,6 @@ object AppPaths {
   fun confDir(netName: String) = File(confDir(), netName)
   fun tincYamlFile(netName: String) = File(confDir(netName), TincYaml.FILE_NAME)
   fun daemonSideDir(netName: String, stanza: String) = File(confDir(netName), stanza)
-  fun invitationFile(netName: String, stanza: String) = File(daemonSideDir(netName, stanza), NET_INVITATION_FILE)
   fun logFile(netName: String) = File(logsDir(), String.format(LOGFILE_FORMAT, netName))
   fun pidFile(netName: String) = File(runtimeDir(), String.format(PIDFILE_FORMAT, netName))
   fun appLogFile() = File(logsDir(), APPLOG_FILE)

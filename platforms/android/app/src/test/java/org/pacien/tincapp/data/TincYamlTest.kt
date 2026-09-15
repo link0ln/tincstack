@@ -61,18 +61,18 @@ class TincYamlTest {
   fun spliceAddsListKeysAndLeavesTheRestByteForByte() {
     val f = yamlFile(DAEMON_DOC)
     val y = TincYaml(f)
-    y.setOptions("mynet", mapOf("AllowApplication" to listOf("com.b", "com.a"), "Route" to listOf("10.165.0.0/24")))
+    y.setOptions("mynet", mapOf("AllowApplication" to listOf("com.b", "com.a"), "InterfaceRoute" to listOf("10.165.0.0/24")))
     val out = f.readText()
 
     val expected = DAEMON_DOC.replace(
       "      AddressPool: 10.165.0.0/24\n",
       "      AddressPool: 10.165.0.0/24\n" +
         "      AllowApplication:\n        - com.b\n        - com.a\n" +
-        "      Route: 10.165.0.0/24\n")
+        "      InterfaceRoute: 10.165.0.0/24\n")
     assertEquals(expected, out)
 
     assertEquals(listOf("com.b", "com.a"), y.optionValues("mynet", "AllowApplication"))
-    assertEquals(listOf("10.165.0.0/24"), y.optionValues("mynet", "Route"))
+    assertEquals(listOf("10.165.0.0/24"), y.optionValues("mynet", "InterfaceRoute"))
     // untouched sections survive
     assertEquals("nodeA", y.optionValue("mynet", "Name"))
     assertTrue(out.contains("    keys:\n      ed25519_priv: |\n        -----BEGIN ED25519 PRIVATE KEY-----\n"))
@@ -83,18 +83,18 @@ class TincYamlTest {
   fun spliceReplacesInPlaceAndRemovesWithNull() {
     val f = yamlFile(DAEMON_DOC)
     val y = TincYaml(f)
-    y.setOptions("mynet", mapOf("Route" to listOf("10.1.0.0/24", "10.2.0.0/24"), "AllowApplication" to listOf("com.x")))
-    y.setOptions("mynet", mapOf("Route" to listOf("192.168.0.0/16"), "AllowApplication" to null, "DisallowApplication" to listOf("com.y")))
+    y.setOptions("mynet", mapOf("InterfaceRoute" to listOf("10.1.0.0/24", "10.2.0.0/24"), "AllowApplication" to listOf("com.x")))
+    y.setOptions("mynet", mapOf("InterfaceRoute" to listOf("192.168.0.0/16"), "AllowApplication" to null, "DisallowApplication" to listOf("com.y")))
     val out = f.readText()
 
-    assertEquals(listOf("192.168.0.0/16"), y.optionValues("mynet", "Route"))
+    assertEquals(listOf("192.168.0.0/16"), y.optionValues("mynet", "InterfaceRoute"))
     assertEquals(emptyList<String>(), y.optionValues("mynet", "AllowApplication"))
     assertEquals(listOf("com.y"), y.optionValues("mynet", "DisallowApplication"))
     assertFalse(out.contains("AllowApplication"))
     assertFalse(out.contains("10.1.0.0/24"))
     // replaced where the old entry stood, i.e. still inside options, before hosts:
-    assertTrue(out.indexOf("      Route: 192.168.0.0/16") < out.indexOf("    hosts:"))
-    assertEquals(1, out.split("Route:").size - 1)
+    assertTrue(out.indexOf("      InterfaceRoute: 192.168.0.0/16") < out.indexOf("    hosts:"))
+    assertEquals(1, out.split("InterfaceRoute:").size - 1)
   }
 
   @Test
@@ -107,9 +107,9 @@ class TincYamlTest {
     assertEquals("networks:\n  net1:\n    options:\n      Name: phone\n      DNSServer: 10.0.0.1\n", f.readText())
 
     // a second stanza in the same file
-    TincYaml(f).setOptions("net2", mapOf("Route" to listOf("0.0.0.0/0")))
+    TincYaml(f).setOptions("net2", mapOf("InterfaceRoute" to listOf("0.0.0.0/0")))
     assertEquals(
-      "networks:\n  net1:\n    options:\n      Name: phone\n      DNSServer: 10.0.0.1\n  net2:\n    options:\n      Route: 0.0.0.0/0\n",
+      "networks:\n  net1:\n    options:\n      Name: phone\n      DNSServer: 10.0.0.1\n  net2:\n    options:\n      InterfaceRoute: 0.0.0.0/0\n",
       f.readText())
     assertEquals(listOf("net1", "net2"), TincYaml(f).networkNames())
   }
@@ -117,8 +117,8 @@ class TincYamlTest {
   @Test
   fun spliceCreatesOptionsWhenTheStanzaHasNone() {
     val f = yamlFile("networks:\n  mynet:\n    hosts:\n      a: |\n        Subnet = 10.0.0.1/32\n")
-    TincYaml(f).setOptions("mynet", mapOf("Route" to listOf("10.0.0.0/24")))
-    assertEquals("networks:\n  mynet:\n    options:\n      Route: 10.0.0.0/24\n    hosts:\n      a: |\n        Subnet = 10.0.0.1/32\n", f.readText())
+    TincYaml(f).setOptions("mynet", mapOf("InterfaceRoute" to listOf("10.0.0.0/24")))
+    assertEquals("networks:\n  mynet:\n    options:\n      InterfaceRoute: 10.0.0.0/24\n    hosts:\n      a: |\n        Subnet = 10.0.0.1/32\n", f.readText())
   }
 
   @Test

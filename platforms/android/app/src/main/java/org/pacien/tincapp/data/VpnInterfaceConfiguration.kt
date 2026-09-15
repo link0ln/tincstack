@@ -27,11 +27,15 @@ import java.io.File
  * field comes from the network's `tinc.yaml` `options:` (docs/config-schema.md,
  * "Android interface options"); the daemon ignores the keys it does not use.
  *
- * `Ifconfig` and `Route` are the keys tinc itself uses in invitations for the
- * interface address and the routes, so a joined node needs no translation.
+ * `InterfaceAddress` and `InterfaceRoute` are the daemon's own interface keys:
+ * `tinc join` writes them from the invitation's `Ifconfig` / `Route` lines
+ * (core/tincd/src/invitation.c, `finalize_join_yaml`) and the Linux built-in
+ * tinc-up (core/tincd/src/autoif.c) consumes them, so a joined node needs no
+ * translation and no side-file. A route is "prefix [gateway]" as in the
+ * invitation; only the prefix is used on Android (the tunnel has no next hop).
  * When they are absent the address and route are derived from the node's own
- * `Subnet` host record and the network's `AddressPool`, so a zero-config or
- * freshly joined node gets a working interface without any Android-specific key.
+ * `Subnet` host record and the network's `AddressPool`, exactly like autoif.c,
+ * so a zero-config node gets a working interface without any extra key.
  *
  * @author euxane
  */
@@ -47,8 +51,8 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
                                      val mtu: Int? = null,
                                      val reconnectOnNetworkChange: Boolean = true) {
   companion object {
-    const val KEY_ADDRESSES = "Ifconfig"
-    const val KEY_ROUTES = "Route"
+    const val KEY_ADDRESSES = "InterfaceAddress"
+    const val KEY_ROUTES = "InterfaceRoute"
     const val KEY_DNS_SERVERS = "DNSServer"
     const val KEY_SEARCH_DOMAINS = "SearchDomain"
     const val KEY_ALLOWED_APPLICATIONS = SplitRouting.KEY_ALLOWED_APPLICATIONS
@@ -81,12 +85,14 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
       val pool = yaml.optionValue(net, KEY_ADDRESS_POOL)?.let { applyIgnoringException(CidrAddress.Companion::fromSlashSeparated, it) }
 
       val addresses = yaml.optionValues(net, KEY_ADDRESSES)
-        .filter { it.lowercase() !in listOf("dhcp", "dhcp6", "slaac") }
+        .map(String::trim)
+        .filter { it.isNotEmpty() && it.lowercase() !in listOf("dhcp", "dhcp6", "slaac") }
         .map { CidrAddress.fromSlashSeparated(it) }
         .ifEmpty { ownAddressesFromSubnet(yaml, net, pool) }
 
       val routes = yaml.optionValues(net, KEY_ROUTES)
-        .map { it.trim().substringBefore(' ') }
+        .map { it.trim().substringBefore(' ') } // "prefix [gateway]": the gateway is meaningless on a tun fd
+        .filter(String::isNotEmpty)
         .map { CidrAddress.fromSlashSeparated(it) }
         .ifEmpty { listOfNotNull(pool) }
 
@@ -108,36 +114,8 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
     private fun ownAddressesFromSubnet(yaml: TincYaml, net: String, pool: CidrAddress?): List<CidrAddress> =
       yaml.ownHostValues(net, HOST_KEY_SUBNET)
         .map { it.substringBefore('#').trim() }
-        .filter { it.isNotEmpty() && !it.contains(':') } // IPv4 only; IPv6 subnets need an explicit Ifconfig
+        .filter { it.isNotEmpty() && !it.contains(':') } // IPv4 only; IPv6 subnets need an explicit InterfaceAddress
         .mapNotNull { applyIgnoringException(CidrAddress.Companion::fromSlashSeparated, it) }
         .map { if (pool != null && it.prefix == 32) CidrAddress(it.address, pool.prefix) else it }
-
-    /**
-     * The `invitation-data` file `tinc join` leaves behind: tinc's own
-     * `Key = value` lines (first chunk only; `#---` separates the peers' host
-     * records that follow). Only `Ifconfig` / `Route` are of interest here.
-     */
-    fun fromInvitation(f: File): VpnInterfaceConfiguration {
-      val lines = f.readLines()
-        .takeWhile { !it.startsWith("#---") }
-        .map { it.trim() }
-        .filter { !it.startsWith("#") && it.contains('=') }
-        .map { it.substringBefore('=').trim() to it.substringAfter('=').trim() }
-      fun values(key: String) = lines.filter { it.first.equals(key, ignoreCase = true) }.map { it.second }
-      return VpnInterfaceConfiguration(
-        values(KEY_ADDRESSES)
-          .mapNotNull { applyIgnoringException(CidrAddress.Companion::fromSlashSeparated, it) },
-        values(KEY_ROUTES)
-          .map { it.substringBefore(' ') }
-          .map { CidrAddress.fromSlashSeparated(it) })
-    }
-  }
-
-  /** Persist the address/route part (what an invitation carries) into the YAML options. */
-  fun writeAddressing(yaml: TincYaml, net: String) {
-    val changes = mutableMapOf<String, List<String>?>()
-    if (addresses.isNotEmpty()) changes[KEY_ADDRESSES] = addresses.map(CidrAddress::toSlashSeparated)
-    if (routes.isNotEmpty()) changes[KEY_ROUTES] = routes.map(CidrAddress::toSlashSeparated)
-    yaml.setOptions(net, changes)
   }
 }
