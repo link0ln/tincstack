@@ -1278,12 +1278,13 @@ static int cmd_dump(int argc, char *argv[]) {
 		long int last_state_change;
 		int udp_ping_rtt;
 		uint64_t in_packets, in_bytes, out_packets, out_bytes;
+		char transports[4096] = "plain";
 
 		switch(req) {
 		case REQ_DUMP_NODES: {
-			int n = sscanf(line, "%*d %*d %4095s %4095s %4095s port %4095s %d %d %d %d %x %"PRIx32" %4095s %4095s %d %hd %hd %hd %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64, node, id, host, port, &cipher, &digest, &maclength, &compression, &options, &status.value, nexthop, via, &distance, &pmtu, &minmtu, &maxmtu, &last_state_change, &udp_ping_rtt, &in_packets, &in_bytes, &out_packets, &out_bytes);
+			int n = sscanf(line, "%*d %*d %4095s %4095s %4095s port %4095s %d %d %d %d %x %"PRIx32" %4095s %4095s %d %hd %hd %hd %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %4095s", node, id, host, port, &cipher, &digest, &maclength, &compression, &options, &status.value, nexthop, via, &distance, &pmtu, &minmtu, &maxmtu, &last_state_change, &udp_ping_rtt, &in_packets, &in_bytes, &out_packets, &out_bytes, transports);
 
-			if(n != 22) {
+			if(n < 22) {
 				fprintf(stderr, "Unable to parse node dump from tincd: %s\n", line);
 				return 1;
 			}
@@ -1309,8 +1310,8 @@ static int cmd_dump(int argc, char *argv[]) {
 					continue;
 				}
 
-				printf("%s id %s at %s port %s cipher %d digest %d maclength %d compression %d options %x status %04x nexthop %s via %s distance %d pmtu %d (min %d max %d) rx %"PRIu64" %"PRIu64" tx %"PRIu64" %"PRIu64,
-				       node, id, host, port, cipher, digest, maclength, compression, options, status.value, nexthop, via, distance, pmtu, minmtu, maxmtu, in_packets, in_bytes, out_packets, out_bytes);
+				printf("%s id %s at %s port %s cipher %d digest %d maclength %d compression %d options %x status %04x nexthop %s via %s distance %d pmtu %d (min %d max %d) rx %"PRIu64" %"PRIu64" tx %"PRIu64" %"PRIu64" transports %s",
+				       node, id, host, port, cipher, digest, maclength, compression, options, status.value, nexthop, via, distance, pmtu, minmtu, maxmtu, in_packets, in_bytes, out_packets, out_bytes, transports);
 
 				if(udp_ping_rtt != -1) {
 					printf(" rtt %d.%03d", udp_ping_rtt / 1000, udp_ping_rtt % 1000);
@@ -1726,7 +1727,9 @@ const var_t variables[] = {
 	{"Sandbox", VAR_SERVER},
 	{"ScriptsExtension", VAR_SERVER},
 	{"ScriptsInterpreter", VAR_SERVER},
+	{"SingleFlow", VAR_SERVER | VAR_SAFE},
 	{"StrictSubnets", VAR_SERVER | VAR_SAFE},
+	{"PreferredTransports", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
 	{"TunnelServer", VAR_SERVER | VAR_SAFE},
 	{"UDPDiscovery", VAR_SERVER | VAR_SAFE},
 	{"UDPDiscoveryKeepaliveInterval", VAR_SERVER | VAR_SAFE},
@@ -1760,6 +1763,7 @@ const var_t variables[] = {
 	{"PublicKeyFile", VAR_SERVER | VAR_HOST | VAR_OBSOLETE},
 	{"Subnet", VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
 	{"TCPOnly", VAR_SERVER | VAR_HOST | VAR_SAFE},
+	{"Transports", VAR_SERVER | VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
 	{"Weight", VAR_HOST | VAR_SAFE},
 	{NULL, 0}
 };

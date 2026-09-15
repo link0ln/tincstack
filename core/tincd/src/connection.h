@@ -53,6 +53,7 @@ typedef union connection_status_t {
 		bool invitation: 1;             /* 1 if this is an invitation */
 		bool invitation_used: 1;        /* 1 if the invitation has been consumed */
 		bool tarpit: 1;                 /* 1 if the connection should be added to the tarpit */
+		bool front_pending: 1;          /* 1 if an inbound TCP connection has not been classified by the front yet */
 	};
 	uint32_t value;
 } connection_status_t;
@@ -124,6 +125,9 @@ typedef struct connection_t {
 	time_t last_ping_time;          /* last time we saw some activity from the other end or pinged them */
 
 	splay_tree_t *config_tree;      /* Pointer to configuration tree belonging to him */
+
+	const struct transport_t *transport; /* carrier this connection runs on (NULL = plain TCP / control) */
+	void *transport_data;           /* carrier-private state (e.g. the single-flow session) */
 } connection_t;
 
 extern list_t connection_list;

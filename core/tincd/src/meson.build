@@ -175,6 +175,9 @@ src_tincd = [
   'raw_socket_device.c',
   'route.c',
   'subnet.c',
+  'transport.c',
+  'transport_table.c',
+  'transport_sf.c',
 ]
 
 src_event_select = files('event_select.c')
@@ -185,6 +188,14 @@ endif
 
 cc_flags_tinc = cc_flags
 cc_flags_tincd = cc_flags
+
+# The `test' stub carrier is compiled in only when explicitly enabled; it is a
+# selectable carrier whose dial always fails, so the negotiation matrix test
+# can prove fallback happens. transport_table.c also needs the flag so the
+# carrier's `compiled' bit (hence the default accept list) matches.
+if get_option('transport_test')
+  cc_flags_tincd += '-DHAVE_TRANSPORT_TEST'
+endif
 
 deps_common = []
 deps_tinc = []

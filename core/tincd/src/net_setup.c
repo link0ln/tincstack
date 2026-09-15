@@ -44,6 +44,9 @@
 #include "subnet.h"
 #include "utils.h"
 #include "xalloc.h"
+
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
 #include "keys.h"
 #include "sandbox.h"
 #include "yamlconf.h"
@@ -199,6 +202,8 @@ static void load_one_node(const char *name) {
 	if(lookup_config(&config, "Address")) {
 		n->status.has_address = true;
 	}
+
+	transport_node_read_config(n, &config);
 
 	splay_empty_tree(&config);
 }
@@ -437,6 +442,10 @@ bool setup_myself_reloadable(void) {
 
 	if(udp_discovery_burst < 1) {
 		udp_discovery_burst = 1;
+	}
+
+	if(!transport_read_config()) {
+		return false;
 	}
 
 	get_config_bool(lookup_config(&config_tree, "UDPRebindOnWake"), &udp_rebind_on_wake);
@@ -1268,6 +1277,10 @@ static bool setup_myself(void) {
 
 	/* Done. */
 
+	if(!transport_init()) {
+		return false;
+	}
+
 	last_config_check = now.tv_sec;
 
 	return true;
@@ -1349,6 +1362,8 @@ void close_network_connections(void) {
 		closesocket(listen_socket[i].tcp.fd);
 		closesocket(listen_socket[i].udp.fd);
 	}
+
+	transport_exit();
 
 	exit_requests();
 	exit_edges();

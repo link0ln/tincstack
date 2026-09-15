@@ -37,6 +37,9 @@
 #include "utils.h"
 #include "watchdog.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 int contradicting_add_edge = 0;
 int contradicting_del_edge = 0;
 static int sleeptime = 10;
@@ -154,11 +157,25 @@ void terminate_connection(connection_t *c, bool report) {
 	}
 
 	outgoing_t *outgoing = c->outgoing;
+	bool activated = c->edge != NULL;
+
+	/* Release any carrier-private state (e.g. the single-flow session) and,
+	   if this was a single-flow link, send a CLOSE before the socket goes. */
+	transport_connection_close(c);
+
 	connection_del(c);
 
 	/* Check if this was our outgoing connection */
 
 	if(outgoing) {
+		/* If the connection died before it was activated, the carrier we tried
+		   did not complete its handshake: fall back to the next candidate so a
+		   failing carrier ends at plain. An activated connection that drops is
+		   a normal reconnect and keeps its (already chosen) candidate. */
+		if(!activated) {
+			transport_next_candidate(outgoing);
+		}
+
 		do_outgoing_connection(outgoing);
 	}
 
