@@ -1734,6 +1734,12 @@ const var_t variables[] = {
 	{"SingleFlow", VAR_SERVER | VAR_SAFE},
 	{"StrictSubnets", VAR_SERVER | VAR_SAFE},
 	{"PreferredTransports", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
+	/* https carrier / TLS front (M5) */
+	{"TlsCert", VAR_SERVER},
+	{"TlsKey", VAR_SERVER},
+	{"HttpsSni", VAR_SERVER | VAR_SAFE},
+	{"HttpsDecoyRoot", VAR_SERVER},
+	{"HttpsDecoyUpstream", VAR_SERVER},
 	{"TunnelServer", VAR_SERVER | VAR_SAFE},
 	{"UDPDiscovery", VAR_SERVER | VAR_SAFE},
 	{"UDPDiscoveryKeepaliveInterval", VAR_SERVER | VAR_SAFE},
@@ -1767,6 +1773,7 @@ const var_t variables[] = {
 	{"PublicKeyFile", VAR_SERVER | VAR_HOST | VAR_OBSOLETE},
 	{"Subnet", VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
 	{"TCPOnly", VAR_SERVER | VAR_HOST | VAR_SAFE},
+	{"TlsFingerprint", VAR_HOST | VAR_SAFE},
 	{"Transports", VAR_SERVER | VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
 	{"Weight", VAR_HOST | VAR_SAFE},
 	{NULL, 0}

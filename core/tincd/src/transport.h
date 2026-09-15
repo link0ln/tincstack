@@ -191,6 +191,15 @@ bool transport_udp_dispatch(listen_socket_t *ls, const uint8_t *buf, size_t len,
 /* plain carrier's dial (net_socket.c): socket + connect + io_add. */
 bool transport_plain_dial(struct connection_t *c);
 
+/* https carrier (https.c): TLS front, meta+data in one TLS flow, decoy for
+   anything that does not authenticate. Compiled only with OpenSSL. */
+bool https_init(void);
+void https_exit(void);
+bool https_dial(struct connection_t *c);
+bool https_accept(struct connection_t *c, const uint8_t *peek, size_t len);
+bool https_send(struct connection_t *c);
+void https_close(struct connection_t *c);
+
 /* single-flow carrier (transport_sf.c) */
 bool sf_dial(struct connection_t *c);
 bool sf_send(struct connection_t *c);

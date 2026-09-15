@@ -42,6 +42,7 @@
 #include "route.h"
 #include "script.h"
 #include "subnet.h"
+#include "tls.h"
 #include "utils.h"
 #include "xalloc.h"
 
@@ -1289,6 +1290,16 @@ static bool setup_myself(void) {
 	if(!transport_init()) {
 		return false;
 	}
+
+#ifdef HAVE_OPENSSL
+
+	/* Expose our own TLS certificate fingerprint via `tinc info'/dump. */
+	if(tls_ready) {
+		free(myself->tls_fingerprint);
+		myself->tls_fingerprint = xstrdup(tls_own_fp_hex);
+	}
+
+#endif
 
 	last_config_check = now.tv_sec;
 

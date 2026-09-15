@@ -27,6 +27,8 @@
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
 
+#include "decoy.h"
+
 uint32_t transport_accept_mask;
 transport_id_t transport_pref[TRANSPORT_MAX];
 int transport_pref_count;
@@ -58,10 +60,23 @@ static const transport_t transports[TRANSPORT_MAX] = {
 		.local_address = sf_local_address,
 		.udp_receive = sf_udp_receive,
 	},
-	/* M5 fills these in; the names are registered so option parsing and
-	   peer advertisements already know them. */
+	/* M5 (G2) fills obfs/quic in; the names are registered so option parsing
+	   and peer advertisements already know them. */
 	[TRANSPORT_OBFS]  = { .id = TRANSPORT_OBFS,  .name = "obfs",  .caps = TRANSPORT_CAP_SINGLE_FLOW },
+#ifdef HAVE_OPENSSL
+	[TRANSPORT_HTTPS] = {
+		.id = TRANSPORT_HTTPS, .name = "https",
+		.caps = TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_META_TCP,
+		.init = https_init,
+		.exit = https_exit,
+		.dial = https_dial,
+		.accept = https_accept,
+		.send = https_send,
+		.close = https_close,
+	},
+#else
 	[TRANSPORT_HTTPS] = { .id = TRANSPORT_HTTPS, .name = "https", .caps = TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_META_TCP },
+#endif
 	[TRANSPORT_QUIC]  = { .id = TRANSPORT_QUIC,  .name = "quic",  .caps = TRANSPORT_CAP_SINGLE_FLOW },
 #ifdef HAVE_TRANSPORT_TEST
 	[TRANSPORT_TEST]  = { .id = TRANSPORT_TEST,  .name = "test",  .caps = TRANSPORT_CAP_META_TCP, .dial = test_dial },
@@ -223,6 +238,10 @@ bool transport_read_config(void) {
 /* ---- init / exit --------------------------------------------------------- */
 
 bool transport_init(void) {
+	/* The plain-HTTP decoy path needs the decoy config even when the https
+	   carrier's init (which also reads it) is not run. Idempotent. */
+	decoy_read_config();
+
 	for(int i = 0; i < TRANSPORT_MAX; i++) {
 		if(transports[i].init && (transport_accept_mask & TRANSPORT_BIT(i)) && !transports[i].init()) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Carrier `%s' failed to initialise", transports[i].name);
@@ -248,6 +267,15 @@ uint32_t transport_node_mask(const node_t *n) {
 }
 
 void transport_node_read_config(node_t *n, splay_tree_t *config_tree) {
+	/* The peer's pinned TLS certificate fingerprint, if its host record carries
+	   one (from an invitation or a first-use pin). Used by the https carrier. */
+	char *fp = NULL;
+
+	if(get_config_string(lookup_config(config_tree, "TlsFingerprint"), &fp) && fp) {
+		free(n->tls_fingerprint);
+		n->tls_fingerprint = fp;
+	}
+
 	char *list = config_join(config_tree, "Transports");
 
 	if(!list) {
@@ -363,30 +391,6 @@ bool transport_local_address(connection_t *c, sockaddr_t *sa) {
 
 /* ---- inbound TCP front --------------------------------------------------- */
 
-/* M5 replaces this with the real decoy (node certificate, static content or
-   upstream proxy). Until then a plaintext prober gets a minimal, valid
-   response and the connection is closed. */
-static void decoy_http(connection_t *c, size_t peeked) {
-	static const char body[] = "<!doctype html><html><head><title>Welcome</title></head><body><h1>It works!</h1></body></html>\n";
-	char header[256];
-	int hlen = snprintf(header, sizeof(header),
-	                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-	                    sizeof(body) - 1);
-
-	/* Drain what has arrived so the close is a FIN, not a RST. */
-	char drain[1024];
-	(void)peeked;
-
-	while(recv(c->socket, drain, sizeof(drain), 0) > 0);
-
-	if(send(c->socket, header, hlen, 0) == hlen) {
-		send(c->socket, body, sizeof(body) - 1, 0);
-	}
-
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Answered HTTP probe from %s with the decoy page", c->hostname);
-	terminate_connection(c, false);
-}
-
 bool transport_front_dispatch(connection_t *c) {
 	uint8_t peek[TRANSPORT_TCP_PEEK];
 	ssize_t len = recv(c->socket, peek, sizeof(peek), MSG_PEEK);
@@ -435,8 +439,9 @@ bool transport_front_dispatch(connection_t *c) {
 		return false;
 
 	case TCP_CLASS_HTTP:
+		/* A cleartext prober gets the same decoy content over plain HTTP. */
 		c->status.front_pending = false;
-		decoy_http(c, (size_t)len);
+		decoy_serve_plain(c);
 		return false;
 
 	case TCP_CLASS_OBFS:
