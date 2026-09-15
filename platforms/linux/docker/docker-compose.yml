@@ -1,0 +1,51 @@
+# tincstack Linux node -- zero-config.
+#
+#   docker compose up -d          # on a clean checkout: builds core/, builds the
+#                                 # node image, starts one node that configures
+#                                 # itself (PLAN.md M1); keys land in the volume
+#   ./invite.sh <name>            # one-line invitation for a new peer
+#   ./join.sh <invitation>        # on the other host: join with that line
+#
+# Deploy-time choices come from the environment / .env (see .env.example).
+# Nothing is templated; the daemon owns tinc.yaml.
+name: tincstack
+
+services:
+  core:
+    # Build-only. The daemon core from core/Dockerfile.build, consumed by
+    # `node` as the named build context `core`. scale: 0 -> never started.
+    image: tincstack/core:${TINCSTACK_TAG:-dev}
+    build:
+      context: ../../../core
+      dockerfile: Dockerfile.build
+    scale: 0
+
+  node:
+    image: tincstack/node:${TINCSTACK_TAG:-dev}
+    build:
+      context: .
+      additional_contexts:
+        core: service:core
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      NETNAME: ${NETNAME:-tincstack}
+      NODE_NAME: ${NODE_NAME:-}
+      PUBLIC_ADDRESS: ${PUBLIC_ADDRESS:-}
+      PORT: ${PORT:-}
+      INVITE: ${INVITE:-}
+      LOG_LEVEL: ${LOG_LEVEL:-1}
+    ports:
+      # A founding node must be reachable here; an invitee dials out and needs
+      # no published port (leave PORT unset, the mapping is then inert).
+      - "${PORT:-655}:${PORT:-655}/tcp"
+      - "${PORT:-655}:${PORT:-655}/udp"
+    volumes:
+      - data:/etc/tincstack
+
+volumes:
+  # Identity + runtime state. Never bind-mount this into the repository.
+  data:

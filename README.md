@@ -38,6 +38,18 @@ docker build -f core/Dockerfile.build -t tincstack/core:dev core/
 docker run --rm tincstack/core:dev tincd --version
 ```
 
+## Run a node on Linux
+
+```
+cd platforms/linux/docker
+docker compose up -d                 # builds the core + node image, starts a self-configuring node
+./invite.sh laptop                   # one-line invitation for a new peer
+./join.sh '<invitation>'             # on the other host
+```
+
+Set `PUBLIC_ADDRESS` in `.env` on the node that issues invitations. Details,
+environment variables and the two-node lab: `platforms/linux/docker/README.md`.
+
 ## Status
 
 Foundation (M0) complete: core selected, vendored and building. See `PLAN.md` for

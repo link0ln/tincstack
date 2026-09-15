@@ -1,0 +1,16 @@
+# Override for the two-project lab (two-nodes.sh): several compose projects on
+# one pre-created bridge so `-p a` and `-p b` reach each other by container
+# name, and no host ports are published (nothing to collide on).
+#
+#   docker network create tincstack-lab
+#   COMPOSE_FILE=docker-compose.yml:compose.lab.yml docker compose -p a up -d
+services:
+  node:
+    ports: !reset []
+    networks:
+      - lab
+
+networks:
+  lab:
+    name: ${TINCSTACK_LAB_NET:-tincstack-lab}
+    external: true

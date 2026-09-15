@@ -1,0 +1,5 @@
+#!/bin/sh
+# tincstack-cli -- run the tinc CLI against this container's network and config.
+# Usage (from the host): docker compose exec node tincstack-cli dump nodes
+set -eu
+exec tinc -n "${NETNAME:-tincstack}" -c "${TINCSTACK_CONFIG_DIR:-/etc/tincstack}/tinc.yaml" "$@"
