@@ -933,6 +933,17 @@ Defects identified during the source audit, to fix as their milestone is reached
   address `10.165.0.2/24` and routes `10.99.0.0/24`, `172.16.0.0/12` on the
   real `VpnService.Builder`; `testDebugUnitTest assembleDebug` → 25 tests,
   0 failures, EXIT=0 (details in M8).
+- 🟠 **`Port` is classified host-only in the CLI, so `tinc set Port` and the
+  materialised `options.Port` disagree.** Found by stream H (2026-09-16):
+  `variables[]` in tincctl.c marks `Port` as `VAR_HOST` without `VAR_SERVER`,
+  so `cmd_config` always writes it into `hosts.<Name>`, while zeroconf/join
+  write `options.Port` (655/0). With both present `config_compare` picks by
+  line number — measured: invitee with `Port = 656` in its host record and
+  `Port: 0` in options listened on ephemeral 38055. The Linux entrypoint
+  bridges it with `tincd -o Port=$PORT` (command line wins). Fix in the
+  consolidation pass: make `Port` `VAR_SERVER | VAR_HOST`, route the
+  unprefixed form to `options:` in YAML mode, and have `tinc set Port` update
+  the host record copy that `tinc invite` reads; then drop the `-o` bridge.
 - ~~🟠 `Port = 0` on the founding node breaks re-connection after its restart.~~
   **Resolved 2026-09-16** by decision 3: founding node materialises `655`,
   invitees `0` (verified: empty file → listens on 655; `ConnectTo` present →
