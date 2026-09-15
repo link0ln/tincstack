@@ -1,0 +1,28 @@
+# Build environment for the tincstack Android app (platforms/android).
+#
+# Contains everything except the Android SDK/NDK, which is mounted read-only
+# from the host (or from a named volume) at /opt/android-sdk:
+#   - JDK 17 (required by AGP 8.x)
+#   - meson + ninja + pkg-config: the core (core/tincd) is meson-only and is
+#     cross-compiled for Android with the NDK from native/build-core.sh
+#   - make + perl: LibreSSL's autotools build (libcrypto for -Dcrypto=openssl)
+#   - curl, unzip, xz: fetching the LibreSSL tarball and the Gradle wrapper dist
+#
+# Usage (see README.md "Android" and platforms/android/native/build-core.sh):
+#   docker build -t ws-e-android-build -f platforms/android/docker/Dockerfile.build platforms/android/docker
+#   docker run --rm -v "$PWD":/src -w /src/platforms/android \
+#       -v /opt/android-sdk:/opt/android-sdk:ro -v wse-gradle:/root/.gradle \
+#       -e ANDROID_HOME=/opt/android-sdk ws-e-android-build ./gradlew assembleDebug
+FROM debian:12-slim
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openjdk-17-jdk-headless \
+        meson ninja-build pkg-config python3 \
+        make perl file \
+        curl ca-certificates unzip xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+ENV ANDROID_HOME=/opt/android-sdk \
+    ANDROID_SDK_ROOT=/opt/android-sdk \
+    GRADLE_USER_HOME=/root/.gradle \
+    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+WORKDIR /src

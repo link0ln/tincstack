@@ -15,13 +15,11 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 -keep class org.apache.commons.** { *; }
--keep class org.bouncycastle.**
 -keep class ch.qos.** { *; }
 -keep class org.slf4j.** { *; }
 -keepattributes *Annotation*
 -dontobfuscate
 -dontwarn org.apache.commons.**
--dontwarn org.bouncycastle.**
 -dontwarn ch.qos.logback.core.net.*
 -dontwarn sun.misc.Unsafe
 -dontwarn build.IgnoreJava8API
