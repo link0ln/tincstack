@@ -15,6 +15,7 @@
 #include "system.h"
 
 #include "ecdsagen.h"
+#include "fs.h"
 #include "logger.h"
 #include "names.h"
 #include "random.h"
@@ -112,7 +113,7 @@ static bool host_text_has(const char *text, const char *var, const char *needle)
 
 /* ---- public helpers ------------------------------------------------------ */
 
-bool zeroconf_pool_first_host(const char *pool, char *out, size_t outlen) {
+bool zeroconf_pool_parse(const char *pool, uint32_t *network, int *prefix) {
 	unsigned int a, b, c, d, bits;
 	char tail;
 
@@ -126,7 +127,20 @@ bool zeroconf_pool_first_host(const char *pool, char *out, size_t outlen) {
 
 	uint32_t addr = (a << 24) | (b << 16) | (c << 8) | d;
 	uint32_t mask = 0xffffffffu << (32 - bits);
-	uint32_t first = (addr & mask) + 1;
+	*network = addr & mask;
+	*prefix = (int)bits;
+	return true;
+}
+
+bool zeroconf_pool_first_host(const char *pool, char *out, size_t outlen) {
+	uint32_t network;
+	int prefix;
+
+	if(!zeroconf_pool_parse(pool, &network, &prefix)) {
+		return false;
+	}
+
+	uint32_t first = network + 1;
 
 	snprintf(out, outlen, "%u.%u.%u.%u/32",
 	         (first >> 24) & 255, (first >> 16) & 255, (first >> 8) & 255, first & 255);
@@ -174,6 +188,63 @@ char *zeroconf_default_name(void) {
 	char *name = NULL;
 	xasprintf(&name, "node_%08x", r);
 	return name;
+}
+
+/* ---- scripts ------------------------------------------------------------- */
+
+int zeroconf_materialise_scripts(void) {
+	if(!yamlconf_path || !yamlconf_global || !netname || !confbase) {
+		return 0;
+	}
+
+	const char **names = yamlconf_script_names(yamlconf_global, netname);
+
+	if(!names) {
+		return 0;
+	}
+
+	int written = 0;
+
+	for(size_t i = 0; names[i]; i++) {
+		const char *name = names[i];
+
+		/* A script name is a plain file name inside the runtime dir. */
+		if(!*name || strpbrk(name, "/\\") || name[0] == '.') {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Ignoring script with unsafe name `%s' in `%s'", name, yamlconf_path);
+			continue;
+		}
+
+		char *text = yamlconf_script_text(yamlconf_global, netname, name);
+
+		if(!text) {
+			continue;
+		}
+
+		char path[PATH_MAX];
+		snprintf(path, sizeof(path), "%s" SLASH "%s", confbase, name);
+
+		FILE *f = fopenmask(path, "w", 0700);
+
+		if(!f) {
+			free(text);
+			free(names);
+			return -1;
+		}
+
+		fputs(text, f);
+
+		if(text[0] && text[strlen(text) - 1] != '\n') {
+			fputc('\n', f);
+		}
+
+		fclose(f);
+		chmod(path, 0700);
+		free(text);
+		written++;
+	}
+
+	free(names);
+	return written;
 }
 
 /* ---- materialisation ----------------------------------------------------- */
@@ -410,6 +481,15 @@ bool zeroconf_materialise(void) {
 
 	if(fresh) {
 		yamlconf_global = yc;
+	}
+
+	int scripts = zeroconf_materialise_scripts();
+
+	if(scripts < 0) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Could not write scripts from `%s' into `%s': %s", yamlconf_path, confbase, strerror(errno));
+		return false;
+	} else if(scripts > 0) {
+		logger(DEBUG_ALWAYS, LOG_INFO, "Wrote %d script(s) from `%s' into `%s'", scripts, yamlconf_path, confbase);
 	}
 
 #undef NOTE

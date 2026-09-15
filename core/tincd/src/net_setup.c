@@ -48,6 +48,7 @@
 #include "sandbox.h"
 #include "yamlconf.h"
 #include "zeroconf.h"
+#include "autoif.h"
 
 #ifdef HAVE_MINIUPNPC
 #include "upnp.h"
@@ -440,6 +441,7 @@ bool setup_myself_reloadable(void) {
 	}
 
 	get_config_bool(lookup_config(&config_tree, "UDPRebindOnWake"), &udp_rebind_on_wake);
+	logger(DEBUG_ALWAYS, LOG_INFO, "UDPDiscoveryBurst %d, UDPRebindOnWake %s", udp_discovery_burst, udp_rebind_on_wake ? "yes" : "no");
 
 	get_config_int(lookup_config(&config_tree, "MTUInfoInterval"), &mtu_info_interval);
 	get_config_int(lookup_config(&config_tree, "UDPInfoInterval"), &udp_info_interval);
@@ -789,11 +791,18 @@ void device_enable(void) {
 		devops.enable();
 	}
 
-	/* Run tinc-up script to further initialize the tap interface */
+	/* Run tinc-up script to further initialize the tap interface; in YAML
+	   mode with no script, the built-in addressing (autoif.c) stands in. */
 
 	environment_t env;
 	environment_init(&env);
-	execute_script("tinc-up", &env);
+
+	if(yamlconf_path && !script_exists("tinc-up")) {
+		autoif_up();
+	} else {
+		execute_script("tinc-up", &env);
+	}
+
 	environment_exit(&env);
 }
 

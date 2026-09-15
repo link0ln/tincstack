@@ -142,12 +142,14 @@ src_tinc = [
   'ifconfig.c',
   'info.c',
   'invitation.c',
+  'pool.c',
   'top.c',
 ]
 
 src_tincd = [
   'address_cache.c',
   'autoconnect.c',
+  'autoif.c',
   'buffer.c',
   'compression.h',
   'conf_net.c',

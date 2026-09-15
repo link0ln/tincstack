@@ -36,4 +36,8 @@ extern void environment_exit(environment_t *env);
 
 extern bool execute_script(const char *name, environment_t *env);
 
+/* True if <confbase>/<name><ScriptsExtension> exists (what execute_script()
+   would run). */
+extern bool script_exists(const char *name);
+
 #endif
