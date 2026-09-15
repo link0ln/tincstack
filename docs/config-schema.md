@@ -167,9 +167,17 @@ this path. A `scripts.tinc-up` in the YAML always wins over the built-in.
 carries, beyond upstream tinc's `Name`/`NetName`/`ConnectTo`:
 
 - every **propagated server option** the inviter has set — the list is
-  `PROPAGATED_OPTIONS[]` in `core/tincd/src/invitation.c`: `Mode`, `Broadcast`,
-  `AddressPool`, `Transports`, `TlsFingerprint` and every option starting with
-  `Obfs`, `Https` or `Quic`. Per-node settings (`Port`, `ConnectTo`,
+  `PROPAGATED_OPTIONS[]` in `core/tincd/src/invitation.c`, an **exact
+  allow-list** (no prefix patterns, security review R): `Mode`, `Broadcast`,
+  `AddressPool`, `Transports`, `TlsFingerprint`, `ObfsJunkPacketCount`,
+  `ObfsJunkPacketMinSize`, `ObfsJunkPacketMaxSize`, `ObfsInitHeaderJunkSize`,
+  `ObfsTransportHeaderJunkSize`, `ObfsInitMagicHeader`,
+  `ObfsTransportMagicHeader`, `HttpsSni`. An entry here is written into the
+  invitee's `options:` by whoever issued the invitation, without the
+  `VAR_SAFE` check every other invitation line goes through, so only options
+  both ends must agree on and that cannot make the invitee read, serve or
+  execute anything qualify. `HttpsDecoyRoot`, `HttpsDecoyUpstream`,
+  `TlsCert`/`TlsKey` and per-node settings (`Port`, `ConnectTo`,
   `PreferredTransports`, …) are deliberately not propagated;
 - the invitee's address from the pool: `Subnet = a.b.c.d/32` (its host record)
   and `Ifconfig = a.b.c.d/<pool prefix>` (its interface address);
@@ -191,7 +199,9 @@ writes the joined network into the YAML — `-n` names it, else the invitation's
 `*_key.priv` or `tinc-up.invitation`. It stores `Name`, the propagated options,
 `ConnectTo = <inviter>`, `InterfaceAddress`/`InterfaceRoute` (from
 `Ifconfig`/`Route`; `dhcp`/`slaac` forms are not supported and are ignored with a
-message), its own host record (`Subnet`, generated `Ed25519PublicKey` and RSA
+message; a value must look like an address[/prefix] or a route, since the
+daemon later hands it to `ip`, and every applied one is logged), its own
+host record (`Subnet`, generated `Ed25519PublicKey` and RSA
 public key) and the inviter's host record, then runs the same materialiser as an
 empty-file start to generate the keys. **Invitee defaults:** `Port = 0` and
 `UDPRebindOnWake = yes` (it always dials out; a fresh NAT mapping per start is
@@ -274,5 +284,20 @@ Rules:
   write atomically (temp + rename), never truncate-in-place over the keys, and
   re-read before merging. The tinc-manager adoption fixes this (its current
   truncate-in-place save is a defect).
+- **Writers' lock** (security review R): every C writer — the daemon's key
+  write-back, `tinc set/add/del`, `tinc join`, the materialiser — serialises
+  its whole read-modify-write on `<tinc.yaml>.lock` (a stable file next to the
+  config; `flock` on POSIX, exclusive open on Windows). A lock on the config
+  file's own inode is useless because saves rename over it. A GUI that writes
+  the file should hold the same lock file around its read → merge → write.
+- **Strict parser**: a document with a line the parser cannot place (a
+  misindented key, a line without a colon inside a mapping) is refused as a
+  whole — the daemon logs `Could not parse YAML config` and does not start —
+  instead of being truncated at that line and written back without the rest.
+  Duplicate keys take the last value, as PyYAML does. Mapping keys are at most
+  255 bytes (a node name is also a `hosts/` file name), nesting at most 64
+  levels; the C writer refuses to save a document it could not read back.
 - The C writer re-emits the whole document (comments are not preserved). Editors
-  must not rely on comment round-tripping.
+  must not rely on comment round-tripping. Scalars that would not read back
+  verbatim (leading `[`, `|`, `#`, `-`, quotes, `: `, outer blanks, control
+  characters) are written double-quoted; empty maps/sequences as `{}`/`[]`.
