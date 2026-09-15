@@ -1,0 +1,41 @@
+# Windows (x86_64, mingw-w64) cross-build of the tincstack core.
+#
+# Produces tincd.exe + tinc.exe for the Windows GUI (platforms/windows) to bundle.
+# Mirrors core/tincd/PATCHES.md "Building / Windows": libgcrypt instead of
+# OpenSSL (Debian ships libgcrypt-mingw-w64-dev; no mingw OpenSSL package),
+# miniupnpc disabled, static link (meson default on Windows).
+#
+#   docker build -f core/Dockerfile.build-win -t tincstack/core-win:dev core/
+#   docker run --rm -v "$PWD/platforms/windows/resources:/out" tincstack/core-win:dev
+#
+# The default CMD copies tincd.exe / tinc.exe into /out. wintun.dll is NOT built
+# here — it is a signed Microsoft-signed binary from https://www.wintun.net/
+# (see platforms/windows/build-windows.md).
+FROM debian:12-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential meson ninja-build pkg-config python3 ca-certificates \
+        mingw-w64 mingw-w64-tools libgcrypt-mingw-w64-dev \
+        binutils-mingw-w64-x86-64 file \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY tincd/ /src/
+# Compression libraries have no mingw packages in Debian; the meson wraps would
+# download them at build time. Keep the build offline/deterministic: no
+# compression (tinc's Compression option is 0 = off by default anyway).
+RUN meson setup build-win --cross-file .ci/cross/windows/amd64 \
+        -Dbuildtype=release -Dcrypto=gcrypt -Dminiupnpc=disabled \
+        -Dzlib=disabled -Dlzo=disabled -Dlz4=disabled \
+        -Dcurses=disabled -Dreadline=disabled \
+        -Dtests=disabled -Ddocs=disabled --wrap-mode=nodownload \
+    && ninja -C build-win \
+    && mkdir -p /dist \
+    && cp build-win/src/tincd.exe build-win/src/tinc.exe /dist/ \
+    && x86_64-w64-mingw32-strip /dist/tincd.exe /dist/tinc.exe \
+    && file /dist/tincd.exe /dist/tinc.exe \
+    && x86_64-w64-mingw32-objdump -p /dist/tincd.exe | grep -E 'DLL Name' \
+    && sha256sum /dist/*.exe > /dist/SHA256SUMS
+
+FROM debian:12-slim
+COPY --from=build /dist/ /dist/
+VOLUME /out
+CMD ["sh", "-c", "cp -v /dist/tincd.exe /dist/tinc.exe /dist/SHA256SUMS /out/ && cat /out/SHA256SUMS"]

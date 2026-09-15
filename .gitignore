@@ -20,3 +20,10 @@ core/tincd/build/
 platforms/android/**/build/
 platforms/android/**/.cxx/
 platforms/android/**/.gradle/
+# platforms/windows — core binaries come from core/Dockerfile.build-win, never from git
+platforms/windows/resources/
+platforms/windows/tincmgr-data/
+platforms/windows/**/*.exe
+platforms/windows/**/*.dll
+platforms/windows/**/*.pyc
+platforms/windows/.pytest_cache/
