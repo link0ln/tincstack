@@ -345,6 +345,18 @@ bool zeroconf_materialise(void) {
 		NOTE("Subnet=%s ", first);
 	}
 
+	/* Advertise our transport accept list in our own host record, so it
+	   propagates through the mesh and through invitations exactly like
+	   Subnet/Ed25519PublicKey. This is the compiled-in default (the carriers
+	   this build understands); an operator who narrows `Transports` in
+	   options: overrides it at runtime. Kept in sync with
+	   transport_compiled_mask() in transport_table.c. */
+	if(!host_text_has(host, "Transports", NULL)) {
+		yamlconf_host_add_line(yc, netname, name, "Transports", "plain, sf");
+		changed = true;
+		NOTE("Transports=plain,sf ");
+	}
+
 	free(host);
 
 	/* --- Ed25519 key pair --- */

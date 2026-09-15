@@ -35,6 +35,9 @@
 #include "utils.h"
 #include "xalloc.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 int addressfamily = AF_UNSPEC;
 int maxtimeout = 900;
 int seconds_till_retry = 5;
@@ -605,30 +608,27 @@ static void handle_meta_io(void *data, int flags) {
 	if(flags & IO_WRITE) {
 		handle_meta_write(c);
 	} else {
+		/* An inbound TCP connection is classified by the front before its
+		   bytes are treated as tinc meta traffic. Until it is classified we
+		   only peek; a client that never sends a recognisable preamble is
+		   reaped by the authentication timeout, so it cannot hold the slot
+		   forever. */
+		if(c->status.front_pending && !transport_front_dispatch(c)) {
+			return;
+		}
+
 		handle_meta_connection_data(c);
 	}
 }
 
-bool do_outgoing_connection(outgoing_t *outgoing) {
-	const sockaddr_t *sa;
+/* The plain carrier's dial hook: open a TCP meta connection (optionally
+   through a proxy), exactly as upstream tinc always did. `c' already has
+   address, hostname and name filled in. On success the connection is
+   registered and returned to the event loop; on failure it returns false and
+   leaves `c' for the caller to free. */
+bool transport_plain_dial(connection_t *c) {
 	struct addrinfo *proxyai = NULL;
 	int result;
-
-begin:
-	sa = get_recent_address(outgoing->node->address_cache);
-
-	if(!sa) {
-		logger(DEBUG_CONNECTIONS, LOG_ERR, "Could not set up a meta connection to %s", outgoing->node->name);
-		retry_outgoing(outgoing);
-		return false;
-	}
-
-	connection_t *c = new_connection();
-	c->outgoing = outgoing;
-	memcpy(&c->address, sa, SALEN(sa->sa));
-	c->hostname = sockaddr2hostname(&c->address);
-
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Trying to connect to %s (%s)", outgoing->node->name, c->hostname);
 
 	if(!proxytype) {
 		c->socket = socket(c->address.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
@@ -639,8 +639,7 @@ begin:
 		proxyai = str2addrinfo(proxyhost, proxyport, SOCK_STREAM);
 
 		if(!proxyai) {
-			free_connection(c);
-			goto begin;
+			return false;
 		}
 
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "Using proxy at %s port %s", proxyhost, proxyport);
@@ -650,8 +649,12 @@ begin:
 
 	if(c->socket == -1) {
 		logger(DEBUG_CONNECTIONS, LOG_ERR, "Creating socket for %s failed: %s", c->hostname, sockstrerror(sockerrno));
-		free_connection(c);
-		goto begin;
+
+		if(proxyai) {
+			freeaddrinfo(proxyai);
+		}
+
+		return false;
 	}
 
 #ifdef FD_CLOEXEC
@@ -688,23 +691,58 @@ begin:
 	}
 
 	if(result == -1 && !sockinprogress(sockerrno)) {
-		logger(DEBUG_CONNECTIONS, LOG_ERR, "Could not connect to %s (%s): %s", outgoing->node->name, c->hostname, sockstrerror(sockerrno));
-		free_connection(c);
-
-		goto begin;
+		logger(DEBUG_CONNECTIONS, LOG_ERR, "Could not connect to %s (%s): %s", c->name, c->hostname, sockstrerror(sockerrno));
+		return false;
 	}
 
-	/* Now that there is a working socket, fill in the rest and register this connection. */
+	/* Now that there is a working socket, register this connection. */
 
-	c->last_ping_time = time(NULL);
 	c->status.connecting = true;
-	c->name = xstrdup(outgoing->node->name);
-	c->outmaclength = myself->connection->outmaclength;
-	c->last_ping_time = now.tv_sec;
 
 	connection_add(c);
 
 	io_add(&c->io, handle_meta_io, c, c->socket, IO_READ | IO_WRITE);
+
+	return true;
+}
+
+bool do_outgoing_connection(outgoing_t *outgoing) {
+	const sockaddr_t *sa;
+
+begin:
+	sa = get_recent_address(outgoing->node->address_cache);
+
+	if(!sa) {
+		logger(DEBUG_CONNECTIONS, LOG_ERR, "Could not set up a meta connection to %s", outgoing->node->name);
+		retry_outgoing(outgoing);
+		return false;
+	}
+
+	const transport_t *t = transport_current(outgoing);
+
+	connection_t *c = new_connection();
+	c->outgoing = outgoing;
+	memcpy(&c->address, sa, SALEN(sa->sa));
+	c->hostname = sockaddr2hostname(&c->address);
+	c->name = xstrdup(outgoing->node->name);
+	c->outmaclength = myself->connection->outmaclength;
+	c->last_ping_time = now.tv_sec;
+	c->transport = t;
+
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Trying to connect to %s (%s) via %s", outgoing->node->name, c->hostname, t->name);
+
+	if(!t->dial || !t->dial(c)) {
+		free_connection(c);
+
+		/* This carrier did not even get a socket up. Fall back to the next
+		   carrier in the preference list, retrying the same set of addresses
+		   from the top. */
+		if(transport_next_candidate(outgoing)) {
+			reset_address_cache(outgoing->node->address_cache);
+		}
+
+		goto begin;
+	}
 
 	return true;
 }
@@ -810,6 +848,7 @@ void handle_new_meta_connection(void *data, int flags) {
 	c->hostname = sockaddr2hostname(&sa);
 	c->socket = fd;
 	c->last_ping_time = now.tv_sec;
+	c->status.front_pending = true;
 
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Connection from %s", c->hostname);
 

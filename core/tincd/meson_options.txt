@@ -99,3 +99,8 @@ option('sandbox',
        value: 'auto',
        description: 'use sandboxing on platforms that support it')
 
+
+option('transport_test',
+       type: 'boolean',
+       value: false,
+       description: 'compile the `test` stub carrier used by testing/transports to prove carrier fallback')

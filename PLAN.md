@@ -322,31 +322,77 @@ from this tree, two containers `wsa-a`/`wsa-b` on docker network `wsa-net`,
 The negotiation model does not exist in any prior work; build the frame before the
 individual carriers.
 
-- [ ] 🟠 `Transports` (accept list, default = all compiled carriers) and
+- [x] 🟠 `Transports` (accept list, default = all compiled carriers) and
   `PreferredTransports` (dial preference, default `[plain]`): parse both;
   advertise `Transports` in the host record; propagate through invitations.
-  **Proof:** a peer's accept list is visible in `tinc dump`/host record; a node
-  with no list is treated as `plain`.
-- [ ] 🟠 Outbound carrier selection: walk own preference list, dial the first
+  **Proof:** implemented in `core/tincd/src/transport.{h,c}` (registry + names +
+  hooks), `transport_table.c` (pure names/parse/classifier). Parsed in
+  `setup_myself_reloadable()` via `transport_read_config()`; registered in
+  `tincctl.c variables[]` (`Transports`, `PreferredTransports`, `SingleFlow`).
+  Advertised two ways: `zeroconf.c` writes `Transports = plain, sf` into the
+  node's own YAML host record (minimal hook, reported below), AND the accept
+  list rides a trailing token on the ACK (`protocol_auth.c send_ack`/`ack_h`),
+  so a peer learns it without host records and an upstream peer that sends
+  nothing is treated as `plain`. Run 2026-09-16, two docker nodes: `tinc info
+  nodea` on the peer → `Transports:   plain,sf`; `tinc dump nodes` → each node
+  line ends `transports plain,sf`. (`n->transports==0` prints `plain`.)
+- [x] 🟠 Outbound carrier selection: walk own preference list, dial the first
   carrier in the peer's accept list; fall back down the list to `plain` on
-  handshake failure. **Proof:** matrix test — each (preference-A × accept-B)
-  pair dials the expected carrier; ticking QUIC on A alone makes A→B use QUIC.
-- [ ] 🟠 Inbound front dispatcher: one listen port classifies a new connection by
+  handshake failure. Selection is per connection, re-evaluated on reconnect
+  (`transport_current`/`transport_next_candidate` in `transport.c`, driven from
+  `do_outgoing_connection` in `net_socket.c` for immediate dial failure and from
+  `terminate_connection` in `net.c` for handshake-phase failure; reset on ACK).
+  **Proof:** `testing/transports/matrix-test.sh` (two docker nodes, needs
+  `-Dtransport_test=true` which compiles the `test` stub carrier whose dial
+  always fails). Run 2026-09-16: node B log →
+  `via test` → `test carrier: simulated dial failure` →
+  `Carrier test failed for nodea, falling back to plain` → `via plain` →
+  `Connection with nodea … activated`. `PASS`.
+- [x] 🟠 Inbound front dispatcher: one listen port classifies a new connection by
   its first bytes and routes to the right handler (plain / obfs / TLS / QUIC).
-  **Proof:** the classifier's decision table (in `docs/transports.md`) with a test
-  feeding each byte pattern to the right handler.
-- [ ] 🟠 **Single-flow mode: meta channel over the data carrier** (brief point 5,
-  independent of the HTTPS front). Today tinc opens a TCP meta connection *and*
-  a UDP data flow — two fingerprints. Provide a mode where the SPTPS meta
-  channel rides the same UDP flow as data (the thing `tinc-obfs` attempted by
-  forcing the handshake onto UDP, but with cold-start identification so a
-  receiver can classify the first datagram, and with the TCP path kept as a
-  fallback when UDP is blocked). The obfs, HTTPS and QUIC carriers then each
-  wrap exactly one flow. **Proof:** tcpdump of a session between two nodes in
-  single-flow mode shows no TCP connection on the tinc port; tunnel up from
-  cold; relay path intact.
-- **Acceptance:** with only `plain` implemented behind it, the scaffold selects
-  and dispatches correctly; adding a carrier is a handler registration.
+  `transport_classify_tcp`/`transport_classify_udp` in `transport_table.c`;
+  dispatch in `transport_front_dispatch` (TCP, `net_socket.c handle_meta_io`
+  peek path) and `transport_udp_dispatch` (UDP, `net_packet.c
+  handle_incoming_vpn_packet`). HTTP probers get a minimal decoy `200 OK` (M5
+  fills the real decoy); a client that sends nothing is reaped by the auth
+  timeout. Decision table in `docs/transports.md` §3. **Proof:**
+  `testing/transports/classify-test.sh` (compiles the classifier standalone in a
+  container, feeds each byte pattern). Run 2026-09-16: `26 checks, 0 failures`.
+- [x] 🟠 **Single-flow mode: meta channel over the data carrier** (brief point 5,
+  independent of the HTTPS front). `SingleFlow = yes|no` (default **no** —
+  documented in `docs/transports.md` §2: it trades tinc's independently-recovering
+  TCP meta channel for one UDP flow, so it is opt-in until it has field mileage;
+  `yes` = dial `sf` first). Carrier in `transport_sf.c`: an ordered, reliable
+  byte stream (go-back-N, cumulative ACK, RTO, fast retransmit) over the UDP data
+  socket carrying the SPTPS meta records; SPTPS itself is unchanged. Cold-start
+  identification: the first datagram is a `DATA|SYN, seq 0` frame with a fixed
+  6-byte magic in the destination-node-id position, so the receiver classifies it
+  with no prior state (the mistake `tinc-obfs` made — fixed here). TCP `plain`
+  stays as the negotiated fallback when UDP is blocked. Relay datagrams keep the
+  existing SPTPS relay format and are classified as `SPTPS`, so relaying is
+  prefix-aware and uncorrupted. **Proof:** `testing/transports/singleflow-test.sh`.
+  Run 2026-09-16, two `SingleFlow=yes` nodes: cold ping `3/3 received`; tcpdump
+  (throwaway `nicolaka/netshoot` sharing the node netns) on the tinc port →
+  `TCP segments=0  UDP datagrams=13`. Three-node A–R–B with A↔B direct severed by
+  an `iptables` DROP → relayed ping `4/4 received` (relay path intact). `PASS`.
+- **Acceptance:** met. With only `plain`/`sf` behind it, the scaffold selects and
+  dispatches correctly; adding a carrier is one `transports[]` row plus its hooks
+  (contract in `docs/transports.md` §5). With all defaults, behaviour is plain
+  tinc (accept `plain,sf`, dial `plain`; ID/ACK wire-compatible with upstream).
+
+### Found during M4
+
+- 🟢 The relayed SPTPS key exchange (A–R–B, no direct path) can take ~20 s to
+  establish on a cold start because of the 30 s SPTPS reset cooldown and the
+  UDP-discovery retry cadence; not a regression (pre-existing timing), but the
+  single-flow relay test retries for it. Blast radius: first-packet latency on a
+  freshly relayed pair; steady state unaffected.
+- 🟢 Files touched outside the stream-B area, all minimal and reported here:
+  `connection.h`/`node.h` (added `transport`/`transport_data` and `transports`
+  fields + a `front_pending` status bit), `node.c` (append transports to the node
+  dump), `info.c` (print `Transports:`), `zeroconf.c` (the one host-record
+  advertisement hook), `meson_options.txt` (the `transport_test` option). No
+  changes to `invitation.c`, `yamlconf.*`, or `sptps.c`.
 
 ---
 

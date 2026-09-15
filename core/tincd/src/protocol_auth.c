@@ -50,6 +50,9 @@
 #include "keys.h"
 #include "yamlconf.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 /* If nonzero, use null ciphers and skip all key exchanges. */
 bool bypass_security = false;
 
@@ -975,7 +978,13 @@ bool send_ack(connection_t *c) {
 		get_config_int(lookup_config(&config_tree, "Weight"), &c->estimated_weight);
 	}
 
-	return send_request(c, "%d %s %d %x", ACK, myport.udp, c->estimated_weight, (c->options & 0xffffff) | (experimental ? (PROT_MINOR << 24) : 0));
+	/* Advertise our transport accept list as a trailing token. An unmodified
+	   upstream peer parses only the first three fields and ignores it; a peer
+	   that sends no list is treated as `plain'. This is how carriers are
+	   negotiated without host records (ARCHITECTURE.md §4). */
+	char transports[TRANSPORT_LIST_MAX];
+
+	return send_request(c, "%d %s %d %x %s", ACK, myport.udp, c->estimated_weight, (c->options & 0xffffff) | (experimental ? (PROT_MINOR << 24) : 0), transport_accept_string(transports));
 }
 
 static void send_everything(connection_t *c) {
@@ -1062,12 +1071,13 @@ bool ack_h(connection_t *c, const char *request) {
 	}
 
 	char hisport[MAX_STRING_SIZE];
+	char histransports[MAX_STRING_SIZE] = "";
 	int weight, mtu;
 	uint32_t options;
 	node_t *n;
 	bool choice;
 
-	if(sscanf(request, "%*d " MAX_STRING " %d %x", hisport, &weight, &options) != 3) {
+	if(sscanf(request, "%*d " MAX_STRING " %d %x " MAX_STRING, hisport, &weight, &options, histransports) < 3) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "ACK", c->name,
 		       c->hostname);
 		return false;
@@ -1103,6 +1113,25 @@ bool ack_h(connection_t *c, const char *request) {
 
 	n->connection = c;
 	c->node = n;
+
+	/* Learn the peer's transport accept list from the ACK (falls back to what
+	   its host record said, else plain). */
+	if(*histransports) {
+		uint32_t mask;
+		char bad[TRANSPORT_LIST_MAX];
+
+		if(transport_parse_list(histransports, &mask, NULL, NULL, bad) && mask) {
+			n->transports = mask | TRANSPORT_MASK_PLAIN;
+		}
+	} else if(!n->transports) {
+		transport_node_read_config(n, c->config_tree);
+	}
+
+	/* A carrier was negotiated successfully; let the next reconnect start its
+	   preference walk afresh. */
+	if(c->outgoing) {
+		transport_reset_candidates(c->outgoing);
+	}
 
 	if(!(c->options & options & OPTION_PMTU_DISCOVERY)) {
 		c->options &= ~OPTION_PMTU_DISCOVERY;
@@ -1146,9 +1175,10 @@ bool ack_h(connection_t *c, const char *request) {
 	sockaddrcpy(&c->edge->address, &c->address);
 	sockaddr_setport(&c->edge->address, hisport);
 	sockaddr_t local_sa;
-	socklen_t local_salen = sizeof(local_sa);
 
-	if(getsockname(c->socket, &local_sa.sa, &local_salen) < 0) {
+	/* Ask the carrier for the local address: a single-flow connection has no
+	   dedicated TCP socket, so its address comes from the shared UDP socket. */
+	if(!transport_local_address(c, &local_sa)) {
 		logger(DEBUG_ALWAYS, LOG_WARNING, "Could not get local socket address for connection with %s", c->name);
 	} else {
 		sockaddr_setport(&local_sa, myport.udp);

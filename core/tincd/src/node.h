@@ -116,6 +116,8 @@ typedef struct node_t {
 	uint64_t out_bytes;
 
 	struct address_cache_t *address_cache;
+
+	uint32_t transports;                    /* carriers this node accepts (TRANSPORT_BIT mask); 0 = unknown, treated as plain */
 } node_t;
 
 extern struct node_t *myself;

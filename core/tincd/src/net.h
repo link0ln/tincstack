@@ -117,11 +117,17 @@ typedef struct listen_socket_t {
 
 #include "conf.h"
 #include "list.h"
+#include "transport.h"
 
 typedef struct outgoing_t {
 	struct node_t *node;
 	int timeout;
 	timeout_t ev;
+
+	/* Carrier candidates for the current dial cycle (transport.c). */
+	transport_id_t candidates[TRANSPORT_MAX];
+	int ncandidates;
+	int transport_idx;
 } outgoing_t;
 
 typedef struct ports_t {

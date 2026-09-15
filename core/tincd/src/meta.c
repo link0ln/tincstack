@@ -32,6 +32,9 @@
 #include "utils.h"
 #include "proxy.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 #ifndef MIN
 static ssize_t MIN(ssize_t x, ssize_t y) {
 	return x < y ? x : y;
@@ -48,7 +51,7 @@ bool send_meta_sptps(void *handle, uint8_t type, const void *buffer, size_t leng
 	}
 
 	buffer_add(&c->outbuf, buffer, length);
-	io_set(&c->io, IO_READ | IO_WRITE);
+	transport_meta_flush(c);
 
 	return true;
 }
@@ -91,7 +94,7 @@ bool send_meta(connection_t *c, const void *buffer, size_t length) {
 		buffer_add(&c->outbuf, buffer, length);
 	}
 
-	io_set(&c->io, IO_READ | IO_WRITE);
+	transport_meta_flush(c);
 
 	return true;
 }
@@ -107,7 +110,7 @@ void send_meta_raw(connection_t *c, const void *buffer, size_t length) {
 
 	buffer_add(&c->outbuf, buffer, length);
 
-	io_set(&c->io, IO_READ | IO_WRITE);
+	transport_meta_flush(c);
 }
 
 void broadcast_meta(connection_t *from, const char *buffer, size_t length) {
@@ -164,7 +167,6 @@ bool receive_meta_sptps(void *handle, uint8_t type, const void *vdata, uint16_t 
 bool receive_meta(connection_t *c) {
 	ssize_t inlen;
 	char inbuf[MAXBUFSIZE];
-	char *bufp = inbuf, *endp;
 
 	/* Strategy:
 	   - Read as much as possible from the TCP socket in one go.
@@ -194,6 +196,23 @@ bool receive_meta(connection_t *c) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Metadata socket read error for %s (%s): %s",
 			       c->name, c->hostname, sockstrerror(sockerrno));
 
+		return false;
+	}
+
+	return receive_meta_bytes(c, inbuf, inlen);
+}
+
+/* Feed bytes of the meta stream into the connection's parser. This is the
+   socket-independent half of receive_meta(): a carrier that delivers the
+   stream by other means (single-flow UDP, and the M5 carriers) calls it
+   directly. `bufp` may be modified in place. */
+bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
+	char *endp;
+
+	buffer_compact(&c->inbuf, MAXBUFSIZE);
+
+	if(MAXBUFSIZE <= c->inbuf.len) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Input buffer full for %s (%s)", c->name, c->hostname);
 		return false;
 	}
 
