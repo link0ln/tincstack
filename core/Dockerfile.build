@@ -1,0 +1,21 @@
+# Build stage for the tincstack core daemon (tinc 1.1 fork, meson build).
+FROM debian:12-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential meson ninja-build pkg-config \
+        libssl-dev zlib1g-dev liblzo2-dev liblz4-dev \
+        libncurses-dev libreadline-dev python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY tincd/ /src/
+RUN meson setup build --prefix=/usr/local --localstatedir=/var \
+        -Dbuildtype=release -Dminiupnpc=disabled -Dtests=disabled -Ddocs=disabled \
+    && ninja -C build \
+    && DESTDIR=/install ninja -C build install
+
+FROM debian:12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libssl3 zlib1g liblzo2-2 liblz4-1 libncursesw6 libreadline8 \
+        iproute2 iputils-ping iptables ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /install/usr/local/ /usr/local/
+RUN ldconfig

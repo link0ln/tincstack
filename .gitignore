@@ -1,0 +1,22 @@
+# runtime data / secrets — never commit
+*.priv
+*_key.priv
+ed25519_key.priv
+rsa_key.priv
+*.pem
+*.key
+!core/tincd/**/*.pem
+tincmgr-data/
+tinc.yaml
+*.log
+invitations/
+# build artifacts
+build/
+dist/
+*.o
+*.pyc
+__pycache__/
+core/tincd/build/
+platforms/android/**/build/
+platforms/android/**/.cxx/
+platforms/android/**/.gradle/

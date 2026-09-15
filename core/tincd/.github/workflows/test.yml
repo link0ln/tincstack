@@ -1,0 +1,434 @@
+name: Test
+
+concurrency:
+  group: test-${{ github.head_ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+
+jobs:
+  cross:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - armhf
+          - mingw
+
+    container:
+      image: debian:stable-slim
+      options: --privileged
+      env:
+        CI: 1
+        HOST: ${{ matrix.arch }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install deps
+        run: .ci/deps.sh
+
+      - name: Prepare the system
+        run: .ci/test/prepare.sh
+
+      - name: Run tests with default settings
+        run: .ci/test/run.sh default
+
+      - name: Run tests without legacy protocol
+        run: .ci/test/run.sh nolegacy
+        if: always()
+
+      - name: Run tests with libgcrypt
+        run: .ci/test/run.sh gcrypt
+        if: always()
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v6
+        with:
+          name: tests_cross_${{ matrix.arch }}
+          path: /tmp/logs/tests.*.tar.gz
+        if: always()
+
+  muon:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: alpine:latest
+      env:
+        CI: 1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: SKIP_MESON=1 .ci/deps.sh muon
+
+      - name: Compatibility with muon
+        run: .ci/muon/run.sh
+
+  analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: debian:stable-slim
+      options: --privileged
+      env:
+        CI: 1
+
+    steps:
+      - name: Install Git
+        run: apt update; apt install -y --no-install-recommends git
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: .ci/deps.sh autoconf automake iperf3 clang-19
+
+      - name: Compatibility with older versions of tinc
+        run: .ci/compat/run.sh
+        if: always()
+
+      - name: Install tools
+        run: |
+          apt install --no-install-recommends -y astyle clang-tidy-$CLANG shellcheck shfmt black pylint mypy python3-venv
+          update-alternatives --install /usr/bin/clang-tidy     clang-tidy     /usr/bin/clang-tidy-$CLANG     100
+          update-alternatives --install /usr/bin/run-clang-tidy run-clang-tidy /usr/bin/run-clang-tidy-$CLANG 100
+          python3 -m venv /tmp/venv
+          . /tmp/venv/bin/activate
+          pip3 install markflow
+        env:
+          CLANG: 19
+        if: always()
+
+      - name: Lint/typecheck/check formatting on C/shell/Python code
+        run: |
+          . /tmp/venv/bin/activate
+          PATH=$PATH:$HOME ./lint.py
+        if: always()
+
+      - name: Check warnings (clang)
+        run: .ci/warn/run.sh
+        env:
+          CC: clang-19
+        if: always()
+
+      - name: Check warnings (gcc)
+        run: .ci/warn/run.sh
+        env:
+          CC: gcc-14
+        if: always()
+
+      - name: Check that very long paths work
+        run: |
+          meson setup "$WD"
+          meson test -C "$WD" --verbose
+        env:
+          WD: /tmp/tinc_testing_directory_with_a_very_long_path_which_goes_over_the_108_char_limit_on_unix_socket_file_paths
+        if: always()
+
+      - name: Archive test results
+        run: tar -caf tests.tar.gz /usr/local/etc
+        continue-on-error: true
+        if: always()
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v6
+        with:
+          name: tests_compat
+          path: tests.tar.gz
+        if: always()
+
+  sanitizer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer:
+          - address
+          - thread
+          - undefined
+    container:
+      image: debian:stable-slim
+      env:
+        CI: 1
+        SANITIZER: "${{ matrix.sanitizer }}"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install deps
+        run: .ci/deps.sh clang libclang-rt-dev
+
+      - name: Prepare the system
+        run: .ci/test/prepare.sh
+
+      - name: Sanitize tests with default settings
+        run: .ci/sanitizers/run.sh default
+        if: always()
+
+      - name: Sanitize tests without legacy protocol
+        run: .ci/sanitizers/run.sh nolegacy
+        if: always()
+
+      - name: Run tests with libgcrypt
+        run: .ci/sanitizers/run.sh gcrypt
+        if: always()
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v6
+        with:
+          name: tests_sanitizer_${{ matrix.sanitizer }}
+          path: /tmp/logs/tests.*.tar.gz
+        if: always()
+
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - alpine:latest
+          - alpine:edge
+          - almalinux:latest
+          - fedora:latest
+          - fedora:rawhide
+          - debian:oldstable-slim
+          - debian:stable-slim
+          - debian:testing-slim
+          - ubuntu:latest
+          - ubuntu:rolling
+    container:
+      image: ${{ matrix.os }}
+      options: --privileged
+      env:
+        CI: 1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install deps
+        run: .ci/deps.sh
+
+      - name: Assign name for test results artifact
+        run: echo ARTIFACT="$(echo '${{ matrix.os }}' | sed 's|[:/]|_|g')" >>"$GITHUB_ENV"
+
+      - name: Create a non-privileged user
+        run: .ci/test/prepare.sh
+
+      - name: Run tests with default settings
+        run: .ci/test/run.sh default
+        if: always()
+
+      - name: Run tests without legacy protocol
+        run: .ci/test/run.sh nolegacy
+        if: always()
+
+      - name: Run tests with libgcrypt
+        run: .ci/test/run.sh gcrypt
+        if: always()
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v6
+        with:
+          name: tests_${{ env.ARTIFACT }}
+          path: /tmp/logs/tests.*.tar.gz
+        if: always()
+
+      - name: Build package
+        run: .ci/package/build.sh
+        if: github.ref == 'refs/heads/1.1' || startsWith(github.ref, 'refs/tags/release-')
+        continue-on-error: true
+
+      - name: Upload package
+        uses: actions/upload-artifact@v6
+        with:
+          name: pkg-${{ env.ARTIFACT }}
+          path: |
+            *.deb
+            ~/rpmbuild/RPMS/*/*.rpm
+        continue-on-error: true
+
+  pkg-publish:
+    if: always() && (github.ref == 'refs/heads/1.1' || startsWith(github.ref, 'refs/tags/release-'))
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    needs:
+      - linux
+      - mingw
+
+    steps:
+      - name: Create artifact directory
+        run: mkdir -p /tmp/artifacts
+
+      - name: Download packages
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/artifacts
+
+      - name: Publish packages (dev)
+        uses: marvinpinto/action-automatic-releases@latest
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: latest
+          title: Development release
+          prerelease: true
+          files: /tmp/artifacts/**/*.(deb|rpm|exe)
+        if: startsWith(github.ref, 'refs/heads/')
+
+      - name: Publish packages (release)
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            /tmp/artifacts/**/*.deb
+            /tmp/artifacts/**/*.rpm
+            /tmp/artifacts/**/*.exe
+        if: startsWith(github.ref, 'refs/tags/')
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install build deps
+        run: .ci/deps.sh
+
+      - name: Run tests with default settings
+        run: CFLAGS=-I/opt/homebrew/include .ci/test/run.sh default
+
+      - name: Run tests without legacy protocol
+        run: CFLAGS=-I/opt/homebrew/include .ci/test/run.sh nolegacy
+        if: always()
+
+      - name: Run tests with libgcrypt
+        run: CFLAGS=-I/opt/homebrew/include .ci/test/run.sh gcrypt
+        if: always()
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v6
+        with:
+          name: tests_macos
+          path: /tmp/logs/tests.*.tar.gz
+        if: always()
+
+  mingw:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Install msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          # https://packages.msys2.org/package/
+          install: >-
+            base-devel
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-libgcrypt
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-lzo2
+            mingw-w64-x86_64-lz4
+            mingw-w64-x86_64-ncurses
+            mingw-w64-x86_64-miniupnpc
+            mingw-w64-x86_64-nsis
+            git
+            openbsd-netcat
+            procps
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Run tests with default settings
+        shell: msys2 {0}
+        run: .ci/test/run.sh default
+
+      - name: Create installer
+        shell: msys2 {0}
+        run: .ci/package/build.sh
+        if: github.ref == 'refs/heads/1.1' || startsWith(github.ref, 'refs/tags/release-')
+        continue-on-error: true
+
+      - name: Upload package
+        uses: actions/upload-artifact@v6
+        with:
+          name: pkg-windows
+          path: .ci/package/win/tinc-*.exe
+        continue-on-error: true
+
+      - name: Run tests without legacy protocol
+        shell: msys2 {0}
+        run: .ci/test/run.sh nolegacy
+        if: always()
+
+      - name: Run tests with libgcrypt
+        shell: msys2 {0}
+        run: .ci/test/run.sh gcrypt
+        if: always()
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v6
+        with:
+          name: tests_windows
+          path: /tmp/logs/tests.*.tar.gz
+        if: always()
+
+  msvc:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { build: amd64, host: amd64, test: test }
+          - { build: amd64, host: x86, test: test }
+          - { build: amd64, host: arm64, test: notest }
+
+    env:
+      HOST_ARCH: ${{ matrix.target.host }}
+      BUILD_ARCH: ${{ matrix.target.build }}
+
+    steps:
+      - name: Install meson
+        run: pip3 install meson
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Activate dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.target.build == matrix.target.host && matrix.target.host || format('{0}_{1}', matrix.target.build, matrix.target.host) }}
+
+      - name: Build (nolegacy)
+        run: .ci\windows\build.cmd nolegacy
+
+      - name: Test (nolegacy)
+        run: .ci\windows\test.cmd nolegacy
+        if: always() && matrix.target.test == 'test'
+
+      - name: Build (OpenSSL)
+        run: .ci\windows\build.cmd openssl
+        if: always()
+
+      - name: Test (OpenSSL)
+        run: .ci\windows\test.cmd openssl
+        if: always() && matrix.target.test == 'test'
