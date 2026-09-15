@@ -493,23 +493,149 @@ this order (cheapest / most-contained first). Full wire formats go in
 
 ---
 
-## Milestone M7 — Windows delivery (point 1a) 🟠
+## Milestone M7 — Windows delivery (point 1a) 🟠 — stream D, 2026-09-16
 
 Adopt `tinc-manager` (PySide6) into `platforms/windows/`, ship the M-series core.
+All Python/Qt/mingw work ran in throwaway Docker containers on a Linux host;
+nothing below was run on Windows (no Windows host in the lab) — each box says
+what that leaves open.
 
-- [ ] 🟠 Repoint the GUI at the tincstack core binaries; bundle the mingw-w64
-  build of `core/tincd`. **Proof:** GUI starts a network with a core-built
-  `tincd.exe`.
-- [ ] 🟠 **Invite/join UI** — the top missing feature (backend exists, GUI cannot
-  drive it). **Proof:** issue an invite and join from the GUI.
-- [ ] 🟠 Surface the new transport options (`Transports`, obfs, HTTPS-front, QUIC)
-  in the config editor. **Proof:** toggling QUIC in the GUI writes `Transports`
-  and the peer negotiates QUIC (ties M5/M4).
-- [ ] 🟡 Fix adoption defects: atomic `tinc.yaml` save (no truncate over keys),
-  daemon-log rotation, guard malformed-YAML startup, move blocking `tinc.exe`
-  calls off the Qt thread. **Proof:** each has a check or a before/after note.
-- **Acceptance:** two-file deploy (`tincmgr.exe` + `tinc.yaml`) manages networks,
-  invites peers, and selects transports.
+- [x] 🟠 Repoint the GUI at the tincstack core binaries; bundle the mingw-w64
+  build of `core/tincd`. **Proof:** `core/Dockerfile.build-win` (Debian 12,
+  mingw-w64, `--cross-file .ci/cross/windows/amd64`, `-Dcrypto=gcrypt`,
+  miniupnpc/zlib/lzo/lz4/curses/readline disabled, static) exits 0 →
+  `tincd.exe`/`tinc.exe`: `file` = `PE32+ executable (console) x86-64, for MS
+  Windows`; imports only `ADVAPI32 IPHLPAPI KERNEL32 msvcrt USER32 WS2_32`
+  (`wintun.dll` is loaded at runtime); `wine64 tincd.exe --version` in a
+  throwaway `debian:12-slim` + wine64 container → `tinc version 1.1pre18 (…
+  protocol 17.7) Features: libgcrypt legacy_protocol`, rc=0.
+  `platforms/windows/build-core-win.sh` drops them into
+  `platforms/windows/resources/` (gitignored); `backend/paths.py` resolves
+  `resources/` → `$TINCSTACK_BIN_DIR` → `$PATH` (this also fixes the broken
+  Linux path of `cli.py`). "GUI starts a network with a core-built tincd",
+  Linux half, same `Runtime`/`TincControl` the GUI uses: in `tincstack/core:dev`
+  + python3 (`--cap-add NET_ADMIN --device /dev/net/tun`), `cli.py -c
+  /etc/tincstack/tinc.yaml up lab` against a 0-byte file → `up lab: ok —
+  started`; daemon log `Materialised defaults into … [lab]: Name=c213f7a5c3ef
+  Mode=router Port=655 AddressPool=10.35.0.0/24 … Ready`; `peers lab` → self
+  `10.35.0.1`; `invite lab peer1` → `172.17.0.6:655/1e41LZ…` (one line, rc 0);
+  `down lab` → stopped; `<yaml dir>/lab/{cache,invitations}` + rotating
+  `lab-tincd.log`, no `hosts/` tree. **Not run on Windows:** `tincd.exe` +
+  Wintun adapter under the GUI — `tests/selftest_runtime.py` is the manual
+  check for a Windows box (its last pre-adoption run is quoted in the file).
+- [x] 🟠 **Invite/join UI.** `gui/dialogs.py`: `InviteDialog` runs `tinc -n NET
+  -c tinc.yaml invite NAME` on a worker thread, shows the one-line string
+  (copy button; QR left out), stderr panel; `JoinDialog` validates the paste,
+  runs `tinc [-n NET] -c tinc.yaml join STRING`, shows stdout+stderr, and on
+  rc 0 the main window re-reads `tinc.yaml` and selects the new network.
+  Coded against the M2 CLI contract (stream A) with the subprocess mocked.
+  **Proof:** `tests/test_gui.py::test_invite_dialog_offscreen` (result line,
+  stderr surfaced, copy, empty-name refusal, runner thread ≠ Qt thread) and
+  `::test_join_dialog_offscreen` (single-token check, duplicate-name refusal,
+  CLI error surfaced, success → network read back from the file and selected).
+  `cli.py invite|join` expose the same calls headless. **Open until A lands:**
+  today's `tinc join` in YAML mode writes a classic tree, so the dialog's
+  success path only shows the new network once M2 makes `join` YAML-native.
+- [x] 🟠 Surface the new transport options in the config editor —
+  **editor half**. `backend/transports.py` (Qt-free schema: `Transports`
+  accept list default all, `PreferredTransports` dial preference default
+  `[plain]`, `Obfs*`, `HttpsFront*`, `TlsCert`/`TlsKey`, `HttpsDecoy*`,
+  `QuicPort`, per `docs/config-schema.md`; validation; `changes()` = only the
+  keys the user changed, absent-and-default keys stay absent);
+  `gui/transports_panel.py` + a *Transports* tab with a "prefer QUIC" knob
+  (decision 2). The generic options table also knows the keys and validates
+  them. **Proof:** `tests/test_transports.py` (defaults, 11 validation
+  errors, change-set rules) and
+  `tests/test_gui.py::test_transports_tab_tick_quic_writes_only_changed_keys`:
+  tick QUIC → save → file is byte-for-byte the original plus
+  `PreferredTransports: [quic, plain]`; reload → editor shows it; untick →
+  `[plain]` written explicitly. `::test_transports_tab_validation_blocks_save`
+  (cert without key + empty accept list refused; then only `Transports`,
+  `TlsCert`, `TlsKey` written).
+- [ ] 🟠 **Peer negotiates QUIC after the tick** — end-to-end proof belongs to
+  M4/M5 (the carriers do not exist yet); nothing to run here.
+- [x] 🟡 Fix adoption defects — each with its check:
+  - **atomic `tinc.yaml` save**: `yaml_config.atomic_write_text` (temp in the
+    same dir + fsync + `os.replace` + dir fsync, mode preserved); `save()`
+    re-reads the file and applies only the diff against the loaded baseline
+    (the daemon is a concurrent writer), refuses to overwrite an unparsable
+    file. Before: `open(path, "w")` truncate-in-place of the only key copy.
+    **Check:** `tests/test_yaml_config.py::test_atomic_save_never_truncates`
+    (rename fails → original byte-identical, no temp left),
+    `::test_concurrent_writer_merge` (daemon adds `AddressPool` + a learned
+    peer while the GUI edits → exact expected YAML keeps both; a no-op save
+    does not rewrite), `::test_save_refuses_to_overwrite_unparsable_file`,
+    `::test_atomic_save_keeps_mode`, and `test_gui.py::test_network_tab_save_uses_merge`.
+  - **daemon-log rotation while running**: `runtime.LogSink` pumps the
+    daemon's stdout pipe into `<net>-tincd.log`, rotating at 2 MB with two
+    backups (the GUI owns the handle, so it works on Windows where a file
+    held open by the child cannot be renamed). Before: rotate-at-start only
+    (13 MB observed). **Check:** `tests/test_runtime.py::test_logsink_rotates_while_writing`
+    (35 KB through a 10 KB limit → 3 files ≤ 10 KB, whole lines) and
+    `::test_start_stop_with_fake_core` (real `Runtime.start` path with a fake
+    `tincd` that logs 30 KB → `.1` exists while the daemon is still running).
+  - **malformed-YAML startup**: `yaml_config.load` raises `ConfigError` (parse
+    error or wrong shape, with file + line); `MainWindow` opens with an error
+    banner (Open raw YAML… / Reload), autostart suppressed. Before: uncaught
+    `yaml.YAMLError` in `MainWindow.__init__`. **Check:**
+    `tests/test_gui.py::test_window_opens_with_malformed_yaml` (banner text,
+    no networks; fixing the file via the raw-YAML save clears it) and 4
+    parametrised cases in `test_yaml_config.py::test_malformed_raises_config_error`.
+  - **blocking `tinc.exe` calls off the Qt thread**: `gui/workers.py`
+    (`WorkerPool` of `QThread`s, tag de-duplication); the peer sampler,
+    start/stop/restart, autostart, tray toggle, genkeys, invite and join all
+    run there; running state is cached from the sampler instead of a
+    subprocess per list refresh. Before: 3 subprocesses per network per 2.5 s
+    tick plus every action on the GUI thread. **Check:**
+    `test_gui.py::test_sampler_runs_off_qt_thread_and_updates_running_state`
+    and `::test_start_stop_do_not_block_qt_thread` (a 0.6 s start returns to
+    the event loop in < 0.3 s; worker thread id ≠ Qt thread). Remaining
+    synchronous call: `Runtime.stop_all()` on Exit (exit path, deliberate).
+  - Also removed: the dead classic-tree modules (`config_store.py`,
+    `service_control.py`, the `sc`/`C:\Program Files\tinc` paths in
+    `management.py`/`tinc_control.py`), the materialiser references in the
+    README, and the three self-tests were rewritten to the current APIs as a
+    pytest suite (38 tests; `selftest_runtime.py` kept as the manual Windows
+    check).
+- [x] 🟡 Two-file deploy story documented: `tincmgr.spec` (PyInstaller onefile,
+  `uac_admin`, bundles `tincd.exe`/`tinc.exe`/`wintun.dll` from `resources/`,
+  refuses to build without them) + `build-windows.md` with the exact
+  commands (core in Docker on Linux, exe on a Windows host). `README.md`
+  (platform + root paragraph) rewritten for the adopted layout.
+- [ ] 🟡 **Build the actual `tincmgr.exe`** — not runnable here (PyInstaller
+  cannot produce a Windows onefile from Linux; needs the Windows box from
+  `build-windows.md` §2). Same for `tests/selftest_runtime.py` on real Wintun.
+- **Acceptance:** two-file deploy (`tincmgr.exe` + `tinc.yaml`) manages
+  networks, invites peers, and selects transports — **met at the code/test
+  level** (38 headless tests, 30 backend + 8 offscreen GUI, all passing in
+  `python:3.12-slim` + PySide6 6.7.3); the on-Windows run is the open box above.
+
+**Test/proof commands (all Docker, nothing on the host):**
+`docker build -f core/Dockerfile.build-win -t tincstack/core-win:dev core/`;
+`docker run --rm -v "$PWD/platforms/windows/resources:/out" tincstack/core-win:dev`;
+`docker run --rm -v "$PWD/platforms/windows:/w" -w /w <python:3.12-slim + libgl1
+libegl1 … + pip PySide6-Essentials==6.7.3 pyqtgraph pyyaml pytest> env
+QT_QPA_PLATFORM=offscreen python -m pytest -q tests` → `38 passed`.
+
+**Found during M7:**
+- 🟡 **Original `Runtime.start` refused to start a network without keys**
+  ("generate keys first") and `＋ Add network` seeded `Port: 0` for a founding
+  node — both contradict M1 zero-config / decision 3. Fixed: a new network is
+  an empty stanza and the daemon materialises everything on first Start.
+- 🟡 **`tinc invite` phone-home re-confirmed** from the Windows backend path
+  (`Trying to discover externally visible hostname...` in the CLI proof; then
+  the M1 local-address fallback). Same defect as in Known Issues; the GUI
+  surfaces the warning in the Invite dialog's stderr panel. Fix stays in M2/M6.
+- 🟢 **Core cross-build warnings**: `src/tincctl.c:2931-2932` `cmd_verify`
+  `-Wuse-after-free` (pointer used after `xrealloc`) — upstream code, builds
+  fine with mingw-w64 GCC 12; not touched by stream D (core is not in D's area).
+- 🟢 **`wintun_mtu` is a GUI-only per-network YAML key** (not in
+  `docs/config-schema.md`). The daemon's writer is a generic tree
+  (`yamlconf.c`), so it survives daemon write-back (verified by reading the
+  emitter); schema doc could list it. Left as is.
+- 🟢 **`Compression`/curses/readline are compiled out of the Windows core**
+  (no mingw packages, offline build). `tinc top` and `Compression > 0` are
+  unavailable on Windows until the wraps are vendored.
 
 ---
 

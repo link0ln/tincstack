@@ -25,3 +25,10 @@ platforms/linux/docker/.env
 platforms/linux/docker/data/
 # agent worktrees
 .claude/
+# platforms/windows — core binaries come from core/Dockerfile.build-win, never from git
+platforms/windows/resources/
+platforms/windows/tincmgr-data/
+platforms/windows/**/*.exe
+platforms/windows/**/*.dll
+platforms/windows/**/*.pyc
+platforms/windows/.pytest_cache/
