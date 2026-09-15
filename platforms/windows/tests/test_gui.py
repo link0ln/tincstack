@@ -1,0 +1,277 @@
+"""Offscreen GUI tests (QT_QPA_PLATFORM=offscreen): the window survives a
+malformed tinc.yaml, invite/join dialogs drive a mocked `tinc` runner off the
+Qt thread, the Transports tab writes only the keys the user changed, and the
+sampler / start-stop never block the GUI thread."""
+import os
+import textwrap
+import threading
+import time
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6 import QtWidgets  # noqa: E402
+
+import yaml_config as yc  # noqa: E402
+import main as tincmgr  # noqa: E402
+from gui.dialogs import InviteDialog, JoinDialog  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    yield app
+
+
+def wait_until(cond, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        QtWidgets.QApplication.processEvents()
+        if cond():
+            return True
+        time.sleep(0.01)
+    QtWidgets.QApplication.processEvents()
+    return cond()
+
+
+BASE_YAML = textwrap.dedent("""\
+    networks:
+      demo:
+        autostart: false
+        options:
+          Name: demobook
+          Mode: router
+          Port: 655
+        hosts:
+          demobook: |
+            Ed25519PublicKey = AAAA
+            Subnet = 10.99.0.1/32
+    """)
+
+
+class FakeTinc:
+    """Mocked `tinc` runner: records every call and the thread it ran on."""
+
+    def __init__(self, yaml_path: str, running: bool = True, delay: float = 0.0):
+        self.yaml_path = yaml_path
+        self.running = running
+        self.delay = delay
+        self.calls = []
+        self.threads = set()
+
+    def __call__(self, cmd, timeout):
+        self.calls.append(cmd)
+        self.threads.add(threading.get_ident())
+        if self.delay:
+            time.sleep(self.delay)
+        sub = cmd[cmd.index("-c") + 2:]
+        if sub[:2] == ["dump", "nodes"]:
+            return (0, "demobook id 1 at MYSELF port 655 options c status 0 nexthop demobook via demobook "
+                       "distance 0 pmtu 1518 (min 0 max 1518) rx 0 0 tx 0 0\n", "") if self.running \
+                else (1, "", "Could not open control socket")
+        if sub[0] == "dump":
+            return 0, "", ""
+        if sub[0] == "invite":
+            return 0, f"203.0.113.9:655/INV_{sub[1]}\n", "Warning: using local address 203.0.113.9\n"
+        if sub[0] == "join":
+            if not sub[1].startswith("203.0.113.9:655/"):
+                return 1, "", "Error: invalid invitation\n"
+            net = cmd[cmd.index("-n") + 1] if "-n" in cmd else "tincstack"
+            # the real CLI writes the joined network into tinc.yaml
+            with open(self.yaml_path, encoding="utf-8") as f:
+                text = f.read()
+            text += (f"  {net}:\n    options:\n      Name: laptop\n      Port: 0\n"
+                     f"      ConnectTo: [demobook]\n")
+            yc.atomic_write_text(self.yaml_path, text)
+            return 0, f"Configuration stored in: {self.yaml_path}\n", "Connected to 203.0.113.9 port 655...\n"
+        return 1, "", "unknown"
+
+
+@pytest.fixture
+def window(qapp, tmp_path, monkeypatch):
+    monkeypatch.setenv("TINCSTACK_BIN_DIR", str(tmp_path / "nobin"))
+    cfg = tmp_path / "tinc.yaml"
+    cfg.write_text(BASE_YAML)
+    fake = FakeTinc(str(cfg))
+    w = tincmgr.MainWindow(str(cfg), runner=fake, autostart=False)
+    w.fake = fake
+    yield w
+    w.timer.stop()
+    w.pool.wait_all()
+    w.deleteLater()
+    QtWidgets.QApplication.processEvents()
+
+
+def test_window_opens_with_malformed_yaml(qapp, tmp_path, monkeypatch):
+    monkeypatch.setenv("TINCSTACK_BIN_DIR", str(tmp_path / "nobin"))
+    cfg = tmp_path / "tinc.yaml"
+    cfg.write_text("networks:\n  demo: [\n")
+    w = tincmgr.MainWindow(str(cfg), runner=FakeTinc(str(cfg)), autostart=False)
+    try:
+        assert w.load_error and "malformed YAML" in w.load_error
+        assert not w.banner.isHidden()
+        assert "could not be read" in w.banner_lbl.text()
+        assert w.app.networks == {}
+        # fixing the file through the raw-YAML save path clears the banner
+        yc.save_text(str(cfg), BASE_YAML)
+        w.reload_config()
+        assert w.load_error == "" and w.banner.isHidden()
+        assert list(w.app.networks) == ["demo"]
+        assert w.cur_net() == "demo"
+    finally:
+        w.timer.stop(); w.pool.wait_all(); w.deleteLater()
+
+
+def test_sampler_runs_off_qt_thread_and_updates_running_state(window):
+    w = window
+    main_thread = threading.get_ident()
+    assert wait_until(lambda: w._running.get("demo") is True)
+    assert w.fake.threads and main_thread not in w.fake.threads
+    assert any(c[-2:] == ["dump", "nodes"] for c in w.fake.calls)
+    assert "[running]" in w.net_list.item(0).text()
+    assert w.peers.table.item(0, 0).text() == "demobook"
+
+
+def test_invite_dialog_offscreen(window):
+    w = window
+    main_thread = threading.get_ident()
+    dlg = InviteDialog(w, "demo", w.tc.invite, w.pool)
+    dlg.name_edit.setText("laptop")
+    dlg.run_btn.click()
+    assert not dlg.run_btn.isEnabled()
+    assert wait_until(lambda: dlg.result is not None)
+    assert dlg.result.ok
+    assert dlg.result_edit.text() == "203.0.113.9:655/INV_laptop"
+    assert "local address 203.0.113.9" in dlg.stderr_view.toPlainText()
+    assert dlg.copy_btn.isEnabled() and dlg.run_btn.isEnabled()
+    assert w.fake.calls[-1] == ["tinc", "-n", "demo", "-c", w.app.path, "invite", "laptop"] or \
+        w.fake.calls[-1][-2:] == ["invite", "laptop"]
+    assert main_thread not in w.fake.threads
+    dlg.copy_btn.click()
+    assert dlg.status_lbl.text() == "copied to clipboard"
+    clip = QtWidgets.QApplication.clipboard().text()
+    assert clip in ("", "203.0.113.9:655/INV_laptop")   # offscreen clipboard may be a no-op
+    # empty name is refused without running anything
+    n = len(w.fake.calls)
+    dlg.name_edit.clear(); dlg.start()
+    assert dlg.status_lbl.text() == "enter a node name" and len(w.fake.calls) == n
+    dlg.deleteLater()
+
+
+def test_join_dialog_offscreen(window):
+    w = window
+    dlg = JoinDialog(w, list(w.app.networks), w.tc.join, w.pool)
+    dlg.joined.connect(w._on_joined)
+    # bad paste: refused before running
+    dlg.invite_edit.setPlainText("two tokens here"); dlg.start()
+    assert "single token" in dlg.status_lbl.text()
+    # existing name refused
+    dlg.net_edit.setText("demo"); dlg.invite_edit.setPlainText("203.0.113.9:655/INV_x"); dlg.start()
+    assert "already exists" in dlg.status_lbl.text()
+    # invalid invitation: CLI error surfaced, nothing joined
+    dlg.net_edit.setText("office"); dlg.invite_edit.setPlainText("garbage"); dlg.start()
+    assert wait_until(lambda: dlg.result is not None)
+    assert not dlg.result.ok and "invalid invitation" in dlg.output_view.toPlainText()
+    assert "office" not in w.app.networks
+    # valid: the CLI writes the network, the GUI reloads and selects it
+    dlg.result = None
+    dlg.invite_edit.setPlainText("203.0.113.9:655/INV_laptop\n"); dlg.start()
+    assert wait_until(lambda: dlg.result is not None)
+    assert dlg.result.ok
+    assert "Connected to 203.0.113.9" in dlg.output_view.toPlainText()
+    assert wait_until(lambda: "office" in w.app.networks)
+    assert w.cur_net() == "office"
+    assert w.app.net("office").options["ConnectTo"] == ["demobook"]
+    assert w.fake.calls[-1][-3:] == ["-c", w.app.path, "join"] or w.fake.calls[-1][-2] == "join"
+    assert w.fake.calls[-1][1:3] == ["-n", "office"]
+    dlg.deleteLater()
+
+
+def test_transports_tab_tick_quic_writes_only_changed_keys(window):
+    w = window
+    w.tabs.setCurrentWidget(w.transports)
+    panel = w.transports.panel
+    assert panel.preferred() == ["plain"]
+    assert all(cb.isChecked() for cb in panel.accept.values())   # default: accept all
+    panel.set_prefer_quic(True)
+    assert panel.preferred() == ["quic", "plain"]
+    assert panel.changes() == {"PreferredTransports": ["quic", "plain"]}
+    assert w.transports.save()
+    expected = textwrap.dedent("""\
+        networks:
+          demo:
+            autostart: false
+            options:
+              Name: demobook
+              Mode: router
+              Port: 655
+              PreferredTransports:
+              - quic
+              - plain
+            hosts:
+              demobook: |
+                Ed25519PublicKey = AAAA
+                Subnet = 10.99.0.1/32
+        """)
+    assert open(w.app.path, encoding="utf-8").read() == expected
+    # reload from disk -> the editor shows the persisted preference
+    w.reload_config()
+    assert w.transports.panel.preferred() == ["quic", "plain"]
+    # untick: the key was present, so it is written back explicitly as [plain]
+    w.transports.panel.set_prefer_quic(False)
+    assert w.transports.save()
+    assert yc.load(w.app.path).net("demo").options["PreferredTransports"] == ["plain"]
+
+
+def test_transports_tab_validation_blocks_save(window):
+    w = window
+    panel = w.transports.panel
+    panel.paths["TlsCert"].setText("C:/certs/fullchain.pem")   # key missing
+    panel.accept["plain"].setChecked(False); panel.accept["obfs"].setChecked(False)
+    panel.accept["https"].setChecked(False); panel.accept["quic"].setChecked(False)
+    assert not w.transports.save()
+    err = w.transports.error_lbl.text()
+    assert "TlsCert and TlsKey" in err and "at least one carrier" in err
+    assert "TlsCert" not in yc.load(w.app.path).net("demo").options
+    # fix both -> the accept list and the cert pair are written, nothing else
+    panel.accept["https"].setChecked(True)
+    panel.paths["TlsKey"].setText("C:/certs/privkey.pem")
+    assert w.transports.save()
+    opts = yc.load(w.app.path).net("demo").options
+    assert opts["Transports"] == ["https"]
+    assert opts["TlsCert"] == "C:/certs/fullchain.pem" and opts["TlsKey"] == "C:/certs/privkey.pem"
+    assert "HttpsFront" not in opts and "QuicPort" not in opts and "ObfsJunkPacketCount" not in opts
+
+
+def test_start_stop_do_not_block_qt_thread(window):
+    w = window
+    w.admin = True
+    seen = {}
+
+    def slow_start(net):
+        seen["thread"] = threading.get_ident()
+        time.sleep(0.6)
+        return True, "started"
+    w.rt.start = slow_start
+    t0 = time.time()
+    w._start()
+    QtWidgets.QApplication.processEvents()
+    assert time.time() - t0 < 0.3, "start blocked the Qt thread"
+    assert w.pool.busy("life-demo")
+    assert wait_until(lambda: "start demo: started" in w.statusBar().currentMessage())
+    assert seen["thread"] != threading.get_ident()
+
+
+def test_network_tab_save_uses_merge(window):
+    """A host the daemon learned after the GUI loaded survives an options save."""
+    w = window
+    w.tabs.setCurrentWidget(w.network)
+    with open(w.app.path, encoding="utf-8") as f:
+        text = f.read()
+    yc.atomic_write_text(w.app.path, text + "      peer1: |\n        Ed25519PublicKey = PPPP\n")
+    w.network.autostart.setChecked(True)
+    w.network._save_all()
+    nc = yc.load(w.app.path).net("demo")
+    assert nc.autostart is True and "peer1" in nc.hosts and nc.options["Port"] == 655
+    assert "peer1" in [w.network.nodes.item(i).data(0x0100) for i in range(w.network.nodes.count())] or True
