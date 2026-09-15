@@ -1,0 +1,39 @@
+/*
+ * Tinc Mesh VPN: Android client and user interface
+ * Copyright (C) 2017-2020 Euxane P. TRAN-GIRARD
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package org.pacien.tincapp.intent
+
+import android.net.Uri
+import org.pacien.tincapp.BuildConfig
+
+/**
+ * @author euxane
+ */
+object Actions {
+  private const val PREFIX = "${BuildConfig.APPLICATION_ID}.intent.action"
+  const val ACTION_CONNECT = "$PREFIX.CONNECT"
+  const val ACTION_DISCONNECT = "$PREFIX.DISCONNECT"
+  const val ACTION_SYSTEM_CONNECT = "android.net.VpnService"
+  const val EVENT_CONNECTED = "$PREFIX.CONNECTED"
+  const val EVENT_DISCONNECTED = "$PREFIX.DISCONNECTED"
+  const val EVENT_ABORTED = "$PREFIX.ABORTED"
+  const val TINC_SCHEME = "tinc"
+
+  fun buildNetworkUri(netName: String, passphrase: String? = null): Uri =
+    Uri.Builder().scheme(TINC_SCHEME).opaquePart(netName).fragment(passphrase).build()
+}

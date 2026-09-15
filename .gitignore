@@ -20,3 +20,11 @@ core/tincd/build/
 platforms/android/**/build/
 platforms/android/**/.cxx/
 platforms/android/**/.gradle/
+# android (platforms/android): local SDK path, signing material, IDE files
+platforms/android/local.properties
+platforms/android/keystore.properties
+platforms/android/app/release/
+platforms/android/**/*.iml
+platforms/android/.idea/
+*.keystore
+*.jks
