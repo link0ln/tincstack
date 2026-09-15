@@ -21,7 +21,7 @@ RUN cd tinc-1.1pre18 \
 
 FROM debian:12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libssl3 zlib1g liblzo2-2 liblz4-1 libncursesw6 libreadline8 \
+        libssl3 zlib1g liblzo2-2 liblz4-1 libncurses6 libncursesw6 libreadline8 \
         iproute2 iputils-ping iptables ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /install/usr/local/ /usr/local/

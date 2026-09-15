@@ -148,8 +148,10 @@ share_hosts() {
 CUR_IMG=core
 tinc_start() { # NAME  -> starts tincd in netns NAME, pid in $RUN/NAME.pid
     local name="$1"
-    ns "$name" "$(tincd_bin "$CUR_IMG")" -D -d5 -c "$NODES/$name" --pidfile "$RUN/$name.pid" \
-        >> "$LOGS/$name.log" 2>&1 &
+    # exec so that $! is the `ip netns exec` process, which execs tincd itself:
+    # SIGSTOP/SIGCONT and kill -0 must hit the daemon, not a wrapper subshell.
+    ( exec ip netns exec "$name" "$(tincd_bin "$CUR_IMG")" -D -d5 -c "$NODES/$name" --pidfile "$RUN/$name.pid" \
+        >> "$LOGS/$name.log" 2>&1 ) &
     echo $! > "$RUN/$name.ospid"
 }
 tinc_pid() { cat "$RUN/$1.ospid"; }
@@ -547,6 +549,11 @@ PY
 
 # ---------------------------------------------------------------- main
 mkdir -p "$RUN" "$NODES" "$LOGS"
+# Both binaries must actually run (a baseline CLI missing a shared library once
+# made every `info` poll fail and turned a working tunnel into SETUP-FAIL).
+for b in "$CORE_TINCD" "$CORE_TINC" "$BASE_TINCD" "$BASE_TINC"; do
+    "$b" --version >/dev/null 2>&1 || die "$b does not run: $("$b" --version 2>&1 | head -1)"
+done
 cmd="${1:-}"; shift || true
 case "$cmd" in
     validate-nat) parse_opts "$@"; validate_nat ;;

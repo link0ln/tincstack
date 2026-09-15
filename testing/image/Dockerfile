@@ -11,7 +11,7 @@ FROM ${BASELINE_IMAGE} AS baseline
 # hadolint ignore=DL3006
 FROM ${CORE_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        iptables conntrack tcpdump python3 iproute2 procps \
+        iptables conntrack tcpdump python3 iproute2 procps libncurses6 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=baseline /usr/local/sbin/tincd /opt/baseline/sbin/tincd
 COPY --from=baseline /usr/local/sbin/tinc /opt/baseline/sbin/tinc
