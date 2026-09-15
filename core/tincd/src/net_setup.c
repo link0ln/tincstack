@@ -846,12 +846,23 @@ static bool setup_myself(void) {
 	myself = new_node(name);
 	myself->connection = new_connection();
 	myself->connection->name = name;
+
+	/* Port precedence: the server config (tinc.conf / options.Port, where
+	   zeroconf, join and `tinc set Port` put it) wins over a Port line in our
+	   own host record. Before this the two were merged into one tree and the
+	   lower line number won, i.e. arbitrarily (PLAN Known Issues, stream H). */
+	if(get_config_string(lookup_config(&config_tree, "Port"), &myport.tcp)) {
+		port_specified = true;
+	}
+
 	read_host_config(&config_tree, name, true);
 
-	if(!get_config_string(lookup_config(&config_tree, "Port"), &myport.tcp)) {
-		myport.tcp = xstrdup("655");
-	} else {
-		port_specified = true;
+	if(!port_specified) {
+		if(!get_config_string(lookup_config(&config_tree, "Port"), &myport.tcp)) {
+			myport.tcp = xstrdup("655");
+		} else {
+			port_specified = true;
+		}
 	}
 
 	myport.udp = xstrdup(myport.tcp);

@@ -123,7 +123,7 @@ static char *conf_get(const char *filename, const char *var) {
 	return result;
 }
 
-static void scan_for_hostname(const char *filename, char **hostname, char **port) {
+static void scan_for_hostname(const char *filename, char **hostname, char **port, bool port_lines) {
 	if(!filename || (*hostname && *port)) {
 		return;
 	}
@@ -162,7 +162,7 @@ static void scan_for_hostname(const char *filename, char **hostname, char **port
 		p += strspn(p, "\t ");
 		p[strcspn(p, "\t ")] = 0;
 
-		if(!*port && !strcasecmp(line, "Port")) {
+		if(port_lines && !*port && !strcasecmp(line, "Port")) {
 			free(*port);
 			*port = xstrdup(q);
 		} else if(!*hostname && !strcasecmp(line, "Address")) {
@@ -225,11 +225,15 @@ static bool get_my_hostname(char **out_address, char **out_port) {
 	char *name = get_my_name(false);
 	char filename[PATH_MAX] = {0};
 
-	// Use first Address statement in own host config file
+	// Use the first Address statement in our own host config file; an explicit
+	// port on that line (a port-forward) wins. For the port itself the
+	// precedence is the daemon's: tinc.conf / options.Port (zeroconf, join,
+	// `tinc set Port`) before a Port line in the host record.
 	if(check_id(name)) {
 		snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", confbase, name);
-		scan_for_hostname(filename, &hostname, &port);
-		scan_for_hostname(tinc_conf, &hostname, &port);
+		scan_for_hostname(filename, &hostname, &port, false);
+		scan_for_hostname(tinc_conf, &hostname, &port, true);
+		scan_for_hostname(filename, &hostname, &port, true);
 	}
 
 	free(name);

@@ -1776,7 +1776,7 @@ const var_t variables[] = {
 	{"MACLength", VAR_SERVER | VAR_HOST},
 	{"PMTU", VAR_SERVER | VAR_HOST},
 	{"PMTUDiscovery", VAR_SERVER | VAR_HOST},
-	{"Port", VAR_HOST},
+	{"Port", VAR_SERVER | VAR_HOST}, /* unprefixed -> tinc.conf/options.Port (authoritative); <node>.Port -> host record */
 	{"PublicKey", VAR_HOST | VAR_OBSOLETE},
 	{"PublicKeyFile", VAR_SERVER | VAR_HOST | VAR_OBSOLETE},
 	{"Subnet", VAR_HOST | VAR_MULTIPLE | VAR_SAFE},

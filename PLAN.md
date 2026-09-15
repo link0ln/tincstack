@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-16 (M9 closed by stream F)
+**Last Updated:** 2026-09-16 (M9 closed by stream F; Port classification fixed in the consolidation pass)
 
 A self-hosted mesh VPN distribution on a hardened tinc 1.1 core, with opt-in
 circumvention transports and per-platform delivery (Linux/Windows/Android).
@@ -665,8 +665,9 @@ this order (cheapest / most-contained first). Full wire formats go in
   `3 received, 0% packet loss`; `PASS: two-node tunnel up`, exit 0.
   shellcheck (koalaman/shellcheck:stable, `-x`) clean on all five scripts;
   `docker compose config` clean with and without the lab overlay.
-  **Core gap found (kept as a minimal bridge, not a template):** tinc's
-  variable table marks `Port` host-only, so `tinc set Port` can only write
+  **Core gap found (bridged at the time, bridge removed in the consolidation
+  pass — see Known Issues, resolved):** tinc's
+  variable table marked `Port` host-only, so `tinc set Port` can only write
   `hosts.<Name>`, while the daemon materialises `options.Port`; with both
   present `config_compare` (conf.c) picks by line number — measured: a joined
   node with `Port = 656` in its host record and materialised `Port: 0`
@@ -1077,6 +1078,12 @@ another network's addresses are dropped by the daemon's nft rules. Details:
   matrix plus that re-run (identical outcomes).
 - **Found during M9** (core sources untouched; evidence under
   `testing/nat-sim/results/2026-09-16/`):
+  - 🟢 **Lab evidence is committed in full** (`testing/**/results/`, ~20 MB of
+    per-node tincd logs, 700+ files for one run; `make check` writes a new
+    `results/<today>/` tree on every run). Impact: repository bloat grows
+    with every recorded run. Consolidation: keep `summary.md`, `result.json`
+    and the laptop/glare logs that the proof lines cite, gitignore the rest
+    (or move full logs to a release artifact).
   - 🟠 **REQ_KEY glare has no tie-break (upstream 1.1pre18 and core).** When
     both nodes start sending to each other in the same instant, both send
     `REQ_KEY`; each side stops its own SPTPS session and becomes a responder,
@@ -1167,8 +1174,20 @@ Defects identified during the source audit, to fix as their milestone is reached
   address `10.165.0.2/24` and routes `10.99.0.0/24`, `172.16.0.0/12` on the
   real `VpnService.Builder`; `testDebugUnitTest assembleDebug` → 25 tests,
   0 failures, EXIT=0 (details in M8).
-- 🟠 **`Port` is classified host-only in the CLI, so `tinc set Port` and the
-  materialised `options.Port` disagree.** Found by stream H (2026-09-16):
+- ~~🟠 **`Port` is classified host-only in the CLI, so `tinc set Port` and the
+  materialised `options.Port` disagree.**~~ **Resolved 2026-09-16
+  (consolidation):** `Port` is `VAR_SERVER | VAR_HOST` in `variables[]`
+  (unprefixed → tinc.conf/`options:`, `<node>.Port` → host record);
+  `net_setup.c` reads the server-config `Port` *before* merging the own host
+  record, so `options.Port` wins; `get_my_hostname` (invitation.c) uses the
+  same order (`Address host port` on the host record still wins, tinc.conf
+  `Port` next, host-record `Port` last). Linux entrypoint: `tinc set Port`,
+  the `-o Port=` bridge and the host-record copy are gone. Proof: two-nodes
+  lab on the rebuilt `dev` image — invitee `entrypoint: options.Port = 656`
+  → `Listening on 0.0.0.0 port 656`, tunnel PASS; with `node_b.Port = 700`
+  added to the host record `tinc invite` still emits `…:656/`; classify
+  26/0, singleflow, tls-front, https-carrier PASS. Original finding by stream
+  H (2026-09-16):
   `variables[]` in tincctl.c marks `Port` as `VAR_HOST` without `VAR_SERVER`,
   so `cmd_config` always writes it into `hosts.<Name>`, while zeroconf/join
   write `options.Port` (655/0). With both present `config_compare` picks by

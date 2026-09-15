@@ -34,7 +34,7 @@ docker compose down -v                             # destroy the node incl. keys
 | `NETNAME` | network name (`tincd -n`), also the tun interface name | `tincstack` |
 | `NODE_NAME` | node name, honoured on the first start only | derived from the hostname by the daemon |
 | `PUBLIC_ADDRESS` | `host` or `host:port` written to the node's own host record as `Address`; used verbatim in invitations | unset: the CLI falls back to a local-address guess and warns |
-| `PORT` | listen port and the port published on the host; `Port` in the node's own host record (`tinc set`) plus `tincd -o Port=` on every start (see Files) | unset: daemon rule (655 founding node, ephemeral invitee) |
+| `PORT` | listen port and the port published on the host; written to `options.Port` with `tinc set Port` | unset: daemon rule (655 founding node, ephemeral invitee) |
 | `INVITE` | invitation string, `tinc join` on the first start only (`join.sh` sets it) | unset |
 | `LOG_LEVEL` | `tincd -d` | `1` |
 | `TINCSTACK_TAG` | tag of the `tincstack/core` and `tincstack/node` images | `dev` |
@@ -66,16 +66,10 @@ full bring-up.
   YAML-aware CLI (`tinc -c tinc.yaml set …`), supervise `tincd`. `Name` goes
   to `options:`, `PUBLIC_ADDRESS` to `hosts.<Name>` as `Address` (before the
   start when the name is known, right after `Ready` otherwise — the CLI is
-  its only reader). `PORT` goes to `hosts.<Name>` as `Port` the same way
-  **and** is passed as `tincd -o Port=…`: tinc's variable table marks `Port`
-  host-only, so `tinc set Port` cannot reach `options.Port`, which the daemon
-  materialises with its own default; with both present the daemon picks one
-  by line number (`config_compare` in `conf.c`; verified: a joined node with
-  `Port = 656` in its host record listened on an ephemeral port). The
-  command-line option ranks above every file entry (same `config_compare`),
-  the host-record copy is what `tinc invite` reads (before `options:`), so
-  the daemon and the invitations agree; `options.Port` keeps the materialised
-  default until the core lets `tinc set` target it.
+  its only reader). `PORT` goes to `options:` as `Port`: in this core `Port`
+  is a server variable that the daemon and `tinc invite` rank above a `Port`
+  line in the host record (`net_setup.c`, `invitation.c`), so the one value
+  is what the daemon listens on and what invitations carry.
   The tun interface is addressed by the daemon's built-in tinc-up
   (`core/tincd/src/autoif.c`); a stopgap `tinc-up` left in an old volume is
   removed on start so it cannot shadow the built-in.
