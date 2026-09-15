@@ -40,10 +40,10 @@ class VpnInterfaceConfigurationTest {
       |  mynet:
       |    options:
       |      Name: phone
-      |      Ifconfig: 10.210.0.3/24
-      |      Route:
+      |      InterfaceAddress: 10.210.0.3/24
+      |      InterfaceRoute:
       |        - 10.210.0.0/24
-      |        - 192.168.1.0/24 via 10.210.0.1
+      |        - 192.168.1.0/24 10.210.0.1
       |      DNSServer: [10.210.0.1, 10.210.0.2]
       |      SearchDomain: mesh.internal
       |      AllowApplication:
@@ -70,8 +70,27 @@ class VpnInterfaceConfigurationTest {
   }
 
   @Test
+  fun severalInterfaceAddressesAndUnsupportedFormsAreHandled() {
+    val cfg = VpnInterfaceConfiguration.fromTincYaml(file("""
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      AddressPool: 10.210.0.0/24
+      |      InterfaceAddress:
+      |        - 10.210.0.3/24
+      |        - fd00:1::3/64
+      |        - dhcp
+      |      InterfaceRoute: 10.210.0.0/24
+      |""".trimMargin()), "mynet")
+
+    assertEquals(listOf(CidrAddress("10.210.0.3", 24), CidrAddress("fd00:1::3", 64)), cfg.addresses)
+    assertEquals(listOf(CidrAddress("10.210.0.0", 24)), cfg.routes)
+  }
+
+  @Test
   fun zeroConfigNodeDerivesAddressAndRouteFromSubnetAndPool() {
-    // exactly what the daemon materialises from an empty file: no Android key at all
+    // exactly what the daemon materialises from an empty file: no interface key at all
     val cfg = VpnInterfaceConfiguration.fromTincYaml(file(TincYamlTest.DAEMON_DOC), "mynet")
     assertEquals(listOf(CidrAddress("10.165.0.1", 24)), cfg.addresses)
     assertEquals(listOf(CidrAddress("10.165.0.0", 24)), cfg.routes)
@@ -81,6 +100,19 @@ class VpnInterfaceConfigurationTest {
     assertFalse(cfg.allowBypass)
     assertNull(cfg.mtu)
     assertTrue(cfg.reconnectOnNetworkChange)
+  }
+
+  @Test
+  fun joinedNodeReadsWhatTheCoreWrote() {
+    // platforms/android/app/src/test/resources/joined-tinc.yaml is a real
+    // `tinc join` output of the core (keys redacted): InterfaceAddress and
+    // InterfaceRoute come from the invitation's Ifconfig / Route lines.
+    val f = tmp.newFile("tinc.yaml").apply { writeText(joinedDocument()) }
+    val cfg = VpnInterfaceConfiguration.fromTincYaml(f, "phonenet")
+    assertEquals(listOf(CidrAddress("10.165.0.2", 24)), cfg.addresses)
+    assertEquals(listOf(CidrAddress("10.99.0.0", 24), CidrAddress("172.16.0.0", 12)), cfg.routes)
+    assertTrue(cfg.allowedApplications.isEmpty())
+    assertTrue(cfg.disallowedApplications.isEmpty())
   }
 
   @Test
@@ -101,18 +133,12 @@ class VpnInterfaceConfigurationTest {
       |""".trimMargin()), "n")
   }
 
-  @Test
-  fun invitationDataAddressingIsFoldedIntoTheYaml() {
-    val inv = tmp.newFile("invitation-data").apply {
-      writeText("Name = phone\nNetName = mynet\nConnectTo = nodeA\nIfconfig = 10.165.0.2/24\nRoute = 10.165.0.0/24\nRoute = 172.16.0.0/12 10.165.0.1\n")
-    }
-    val yaml = TincYaml(file(TincYamlTest.DAEMON_DOC))
-    VpnInterfaceConfiguration.fromInvitation(inv).writeAddressing(yaml, "mynet")
+  companion object {
+    const val JOINED_RESOURCE = "/joined-tinc.yaml"
 
-    assertEquals(listOf("10.165.0.2/24"), yaml.optionValues("mynet", "Ifconfig"))
-    assertEquals(listOf("10.165.0.0/24", "172.16.0.0/12"), yaml.optionValues("mynet", "Route"))
-    val cfg = VpnInterfaceConfiguration.fromTincYaml(yaml.file, "mynet")
-    assertEquals(listOf(CidrAddress("10.165.0.2", 24)), cfg.addresses)
-    assertEquals(listOf(CidrAddress("10.165.0.0", 24), CidrAddress("172.16.0.0", 12)), cfg.routes)
+    /** The joined document as the core wrote it (test resource, keys redacted). */
+    fun joinedDocument(): String =
+      VpnInterfaceConfigurationTest::class.java.getResourceAsStream(JOINED_RESOURCE)!!
+        .use { it.readBytes().toString(Charsets.UTF_8) }
   }
 }

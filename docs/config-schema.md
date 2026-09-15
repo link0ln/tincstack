@@ -219,12 +219,15 @@ On the device each network is a directory `networks/<net>/` holding `tinc.yaml`
 networks:
   <netname>:
     options:
-      Ifconfig: 10.210.0.3/24          # interface address(es); the key tinc itself uses
-                                       # in invitations. Absent → derived from this
-                                       # node's own Subnet + AddressPool prefix
-      Route:                           # traffic sent through the tunnel; absent →
-        - 10.210.0.0/24                # AddressPool. "prefix [gateway]" as in invitations;
-        - 0.0.0.0/0                    # only the prefix is used on Android
+      InterfaceAddress: 10.210.0.3/24  # the top-level option (one or more); what
+                                       # `tinc join` writes from the invitation's
+                                       # Ifconfig. Absent → derived from this node's
+                                       # own Subnet + AddressPool prefix
+      InterfaceRoute:                  # the top-level option; traffic sent through
+        - 10.210.0.0/24                # the tunnel. Absent → AddressPool. "prefix
+        - 0.0.0.0/0                    # [gateway]" as `tinc join` writes it from the
+                                       # invitation's Route; only the prefix is used
+                                       # on Android (a tun fd has no next hop)
       DNSServer: [10.210.0.1]          # DNS server(s) for the tunnel
       SearchDomain: mesh.internal
       AllowApplication:                # WHITELIST: only these apps use the VPN
@@ -248,11 +251,15 @@ Rules:
   write-back: unrelated options, `keys:`, `hosts:` and comments are preserved
   byte for byte. A change made while that network is connected applies at the
   next connection.
-- `Ifconfig`/`Route` are what `tinc join` receives in an invitation; when the
-  CLI leaves them in `invitation-data` next to the config, the app folds them
-  into the YAML after joining. With neither present the interface still comes
-  up on a zero-config or freshly joined node: address = own `Subnet` with the
-  `AddressPool` prefix, route = `AddressPool`.
+- `InterfaceAddress`/`InterfaceRoute` are the same keys on every platform:
+  `tinc join` writes them into `options:` from the invitation's
+  `Ifconfig`/`Route` lines (`finalize_join_yaml` in
+  `core/tincd/src/invitation.c`), the Linux built-in tinc-up
+  (`core/tincd/src/autoif.c`) and the Android app read them. The join writes
+  no side-file (`invitation-data` does not exist in YAML mode) and the app
+  folds nothing in. With neither key present the interface still comes up on a
+  zero-config node: address = own `Subnet` with the `AddressPool` prefix,
+  route = `AddressPool` (the same fallback autoif.c applies).
 - Private keys are embedded (`keys:`) and unencrypted; the app's former
   passphrase feature (encrypted `*.priv` files + unlock dialog) does not apply
   and was removed.

@@ -1,0 +1,47 @@
+networks:
+  phonenet:
+    options:
+      Name: phone
+      ConnectTo: node_a
+      AddressPool: 10.165.0.0/24
+      Mode: router
+      InterfaceAddress: 10.165.0.2/24
+      InterfaceRoute:
+        - 10.99.0.0/24
+        - 172.16.0.0/12 10.165.0.1
+      Port: 0
+      UDPRebindOnWake: yes
+    hosts:
+      phone: |
+        Subnet = 10.165.0.2/32
+        Transports = plain, sf
+        Ed25519PublicKey = REDACTEDphonePUBLICKEYxxxxxxxxxxxxxxxxxxxxx
+        -----BEGIN RSA PUBLIC KEY-----
+        REDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTED
+        REDACTEDREDACTEDREDACTEDREDACTEDREDACTED
+        -----END RSA PUBLIC KEY-----
+
+      node_a: |
+        Address = wsh-fix-a 655
+        Subnet = 10.165.0.1/32
+        Transports = plain, sf
+        Ed25519PublicKey = REDACTEDnodeaPUBLICKEYxxxxxxxxxxxxxxxxxxxxx
+        -----BEGIN RSA PUBLIC KEY-----
+        REDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTED
+        REDACTEDREDACTEDREDACTEDREDACTEDREDACTED
+        -----END RSA PUBLIC KEY-----
+        Port = 655
+
+    keys:
+      ed25519_priv: |
+        -----BEGIN ED25519 PRIVATE KEY-----
+        REDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTED
+        REDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTED
+        -----END ED25519 PRIVATE KEY-----
+
+      rsa_priv: |
+        -----BEGIN RSA PRIVATE KEY-----
+        REDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTED
+        REDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTEDREDACTED
+        -----END RSA PRIVATE KEY-----
+

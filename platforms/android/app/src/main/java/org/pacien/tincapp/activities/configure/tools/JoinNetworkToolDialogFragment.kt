@@ -31,8 +31,10 @@ import org.pacien.tincapp.databinding.ConfigureToolsDialogNetworkJoinBinding
 import org.pacien.tincapp.utils.makePublic
 
 /**
- * Join by invitation URL or QR code: `tinc -c <net>/tinc.yaml -n <net> join <url>`,
- * then fold the invitation's interface addressing into the YAML.
+ * Join by invitation URL or QR code: `tinc -c <net>/tinc.yaml -n <net> join <url>`.
+ * The core writes the whole joined network into that YAML, interface address
+ * and routes included (`InterfaceAddress` / `InterfaceRoute`); the app only
+ * drops the scripts it cannot run.
  *
  * @author euxane
  */
@@ -76,7 +78,6 @@ class JoinNetworkToolDialogFragment : ConfigurationToolDialogFragment() {
       validateNetName(netName)
         .thenCompose { Tinc.join(netName, url) }
         .thenCompose { TincApp.removeScripts(netName) }
-        .thenCompose { TincApp.importInvitationAddressing(netName) }
         .thenApply { AppPaths.confDir(netName).makePublic() }
     )
 }

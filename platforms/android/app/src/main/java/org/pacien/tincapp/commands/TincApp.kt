@@ -22,7 +22,6 @@ package org.pacien.tincapp.commands
 import org.pacien.tincapp.commands.Executor.runAsyncTask
 import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.data.TincYaml
-import org.pacien.tincapp.data.VpnInterfaceConfiguration
 import java.io.File
 import java.util.regex.Pattern
 
@@ -60,19 +59,5 @@ object TincApp {
     if (!NODE_NAME_PATTERN.matcher(nodeName).matches())
       throw IllegalArgumentException("Node name must be made of letters, digits and underscores.")
     TincYaml(AppPaths.tincYamlFile(netName)).createNetwork(netName, nodeName)
-  }
-
-  /**
-   * After `tinc join`: the interface address and routes an invitation carries
-   * (`Ifconfig` / `Route`) go into the YAML options if the CLI left them in an
-   * `invitation-data` side-file instead of the YAML itself.
-   */
-  fun importInvitationAddressing(netName: String) = runAsyncTask {
-    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-    val stanza = yaml.resolveNetwork(netName)
-    val invitation = AppPaths.invitationFile(netName, stanza)
-    if (!invitation.exists()) return@runAsyncTask
-    if (!yaml.file.exists()) return@runAsyncTask // nothing to fold into: the core still writes a classic tree here
-    VpnInterfaceConfiguration.fromInvitation(invitation).writeAddressing(yaml, stanza)
   }
 }

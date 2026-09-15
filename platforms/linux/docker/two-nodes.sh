@@ -68,9 +68,18 @@ if ! wait_ready "$B"; then
 fi
 docker compose -p "$B" logs --no-log-prefix node | grep -E 'entrypoint|Materialised|Ready|Connect' || true
 
+step "interfaces: addressed by the daemon's built-in tinc-up, no script in the image"
+for p in "$A" "$B"; do
+    docker compose -p "$p" logs --no-log-prefix node | grep -E 'built-in tinc-up' || {
+        echo "FAIL: $p did not log the built-in interface setup" >&2; exit 1; }
+    docker compose -p "$p" exec -T node ip -br addr show dev tincstack
+    docker compose -p "$p" exec -T node test ! -e /etc/tincstack/tincstack/tinc-up || {
+        echo "FAIL: $p has a tinc-up script in its runtime dir" >&2; exit 1; }
+done
+
 step "tunnel: b -> a and a -> b"
-a_ip=$(docker compose -p "$A" exec -T node tincstack-yaml host-get /etc/tincstack/tinc.yaml tincstack node_a Subnet)
-b_ip=$(docker compose -p "$B" exec -T node tincstack-yaml host-get /etc/tincstack/tinc.yaml tincstack node_b Subnet)
+a_ip=$(docker compose -p "$A" exec -T node tincstack-cli get node_a.Subnet | head -n1)
+b_ip=$(docker compose -p "$B" exec -T node tincstack-cli get node_b.Subnet | head -n1)
 a_ip=${a_ip%%/*}
 b_ip=${b_ip%%/*}
 echo "a=$a_ip b=$b_ip"
@@ -78,7 +87,7 @@ docker compose -p "$B" exec -T node ping -c 3 -W 2 "$a_ip"
 docker compose -p "$A" exec -T node ping -c 3 -W 2 "$b_ip"
 
 step "inviter learned the invitee (hosts.node_b in a's tinc.yaml)"
-docker compose -p "$A" exec -T node tincstack-yaml host-get /etc/tincstack/tinc.yaml tincstack node_b Ed25519PublicKey
+docker compose -p "$A" exec -T node tincstack-cli get node_b.Ed25519PublicKey
 
 echo
 echo "PASS: two-node tunnel up"
