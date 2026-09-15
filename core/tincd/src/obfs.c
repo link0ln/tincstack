@@ -304,7 +304,11 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 		}
 	}
 
-	logger(DEBUG_TRAFFIC, LOG_DEBUG, "Sent %d obfs junk datagram(s) around a handshake", obfs_junk_count);
+	/* Connection-level event (once per handshake), logged at the connections
+	   level so the sender's own junk accounting is visible at -d2; the
+	   obfs test counts these lines instead of guessing junk from wire sizes
+	   (junk is indistinguishable from random bytes by design). */
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Sent %d obfs junk datagram(s) around a handshake", obfs_junk_count);
 }
 
 /* ---- inbound: keyed classification + decap + re-injection ---------------- */
@@ -396,7 +400,12 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 		ssize_t nlen = obfs_open(l, buf, len, inner, sizeof(inner));
 
 		if(nlen >= 0) {
-			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Cold-classified an obfs datagram from %s as %s", sockaddr2hostname(&addr), n->name);
+			if(debug_level >= DEBUG_CONNECTIONS) {
+				char *hostname = sockaddr2hostname(&addr);
+				logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Cold-classified an obfs datagram from %s as %s", hostname, n->name);
+				free(hostname);
+			}
+
 			return obfs_inject(ls, inner, (size_t)nlen, &addr, l);
 		}
 	}
