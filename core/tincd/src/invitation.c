@@ -50,10 +50,17 @@ int addressfamily = AF_UNSPEC;
   Server options an invitation carries from the inviter to the invitee, so
   that a joined node's `options` match the inviter's for every network-wide
   parameter (ARCHITECTURE.md section 8). This table is the single place to
-  extend: an entry ending in '*' matches every option with that prefix, so
-  a transport or front option added elsewhere propagates without touching
-  the invitation code. Per-node preferences (PreferredTransports, Port,
-  ConnectTo, ...) deliberately stay out.
+  extend, and it is an exact allow-list on purpose: an entry here is
+  written into the invitee's config by whoever issued the invitation and
+  takes effect on the invitee's machine without the VAR_SAFE check that
+  every other invitation line goes through. Add only options that both
+  ends of a network must agree on and that cannot make the invitee read,
+  serve or execute anything (never a path, a URL, a command, a
+  per-node listener setting). Prefix patterns are deliberately not
+  supported: a wildcard such as "Https*" would also have matched a future
+  HttpsDecoyRoot or HttpsDecoyUpstream. Per-node preferences
+  (PreferredTransports, Port, ConnectTo, TlsCert/TlsKey, ...) stay out.
+  (Security review R, 2026-09-16.)
 */
 const char *const PROPAGATED_OPTIONS[] = {
 	"Mode",
@@ -61,27 +68,86 @@ const char *const PROPAGATED_OPTIONS[] = {
 	"AddressPool",
 	"Transports",
 	"TlsFingerprint",
-	"Obfs*",
-	"Https*",
-	"Quic*",
+	"ObfsJunkPacketCount",
+	"ObfsJunkPacketMinSize",
+	"ObfsJunkPacketMaxSize",
+	"ObfsInitHeaderJunkSize",
+	"ObfsInitMagicHeader",
 	NULL,
 };
 
-bool invitation_option_propagated(const char *variable) {
+/* Returns the table's own spelling of a propagated option, or NULL. */
+const char *invitation_option_propagated_name(const char *variable) {
 	for(size_t i = 0; PROPAGATED_OPTIONS[i]; i++) {
-		const char *pat = PROPAGATED_OPTIONS[i];
-		size_t n = strlen(pat);
-
-		if(n && pat[n - 1] == '*') {
-			if(!strncasecmp(variable, pat, n - 1)) {
-				return true;
-			}
-		} else if(!strcasecmp(variable, pat)) {
-			return true;
+		if(!strcasecmp(variable, PROPAGATED_OPTIONS[i])) {
+			return PROPAGATED_OPTIONS[i];
 		}
 	}
 
-	return false;
+	return NULL;
+}
+
+bool invitation_option_propagated(const char *variable) {
+	return invitation_option_propagated_name(variable) != NULL;
+}
+
+/* A node name that arrives in an invitation (our own Name, or the peers of
+   the secondary chunks). check_id() bounds the alphabet but not the length;
+   a name is also a hosts/<name> file name (NAME_MAX = 255 on every platform
+   we run on) and a YAML mapping key (same cap in yamlconf.c), so anything
+   longer could never be stored -- and in YAML mode would poison the config
+   file on write-back. */
+#define INVITATION_MAX_NAME 255
+
+static bool invitation_name_ok(const char *name) {
+	return check_id(name) && strlen(name) <= INVITATION_MAX_NAME;
+}
+
+/* Address/prefix or bare address as an invitation may hand it to the
+   built-in interface setup (autoif.c): only address characters and one
+   optional "/prefix". Not a full parser -- the daemon validates again --
+   but enough to keep anything that is not an address out of the config. */
+static bool invitation_addr_ok(const char *s) {
+	size_t n = strspn(s, "0123456789abcdefABCDEF.:");
+
+	if(!n || n > 45) {
+		return false;
+	}
+
+	if(s[n] == 0) {
+		return true;
+	}
+
+	if(s[n] != '/') {
+		return false;
+	}
+
+	const char *p = s + n + 1;
+	size_t d = strspn(p, "0123456789");
+	return d >= 1 && d <= 3 && p[d] == 0;
+}
+
+/* "prefix" or "prefix gateway" (Route line). */
+static bool invitation_route_ok(const char *s) {
+	char buf[128];
+
+	if(strlen(s) >= sizeof(buf)) {
+		return false;
+	}
+
+	strcpy(buf, s);
+	char *gw = strchr(buf, ' ');
+
+	if(gw) {
+		*gw++ = 0;
+		gw += strspn(gw, " ");
+
+		if(*gw && !invitation_addr_ok(gw)) {
+			return false;
+		}
+	}
+
+	return invitation_addr_ok(buf);
 }
 
 /* First value of `var` in a tinc.conf-style file (YAML-aware), or NULL.
@@ -842,12 +908,25 @@ static char *get_line(char *line, size_t linelen, const char **data) {
 		return NULL;
 	}
 
-	if(len && !isprint((uint8_t) **data)) {
-		abort();
+	/* The payload comes from the inviter over an authenticated but not
+	   otherwise trusted channel: refuse control bytes, do not abort() on
+	   them (that was upstream's behaviour and a remote-triggerable crash of
+	   `tinc join'). */
+	for(size_t i = 0; i < len; i++) {
+		unsigned char ch = (unsigned char)(*data)[i];
+
+		if(ch < 0x20 && ch != '\t' && ch != '\r') {
+			fprintf(stderr, "Control character in invitation data!\n");
+			return NULL;
+		}
 	}
 
 	memcpy(line, *data, len);
 	line[len] = 0;
+
+	while(len && line[len - 1] == '\r') {
+		line[--len] = 0;
+	}
 
 	if(end) {
 		*data = end + 1;
@@ -951,6 +1030,154 @@ static char *split_line(char *l, char **value) {
   never carries (keys, Port, Mode). No tinc.conf, hosts/ tree, *_key.priv or
   tinc-up.invitation is created.
 */
+/*
+  Apply an invitation payload to networks.<net> of a YAML document. This is
+  the trust boundary between the inviter and the invitee's configuration:
+  `payload` is what the inviter sent (authenticated by the invitation key,
+  but the inviter chooses every byte). Pure (no globals, no I/O, nothing
+  executed), so it can be unit- and fuzz-tested on its own.
+
+  First chunk (up to the inviter's own "Name" line): every line is filtered
+  through variables[] (only VAR_SAFE ones, or every one with `allow_unsafe')
+  or through PROPAGATED_OPTIONS (network-wide options, see the table). Host
+  variables go to hosts.<name>, server variables to options:. Ifconfig/Route
+  become InterfaceAddress/InterfaceRoute after a syntax check, because the
+  daemon later hands them to `ip'. Secondary chunks ("Name = <peer>" blocks)
+  become hosts.<peer> verbatim, as upstream does.
+*/
+bool invitation_yaml_apply(yamlconf_t *yc, const char *net, const char *name, const char *payload, bool allow_unsafe) {
+	char line[1024];
+
+	if(!invitation_name_ok(name)) {
+		fprintf(stderr, "Invalid Name found in invitation!\n");
+		return false;
+	}
+
+	yamlconf_set_option(yc, net, "Name", name);
+
+	const char *p = payload;
+	char *l, *value = NULL;
+
+	while((l = get_line(line, sizeof(line), &p))) {
+		if(*l == '#') {
+			continue;
+		}
+
+		l = split_line(l, &value);
+
+		if(!*l) {
+			continue;
+		}
+
+		if(!strcasecmp(l, "Name")) {
+			if(strcmp(value, name)) {
+				break;
+			} else {
+				continue;
+			}
+		} else if(!strcasecmp(l, "NetName")) {
+			continue;
+		}
+
+		if(!strcasecmp(l, "Ifconfig")) {
+			if(!strcasecmp(value, "dhcp") || !strcasecmp(value, "dhcp6") || !strcasecmp(value, "slaac")) {
+				fprintf(stderr, "Ignoring Ifconfig = %s: not supported by the built-in interface setup.\n", value);
+			} else if(!invitation_addr_ok(value)) {
+				fprintf(stderr, "Ignoring Ifconfig = %s: not an address.\n", value);
+			} else {
+				fprintf(stderr, "Interface address from invitation: %s\n", value);
+				yamlconf_set_option(yc, net, "InterfaceAddress", value);
+			}
+
+			continue;
+		} else if(!strcasecmp(l, "Route")) {
+			if(!invitation_route_ok(value)) {
+				fprintf(stderr, "Ignoring Route = %s: not a prefix.\n", value);
+			} else {
+				fprintf(stderr, "Route from invitation: %s\n", value);
+				yamlconf_add_option_value(yc, net, "InterfaceRoute", value);
+			}
+
+			continue;
+		}
+
+		int i;
+		bool found = false;
+
+		for(i = 0; variables[i].name; i++) {
+			if(!strcasecmp(l, variables[i].name)) {
+				found = true;
+				break;
+			}
+		}
+
+		const char *propagated = invitation_option_propagated_name(l);
+
+		if(!found && !propagated) {
+			fprintf(stderr, "Ignoring unknown variable '%s' in invitation.\n", l);
+			continue;
+		}
+
+		if(found && !propagated && !(variables[i].type & VAR_SAFE)) {
+			if(allow_unsafe) {
+				fprintf(stderr, "Warning: unsafe variable '%s' in invitation.\n", l);
+			} else {
+				fprintf(stderr, "Ignoring unsafe variable '%s' in invitation.\n", l);
+				continue;
+			}
+		}
+
+		if(found && (variables[i].type & VAR_HOST)) {
+			yamlconf_host_add_line(yc, net, name, variables[i].name, value);
+		} else {
+			yamlconf_add_option_value(yc, net, found ? variables[i].name : propagated, value);
+		}
+	}
+
+	/* Secondary chunks: one host record per "Name = <peer>" block. */
+	while(l && !strcasecmp(l, "Name")) {
+		if(!invitation_name_ok(value)) {
+			fprintf(stderr, "Invalid Name found in invitation.\n");
+			return false;
+		}
+
+		if(!strcmp(value, name)) {
+			fprintf(stderr, "Secondary chunk would overwrite our own host config file.\n");
+			return false;
+		}
+
+		char *hostname = xstrdup(value);
+		char *text = xstrdup("");
+		size_t tlen = 0;
+
+		while((l = get_line(line, sizeof(line), &p))) {
+			if(!strcmp(l, "#---------------------------------------------------------------#")) {
+				continue;
+			}
+
+			size_t len = strcspn(l, "\t =");
+
+			if(len == 4 && !strncasecmp(l, "Name", 4)) {
+				l = split_line(l, &value);
+				break;
+			}
+
+			size_t llen = strlen(l);
+			text = xrealloc(text, tlen + llen + 2);
+			memcpy(text + tlen, l, llen);
+			tlen += llen;
+			text[tlen++] = '\n';
+			text[tlen] = 0;
+		}
+
+		yamlconf_host_set_text(yc, net, hostname, text);
+		free(text);
+		free(hostname);
+	}
+
+	return true;
+}
+
 /* What finalize_join_yaml() changed on disk, so cmd_join() can undo it when
    the inviter never confirms (the invitee's key is then not stored anywhere,
    and a retry must start from a clean network). */
@@ -990,6 +1217,12 @@ static bool finalize_join_yaml(const char *name) {
 		}
 	}
 
+	/* Start from what is on disk right now (we hold the lock). */
+	if(yamlconf_global && !access(yamlconf_path, F_OK) && !yamlconf_reload_global()) {
+		fprintf(stderr, "Could not re-read %s\n", yamlconf_path);
+		return false;
+	}
+
 	yamlconf_t *yc = yamlconf_global;
 
 	if(yc && yamlconf_has_network(yc, netname) &&
@@ -1009,120 +1242,8 @@ static bool finalize_join_yaml(const char *name) {
 		join_yaml_created_file = true;
 	}
 
-	yamlconf_set_option(yc, netname, "Name", name);
-
-	/* First chunk: filter on approved keywords, split between options: and
-	   our own host record. Ifconfig/Route become InterfaceAddress/
-	   InterfaceRoute options for the built-in interface setup. */
-	const char *p = data;
-	char *l, *value = NULL;
-
-	while((l = get_line(line, sizeof(line), &p))) {
-		if(*l == '#') {
-			continue;
-		}
-
-		l = split_line(l, &value);
-
-		if(!*l) {
-			continue;
-		}
-
-		if(!strcasecmp(l, "Name")) {
-			if(strcmp(value, name)) {
-				break;
-			} else {
-				continue;
-			}
-		} else if(!strcasecmp(l, "NetName")) {
-			continue;
-		}
-
-		if(!strcasecmp(l, "Ifconfig")) {
-			if(!strcasecmp(value, "dhcp") || !strcasecmp(value, "dhcp6") || !strcasecmp(value, "slaac")) {
-				fprintf(stderr, "Ignoring Ifconfig = %s: not supported by the built-in interface setup.\n", value);
-			} else {
-				yamlconf_set_option(yc, netname, "InterfaceAddress", value);
-			}
-
-			continue;
-		} else if(!strcasecmp(l, "Route")) {
-			yamlconf_add_option_value(yc, netname, "InterfaceRoute", value);
-			continue;
-		}
-
-		int i;
-		bool found = false;
-
-		for(i = 0; variables[i].name; i++) {
-			if(!strcasecmp(l, variables[i].name)) {
-				found = true;
-				break;
-			}
-		}
-
-		bool propagated = invitation_option_propagated(l);
-
-		if(!found && !propagated) {
-			fprintf(stderr, "Ignoring unknown variable '%s' in invitation.\n", l);
-			continue;
-		}
-
-		if(found && !propagated && !(variables[i].type & VAR_SAFE)) {
-			if(force) {
-				fprintf(stderr, "Warning: unsafe variable '%s' in invitation.\n", l);
-			} else {
-				fprintf(stderr, "Ignoring unsafe variable '%s' in invitation.\n", l);
-				continue;
-			}
-		}
-
-		if(found && (variables[i].type & VAR_HOST)) {
-			yamlconf_host_add_line(yc, netname, name, variables[i].name, value);
-		} else {
-			yamlconf_add_option_value(yc, netname, found ? variables[i].name : l, value);
-		}
-	}
-
-	/* Secondary chunks: one host record per "Name = <peer>" block. */
-	while(l && !strcasecmp(l, "Name")) {
-		if(!check_id(value)) {
-			fprintf(stderr, "Invalid Name found in invitation.\n");
-			return false;
-		}
-
-		if(!strcmp(value, name)) {
-			fprintf(stderr, "Secondary chunk would overwrite our own host config file.\n");
-			return false;
-		}
-
-		char *hostname = xstrdup(value);
-		char *text = xstrdup("");
-		size_t tlen = 0;
-
-		while((l = get_line(line, sizeof(line), &p))) {
-			if(!strcmp(l, "#---------------------------------------------------------------#")) {
-				continue;
-			}
-
-			size_t len = strcspn(l, "\t =");
-
-			if(len == 4 && !strncasecmp(l, "Name", 4)) {
-				l = split_line(l, &value);
-				break;
-			}
-
-			size_t llen = strlen(l);
-			text = xrealloc(text, tlen + llen + 2);
-			memcpy(text + tlen, l, llen);
-			tlen += llen;
-			text[tlen++] = '\n';
-			text[tlen] = 0;
-		}
-
-		yamlconf_host_set_text(yc, netname, hostname, text);
-		free(text);
-		free(hostname);
+	if(!invitation_yaml_apply(yc, netname, name, data, force)) {
+		return false;
 	}
 
 	/* Invitee defaults (decision 3): we always dial out, so no stable inbound
@@ -1138,7 +1259,7 @@ static bool finalize_join_yaml(const char *name) {
 	/* Keys, Mode, Subnet-if-missing: the same materialiser the daemon runs on
 	   an empty file, so a joined config is exactly a zero-config one plus the
 	   invitation. This also writes the file. */
-	if(!zeroconf_materialise()) {
+	if(!zeroconf_materialise(false)) {
 		fprintf(stderr, "Could not write %s\n", yamlconf_path);
 		return false;
 	}
@@ -1194,13 +1315,22 @@ static bool finalize_join(void) {
 		return false;
 	}
 
-	if(!check_id(name)) {
+	if(!invitation_name_ok(name)) {
 		fprintf(stderr, "Invalid Name found in invitation!\n");
 		return false;
 	}
 
 	if(yamlconf_path) {
-		return finalize_join_yaml(name);
+		/* The whole read-modify-write of the YAML happens under the
+		   writers' lock (shared with the daemon and the CLI). */
+		if(!yamlconf_lock(yamlconf_path)) {
+			fprintf(stderr, "Could not lock %s: %s\n", yamlconf_path, strerror(errno));
+			return false;
+		}
+
+		bool ok = finalize_join_yaml(name);
+		yamlconf_unlock();
+		return ok;
 	}
 
 	if(!netname) {
@@ -1397,7 +1527,7 @@ make_names:
 	fclose(fup);
 
 	while(l && !strcasecmp(l, "Name")) {
-		if(!check_id(value)) {
+		if(!invitation_name_ok(value)) {
 			fprintf(stderr, "Invalid Name found in invitation.\n");
 			return false;
 		}
@@ -1640,6 +1770,70 @@ static bool invitation_send(void *handle, uint8_t type, const void *vdata, size_
 	return true;
 }
 
+/*
+  Split an invitation URL "<address>[:port]/<48 base64 chars>" (or
+  "[v6addr]:port/...") in place. The 48 characters decode to the 18-byte
+  hash of the inviter's invitation key and the 18-byte cookie. The URL is
+  the one piece of input a user pastes from wherever the inviter sent it,
+  so nothing here trusts its shape. Returns false on anything malformed.
+*/
+bool invitation_url_parse(char *url, char **address, char **port, void *hash18, void *cookie18) {
+	char *slash = strchr(url, '/');
+
+	if(!slash) {
+		return false;
+	}
+
+	*slash++ = 0;
+
+	if(strlen(slash) != 48) {
+		return false;
+	}
+
+	char *addr = url;
+	char *prt = NULL;
+
+	if(*addr == '[') {
+		addr++;
+		char *bracket = strchr(addr, ']');
+
+		if(!bracket) {
+			return false;
+		}
+
+		*bracket = 0;
+
+		if(bracket[1] == ':') {
+			prt = bracket + 2;
+		} else if(bracket[1]) {
+			return false;
+		}
+	} else {
+		prt = strchr(addr, ':');
+
+		if(prt) {
+			*prt++ = 0;
+		}
+	}
+
+	if(!*addr) {
+		return false;
+	}
+
+	if(!prt || !*prt) {
+		static char default_port[] = "655";
+		prt = default_port;
+	}
+
+	if(!b64decode_tinc(slash, hash18, 24) || !b64decode_tinc(slash + 24, cookie18, 24)) {
+		return false;
+	}
+
+	*address = addr;
+	*port = prt;
+	return true;
+}
+
 static bool invitation_receive(void *handle, uint8_t type, const void *msg, uint16_t len) {
 	(void)handle;
 
@@ -1744,48 +1938,10 @@ int cmd_join(int argc, char *argv[]) {
 	// Parse the invitation URL.
 	rstrip(line);
 
-	char *slash = strchr(invitation, '/');
-
-	if(!slash) {
-		goto invalid;
-	}
-
-	*slash++ = 0;
-
-	if(strlen(slash) != 48) {
-		goto invalid;
-	}
-
-	char *address = invitation;
+	char *address = NULL;
 	char *port = NULL;
 
-	if(*address == '[') {
-		address++;
-		char *bracket = strchr(address, ']');
-
-		if(!bracket) {
-			goto invalid;
-		}
-
-		*bracket = 0;
-
-		if(bracket[1] == ':') {
-			port = bracket + 2;
-		}
-	} else {
-		port = strchr(address, ':');
-
-		if(port) {
-			*port++ = 0;
-		}
-	}
-
-	if(!port || !*port) {
-		static char default_port[] = "655";
-		port = default_port;
-	}
-
-	if(!b64decode_tinc(slash, hash, 24) || !b64decode_tinc(slash + 24, cookie, 24)) {
+	if(!invitation_url_parse(invitation, &address, &port, hash, cookie)) {
 		goto invalid;
 	}
 
@@ -1958,7 +2114,7 @@ exit:
 			if(join_yaml_created_file) {
 				unlink(yamlconf_path);
 				fprintf(stderr, "Removed %s again (join did not complete).\n", yamlconf_path);
-			} else {
+			} else if(yamlconf_lock(yamlconf_path)) {
 				yamlconf_t *yc = yamlconf_load(yamlconf_path);
 
 				if(yc && yamlconf_del_network(yc, netname) && yamlconf_save(yc, yamlconf_path)) {
@@ -1966,6 +2122,7 @@ exit:
 				}
 
 				yamlconf_free(yc);
+				yamlconf_unlock();
 			}
 		}
 

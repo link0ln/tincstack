@@ -27,9 +27,15 @@ int cmd_join(int argc, char *argv[]);
 // true if socket is ready, false on timeout.
 bool wait_socket_recv(int fd);
 
-/* Server options carried from inviter to invitee; see invitation.c. An entry
-   ending in '*' is a prefix. NULL-terminated. */
+/* Server options carried from inviter to invitee; see invitation.c. Exact
+   names only (an allow-list, no prefixes). NULL-terminated. */
 extern const char *const PROPAGATED_OPTIONS[];
 extern bool invitation_option_propagated(const char *variable);
+extern const char *invitation_option_propagated_name(const char *variable);
+
+/* Pure pieces of the join path, exposed for unit and fuzz tests. */
+struct yamlconf;
+extern bool invitation_yaml_apply(struct yamlconf *yc, const char *net, const char *name, const char *payload, bool allow_unsafe);
+extern bool invitation_url_parse(char *url, char **address, char **port, void *hash18, void *cookie18);
 
 #endif
