@@ -395,9 +395,9 @@ this order (cheapest / most-contained first). Full wire formats go in
 
 ---
 
-## Milestone M6 — Linux delivery (point 1c) 🟠
+## Milestone M6 — Linux delivery (point 1c) ✅ (2026-09-16, one 🟢 cleanup open)
 
-- [~] 🟠 `platforms/linux/docker/`: `docker-compose.yml` + auto-init entrypoint
+- [x] 🟠 `platforms/linux/docker/`: `docker-compose.yml` + auto-init entrypoint
   that relies on M1 (daemon self-configures) rather than templating config in
   shell. Env for the few deploy-time choices (netname, connect target, public
   address). **Proof:** `docker compose up` on a clean checkout brings up a node
@@ -430,16 +430,23 @@ this order (cheapest / most-contained first). Full wire formats go in
   `ERROR Error trying to create /etc/tincstack/tincstack/hosts/node_b: No such
   file or directory` → `Closing connection with node_b`. Re-run when A lands:
   `cd platforms/linux/docker && ./two-nodes.sh` (one command, cleans up).
-- [~] 🟠 Invite/join helper scripts (`docker compose exec … tinc invite`).
+  **(b) done 2026-09-16 after merging stream A** (`47b4bbb`): `LAB=mrg
+  TINCSTACK_TAG=dev ./two-nodes.sh` → invitee `Connected to mrg-a-node-1 port
+  655...` → `Materialised defaults … ed25519_priv … RSA-public` → `Ready` →
+  `Connection with node_a (10.16.8.2 port 655) activated`; ping b→a and a→b
+  `3 packets transmitted, 3 received, 0% packet loss`; inviter's `tinc.yaml`
+  gained `hosts.node_b` with the invitee's Ed25519 key; `PASS: two-node tunnel
+  up`, exit 0.
+- [x] 🟠 Invite/join helper scripts (`docker compose exec … tinc invite`).
   **Proof:** two-host (or two-project) bring-up reachable end to end.
   `invite.sh <name>` (`docker compose exec -T node tincstack-cli invite`) and
   `join.sh <invitation>` (`INVITE=… docker compose up -d`; the entrypoint joins
   on the first start only and cleans the classic-tree leftovers of a failed
   attempt so a retry is clean) exist, are shellcheck-clean and were exercised
   by `two-nodes.sh`: `invite.sh` returned `wsc-a-node-1:655/<cookie>`, `join.sh`'s
-  path ran `tinc join` against it. End-to-end reachability **blocked on stream
-  A** (same observation as above); the ping step of `two-nodes.sh` is in place
-  and has not run.
+  path ran `tinc join` against it. End-to-end reachability proven on merged
+  master 2026-09-16 (run (b) above): tunnel addresses 10.176.0.1 / 10.176.0.2,
+  ping both ways 0% loss.
 - [x] 🟡 No secrets in the tree; keys generated at first run into a named volume.
   **Proof:** `git status` clean of key material; `.gitignore` covers runtime data.
   Run 2026-09-16: after the single-node bring-up and the two-project lab,
@@ -449,8 +456,14 @@ this order (cheapest / most-contained first). Full wire formats go in
   Root `.gitignore` already covered `tinc.yaml`, `*.priv`, `invitations/`;
   appended `platforms/linux/docker/.env` and `platforms/linux/docker/data/`.
 - **Acceptance:** a Linux user gets a working node from `docker compose up` and
-  onboards peers with one invite string. **Half met:** the node, yes; the
-  onboarding waits for M2.
+  onboards peers with one invite string. **Met** on merged master 2026-09-16
+  (`two-nodes.sh` exit 0). Follow-ups: replace `tincstack-yaml` with the now
+  YAML-aware `tinc set` and drop the stopgap `tinc-up` (the core's built-in
+  Linux addressing from M2 covers it) — tracked as a 🟢 cleanup below.
+- [ ] 🟢 Cleanup after M2 landed: route the env mapping through `tinc set`
+  (YAML-aware since M2) and delete `tincstack-yaml`; delete the stopgap
+  `tinc-up` (the core's built-in Linux interface addressing covers it) and
+  verify `two-nodes.sh` still passes. **Proof:** both files gone, run exit 0.
 - **Found during M6** (2026-09-16):
   - 🔴 **Daemon-side invitation acceptance is not YAML-aware** (for stream A,
     M2 box 1/3). Reproduction: zero-config node, `tinc invite node_b`, a second
