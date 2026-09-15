@@ -50,25 +50,19 @@
 	<string name="crash_modal_action_send_report">傳送報告</string>
 
 	<!-- key decryption modal -->
-	<string name="decrypt_key_modal_title">解鎖 tinc 私鑰</string>
-	<string name="decrypt_key_modal_field_passphrase">密碼</string>
-	<string name="decrypt_key_modal_action_unlock">解鎖</string>
 
 	<!-- error notifications -->
 	<string name="notification_error_channel_name">錯誤</string>
 	<string name="notification_error_action_open_manual">開啟手冊</string>
 	<string name="notification_error_title_unable_to_start_tinc">無法啟動 tinc</string>
-	<string name="notification_error_message_could_not_read_private_key_format">無法讀取 tinc 私鑰：\n%1$s</string>
 	<string name="notification_error_message_could_not_read_network_configuration_format">無法讀取網路介面配置：\n%1$s</string>
 	<string name="notification_error_message_could_not_bind_iface">無法繫結網路介面。是否有另一個 VPN 正在執行？</string>
 	<string name="notification_error_message_could_not_configure_iface">無法應用網路介面配置：\n%1$s</string>
 	<string name="notification_error_message_daemon_exited">tinc 守護程式在啟動時退出：\n%1$s\n請檢查日誌獲取更多詳細資訊。</string>
-	<string name="notification_error_message_passphrase_not_provided">沒有提供解密金鑰環的密碼。</string>
 	<string name="notification_error_message_no_network_name_provided">沒有提供網路名稱。</string>
 	<string name="notification_error_message_no_configuration_for_network_format">沒有找到網路“%1$s”的配置。</string>
 	<string name="notification_error_message_network_config_not_found_format">在“%1$s”找不到網路配置檔案。</string>
 	<string name="notification_error_message_network_config_invalid_format">network.conf 中的網路配置無效：\n%1$s</string>
-	<string name="notification_error_message_could_not_decrypt_private_keys_format">無法解密私鑰：\n%1$s</string>
 
 	<!-- Start activity -->
 	<string name="start_activity_menu_configure">配置</string>
@@ -82,12 +76,10 @@
 
 	<string name="configure_activity_title_tools">工具</string>
 	<string name="configure_tools_action_generate_node_configuration_and_keys">生成節點配置和金鑰</string>
-	<string name="configure_tools_action_encrypt_decrypt_private_keys">加密或解密私鑰</string>
 
 	<string name="configure_tools_generate_config_title">新建網路</string>
 	<string name="configure_tools_generate_config_net_name_hint">Tinc 網路名稱</string>
 	<string name="configure_tools_generate_config_node_name_hint">此節點名稱</string>
-	<string name="configure_tools_generate_config_optional_passphrase_hint">密碼（可選）</string>
 	<string name="configure_tools_generate_config_action">建立</string>
 	<string name="configure_tools_generate_config_generating">生成節點配置…</string>
 
@@ -97,10 +89,6 @@
 	<string name="configure_tools_join_network_action">加入</string>
 	<string name="configure_tools_join_network_joining">加入網路…</string>
 
-	<string name="configure_tools_private_keys_encryption_title">私鑰加密</string>
-	<string name="configure_tools_private_key_encryption_current_passphrase">當前密碼\n（沒有則為空）</string>
-	<string name="configure_tools_private_key_encryption_new_passphrase">新密碼\n（空白以解密）</string>
-	<string name="configure_tools_private_keys_encryption_encrypting">加密/解密私鑰</string>
 
 	<!-- Status activity -->
 	<string name="status_activity_state_connected_to_format">已連線至 %s</string>

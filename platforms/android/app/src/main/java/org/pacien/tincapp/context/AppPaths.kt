@@ -1,6 +1,7 @@
 /*
  * Tinc Mesh VPN: Android client and user interface
  * Copyright (C) 2017-2024 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,6 +19,7 @@
 
 package org.pacien.tincapp.context
 
+import org.pacien.tincapp.data.TincYaml
 import java.io.File
 import java.io.FileNotFoundException
 
@@ -25,6 +27,12 @@ import java.io.FileNotFoundException
  * @author euxane
  *
  * @implNote Logs and PID files are stored in the cache directory for automatic collection.
+ *
+ * Layout of a network `<net>` (one directory per network under `networks/`):
+ *
+ *     networks/<net>/tinc.yaml   the one config file, daemon-owned (docs/config-schema.md)
+ *     networks/<net>/<stanza>/   the daemon's runtime side-files for that YAML stanza
+ *                                (cache/, invitations/, and what `tinc join` leaves behind)
  */
 object AppPaths {
   private const val APP_LOGS_DIR = "logs"
@@ -39,13 +47,7 @@ object AppPaths {
   private const val LOGFILE_FORMAT = "tinc.%s.log"
   private const val PIDFILE_FORMAT = "tinc.%s.pid"
 
-  private const val NET_CONF_FILE = "network.conf"
-  private const val NET_TINC_CONF_FILE = "tinc.conf"
-  private const val NET_HOSTS_DIR = "hosts"
   private const val NET_INVITATION_FILE = "invitation-data"
-
-  const val NET_DEFAULT_ED25519_PRIVATE_KEY_FILE = "ed25519_key.priv"
-  const val NET_DEFAULT_RSA_PRIVATE_KEY_FILE = "rsa_key.priv"
 
   private val context by lazy { App.getContext() }
 
@@ -58,10 +60,9 @@ object AppPaths {
   fun confDir() = withDir(File(privateFilesDir(), APP_TINC_NETWORKS_DIR))
 
   fun confDir(netName: String) = File(confDir(), netName)
-  fun hostsDir(netName: String) = File(confDir(netName), NET_HOSTS_DIR)
-  fun netConfFile(netName: String) = File(confDir(netName), NET_CONF_FILE)
-  fun tincConfFile(netName: String) = File(confDir(netName), NET_TINC_CONF_FILE)
-  fun invitationFile(netName: String) = File(confDir(netName), NET_INVITATION_FILE)
+  fun tincYamlFile(netName: String) = File(confDir(netName), TincYaml.FILE_NAME)
+  fun daemonSideDir(netName: String, stanza: String) = File(confDir(netName), stanza)
+  fun invitationFile(netName: String, stanza: String) = File(daemonSideDir(netName, stanza), NET_INVITATION_FILE)
   fun logFile(netName: String) = File(logsDir(), String.format(LOGFILE_FORMAT, netName))
   fun pidFile(netName: String) = File(runtimeDir(), String.format(PIDFILE_FORMAT, netName))
   fun appLogFile() = File(logsDir(), APPLOG_FILE)
@@ -69,9 +70,6 @@ object AppPaths {
 
   fun existing(f: File) = f.apply { if (!exists()) throw FileNotFoundException(f.absolutePath) }
   private fun withDir(f: File) = f.apply { if (!exists()) mkdirs() }
-
-  fun defaultEd25519PrivateKeyFile(netName: String) = File(confDir(netName), NET_DEFAULT_ED25519_PRIVATE_KEY_FILE)
-  fun defaultRsaPrivateKeyFile(netName: String) = File(confDir(netName), NET_DEFAULT_RSA_PRIVATE_KEY_FILE)
 
   fun tincd() = File(binDir(), TINCD_BIN)
   fun tinc() = File(binDir(), TINC_BIN)

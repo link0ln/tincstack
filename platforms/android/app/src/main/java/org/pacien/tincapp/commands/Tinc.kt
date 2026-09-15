@@ -1,6 +1,7 @@
 /*
  * Tinc Mesh VPN: Android client and user interface
  * Copyright (C) 2017-2018 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,14 +21,24 @@ package org.pacien.tincapp.commands
 
 import java8.util.concurrent.CompletableFuture
 import org.pacien.tincapp.context.AppPaths
+import org.pacien.tincapp.data.TincYaml
 
 /**
+ * The `tinc` CLI against the network's `tinc.yaml` (YAML mode, same file the
+ * daemon uses). Control commands find the running daemon through the pidfile.
+ *
  * @author euxane
  */
 object Tinc {
-  private fun newCommand(netName: String): Command =
+  private fun stanza(netName: String) = TincYaml(AppPaths.tincYamlFile(netName)).resolveNetwork(netName)
+
+  private fun configCommand(netName: String): Command =
     Command(AppPaths.tinc().absolutePath)
-      .withOption("config", AppPaths.confDir(netName).absolutePath)
+      .withOption("config", AppPaths.tincYamlFile(netName).absolutePath)
+      .withOption("net", stanza(netName))
+
+  private fun newCommand(netName: String): Command =
+    configCommand(netName)
       .withOption("pidfile", AppPaths.pidFile(netName).absolutePath)
 
   fun stop(netName: String): CompletableFuture<Unit> =
@@ -55,21 +66,17 @@ object Tinc {
     Executor.call(newCommand(netName).withArguments("info", node))
       .thenApply { it.joinToString("\n") }
 
-  fun init(netName: String, nodeName: String): CompletableFuture<String> =
-    if (netName.isBlank())
-      CompletableFuture.failedFuture(IllegalArgumentException("Network name cannot be blank."))
-    else
-      Executor.call(Command(AppPaths.tinc().absolutePath)
-        .withOption("config", AppPaths.confDir(netName).absolutePath)
-        .withArguments("init", nodeName))
-        .thenApply { it.joinToString("\n") }
-
+  /**
+   * `tinc -c <net>/tinc.yaml -n <net> join <invitation>`. The stanza is the
+   * directory name, so the joined network lands where the app expects it.
+   */
   fun join(netName: String, invitationUrl: String): CompletableFuture<String> =
     if (netName.isBlank())
       CompletableFuture.failedFuture(IllegalArgumentException("Network name cannot be blank."))
     else
       Executor.call(Command(AppPaths.tinc().absolutePath)
-        .withOption("config", AppPaths.confDir(netName).absolutePath)
+        .withOption("config", AppPaths.tincYamlFile(netName).absolutePath)
+        .withOption("net", netName)
         .withArguments("join", invitationUrl))
         .thenApply { it.joinToString("\n") }
 

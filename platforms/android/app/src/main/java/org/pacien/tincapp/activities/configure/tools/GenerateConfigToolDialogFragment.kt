@@ -1,6 +1,7 @@
 /*
  * Tinc Mesh VPN: Android client and user interface
  * Copyright (C) 2017-2024 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,14 +20,16 @@
 package org.pacien.tincapp.activities.configure.tools
 
 import android.os.Bundle
-import org.pacien.tincapp.databinding.ConfigureToolsDialogNetworkGenerateBinding
 import org.pacien.tincapp.R
-import org.pacien.tincapp.commands.Tinc
 import org.pacien.tincapp.commands.TincApp
 import org.pacien.tincapp.context.AppPaths
+import org.pacien.tincapp.databinding.ConfigureToolsDialogNetworkGenerateBinding
 import org.pacien.tincapp.utils.makePublic
 
 /**
+ * A new network is a `tinc.yaml` holding just the node name; the daemon
+ * materialises keys, port and address pool into it on first connect.
+ *
  * @author euxane
  */
 class GenerateConfigToolDialogFragment : ConfigurationToolDialogFragment() {
@@ -38,17 +41,13 @@ class GenerateConfigToolDialogFragment : ConfigurationToolDialogFragment() {
     ) { dialog ->
       generateConf(
         dialog.newNetName.text.toString(),
-        dialog.newNodeName.text.toString(),
-        dialog.newPassphrase.text.toString()
+        dialog.newNodeName.text.toString()
       )
     }
 
-  private fun generateConf(netName: String, nodeName: String, passphrase: String? = null) = execAction(
+  private fun generateConf(netName: String, nodeName: String) = execAction(
     R.string.configure_tools_generate_config_generating,
     validateNetName(netName)
-      .thenCompose { Tinc.init(netName, nodeName) }
-      .thenCompose { TincApp.removeScripts(netName) }
-      .thenCompose { TincApp.generateIfaceCfgTemplate(netName) }
-      .thenCompose { TincApp.setPassphrase(netName, newPassphrase = passphrase) }
+      .thenCompose { TincApp.createNetwork(netName, nodeName) }
       .thenApply { AppPaths.confDir(netName).makePublic() })
 }

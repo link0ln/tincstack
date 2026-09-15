@@ -41,7 +41,11 @@ class RecentCrashHandler(private val parentActivity: BaseActivity) {
     AlertDialog.Builder(parentActivity)
       .setTitle(R.string.crash_modal_title)
       .setMessage(makeMessage())
-      .setNeutralButton(R.string.crash_modal_action_send_report) { _, _ -> sendReportMail() }
+      .apply {
+        // no maintainer address configured: the log stays on the device
+        if (resources.getString(R.string.crash_modal_dev_email).isNotBlank())
+          setNeutralButton(R.string.crash_modal_action_send_report) { _, _ -> sendReportMail() }
+      }
       .setPositiveButton(R.string.generic_action_close) { _, _ -> }
       .show()
   }

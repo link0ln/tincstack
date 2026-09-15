@@ -1,6 +1,7 @@
 /*
  * Tinc Mesh VPN: Android client and user interface
  * Copyright (C) 2017-2024 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +31,9 @@ import org.pacien.tincapp.databinding.ConfigureToolsDialogNetworkJoinBinding
 import org.pacien.tincapp.utils.makePublic
 
 /**
+ * Join by invitation URL or QR code: `tinc -c <net>/tinc.yaml -n <net> join <url>`,
+ * then fold the invitation's interface addressing into the YAML.
+ *
  * @author euxane
  */
 class JoinNetworkToolDialogFragment : ConfigurationToolDialogFragment() {
@@ -53,8 +57,7 @@ class JoinNetworkToolDialogFragment : ConfigurationToolDialogFragment() {
       ) { dialog ->
         joinNetwork(
           dialog.netName.text.toString(),
-          dialog.invitationUrl.text.toString(),
-          dialog.joinPassphrase.text.toString()
+          dialog.invitationUrl.text.toString()
         )
       }
     }
@@ -67,14 +70,13 @@ class JoinNetworkToolDialogFragment : ConfigurationToolDialogFragment() {
     scanner.initiateScan()
   }
 
-  private fun joinNetwork(netName: String, url: String, passphrase: String? = null) =
+  private fun joinNetwork(netName: String, url: String) =
     execAction(
       R.string.configure_tools_join_network_joining,
       validateNetName(netName)
         .thenCompose { Tinc.join(netName, url) }
         .thenCompose { TincApp.removeScripts(netName) }
-        .thenCompose { TincApp.generateIfaceCfg(netName) }
-        .thenCompose { TincApp.setPassphrase(netName, newPassphrase = passphrase) }
+        .thenCompose { TincApp.importInvitationAddressing(netName) }
         .thenApply { AppPaths.confDir(netName).makePublic() }
     )
 }

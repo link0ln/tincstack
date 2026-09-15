@@ -68,14 +68,6 @@
 
         </LinearLayout>
 
-        <EditText
-            android:id="@+id/join_passphrase"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:hint="@string/configure_tools_generate_config_optional_passphrase_hint"
-            android:importantForAutofill="no"
-            android:inputType="textVisiblePassword" />
-
     </LinearLayout>
 
 </layout>

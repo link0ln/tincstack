@@ -1,6 +1,7 @@
 /*
  * Tinc Mesh VPN: Android client and user interface
  * Copyright (C) 2017-2020 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,21 +21,23 @@ package org.pacien.tincapp.commands
 
 import java8.util.concurrent.CompletableFuture
 import org.pacien.tincapp.context.AppPaths
-import java.io.File
 
 /**
+ * The daemon, started in YAML mode (`-c <net>/tinc.yaml -n <stanza>`): it reads
+ * and writes the one config file itself, including materialising keys and
+ * defaults into it on first start.
+ *
  * @author euxane
  */
 object Tincd {
-  fun start(netName: String, device: String, ed25519PrivateKey: File? = null, rsaPrivateKey: File? = null): CompletableFuture<Unit> =
+  fun start(netName: String, stanza: String, device: String): CompletableFuture<Unit> =
     Executor.call(Command(AppPaths.tincd().absolutePath)
       .withOption("no-detach")
-      .withOption("config", AppPaths.confDir(netName).absolutePath)
+      .withOption("config", AppPaths.tincYamlFile(netName).absolutePath)
+      .withOption("net", stanza)
       .withOption("pidfile", AppPaths.pidFile(netName).absolutePath)
       .withOption("logfile", AppPaths.logFile(netName).absolutePath)
       .withOption("option", "DeviceType=fd")
       .withOption("option", "Device=@$device")
-      .apply { if (ed25519PrivateKey != null) withOption("option", "Ed25519PrivateKeyFile=${ed25519PrivateKey.absolutePath}") }
-      .apply { if (rsaPrivateKey != null) withOption("option", "PrivateKeyFile=${rsaPrivateKey.absolutePath}") }
     ).thenApply { }
 }

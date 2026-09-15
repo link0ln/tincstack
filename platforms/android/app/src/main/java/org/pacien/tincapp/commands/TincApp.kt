@@ -1,6 +1,7 @@
 /*
  * Tinc Mesh VPN: Android client and user interface
  * Copyright (C) 2017-2020 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,58 +19,60 @@
 
 package org.pacien.tincapp.commands
 
-import org.pacien.tincapp.R
 import org.pacien.tincapp.commands.Executor.runAsyncTask
-import org.pacien.tincapp.context.App
 import org.pacien.tincapp.context.AppPaths
-import org.pacien.tincapp.data.TincConfiguration
+import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.data.VpnInterfaceConfiguration
-import org.pacien.tincapp.utils.PemUtils
-import java.io.FileNotFoundException
+import java.io.File
+import java.util.regex.Pattern
 
 /**
+ * Configuration housekeeping done by the app itself (not by the tinc CLI).
+ *
  * @author euxane
  */
 object TincApp {
   private val SCRIPT_SUFFIXES = listOf("-up", "-down", "-created", "-accepted")
   private val STATIC_SCRIPTS = listOf("tinc", "host", "subnet", "invitation").flatMap { s -> SCRIPT_SUFFIXES.map { s + it } }
+  private val NODE_NAME_PATTERN: Pattern = Pattern.compile("^[A-Za-z0-9_]+$")
 
-  private fun listScripts(netName: String) =
-    AppPaths.confDir(netName).listFiles { f -> f.name in STATIC_SCRIPTS }!! +
-      AppPaths.hostsDir(netName).listFiles { f -> SCRIPT_SUFFIXES.any { f.name.endsWith(it) } }!!
+  private fun stanza(netName: String) = TincYaml(AppPaths.tincYamlFile(netName)).resolveNetwork(netName)
 
-  fun listPrivateKeys(netName: String) = try {
-    TincConfiguration.fromTincConfiguration(AppPaths.existing(AppPaths.tincConfFile(netName))).let {
-      listOf(
-        it.privateKeyFile ?: AppPaths.defaultRsaPrivateKeyFile(netName),
-        it.ed25519PrivateKeyFile ?: AppPaths.defaultEd25519PrivateKeyFile(netName))
+  private fun listScripts(netName: String): List<File> {
+    val dirs = listOf(AppPaths.confDir(netName), AppPaths.daemonSideDir(netName, stanza(netName)))
+    return dirs.flatMap { dir ->
+      (dir.listFiles { f -> f.name in STATIC_SCRIPTS } ?: emptyArray()).toList() +
+        (File(dir, "hosts").listFiles { f -> SCRIPT_SUFFIXES.any { f.name.endsWith(it) } } ?: emptyArray()).toList()
     }
-  } catch (e: FileNotFoundException) {
-    throw FileNotFoundException(App.getResources().getString(R.string.notification_error_message_network_config_not_found_format, e.message!!))
   }
 
+  /** Scripts cannot run on Android (no ifconfig/ip); drop whatever `tinc join` generated. */
   fun removeScripts(netName: String) = runAsyncTask {
     listScripts(netName).forEach { it.delete() }
   }
 
-  fun generateIfaceCfg(netName: String) = runAsyncTask {
-    VpnInterfaceConfiguration
-      .fromInvitation(AppPaths.invitationFile(netName))
-      .write(AppPaths.netConfFile(netName))
+  /**
+   * A new network is a `tinc.yaml` with just a `Name`; the daemon materialises
+   * keys, port, address pool and own subnet into it at first start
+   * (docs/config-schema.md, "Zero-config materialisation").
+   */
+  fun createNetwork(netName: String, nodeName: String) = runAsyncTask {
+    if (!NODE_NAME_PATTERN.matcher(nodeName).matches())
+      throw IllegalArgumentException("Node name must be made of letters, digits and underscores.")
+    TincYaml(AppPaths.tincYamlFile(netName)).createNetwork(netName, nodeName)
   }
 
-  fun generateIfaceCfgTemplate(netName: String) = runAsyncTask {
-    App.getResources().openRawResource(R.raw.network).use { inputStream ->
-      AppPaths.netConfFile(netName).outputStream().use { inputStream.copyTo(it) }
-    }
-  }
-
-  fun setPassphrase(netName: String, currentPassphrase: String? = null, newPassphrase: String?) = runAsyncTask {
-    listPrivateKeys(netName)
-      .filter { it.exists() }
-      .map { Pair(PemUtils.read(it), it) }
-      .map { Pair(PemUtils.decrypt(it.first, currentPassphrase), it.second) }
-      .map { Pair(if (newPassphrase?.isNotEmpty() == true) PemUtils.encrypt(it.first, newPassphrase) else it.first, it.second) }
-      .forEach { PemUtils.write(it.first, it.second.writer()) }
+  /**
+   * After `tinc join`: the interface address and routes an invitation carries
+   * (`Ifconfig` / `Route`) go into the YAML options if the CLI left them in an
+   * `invitation-data` side-file instead of the YAML itself.
+   */
+  fun importInvitationAddressing(netName: String) = runAsyncTask {
+    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+    val stanza = yaml.resolveNetwork(netName)
+    val invitation = AppPaths.invitationFile(netName, stanza)
+    if (!invitation.exists()) return@runAsyncTask
+    if (!yaml.file.exists()) return@runAsyncTask // nothing to fold into: the core still writes a classic tree here
+    VpnInterfaceConfiguration.fromInvitation(invitation).writeAddressing(yaml, stanza)
   }
 }

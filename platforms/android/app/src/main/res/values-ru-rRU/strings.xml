@@ -49,25 +49,19 @@
 	<string name="crash_modal_action_send_report">Отправить отчет</string>
 
 	<!-- key decryption modal -->
-	<string name="decrypt_key_modal_title">Разблокировать приватные ключи tinc</string>
-	<string name="decrypt_key_modal_field_passphrase">Кодовая фраза</string>
-	<string name="decrypt_key_modal_action_unlock">Разблокировать</string>
 
 	<!-- error notifications -->
 	<string name="notification_error_channel_name">Ошибки</string>
 	<string name="notification_error_action_open_manual">Открыть руководство</string>
 	<string name="notification_error_title_unable_to_start_tinc">Не удалось запустить tinc</string>
-	<string name="notification_error_message_could_not_read_private_key_format">Не удалось прочитать закрытые ключи tinc:\n%1$s</string>
 	<string name="notification_error_message_could_not_read_network_configuration_format">Не удалось прочитать конфигурацию сетевого интерфейса:\n%1$s</string>
 	<string name="notification_error_message_could_not_bind_iface">Не удалось привязать сетевой интерфейс. Запущен другой VPN?</string>
 	<string name="notification_error_message_could_not_configure_iface">Не удалось применить конфигурацию сетевого интерфейса:\n%1$s</string>
 	<string name="notification_error_message_daemon_exited">демон tinc завершил работу во время запуска: \n%1$s\nПроверьте журналы для получения более подробной информации.</string>
-	<string name="notification_error_message_passphrase_not_provided">Не предоставлена кодовая фраза для разблокировки хранилища ключей.</string>
 	<string name="notification_error_message_no_network_name_provided">Не указано имя сети.</string>
 	<string name="notification_error_message_no_configuration_for_network_format">Не удалось найти конфигурацию для сети \"%1$s\".</string>
 	<string name="notification_error_message_network_config_not_found_format">Не удалось найти файл конфигурации сети по адресу \"%1$s\".</string>
 	<string name="notification_error_message_network_config_invalid_format">Недопустимая конфигурация сети в network.conf:\n%1$s</string>
-	<string name="notification_error_message_could_not_decrypt_private_keys_format">Не удалось расшифровать закрытые ключи:\n%1$s</string>
 
 	<!-- Start activity -->
 	<string name="start_activity_menu_configure">Конфигурировать</string>
@@ -82,12 +76,10 @@
 
 	<string name="configure_activity_title_tools">Инструменты</string>
 	<string name="configure_tools_action_generate_node_configuration_and_keys">Генерировать конфигурацию узла и ключи</string>
-	<string name="configure_tools_action_encrypt_decrypt_private_keys">Шифровать или дешифровать закрытые ключи</string>
 
 	<string name="configure_tools_generate_config_title">Новая сеть</string>
 	<string name="configure_tools_generate_config_net_name_hint">имя сети tinc</string>
 	<string name="configure_tools_generate_config_node_name_hint">Имя этого узла</string>
-	<string name="configure_tools_generate_config_optional_passphrase_hint">Кодовая фраза (необязательно)</string>
 	<string name="configure_tools_generate_config_action">Создать</string>
 	<string name="configure_tools_generate_config_generating">Генерируем конфигурацию узла…</string>
 
@@ -97,10 +89,6 @@
 	<string name="configure_tools_join_network_action">Присоединиться</string>
 	<string name="configure_tools_join_network_joining">Присоединяемся к сети…</string>
 
-	<string name="configure_tools_private_keys_encryption_title">Шифрование закрытых ключей</string>
-	<string name="configure_tools_private_key_encryption_current_passphrase">Текущая кодовая фраза\n (оставьте пустой, если нет)</string>
-	<string name="configure_tools_private_key_encryption_new_passphrase">Новая кодовая фраза\n (оставьте пустой для расшифровки)</string>
-	<string name="configure_tools_private_keys_encryption_encrypting">Шифрование/дешифрование закрытых ключей tinc</string>
 
 	<!-- Status activity -->
 	<string name="status_activity_state_connected_to_format">Подключен к %s</string>

@@ -58,7 +58,7 @@ class StartActivity : BaseActivity() {
     initNetworkListFragment()
 
     if (intent.action == Actions.ACTION_CONNECT && intent.data?.schemeSpecificPart != null)
-      connectionStarter.tryStart(intent.data!!.schemeSpecificPart, intent.data!!.fragment, false)
+      connectionStarter.tryStart(intent.data!!.schemeSpecificPart, false)
   }
 
   private fun initNetworkListFragment() {

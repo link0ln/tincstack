@@ -19,7 +19,7 @@
 -->
 
 <resources>
-	<string name="app_name" translatable="false">Tinc Mesh VPN</string>
+	<string name="app_name" translatable="false">tincstack</string>
 	<string name="app_doc_url_format" translatable="false">https://tincapp.euxane.net/%1$s</string>
 
 	<!-- generic strings -->
@@ -35,8 +35,8 @@
 
 	<!-- about modal -->
 	<string name="about_app_menu_about">About</string>
-	<string name="about_app_short_desc">Android binding and user interface for the tinc mesh VPN daemon.</string>
-	<string name="about_app_copyright">Copyright © 2017–2024 Euxane P. TRAN-GIRARD and contributors.</string>
+	<string name="about_app_short_desc">Android client for the tincstack mesh VPN (tinc 1.1 core, one tinc.yaml, per-app split routing). Based on Tinc Mesh VPN by Euxane P. TRAN-GIRARD.</string>
+	<string name="about_app_copyright">Copyright © 2017–2024 Euxane P. TRAN-GIRARD and contributors; © 2026 tincstack contributors.</string>
 	<string name="about_app_license">Software distributed under the terms of the GNU General Public License v3.</string>
 	<string name="about_app_website_url" translatable="false">https://tincapp.euxane.net</string>
 	<string name="about_app_version_format">App version %1$s (%2$s build)</string>
@@ -50,13 +50,8 @@
 	<string name="crash_modal_crash_logged">Crash details saved in \"%1$s\".</string>
 	<string name="crash_modal_action_send_email">Send e-mail</string>
 	<string name="crash_modal_action_send_report">Send report</string>
-	<string name="crash_modal_dev_email" translatable="false">pacien.gplayfr@gmail.com</string>
-
-	<!-- key decryption modal -->
-	<string name="decrypt_key_modal_title">Unlock private tinc keys</string>
-	<string name="decrypt_key_modal_field_passphrase">Passphrase</string>
-	<string name="decrypt_key_modal_action_unlock">Unlock</string>
-	<string name="decrypt_key_modal_action_cancel" translatable="false">@string/generic_action_cancel</string>
+	<!-- maintainer address for crash reports; empty = no "Send report" button (logs stay on the device) -->
+	<string name="crash_modal_dev_email" translatable="false"></string>
 
 	<!-- error notifications -->
 	<string name="notification_error_channel_name">Errors</string>
@@ -64,17 +59,14 @@
 	<string name="notification_error_action_open_config_dir">Open configuration directory</string>
 	<string name="notification_error_action_open_logs_dir">Open logs directory</string>
 	<string name="notification_error_title_unable_to_start_tinc">Could not start tinc</string>
-	<string name="notification_error_message_could_not_read_private_key_format">Could not read private tinc keys:\n%1$s</string>
 	<string name="notification_error_message_could_not_read_network_configuration_format">Could not read network interface configuration:\n%1$s</string>
 	<string name="notification_error_message_could_not_bind_iface">Could not bind network interface. Is another VPN running?</string>
 	<string name="notification_error_message_could_not_configure_iface">Could not apply network interface configuration:\n%1$s</string>
 	<string name="notification_error_message_daemon_exited">tinc daemon exited during startup:\n%1$s\nCheck the logs for more details.</string>
-	<string name="notification_error_message_passphrase_not_provided">No passphrase provided to unlock the keyring.</string>
 	<string name="notification_error_message_no_network_name_provided">No network name provided.</string>
 	<string name="notification_error_message_no_configuration_for_network_format">Could not find configuration for \"%1$s\" network.</string>
 	<string name="notification_error_message_network_config_not_found_format">Could not find network configuration file at \"%1$s\".</string>
-	<string name="notification_error_message_network_config_invalid_format">Invalid network configuration in network.conf:\n%1$s</string>
-	<string name="notification_error_message_could_not_decrypt_private_keys_format">Could not decrypt private keys:\n%1$s</string>
+	<string name="notification_error_message_network_config_invalid_format">Invalid network configuration in tinc.yaml:\n%1$s</string>
 
 	<!-- Start activity -->
 	<string name="start_activity_menu_configure">Configure</string>
@@ -95,12 +87,25 @@
 	<string name="configure_activity_title_tools">Tools</string>
 	<string name="configure_tools_action_generate_node_configuration_and_keys">Generate node configuration and keys</string>
 	<string name="configure_tools_action_join_network_via_invitation_url_qr_code">Join network via invitation URL or QR code</string>
-	<string name="configure_tools_action_encrypt_decrypt_private_keys">Encrypt or decrypt private keys</string>
+	<string name="configure_tools_action_pick_apps">Choose which apps use the VPN</string>
+	<string name="configure_tools_action_pick_apps_description">Per-app split routing: only selected apps, or all apps except selected ones.</string>
+
+	<!-- App picker (per-app split routing) -->
+	<string name="apps_picker_choose_network_title">Network</string>
+	<string name="apps_picker_mode_blacklist">All apps except the selected ones use the VPN</string>
+	<string name="apps_picker_mode_whitelist">Only the selected apps use the VPN</string>
+	<string name="apps_picker_mode_blacklist_hint">Selected apps bypass the tunnel (DisallowApplication). No selection: every app uses the VPN.</string>
+	<string name="apps_picker_mode_whitelist_hint">Only selected apps go through the tunnel (AllowApplication). No selection: every app uses the VPN.</string>
+	<string name="apps_picker_search_hint">Search apps</string>
+	<string name="apps_picker_action_save">Save</string>
+	<string name="apps_picker_saved">App selection written to tinc.yaml.</string>
+	<string name="apps_picker_saved_reconnect">App selection written to tinc.yaml; reconnect to apply it.</string>
+	<string name="apps_picker_error_read_format">Could not read the network configuration:\n%1$s</string>
+	<string name="apps_picker_error_write_format">Could not write the network configuration:\n%1$s</string>
 
 	<string name="configure_tools_generate_config_title">New network</string>
 	<string name="configure_tools_generate_config_net_name_hint">tinc network name</string>
 	<string name="configure_tools_generate_config_node_name_hint">Name of this node</string>
-	<string name="configure_tools_generate_config_optional_passphrase_hint">Passphrase (optional)</string>
 	<string name="configure_tools_generate_config_action">Create</string>
 	<string name="configure_tools_generate_config_generating">Generating node configuration…</string>
 
@@ -110,11 +115,6 @@
 	<string name="configure_tools_join_network_action">Join</string>
 	<string name="configure_tools_join_network_joining">Joining network…</string>
 
-	<string name="configure_tools_private_keys_encryption_title">Private keys encryption</string>
-	<string name="configure_tools_private_key_encryption_current_passphrase">Current passphrase\n(leave empty if none)</string>
-	<string name="configure_tools_private_key_encryption_new_passphrase">New passphrase\n(leave empty to decrypt)</string>
-	<string name="configure_tools_private_keys_encryption_action" translatable="false">@string/generic_action_apply</string>
-	<string name="configure_tools_private_keys_encryption_encrypting">Encrypting/decrypting private tinc keys</string>
 
 	<!-- Status activity -->
 	<string name="status_activity_state_connected_to_format">Connected to %s</string>

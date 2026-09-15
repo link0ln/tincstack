@@ -1,6 +1,7 @@
 /*
  * Tinc Mesh VPN: Android client and user interface
  * Copyright (C) 2017-2018 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,8 +19,6 @@
 
 package org.pacien.tincapp.data
 
-import org.apache.commons.configuration2.ex.ConversionException
-
 /**
  * @author euxane
  */
@@ -30,7 +29,7 @@ data class CidrAddress(val address: String, val prefix: Int) {
     fun fromSlashSeparated(s: String) = try {
       CidrAddress(s.substringBefore(SEPARATOR), Integer.parseInt(s.substringAfter(SEPARATOR)))
     } catch (e: Exception) {
-      throw ConversionException(e.message, e)
+      throw TincYaml.InvalidConfigurationException("not an address/prefix: '$s'")
     }
   }
 
