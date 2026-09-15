@@ -58,6 +58,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "obfs.h"
 
 /* The minimum size of a probe is 14 bytes, but since we normally use CBC mode
    encryption, we can add a few extra random bytes without increasing the
@@ -1177,6 +1178,14 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 
 	logger(DEBUG_TRAFFIC, LOG_INFO, "Sending packet from %s (%s) to %s (%s) via %s (%s) (UDP)", from->name, from->hostname, to->name, to->hostname, relay->name, relay->hostname);
 
+	/* obfs carrier: if the next hop is an obfs link, seal this SPTPS datagram
+	   before it goes on the wire. The relay strips the seal on receive and this
+	   re-applies it per hop, so a relayed record is never double-wrapped. When
+	   the hop is not an obfs link the datagram is sent unchanged below. */
+	if(obfs_wrap_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay)) {
+		return true;
+	}
+
 #ifdef HAVE_SENDMMSG
 
 	/* While the relay receive loop is batching, queue this datagram instead of
@@ -1879,20 +1888,14 @@ static node_t *try_harder(const sockaddr_t *from, const vpn_packet_t *pkt) {
 	return match;
 }
 
-static void handle_incoming_vpn_packet(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr) {
+/* The SPTPS / legacy UDP data path, split out so the obfs carrier can
+   re-inject a datagram it just unsealed without going back through the carrier
+   dispatcher (which would try to classify the inner bytes again). */
+static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr) {
 	char *hostname;
 	node_id_t nullid = {0};
 	node_t *from, *to;
 	bool direct = false;
-
-	/* First give the carriers a chance to claim this datagram (single-flow
-	   meta frames, QUIC, obfs). Anything they do not claim is an ordinary
-	   SPTPS / legacy data packet and is handled below exactly as before. The
-	   classifier keys on a reserved prefix, so a real data packet is never
-	   mis-claimed (see docs/transports.md). */
-	if(transport_udp_dispatch(ls, pkt->data, pkt->len, addr)) {
-		return;
-	}
 
 	sockaddrunmap(addr); /* Some braindead IPv6 implementations do stupid things. */
 
@@ -2013,6 +2016,37 @@ skip_harder:
 	if(!direct) {
 		send_mtu_info(myself, n, MTU);
 	}
+}
+
+static void handle_incoming_vpn_packet(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr) {
+	/* First give the carriers a chance to claim this datagram (single-flow
+	   meta frames, QUIC, obfs). Anything they do not claim is an ordinary
+	   SPTPS / legacy data packet and is handled by process_sptps_udp() exactly
+	   as before. The classifier keys on a reserved prefix (or, for obfs, a
+	   keyed check), so a real data packet is never mis-claimed (see
+	   docs/transports.md). */
+	if(transport_udp_dispatch(ls, pkt->data, pkt->len, addr)) {
+		return;
+	}
+
+	process_sptps_udp(ls, pkt, addr);
+}
+
+/* Re-inject an inner SPTPS datagram that the obfs carrier just unsealed. It
+   goes straight to the data path, bypassing carrier dispatch. */
+void handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr) {
+	if(len > MAXSIZE) {
+		return;
+	}
+
+	vpn_packet_t pkt;
+	pkt.offset = 0;
+	pkt.priority = 0;
+	memcpy(pkt.data, buf, len);
+	pkt.len = len;
+
+	sockaddr_t a = *addr;
+	process_sptps_udp(ls, &pkt, &a);
 }
 
 void handle_incoming_vpn_data(void *data, int flags) {
