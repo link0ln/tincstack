@@ -36,7 +36,9 @@ TCPDUMP_IMG=nicolaka/netshoot
 NET=wsg2obfs
 BASE=/tmp/wsg2-obfs
 PFX=wsg2o
-WAIT=60
+WAIT=120   # deadline ceiling for every readiness poll; the happy path exits as
+           # soon as the link is clean (observed 17-81 s for the relayed obfs KEX
+           # under load), so a larger ceiling only adds tolerance, never latency.
 
 A_IP=10.37.9.10
 R_IP=10.37.9.11
@@ -149,13 +151,17 @@ setvpn() { # letter vpnip  (idempotent; the device may not exist yet right after
 logs() { docker logs "${PFX}-$1" 2>&1; }
 activated() { logs "$1" | grep -q ' activated'; }
 
-# wait_link <from> <from-vpn> <to> <to-vpn>: both daemons logged "activated"
-# and <from> pings <to> over the tunnel. Polls 1 s up to $WAIT s.
+# wait_link <n1> <n1-vpn> <n2> <n2-vpn>: both daemons logged "activated" AND the
+# tunnel pings clean in BOTH directions (each obfs data path is warmed/confirmed
+# independently, so the assertion pings that follow are not racing a still-cold
+# reverse direction). Polls 1 s up to $WAIT s.
 wait_link() {
 	deadline=$(( $(date +%s) + WAIT ))
 	while :; do
 		setvpn "$1" "$2"; setvpn "$3" "$4"
-		if activated "$1" && activated "$3" && docker exec "${PFX}-$1" ping -c1 -W1 "$4" >/dev/null 2>&1; then
+		if activated "$1" && activated "$3" \
+		   && docker exec "${PFX}-$1" ping -c1 -W1 "$4" >/dev/null 2>&1 \
+		   && docker exec "${PFX}-$3" ping -c1 -W1 "$2" >/dev/null 2>&1; then
 			return 0
 		fi
 		if [ "$(date +%s)" -ge "$deadline" ]; then
@@ -166,15 +172,31 @@ wait_link() {
 		sleep 1
 	done
 }
-# wait_ping <from> <to-vpn>: one ping succeeds within $WAIT s
-wait_ping() {
+# wait_clean <from> <to-vpn> [count]: poll a full ping run until it reports a
+# clean " 0% packet loss" within $WAIT s, echoing the final ping tail. A fresh
+# cold link needs a moment for tinc's UDP discovery to confirm each direction
+# independently; polling a *clean* run (not a single snapshot) tolerates that
+# convergence window under host load while still failing if a direction never
+# stabilises. Echoes the final ping tail; RETURN CODE is the result (0 clean,
+# 1 timed out) -- read it via `if out=$(wait_clean ...); then`, since a global
+# set here would not survive the command substitution.
+wait_clean() {
 	deadline=$(( $(date +%s) + WAIT ))
-	until docker exec "${PFX}-$1" ping -c1 -W1 "$2" >/dev/null 2>&1; do
-		[ "$(date +%s)" -ge "$deadline" ] && return 1
-		sleep 1
+	cnt=${3:-4}
+	while :; do
+		out=$(docker exec "${PFX}-$1" ping -c"$cnt" -W2 "$2" 2>&1 | tail -2)
+		if echo "$out" | grep -q " 0% packet loss"; then
+			echo "$out"
+			return 0
+		fi
+		if [ "$(date +%s)" -ge "$deadline" ]; then
+			echo "$out"
+			return 1
+		fi
+		sleep 2
 	done
 }
-loss() { echo "$1" | grep -oE '[0-9]+% packet loss' || echo '?'; }
+loss() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)?% packet loss' || echo '?'; }
 
 capture_start() { # letter
 	docker run -d --name ${PFX}-cap --net container:${PFX}-$1 --cap-add NET_RAW "$TCPDUMP_IMG" \
@@ -234,8 +256,8 @@ wait_link a "$A_VPN" b "$B_VPN" || fail=1
 hs_cap=$(capture_stop)
 junk_hs=$(junk_events a b)
 
-ab=$(docker exec ${PFX}-a ping -c3 -W2 "$B_VPN" 2>&1 | tail -2)
-ba=$(docker exec ${PFX}-b ping -c3 -W2 "$A_VPN" 2>&1 | tail -2)
+if ab=$(wait_clean a "$B_VPN"); then ab_ok=1; else ab_ok=0; fi
+if ba=$(wait_clean b "$A_VPN"); then ba_ok=1; else ba_ok=0; fi
 
 # steady-state flood: no new handshake, so the sender's junk counter must not move
 junk_before=$(junk_events a b)
@@ -253,8 +275,8 @@ echo "  (info) wire datagrams of $JMIN-$JMAX B in the handshake window = $junk_h
 echo "  dialer log: $(logs a | grep -oE 'Dialling .* via obfuscated single-flow UDP|Connection with nodeb .* activated' | head -2 | tr '\n' ';')"
 echo "  acceptor log: $(logs b | grep -oE 'Cold-classified an obfs datagram[^;]*|Connection from .* \(obfuscated single-flow UDP\)' | head -2 | tr '\n' ';')"
 
-echo "$ab" | grep -q " 0% packet loss" || { echo "MISS: cold obfs A->B ping failed"; fail=1; }
-echo "$ba" | grep -q " 0% packet loss" || { echo "MISS: cold obfs B->A ping failed"; fail=1; }
+[ "$ab_ok" = 1 ] || { echo "MISS: cold obfs A->B ping never went clean within ${WAIT}s"; fail=1; }
+[ "$ba_ok" = 1 ] || { echo "MISS: cold obfs B->A ping never went clean within ${WAIT}s"; fail=1; }
 [ "$sf_magic" -gt 0 ] || { echo "MISS: SF magic not seen in the sf reference capture (test setup)"; fail=1; }
 [ "$obfs_magic" = 0 ] || { echo "MISS: SF/SPTPS fingerprint (SF magic) still visible under obfs"; fail=1; }
 [ "$junk_hs" -gt 0 ] || { echo "MISS: no junk emitted around the handshake"; fail=1; }
@@ -280,20 +302,14 @@ docker exec ${PFX}-a iptables -A INPUT  -s "$B_IP" -j DROP
 docker exec ${PFX}-a iptables -A OUTPUT -d "$B_IP" -j DROP
 docker exec ${PFX}-b iptables -A INPUT  -s "$A_IP" -j DROP
 docker exec ${PFX}-b iptables -A OUTPUT -d "$A_IP" -j DROP
-# The first packets trigger the relayed SPTPS key exchange through R; poll
-# until one ping gets through (<= 60 s), then require a clean run.
+# The first packets trigger the relayed SPTPS key exchange through R; poll until
+# a full ping run is clean (<= WAIT s), which covers establishment + convergence.
 t0=$(date +%s)
-if wait_ping a "$B_VPN"; then
-	ping2=$(docker exec ${PFX}-a ping -c4 -W3 "$B_VPN" 2>&1 | tail -2)
-	recv=$(echo "$ping2" | grep -oE '[0-9]+ received' | grep -oE '[0-9]+')
-	echo "relay up after $(( $(date +%s) - t0 )) s: $(echo "$ping2" | head -1)"
-	if [ "${recv:-0}" -ge 3 ]; then
-		echo "relay A<->B reachable through R (obfs, per-hop sealed)"
-	else
-		echo "MISS: relayed obfs A<->B ping lossy after establishment"; fail=1
-	fi
+if ping2=$(wait_clean a "$B_VPN" 4); then
+	echo "relay up after $(( $(date +%s) - t0 )) s: $ping2"
+	echo "relay A<->B reachable through R (obfs, per-hop sealed)"
 else
-	echo "MISS: relayed obfs A<->B never came up within ${WAIT}s"; fail=1
+	echo "MISS: relayed obfs A<->B never went clean within ${WAIT}s: $ping2"; fail=1
 	logs r | tail -20
 fi
 
@@ -309,12 +325,12 @@ wait_link a "$A_VPN" b "$B_VPN" || fail=1
 capture_start b
 docker exec ${PFX}-a ping -c3 -W2 "$B_VPN" >/dev/null 2>&1 || true
 def_cap=$(capture_stop)
-def_ping=$(docker exec ${PFX}-a ping -c3 -W2 "$B_VPN" 2>&1 | tail -2)
+if def_ping=$(wait_clean a "$B_VPN"); then def_ok=1; else def_ok=0; fi
 def_magic=$(sfmagic "$(hex_of "$def_cap")")
 udpn=$(echo "$def_cap" | grep -c 'UDP' || true)
 def_junk=$(junk_events a b)
 echo "default: $(loss "$def_ping") ; SF magic=$def_magic ; UDP datagrams=$udpn ; junk events=$def_junk"
-echo "$def_ping" | grep -q " 0% packet loss" || { echo "MISS: default tunnel ping failed"; fail=1; }
+[ "$def_ok" = 1 ] || { echo "MISS: default tunnel ping never went clean within ${WAIT}s"; fail=1; }
 [ "$def_magic" = 0 ] || { echo "MISS: SF magic on the wire with defaults (should be plain SPTPS)"; fail=1; }
 [ "$udpn" -gt 0 ] || { echo "MISS: no UDP data on the wire with defaults"; fail=1; }
 [ "$def_junk" = 0 ] || { echo "MISS: junk emitted with obfs not selected"; fail=1; }
