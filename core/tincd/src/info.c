@@ -76,9 +76,10 @@ static int info_node(int fd, const char *item) {
 	int udp_ping_rtt;
 	uint64_t in_packets, in_bytes, out_packets, out_bytes;
 	char transports[4096] = "plain";
+	char tlsfp[4096] = "-";
 
 	while(recvline(fd, line, sizeof(line))) {
-		int n = sscanf(line, "%d %d %4095s %4095s %4095s port %4095s %d %d %d %d %x %"PRIx32" %4095s %4095s %d %hd %hd %hd %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %4095s", &code, &req, node, id, host, port, &cipher, &digest, &maclength, &compression, &options, &status_union.raw, nexthop, via, &distance, &pmtu, &minmtu, &maxmtu, &last_state_change, &udp_ping_rtt, &in_packets, &in_bytes, &out_packets, &out_bytes, transports);
+		int n = sscanf(line, "%d %d %4095s %4095s %4095s port %4095s %d %d %d %d %x %"PRIx32" %4095s %4095s %d %hd %hd %hd %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %4095s %4095s", &code, &req, node, id, host, port, &cipher, &digest, &maclength, &compression, &options, &status_union.raw, nexthop, via, &distance, &pmtu, &minmtu, &maxmtu, &last_state_change, &udp_ping_rtt, &in_packets, &in_bytes, &out_packets, &out_bytes, transports, tlsfp);
 
 		if(n == 2) {
 			break;
@@ -110,6 +111,10 @@ static int info_node(int fd, const char *item) {
 	printf("Node ID:      %s\n", id);
 	printf("Address:      %s port %s\n", host, port);
 	printf("Transports:   %s\n", transports);
+
+	if(strcmp(tlsfp, "-")) {
+		printf("TLS cert fp:  %s\n", tlsfp);
+	}
 
 	char timestr[32] = "never";
 	time_t lsc_time = last_state_change;

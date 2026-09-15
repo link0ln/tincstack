@@ -117,6 +117,7 @@ void free_node(node_t *n) {
 	free(n->hostname);
 	free(n->name);
 	free(n->late);
+	free(n->tls_fingerprint);
 
 	if(n->address_cache) {
 		close_address_cache(n->address_cache);
@@ -212,7 +213,9 @@ bool dump_nodes(connection_t *c) {
 		id[sizeof(id) - 1] = 0;
 		char transports[TRANSPORT_LIST_MAX];
 		transport_mask_to_string(transport_node_mask(n), transports);
-		send_request(c, "%d %d %s %s %s %d %d %lu %d %x %x %s %s %d %d %d %d %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %s", CONTROL, REQ_DUMP_NODES,
+		/* Trailing tls fingerprint token ("-" if unknown), like transports: an
+		   older CLI's sscanf stops before it and ignores it. */
+		send_request(c, "%d %d %s %s %s %d %d %lu %d %x %x %s %s %d %d %d %d %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %s %s", CONTROL, REQ_DUMP_NODES,
 		             n->name, id, n->hostname ? n->hostname : "unknown port unknown",
 #ifdef DISABLE_LEGACY
 		             0, 0, 0UL,
@@ -222,7 +225,8 @@ bool dump_nodes(connection_t *c) {
 		             n->outcompression, n->options, n->status.value,
 		             n->nexthop ? n->nexthop->name : "-", n->via && n->via->name ? n->via->name : "-", n->distance,
 		             n->mtu, n->minmtu, n->maxmtu, (long)n->last_state_change, n->udp_ping_rtt,
-		             n->in_packets, n->in_bytes, n->out_packets, n->out_bytes, transports);
+		             n->in_packets, n->in_bytes, n->out_packets, n->out_bytes, transports,
+		             n->tls_fingerprint ? n->tls_fingerprint : "-");
 	}
 
 	return send_request(c, "%d %d", CONTROL, REQ_DUMP_NODES);

@@ -130,6 +130,7 @@ src_lib_common = [
   'splay_tree.c',
   'sptps.c',
   'subnet_parse.c',
+  'tls.c',
   'utils.c',
   'version.c',
   'xoshiro.c',
@@ -181,6 +182,8 @@ src_tincd = [
   'transport.c',
   'transport_table.c',
   'transport_sf.c',
+  'https.c',
+  'decoy.c',
 ]
 
 src_event_select = files('event_select.c')

@@ -32,6 +32,9 @@
 #include "utils.h"
 #include "xalloc.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 list_t connection_list = {
 	.head = NULL,
 	.tail = NULL,
@@ -167,10 +170,14 @@ void connection_del(connection_t *c) {
 
 bool dump_connections(connection_t *cdump) {
 	for list_each(connection_t, c, &connection_list) {
-		send_request(cdump, "%d %d %s %s %x %d %x",
+		/* Trailing carrier name ("plain" if none), so `tinc dump connections'
+		   shows which transport a link runs on. An older CLI's sscanf stops
+		   before it and ignores it. */
+		send_request(cdump, "%d %d %s %s %x %d %x %s",
 		             CONTROL, REQ_DUMP_CONNECTIONS,
 		             c->name, c->hostname, c->options, c->socket,
-		             c->status.value);
+		             c->status.value,
+		             c->transport && c->transport->name ? c->transport->name : "plain");
 	}
 
 	return send_request(cdump, "%d %d", CONTROL, REQ_DUMP_CONNECTIONS);
