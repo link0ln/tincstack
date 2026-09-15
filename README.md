@@ -38,6 +38,20 @@ docker build -f core/Dockerfile.build -t tincstack/core:dev core/
 docker run --rm tincstack/core:dev tincd --version
 ```
 
+## Windows client
+
+`platforms/windows/` is the PySide6 manager (`tincmgr.exe` + `tinc.yaml`). The
+core cross-builds for Windows on Linux in Docker:
+
+```
+platforms/windows/build-core-win.sh      # core/Dockerfile.build-win → platforms/windows/resources/
+```
+
+The GUI (invite/join dialogs, transports editor, atomic YAML save, rotating
+daemon log, all `tinc.exe` calls off the Qt thread) is tested headless in Docker
+(`QT_QPA_PLATFORM=offscreen`); the onefile `.exe` itself is built on a Windows
+host with PyInstaller — see `platforms/windows/build-windows.md`.
+
 ## Status
 
 Foundation (M0) complete: core selected, vendored and building. See `PLAN.md` for
