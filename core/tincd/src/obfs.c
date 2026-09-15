@@ -374,12 +374,17 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 	}
 
 	for splay_each(node_t, n, &node_tree) {
-		if(!n->ecdsa || n == myself) {
+		if(n == myself) {
 			continue;
 		}
 
 		if(scan_budget-- <= 0) {
 			break;
+		}
+
+		/* Public keys are read lazily; load this node's before deriving. */
+		if(!node_read_ecdsa_public_key(n)) {
+			continue;
 		}
 
 		obfs_link_t *l = obfs_link_for_node(n);
@@ -409,6 +414,7 @@ bool obfs_dial(connection_t *c) {
 		return false;
 	}
 
+	node_read_ecdsa_public_key(n); /* keys are read lazily; the dial needs it now */
 	obfs_link_t *l = obfs_link_for_node(n);
 
 	if(!l) {
