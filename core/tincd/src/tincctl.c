@@ -1732,6 +1732,13 @@ const var_t variables[] = {
 	{"ScriptsExtension", VAR_SERVER},
 	{"ScriptsInterpreter", VAR_SERVER},
 	{"SingleFlow", VAR_SERVER | VAR_SAFE},
+	{"ObfsJunkPacketCount", VAR_SERVER | VAR_SAFE},
+	{"ObfsJunkPacketMinSize", VAR_SERVER | VAR_SAFE},
+	{"ObfsJunkPacketMaxSize", VAR_SERVER | VAR_SAFE},
+	{"ObfsInitHeaderJunkSize", VAR_SERVER | VAR_SAFE},
+	{"ObfsTransportHeaderJunkSize", VAR_SERVER | VAR_SAFE},
+	{"ObfsInitMagicHeader", VAR_SERVER | VAR_SAFE},
+	{"ObfsTransportMagicHeader", VAR_SERVER | VAR_SAFE},
 	{"StrictSubnets", VAR_SERVER | VAR_SAFE},
 	{"PreferredTransports", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
 	{"TunnelServer", VAR_SERVER | VAR_SAFE},
@@ -2299,6 +2306,193 @@ int check_port(const char *name) {
 
 	fprintf(stderr, "Please change tinc's Port manually.\n");
 	return 0;
+}
+
+/* ---- obfs runtime control (M5) ------------------------------------------
+   Every mutation goes through the YAML-aware cmd_config path (M2), so it lands
+   in tinc.yaml and survives `tinc reload' and a daemon restart -- the exact
+   defect the tinc-obfs prototype had (its changes were lost on reload). */
+
+static const struct {
+	const char *alias;
+	const char *var;
+} obfs_aliases[] = {
+	{"junkcount", "ObfsJunkPacketCount"}, {"jc", "ObfsJunkPacketCount"},
+	{"junkmin", "ObfsJunkPacketMinSize"}, {"jmin", "ObfsJunkPacketMinSize"},
+	{"junkmax", "ObfsJunkPacketMaxSize"}, {"jmax", "ObfsJunkPacketMaxSize"},
+	{"initjunk", "ObfsInitHeaderJunkSize"}, {"s1", "ObfsInitHeaderJunkSize"},
+	{"transportjunk", "ObfsTransportHeaderJunkSize"}, {"s2", "ObfsTransportHeaderJunkSize"},
+	{"initmagic", "ObfsInitMagicHeader"}, {"h1", "ObfsInitMagicHeader"},
+	{"transportmagic", "ObfsTransportMagicHeader"}, {"h2", "ObfsTransportMagicHeader"},
+	{NULL, NULL},
+};
+
+/* The full set of obfs keys, in the order `status' prints them. */
+static const char *const obfs_keys[] = {
+	"ObfsJunkPacketCount", "ObfsJunkPacketMinSize", "ObfsJunkPacketMaxSize",
+	"ObfsInitHeaderJunkSize", "ObfsTransportHeaderJunkSize",
+	"ObfsInitMagicHeader", "ObfsTransportMagicHeader", NULL,
+};
+
+static const char *obfs_resolve_key(const char *k) {
+	for(int i = 0; obfs_aliases[i].alias; i++) {
+		if(!strcasecmp(k, obfs_aliases[i].alias)) {
+			return obfs_aliases[i].var;
+		}
+	}
+
+	if(!strncasecmp(k, "Obfs", 4)) {
+		return k;
+	}
+
+	return NULL;
+}
+
+/* Reuse cmd_config. It expects argv[0] to be the action and dereferences
+   argv[-1], so we pass a base array and hand it base+1. */
+static int obfs_config_call(const char *action, const char *key, const char *value) {
+	char *base[4];
+	base[0] = "obfs";
+	base[1] = (char *)action;
+	base[2] = (char *)key;
+	int argc = 2;
+
+	if(value) {
+		base[3] = (char *)value;
+		argc = 3;
+	}
+
+	return cmd_config(argc, base + 1);
+}
+
+static void obfs_usage(void) {
+	fprintf(stderr,
+	        "Usage: tinc obfs status\n"
+	        "       tinc obfs enable | disable\n"
+	        "       tinc obfs set <key> <value>\n"
+	        "       tinc obfs get <key>\n"
+	        "       tinc obfs tag <count>/<min>/<max>[/<initjunk>[/<initmagic>]]\n"
+	        "Keys: junkcount jmin jmax initjunk transportjunk initmagic transportmagic\n"
+	        "      (or the full ObfsJunkPacketCount, ObfsInitHeaderJunkSize, ... names)\n");
+}
+
+static int cmd_obfs(int argc, char *argv[]) {
+	if(argc < 2) {
+		obfs_usage();
+		return 1;
+	}
+
+	const char *sub = argv[1];
+
+	if(!strcasecmp(sub, "status")) {
+		bool running = connect_tincd(false);
+		printf("obfs status:\n");
+		printf("  daemon: %s\n", running ? "running (control socket connected)" : "not running");
+		printf("  dial preference (PreferredTransports):\n    ");
+		fflush(stdout);
+		obfs_config_call("get", "PreferredTransports", NULL);
+		printf("  parameters:\n");
+
+		for(int i = 0; obfs_keys[i]; i++) {
+			printf("    %s = ", obfs_keys[i]);
+			fflush(stdout);
+			obfs_config_call("get", obfs_keys[i], NULL);
+		}
+
+		return 0;
+	}
+
+	if(!strcasecmp(sub, "enable")) {
+		int r = obfs_config_call("set", "PreferredTransports", "obfs");
+
+		if(!r) {
+			r = obfs_config_call("add", "PreferredTransports", "plain");
+		}
+
+		if(!r) {
+			fprintf(stderr, "obfs enabled: PreferredTransports = obfs, plain\n");
+		}
+
+		return r;
+	}
+
+	if(!strcasecmp(sub, "disable")) {
+		int r = obfs_config_call("set", "PreferredTransports", "plain");
+
+		if(!r) {
+			fprintf(stderr, "obfs disabled: PreferredTransports = plain\n");
+		}
+
+		return r;
+	}
+
+	if(!strcasecmp(sub, "set")) {
+		if(argc < 4) {
+			obfs_usage();
+			return 1;
+		}
+
+		const char *var = obfs_resolve_key(argv[2]);
+
+		if(!var) {
+			fprintf(stderr, "Unknown obfs key `%s'.\n", argv[2]);
+			return 1;
+		}
+
+		return obfs_config_call("set", var, argv[3]);
+	}
+
+	if(!strcasecmp(sub, "get")) {
+		if(argc < 3) {
+			obfs_usage();
+			return 1;
+		}
+
+		const char *var = obfs_resolve_key(argv[2]);
+
+		if(!var) {
+			fprintf(stderr, "Unknown obfs key `%s'.\n", argv[2]);
+			return 1;
+		}
+
+		return obfs_config_call("get", var, NULL);
+	}
+
+	if(!strcasecmp(sub, "tag")) {
+		if(argc < 3) {
+			obfs_usage();
+			return 1;
+		}
+
+		static const char *const tag_vars[] = {
+			"ObfsJunkPacketCount", "ObfsJunkPacketMinSize", "ObfsJunkPacketMaxSize",
+			"ObfsInitHeaderJunkSize", "ObfsInitMagicHeader",
+		};
+		char spec[256];
+		strncpy(spec, argv[2], sizeof(spec) - 1);
+		spec[sizeof(spec) - 1] = 0;
+
+		char *save = NULL;
+		int i = 0;
+
+		for(char *tok = strtok_r(spec, "/", &save); tok && i < 5; tok = strtok_r(NULL, "/", &save), i++) {
+			if(!*tok) {
+				continue; /* an empty field leaves that parameter unchanged */
+			}
+
+			int r = obfs_config_call("set", tag_vars[i], tok);
+
+			if(r) {
+				return r;
+			}
+		}
+
+		fprintf(stderr, "obfs tag applied (%d field(s)).\n", i);
+		return 0;
+	}
+
+	obfs_usage();
+	return 1;
 }
 
 static int cmd_init(int argc, char *argv[]) {
@@ -3117,6 +3311,7 @@ static const struct {
 	{"del", cmd_config, false},
 	{"get", cmd_config, false},
 	{"set", cmd_config, false},
+	{"obfs", cmd_obfs, false},
 	{"init", cmd_init, false},
 	{"generate-keys", cmd_generate_keys, false},
 #ifndef DISABLE_LEGACY
