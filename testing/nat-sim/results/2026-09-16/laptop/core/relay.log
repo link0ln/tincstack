@@ -1,0 +1,1123 @@
+2026-09-15 22:08:46 NOTICE  tincd 1.1pre18 (Sep 15 2026 21:28:28) starting, debug level 5
+2026-09-15 22:08:46 INFO    /dev/net/tun is a Linux tun/tap device (tun mode)
+2026-09-15 22:08:46 NOTICE  Listening on 0.0.0.0 port 655
+2026-09-15 22:08:46 INFO    Executing script tinc-up
+2026-09-15 22:08:46 NOTICE  Ready
+2026-09-15 22:08:46 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:08:46 INFO    Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+2026-09-15 22:08:46 NOTICE  Connection from 100.64.0.4 port 36854
+2026-09-15 22:08:47 DEBUG   Got ID from <unknown> (100.64.0.4 port 36854): 0 nodel 17.7
+2026-09-15 22:08:47 DEBUG   Sending ID to nodel (100.64.0.4 port 36854): 0 relay 17.7
+2026-09-15 22:08:47 DEBUG   Sending 13 bytes of raw metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:47 NOTICE  Connection from 100.64.0.3 port 51908
+2026-09-15 22:08:47 DEBUG   Got ID from <unknown> (100.64.0.3 port 51908): 0 nodeb 17.7
+2026-09-15 22:08:47 DEBUG   Sending ID to nodeb (100.64.0.3 port 51908): 0 relay 17.7
+2026-09-15 22:08:47 DEBUG   Sending 13 bytes of raw metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:47 DEBUG   Sending ACK to nodel (100.64.0.4 port 36854): 4 655 0 700000c
+2026-09-15 22:08:47 DEBUG   Sending 16 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:47 DEBUG   Sending ACK to nodeb (100.64.0.3 port 51908): 4 655 0 700000c
+2026-09-15 22:08:47 DEBUG   Sending 16 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:47 DEBUG   Got ACK from nodel (100.64.0.4 port 36854): 4 655 1 700000c
+2026-09-15 22:08:47 NOTICE  Connection with nodel (100.64.0.4 port 36854) activated
+2026-09-15 22:08:47 DEBUG   Sending ADD_SUBNET to nodel (100.64.0.4 port 36854): 10 2dc2796 relay 10.77.0.1
+2026-09-15 22:08:47 DEBUG   Sending 27 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:47 DEBUG   Sending ADD_EDGE to everyone (BROADCAST): 12 f728a95 relay nodel 100.64.0.4 655 700000c 0 100.64.0.10 655
+2026-09-15 22:08:47 DEBUG   Sending 64 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:47 DEBUG   Got ADD_SUBNET from nodel (100.64.0.4 port 36854): 10 13b4bc70 nodel 10.77.0.4
+2026-09-15 22:08:47 DEBUG   Forwarding ADD_SUBNET from nodel (100.64.0.4 port 36854): 10 13b4bc70 nodel 10.77.0.4
+2026-09-15 22:08:47 DEBUG   Got ADD_EDGE from nodel (100.64.0.4 port 36854): 12 848a6cb4 nodel relay 100.64.0.10 655 700000c 0 192.168.130.5 655
+2026-09-15 22:08:47 DEBUG   Forwarding ADD_EDGE from nodel (100.64.0.4 port 36854): 12 848a6cb4 nodel relay 100.64.0.10 655 700000c 0 192.168.130.5 655
+2026-09-15 22:08:47 DEBUG   UDP address of nodel set to 100.64.0.4 port 655
+2026-09-15 22:08:47 DEBUG   Node nodel (100.64.0.4 port 655) became reachable
+2026-09-15 22:08:47 DEBUG   Got ACK from nodeb (100.64.0.3 port 51908): 4 655 1 700000c
+2026-09-15 22:08:47 NOTICE  Connection with nodeb (100.64.0.3 port 51908) activated
+2026-09-15 22:08:47 DEBUG   Sending ADD_SUBNET to nodeb (100.64.0.3 port 51908): 10 a00e3c3a nodel 10.77.0.4
+2026-09-15 22:08:47 DEBUG   Sending 28 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:47 DEBUG   Sending ADD_EDGE to nodeb (100.64.0.3 port 51908): 12 1f78f36 nodel relay 100.64.0.10 655 700000c 0 192.168.130.5 655
+2026-09-15 22:08:47 DEBUG   Sending 67 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:47 DEBUG   Sending ADD_SUBNET to nodeb (100.64.0.3 port 51908): 10 ca9b3ee2 relay 10.77.0.1
+2026-09-15 22:08:47 DEBUG   Sending 28 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:47 DEBUG   Sending ADD_EDGE to nodeb (100.64.0.3 port 51908): 12 7a763206 relay nodel 100.64.0.4 655 700000c 0 100.64.0.10 655
+2026-09-15 22:08:47 DEBUG   Sending 65 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:47 DEBUG   Sending ADD_EDGE to everyone (BROADCAST): 12 3f776df1 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+2026-09-15 22:08:47 DEBUG   Sending 65 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:47 DEBUG   Sending 65 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:47 DEBUG   Got ADD_SUBNET from nodeb (100.64.0.3 port 51908): 10 b1e6e15f nodeb 10.77.0.3
+2026-09-15 22:08:47 DEBUG   Forwarding ADD_SUBNET from nodeb (100.64.0.3 port 51908): 10 b1e6e15f nodeb 10.77.0.3
+2026-09-15 22:08:47 DEBUG   Sending 28 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:47 DEBUG   Got ADD_EDGE from nodeb (100.64.0.3 port 51908): 12 a668073c nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:08:47 DEBUG   Forwarding ADD_EDGE from nodeb (100.64.0.3 port 51908): 12 a668073c nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:08:47 DEBUG   Sending 68 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:47 DEBUG   UDP address of nodeb set to 100.64.0.3 port 655
+2026-09-15 22:08:47 DEBUG   Node nodeb (100.64.0.3 port 655) became reachable
+2026-09-15 22:08:47 DEBUG   Got REQ_KEY from nodel (100.64.0.4 port 36854): 15 nodel nodeb 15 AAAAAAIAwBhrGitQkS/BwHh/ZLugh2iB1B21/PkHmJTLNkTkVw8XfhT93dLlPiTvaCr/TCvKX21MUt67OMK1d+UGp74KYC
+2026-09-15 22:08:47 DEBUG   Sending REQ_KEY to nodeb (100.64.0.3 port 51908): 15 nodel nodeb 15 AAAAAAIAwBhrGitQkS/BwHh/ZLugh2iB1B21/PkHmJTLNkTkVw8XfhT93dLlPiTvaCr/TCvKX21MUt67OMK1d+UGp74KYC
+2026-09-15 22:08:47 DEBUG   Sending 113 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:47 DEBUG   Got REQ_KEY from nodel (100.64.0.4 port 36854): 15 nodel relay 15 AAAAAAIAjEgP8Odp2CUNS51VYHWvVwDpZ0gO2XhbAnJtHRcf++Het+BauVVBkpeaLZEuEa3n+YbqqvF7eE7pB6eS5Pe3jB
+2026-09-15 22:08:47 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 36854): 16 relay nodel AAAAAAIA/xhNCULcKdLDWDKpCpJtBxh3/kvb7E9EJpJRP6PFmezqSUXnrqQK/xk1WAqvO8p26ydNEaGUmZDL99uuWByvRD -1 -1 -1 0
+2026-09-15 22:08:47 DEBUG   Sending 121 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:47 DEBUG   Got PACKET from nodel (100.64.0.4 port 36854): 17 18
+2026-09-15 22:08:47 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:08:47 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:08:47 DEBUG   Got PACKET from nodel (100.64.0.4 port 36854): 17 18
+2026-09-15 22:08:47 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:08:47 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:08:47 DEBUG   Got PACKET from nodel (100.64.0.4 port 36854): 17 18
+2026-09-15 22:08:47 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:08:47 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:08:47 DEBUG   Got PACKET from nodel (100.64.0.4 port 36854): 17 18
+2026-09-15 22:08:47 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:08:47 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:08:47 DEBUG   Got PACKET from nodel (100.64.0.4 port 36854): 17 18
+2026-09-15 22:08:47 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:08:47 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:08:47 DEBUG   Got PACKET from nodel (100.64.0.4 port 36854): 17 18
+2026-09-15 22:08:47 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:08:47 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:08:49 DEBUG   Got ANS_KEY from nodel (100.64.0.4 port 36854): 16 nodel relay AAAABAY4ihgDZgkfNQUZ4kZKlVn2b5GJEqV35jaddBV9ZwNBzzFMvzMPDLx5/bHU1IqsH3u+wwu3IIbRaFhkLh/asuyC -1 -1 -1 0
+2026-09-15 22:08:49 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 36854): 16 relay nodel AAAABA4vPqYpOcy6pivXcz6QcIRt88CCY0Hu+c3dHkKD9jqDoE1YWvFlcQAn1lJWnkxLGcPmUC9zkExqf/tEJy7XgfkC -1 -1 -1 0
+2026-09-15 22:08:49 DEBUG   Sending 119 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:49 INFO    SPTPS key exchange with nodel (100.64.0.4 port 655) successful
+2026-09-15 22:08:49 DEBUG   Got UDP_INFO from nodeb (100.64.0.3 port 51908): 22 nodeb nodel 192.168.120.5 655
+2026-09-15 22:08:49 DEBUG   Sending UDP_INFO to nodel (100.64.0.4 port 36854): 22 nodeb nodel 100.64.0.3 655
+2026-09-15 22:08:49 DEBUG   Sending 30 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:49 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 51908): 16 nodeb nodel AAAAAAIA4NztXRRp0WTzG+ZR8F/hvTBngGOKuim7EoxdYD4d54Te29/YLhf2jeTtge0mUS9pYLhJUfE/LQg4u5CzhYSOzB -1 -1 -1 0
+2026-09-15 22:08:49 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 36854): 16 nodeb nodel AAAAAAIA4NztXRRp0WTzG+ZR8F/hvTBngGOKuim7EoxdYD4d54Te29/YLhf2jeTtge0mUS9pYLhJUfE/LQg4u5CzhYSOzB -1 -1 -1 0
+2026-09-15 22:08:49 DEBUG   Sending 121 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:49 DEBUG   Got MTU_INFO from nodeb (100.64.0.3 port 51908): 23 nodeb nodel 1518
+2026-09-15 22:08:49 DEBUG   Sending MTU_INFO to nodel (100.64.0.4 port 36854): 23 nodeb nodel 1518
+2026-09-15 22:08:49 DEBUG   Sending 20 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:49 DEBUG   Got ANS_KEY from nodel (100.64.0.4 port 36854): 16 nodel nodeb AAAABAIJWRuxY2ozDzbaPEdI01H3xx/pRlo45O29+uixN4c2rNjB5P/A/k3yhekjLUL4iJUPllxsb7lyVIqJMn93pLNB -1 -1 -1 0
+2026-09-15 22:08:49 DEBUG   Sending ANS_KEY to nodeb (100.64.0.3 port 51908): 16 nodel nodeb AAAABAIJWRuxY2ozDzbaPEdI01H3xx/pRlo45O29+uixN4c2rNjB5P/A/k3yhekjLUL4iJUPllxsb7lyVIqJMn93pLNB -1 -1 -1 0
+2026-09-15 22:08:49 DEBUG   Sending 119 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:49 DEBUG   Got MTU_INFO from nodel (100.64.0.4 port 36854): 23 nodel nodeb 1518
+2026-09-15 22:08:49 DEBUG   Sending MTU_INFO to nodeb (100.64.0.3 port 51908): 23 nodel nodeb 1518
+2026-09-15 22:08:49 DEBUG   Sending 20 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:49 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 51908): 16 nodeb nodel AAAABAodomAfXgjQsPwzVc5BMdSa2Nv7BNc2U6KW+Mg6GhE29qhppD7kGamhSCi7DUCnti1mbrf4GJNwFoBCSFTKtKdC -1 -1 -1 0
+2026-09-15 22:08:49 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 36854): 16 nodeb nodel AAAABAodomAfXgjQsPwzVc5BMdSa2Nv7BNc2U6KW+Mg6GhE29qhppD7kGamhSCi7DUCnti1mbrf4GJNwFoBCSFTKtKdC -1 -1 -1 0
+2026-09-15 22:08:49 DEBUG   Sending 119 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:49 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 36854): 21 117
+2026-09-15 22:08:49 INFO    No valid key known yet for nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:49 DEBUG   Sending REQ_KEY to nodeb (100.64.0.3 port 51908): 15 relay nodeb 15 AAAAAAIAq9k2ZnIKPT9n9S9BeIg4uJ/saQiV884LijXMArm8A0aKYVV209m0hgIULnLBvzkma7ZADrx8qacNXgzkBZEmVC
+2026-09-15 22:08:49 DEBUG   Sending 113 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:50 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 51908): 17 18
+2026-09-15 22:08:50 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:50 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 51908): 17 18
+2026-09-15 22:08:50 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:50 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 51908): 17 18
+2026-09-15 22:08:50 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:50 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 51908): 17 18
+2026-09-15 22:08:50 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:50 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 51908): 17 18
+2026-09-15 22:08:50 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:50 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 51908): 17 18
+2026-09-15 22:08:50 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 51908): 16 nodeb relay AAAAAAIAAZxv6c5JHrl1C5cxsEwsh19UYs0erPMNujYuqniwxSZejRbq3avqCB8vZHvxCwNEbq5Tk1XsmJd7bxIUEaRnzD -1 -1 -1 0
+2026-09-15 22:08:50 DEBUG   Sending ANS_KEY to nodeb (100.64.0.3 port 51908): 16 relay nodeb AAAABAI0H+6bL5cWrGozpgnQIvDITLNhPQY2KhoZCDbN93HBjJ+jFQqxGDEisWPhTTW6+fH8r+Es5ynwdFHR9mAsJ/mC -1 -1 -1 0
+2026-09-15 22:08:50 DEBUG   Sending 119 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 51908): 16 nodeb relay AAAABAIcCMxThYu8nBglMzEqjKO8ZlD6pvnSonWydKoy1G+CNGL5VpUgKagmL5xvJfUqFPSBqo8QgzqzcCoG6DKlrcUD -1 -1 -1 0
+2026-09-15 22:08:50 INFO    SPTPS key exchange with nodeb (100.64.0.3 port 655) successful
+2026-09-15 22:08:50 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:08:50 INFO    Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+2026-09-15 22:08:50 ERROR   Sending packet of 62 bytes to nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 DEBUG   Sending PACKET to nodel (100.64.0.4 port 36854): 17 62
+2026-09-15 22:08:50 DEBUG   Sending 6 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:50 DEBUG   Sending 62 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:08:50 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:08:50 WARNING Error sending UDP SPTPS packet to nodel (100.64.0.4 port 655): Network is unreachable
+2026-09-15 22:08:50 ERROR   Sending packet of 62 bytes to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:50 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 51908): 17 62
+2026-09-15 22:08:50 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 DEBUG   Sending 62 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:50 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:08:50 DEBUG   UDP address of nodel set to 100.64.0.4 port 622
+2026-09-15 22:08:50 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:50 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:50 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:50 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:50 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:50 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:51 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 36854): 21 117
+2026-09-15 22:08:51 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 655) via nodeb (100.64.0.3 port 655) (TCP)
+2026-09-15 22:08:51 DEBUG   Sending SPTPS_PACKET to nodeb (100.64.0.3 port 51908): 21 117
+2026-09-15 22:08:51 DEBUG   Sending 7 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:51 DEBUG   Sending 117 bytes of raw metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:51 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:51 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 655) via nodeb (100.64.0.3 port 655) (UDP)
+2026-09-15 22:08:51 DEBUG   UDP address of nodeb set to 100.64.0.3 port 41655
+2026-09-15 22:08:51 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:51 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:51 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:51 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:51 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:51 DEBUG   Got SPTPS_PACKET from nodeb (100.64.0.3 port 51908): 21 117
+2026-09-15 22:08:51 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (TCP)
+2026-09-15 22:08:51 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 36854): 21 117
+2026-09-15 22:08:51 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:51 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:51 DEBUG   Got UDP_INFO from nodel (100.64.0.4 port 36854): 22 nodel nodeb 192.168.130.5 655
+2026-09-15 22:08:51 DEBUG   Sending UDP_INFO to nodeb (100.64.0.3 port 51908): 22 nodel nodeb 100.64.0.4 622
+2026-09-15 22:08:51 DEBUG   Sending 30 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:51 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=1278.941
+2026-09-15 22:08:51 DEBUG   Caching recent address for nodeb
+2026-09-15 22:08:51 INFO    Got UDP probe request 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:51 DEBUG   Got PACKET from nodeb (100.64.0.3 port 51908): 17 62
+2026-09-15 22:08:51 DEBUG   Received packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:08:51 INFO    Broadcasting packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:51 ERROR   Sending packet of 62 bytes to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:51 DEBUG   Sending PACKET to nodel (100.64.0.4 port 36854): 17 62
+2026-09-15 22:08:51 DEBUG   Sending 6 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:51 DEBUG   Sending 62 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:52 INFO    Got type 2 UDP probe reply 18 from nodel (100.64.0.4 port 622) rtt=1536.034
+2026-09-15 22:08:52 DEBUG   Caching recent address for nodel
+2026-09-15 22:08:52 INFO    Got UDP probe request 1439 from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:52 INFO    Sending type 2 probe reply length 1439 to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:52 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:52 DEBUG   Got PACKET from nodel (100.64.0.4 port 36854): 17 62
+2026-09-15 22:08:52 DEBUG   Received packet of 62 bytes from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:52 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:08:52 INFO    Broadcasting packet of 62 bytes from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:52 ERROR   Sending packet of 62 bytes to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:52 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 51908): 17 62
+2026-09-15 22:08:52 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:52 DEBUG   Sending 62 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:52 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:52 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:52 INFO    Using system-provided maximum tinc MTU for nodeb (100.64.0.3 port 41655): 1439
+2026-09-15 22:08:52 INFO    Sending UDP probe length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:52 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:52 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:52 INFO    Fixing MTU of nodeb (100.64.0.3 port 41655) to 1439 after 1 probes
+2026-09-15 22:08:52 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:52 DEBUG   Got UDP_INFO from nodeb (100.64.0.3 port 51908): 22 nodeb nodel 192.168.120.5 655
+2026-09-15 22:08:52 DEBUG   Sending UDP_INFO to nodel (100.64.0.4 port 36854): 22 nodeb nodel 100.64.0.3 41655
+2026-09-15 22:08:52 DEBUG   Sending 32 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:52 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (TCP)
+2026-09-15 22:08:52 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 36854): 21 117
+2026-09-15 22:08:52 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:52 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:52 INFO    Sending type 2 probe reply length 1439 to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:52 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:52 INFO    Using system-provided maximum tinc MTU for nodel (100.64.0.4 port 622): 1439
+2026-09-15 22:08:52 INFO    Sending UDP probe length 1439 to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:52 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:52 INFO    Got type 2 UDP probe reply 1439 from nodel (100.64.0.4 port 622)
+2026-09-15 22:08:52 INFO    Fixing MTU of nodel (100.64.0.4 port 622) to 1439 after 1 probes
+2026-09-15 22:08:52 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:53 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:53 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:54 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:54 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:55 NOTICE  Connection closed by nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:55 NOTICE  Closing connection with nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:55 DEBUG   Sending DEL_EDGE to everyone (BROADCAST): 13 d20cce41 relay nodeb
+2026-09-15 22:08:55 DEBUG   Sending 24 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:55 DEBUG   Sending 24 bytes of metadata to nodeb (100.64.0.3 port 51908)
+2026-09-15 22:08:55 DEBUG   Node nodeb (100.64.0.3 port 41655) became unreachable
+2026-09-15 22:08:55 DEBUG   Sending DEL_EDGE to everyone (BROADCAST): 13 6aadb23 nodeb relay
+2026-09-15 22:08:55 DEBUG   Sending 23 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:55 NOTICE  Connection from 100.64.0.3 port 58222
+2026-09-15 22:08:56 DEBUG   Got ID from <unknown> (100.64.0.3 port 58222): 0 nodeb 17.7
+2026-09-15 22:08:56 DEBUG   Sending ID to nodeb (100.64.0.3 port 58222): 0 relay 17.7
+2026-09-15 22:08:56 DEBUG   Sending 13 bytes of raw metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Sending ACK to nodeb (100.64.0.3 port 58222): 4 655 0 700000c
+2026-09-15 22:08:56 DEBUG   Sending 16 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Got ACK from nodeb (100.64.0.3 port 58222): 4 655 0 700000c
+2026-09-15 22:08:56 NOTICE  Connection with nodeb (100.64.0.3 port 58222) activated
+2026-09-15 22:08:56 DEBUG   Sending ADD_SUBNET to nodeb (100.64.0.3 port 58222): 10 e599a351 nodeb 10.77.0.3
+2026-09-15 22:08:56 DEBUG   Sending 28 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Sending ADD_SUBNET to nodeb (100.64.0.3 port 58222): 10 efe24983 nodel 10.77.0.4
+2026-09-15 22:08:56 DEBUG   Sending 28 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Sending ADD_EDGE to nodeb (100.64.0.3 port 58222): 12 350bcbb0 nodel relay 100.64.0.10 655 700000c 0 192.168.130.5 655
+2026-09-15 22:08:56 DEBUG   Sending 68 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Sending ADD_SUBNET to nodeb (100.64.0.3 port 58222): 10 7314eebd relay 10.77.0.1
+2026-09-15 22:08:56 DEBUG   Sending 28 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Sending ADD_EDGE to nodeb (100.64.0.3 port 58222): 12 32c5a598 relay nodel 100.64.0.4 655 700000c 0 100.64.0.10 655
+2026-09-15 22:08:56 DEBUG   Sending 65 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Sending ADD_EDGE to everyone (BROADCAST): 12 ddab377e relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+2026-09-15 22:08:56 DEBUG   Sending 65 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:56 DEBUG   Sending 65 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Got ADD_SUBNET from nodeb (100.64.0.3 port 58222): 10 30fc7046 nodeb 10.77.0.3
+2026-09-15 22:08:56 DEBUG   Got ADD_EDGE from nodeb (100.64.0.3 port 58222): 12 61eec2c nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:08:56 DEBUG   Forwarding ADD_EDGE from nodeb (100.64.0.3 port 58222): 12 61eec2c nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:08:56 DEBUG   Sending 67 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:56 DEBUG   UDP address of nodeb set to 100.64.0.3 port 655
+2026-09-15 22:08:56 DEBUG   Node nodeb (100.64.0.3 port 655) became reachable
+2026-09-15 22:08:56 DEBUG   Got REQ_KEY from nodel (100.64.0.4 port 36854): 15 nodel nodeb 15 AAAAAAIAaazAfTAlzE7lToSG43VVyu2uXb3oWSGpDUPFBczIYvyYuryRSHcwfbtAjEdw/IFnq3E+7dM2i+jLURTq/nHMkA
+2026-09-15 22:08:56 DEBUG   Sending REQ_KEY to nodeb (100.64.0.3 port 58222): 15 nodel nodeb 15 AAAAAAIAaazAfTAlzE7lToSG43VVyu2uXb3oWSGpDUPFBczIYvyYuryRSHcwfbtAjEdw/IFnq3E+7dM2i+jLURTq/nHMkA
+2026-09-15 22:08:56 DEBUG   Sending 113 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Got UDP_INFO from nodeb (100.64.0.3 port 58222): 22 nodeb nodel 192.168.120.5 655
+2026-09-15 22:08:56 DEBUG   Sending UDP_INFO to nodel (100.64.0.4 port 36854): 22 nodeb nodel 100.64.0.3 655
+2026-09-15 22:08:56 DEBUG   Sending 30 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:56 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 58222): 16 nodeb nodel AAAAAAIAfiKlXjjsrrkqivdcVqsiCQ5OPbtRnc3ZJ1AUKSEk1HMxyufxBZ6BjOU21aZ3YxGYNGSqjO0QHnK34J/KPH1W6D -1 -1 -1 0
+2026-09-15 22:08:56 DEBUG   Appending reflexive UDP address to ANS_KEY from nodeb to nodel
+2026-09-15 22:08:56 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 36854): 16 nodeb nodel AAAAAAIAfiKlXjjsrrkqivdcVqsiCQ5OPbtRnc3ZJ1AUKSEk1HMxyufxBZ6BjOU21aZ3YxGYNGSqjO0QHnK34J/KPH1W6D -1 -1 -1 0 100.64.0.3 655
+2026-09-15 22:08:56 DEBUG   Sending 136 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:56 DEBUG   Got MTU_INFO from nodeb (100.64.0.3 port 58222): 23 nodeb nodel 1518
+2026-09-15 22:08:56 INFO    Using provisional MTU 1518 for node nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:56 DEBUG   Sending MTU_INFO to nodel (100.64.0.4 port 36854): 23 nodeb nodel 1518
+2026-09-15 22:08:56 DEBUG   Sending 20 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:56 DEBUG   Got ANS_KEY from nodel (100.64.0.4 port 36854): 16 nodel nodeb AAAABAIX1QAy00ATu+ZQuO6duYp2hMl6UN61H9fkfQRPFu2dCzTiYpm/Ajf7eAHFd+1jkTybD9gLqy2I3B2YG8DLXniA -1 -1 -1 0
+2026-09-15 22:08:56 DEBUG   Sending ANS_KEY to nodeb (100.64.0.3 port 58222): 16 nodel nodeb AAAABAIX1QAy00ATu+ZQuO6duYp2hMl6UN61H9fkfQRPFu2dCzTiYpm/Ajf7eAHFd+1jkTybD9gLqy2I3B2YG8DLXniA -1 -1 -1 0
+2026-09-15 22:08:56 DEBUG   Sending 119 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Got MTU_INFO from nodel (100.64.0.4 port 36854): 23 nodel nodeb 1518
+2026-09-15 22:08:56 DEBUG   Sending MTU_INFO to nodeb (100.64.0.3 port 58222): 23 nodel nodeb 1439
+2026-09-15 22:08:56 DEBUG   Sending 20 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 58222): 16 nodeb nodel AAAABAYLs5/QHTqvGjA9P63dORWGyhJc7sAO40/jnnMDvMsAIUPVr3LF+/8yy3NLO4BvgXhZNnoWxAwSwKk5N6Eni4bD -1 -1 -1 0
+2026-09-15 22:08:56 DEBUG   Appending reflexive UDP address to ANS_KEY from nodeb to nodel
+2026-09-15 22:08:56 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 36854): 16 nodeb nodel AAAABAYLs5/QHTqvGjA9P63dORWGyhJc7sAO40/jnnMDvMsAIUPVr3LF+/8yy3NLO4BvgXhZNnoWxAwSwKk5N6Eni4bD -1 -1 -1 0 100.64.0.3 655
+2026-09-15 22:08:56 DEBUG   Sending 134 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:56 DEBUG   Sending PING to nodel (100.64.0.4 port 36854): 8
+2026-09-15 22:08:56 DEBUG   Sending 2 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:56 DEBUG   Got PONG from nodel (100.64.0.4 port 36854): 9
+2026-09-15 22:08:56 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 655) via nodeb (100.64.0.3 port 655) (TCP)
+2026-09-15 22:08:56 DEBUG   Sending SPTPS_PACKET to nodeb (100.64.0.3 port 58222): 21 117
+2026-09-15 22:08:56 DEBUG   Sending 7 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 DEBUG   Sending 117 bytes of raw metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:56 INFO    No valid key known yet for nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:56 DEBUG   Sending REQ_KEY to nodeb (100.64.0.3 port 58222): 15 relay nodeb 15 AAAAAAIAHURi/+qidRshhNieoiwT3Xbxkxpomen9fIaRIIAGaJWOT3/7gWi3JfUu2Yfh0hpuR839TFzfYa+f/vkZ2YzzdC
+2026-09-15 22:08:56 DEBUG   Sending 113 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Sending 18 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 58222): 16 nodeb relay AAAAAAIAhWgWHwPHvyfhFyIcDrOZa/6/I9tkU6sx+bF44JOtEEH1X0q/VUPBurfG/2FoHWuKXAgSkJQD21JFEC2S/c/HZA -1 -1 -1 0
+2026-09-15 22:08:57 DEBUG   Sending ANS_KEY to nodeb (100.64.0.3 port 58222): 16 relay nodeb AAAABA4Cn/1njzvvgOorAfgYjUfHM6nG8S6DZFnRsIsrOHOFp8eQzR9RvwCzfI29F6E5s8P6MOrybEhOLS9FoF8h0KeA -1 -1 -1 0
+2026-09-15 22:08:57 DEBUG   Sending 119 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Got SPTPS_PACKET from nodeb (100.64.0.3 port 58222): 21 117
+2026-09-15 22:08:57 INFO    Sending packet from nodeb (100.64.0.3 port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:57 DEBUG   Got PACKET from nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Received packet of 18 bytes from nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 WARNING Cannot route packet from nodeb (100.64.0.3 port 655): unknown type 0
+2026-09-15 22:08:57 DEBUG   Got PACKET from nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Received packet of 18 bytes from nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 WARNING Cannot route packet from nodeb (100.64.0.3 port 655): unknown type 0
+2026-09-15 22:08:57 DEBUG   Got PACKET from nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Received packet of 18 bytes from nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 WARNING Cannot route packet from nodeb (100.64.0.3 port 655): unknown type 0
+2026-09-15 22:08:57 DEBUG   Got PACKET from nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Received packet of 18 bytes from nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 WARNING Cannot route packet from nodeb (100.64.0.3 port 655): unknown type 0
+2026-09-15 22:08:57 DEBUG   Got PACKET from nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Received packet of 18 bytes from nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 WARNING Cannot route packet from nodeb (100.64.0.3 port 655): unknown type 0
+2026-09-15 22:08:57 DEBUG   Got PACKET from nodeb (100.64.0.3 port 58222): 17 18
+2026-09-15 22:08:57 DEBUG   Received packet of 18 bytes from nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:57 WARNING Cannot route packet from nodeb (100.64.0.3 port 655): unknown type 0
+2026-09-15 22:08:57 DEBUG   Got UDP_INFO from nodel (100.64.0.4 port 36854): 22 nodel nodeb 192.168.130.5 655
+2026-09-15 22:08:57 DEBUG   Sending UDP_INFO to nodeb (100.64.0.3 port 58222): 22 nodel nodeb 100.64.0.4 622
+2026-09-15 22:08:57 DEBUG   Sending 30 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:57 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 58222): 16 nodeb relay AAAABAotpOR4IdS3xcN6MRbyLzAARtPmNS0D31ETQAv00ZvL0r1ewjGTuyE6iYk97xVf6D2+rd/fegc9GBMZRlrPN/EB -1 -1 -1 0
+2026-09-15 22:08:57 INFO    SPTPS key exchange with nodeb (100.64.0.3 port 655) successful
+2026-09-15 22:08:57 DEBUG   Got PING from nodel (100.64.0.4 port 36854): 8
+2026-09-15 22:08:57 DEBUG   Sending PONG to nodel (100.64.0.4 port 36854): 9
+2026-09-15 22:08:57 DEBUG   Sending 2 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:08:58 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 655) via nodeb (100.64.0.3 port 655) (TCP)
+2026-09-15 22:08:58 DEBUG   Sending SPTPS_PACKET to nodeb (100.64.0.3 port 58222): 21 117
+2026-09-15 22:08:58 DEBUG   Sending 7 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:58 DEBUG   Sending 117 bytes of raw metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:58 DEBUG   Got SPTPS_PACKET from nodeb (100.64.0.3 port 58222): 21 117
+2026-09-15 22:08:58 INFO    Sending packet from nodeb (100.64.0.3 port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:59 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:08:59 INFO    Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+2026-09-15 22:08:59 ERROR   Sending packet of 62 bytes to nodel (100.64.0.4 port 622)
+2026-09-15 22:08:59 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:08:59 ERROR   Sending packet of 62 bytes to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:59 DEBUG   Sending PACKET to nodeb (100.64.0.3 port 58222): 17 62
+2026-09-15 22:08:59 DEBUG   Sending 6 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:59 DEBUG   Sending 62 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:59 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 655) via nodeb (100.64.0.3 port 655) (TCP)
+2026-09-15 22:08:59 DEBUG   Sending SPTPS_PACKET to nodeb (100.64.0.3 port 58222): 21 117
+2026-09-15 22:08:59 DEBUG   Sending 7 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:59 DEBUG   Sending 117 bytes of raw metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:08:59 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:59 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 655)
+2026-09-15 22:08:59 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 655) via nodeb (100.64.0.3 port 655) (UDP)
+2026-09-15 22:08:59 DEBUG   UDP address of nodeb set to 100.64.0.3 port 41655
+2026-09-15 22:08:59 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:59 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:59 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:59 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:59 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:08:59 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:08:59 DEBUG   Got SPTPS_PACKET from nodeb (100.64.0.3 port 58222): 21 117
+2026-09-15 22:08:59 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:00 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:00 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:00 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:00 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:00 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:00 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:00 WARNING Error sending UDP SPTPS packet to nodeb (100.64.0.3 port 41655): Network is unreachable
+2026-09-15 22:09:00 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.189
+2026-09-15 22:09:00 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (TCP)
+2026-09-15 22:09:00 DEBUG   Sending SPTPS_PACKET to nodeb (100.64.0.3 port 58222): 21 117
+2026-09-15 22:09:00 DEBUG   Sending 7 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:00 DEBUG   Sending 117 bytes of raw metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:00 INFO    Using system-provided maximum tinc MTU for nodeb (100.64.0.3 port 41655): 1439
+2026-09-15 22:09:00 INFO    Sending UDP probe length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:00 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Fixing MTU of nodeb (100.64.0.3 port 41655) to 1439 after 1 probes
+2026-09-15 22:09:00 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Got UDP probe request 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:00 DEBUG   Got SPTPS_PACKET from nodeb (100.64.0.3 port 58222): 21 117
+2026-09-15 22:09:00 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:00 DEBUG   Received packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:09:00 INFO    Broadcasting packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:00 ERROR   Sending packet of 62 bytes to nodel (100.64.0.4 port 622)
+2026-09-15 22:09:00 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:01 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 622)
+2026-09-15 22:09:01 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:01 INFO    Got type 2 UDP probe reply 18 from nodel (100.64.0.4 port 622) rtt=0.145
+2026-09-15 22:09:01 DEBUG   Received packet of 62 bytes from nodel (100.64.0.4 port 622)
+2026-09-15 22:09:01 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:09:01 INFO    Broadcasting packet of 62 bytes from nodel (100.64.0.4 port 622)
+2026-09-15 22:09:01 ERROR   Sending packet of 62 bytes to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:01 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:01 INFO    Got type 2 UDP probe reply 1439 from nodel (100.64.0.4 port 622)
+2026-09-15 22:09:01 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:01 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:01 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:01 DEBUG   Got UDP_INFO from nodeb (100.64.0.3 port 58222): 22 nodeb nodel 192.168.120.5 655
+2026-09-15 22:09:01 DEBUG   Sending UDP_INFO to nodel (100.64.0.4 port 36854): 22 nodeb nodel 100.64.0.3 41655
+2026-09-15 22:09:01 DEBUG   Sending 32 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:09:01 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:01 INFO    Sending type 2 probe reply length 62 to nodel (100.64.0.4 port 622)
+2026-09-15 22:09:01 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:01 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 622)
+2026-09-15 22:09:01 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 622)
+2026-09-15 22:09:01 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:02 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:02 INFO    Got UDP probe request 1439 from nodel (100.64.0.4 port 622)
+2026-09-15 22:09:02 INFO    Sending type 2 probe reply length 1439 to nodel (100.64.0.4 port 622)
+2026-09-15 22:09:02 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:02 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:02 DEBUG   Got UDP_INFO from nodel (100.64.0.4 port 36854): 22 nodel nodeb 192.168.130.5 655
+2026-09-15 22:09:02 DEBUG   Sending UDP_INFO to nodeb (100.64.0.3 port 58222): 22 nodel nodeb 100.64.0.4 622
+2026-09-15 22:09:02 DEBUG   Sending 30 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:03 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:03 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:04 INFO    Sending packet from nodel (100.64.0.4 port 622) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:05 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:05 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:05 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:06 DEBUG   Sending PING to nodel (100.64.0.4 port 36854): 8
+2026-09-15 22:09:06 DEBUG   Sending 2 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:09:06 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:06 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:06 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:08 DEBUG   Received packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:08 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:09:08 INFO    Broadcasting packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:08 ERROR   Sending packet of 62 bytes to nodel (100.64.0.4 port 622)
+2026-09-15 22:09:08 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:10 INFO    Sending type 2 probe reply length 62 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:10 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:10 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:10 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:10 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.116
+2026-09-15 22:09:10 INFO    Got type 2 UDP probe reply 62 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:11 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:11 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:11 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:11 INFO    Sending type 2 probe reply length 1439 to nodel (100.64.0.4 port 622)
+2026-09-15 22:09:11 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:11 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 622)
+2026-09-15 22:09:11 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 622) via nodel (100.64.0.4 port 622) (UDP)
+2026-09-15 22:09:11 INFO    nodel (100.64.0.4 port 36854) didn't respond to PING in 5 seconds
+2026-09-15 22:09:11 NOTICE  Closing connection with nodel (100.64.0.4 port 36854)
+2026-09-15 22:09:11 DEBUG   Sending DEL_EDGE to everyone (BROADCAST): 13 b5ab77be relay nodel
+2026-09-15 22:09:11 DEBUG   Sending 24 bytes of metadata to nodel (100.64.0.4 port 36854)
+2026-09-15 22:09:11 DEBUG   Sending 24 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:11 DEBUG   Node nodel (100.64.0.4 port 622) became unreachable
+2026-09-15 22:09:11 DEBUG   Sending DEL_EDGE to everyone (BROADCAST): 13 90ad8a56 nodel relay
+2026-09-15 22:09:11 DEBUG   Sending 24 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:15 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:15 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:15 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:16 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:09:16 INFO    Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+2026-09-15 22:09:16 ERROR   Sending packet of 62 bytes to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:16 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:16 INFO    Sending UDP probe length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:16 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:16 INFO    Sending UDP probe length 1440 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:16 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:16 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:16 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:16 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:16 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:20 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:20 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:21 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:21 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:21 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.150
+2026-09-15 22:09:21 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:21 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:21 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:21 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:25 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:25 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:25 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:25 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:25 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:25 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:26 DEBUG   Received packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:26 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:09:26 INFO    Broadcasting packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:26 INFO    Got UDP probe request 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:26 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:26 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:30 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:30 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:31 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:32 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:32 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:32 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.135
+2026-09-15 22:09:32 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:32 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:32 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:35 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:35 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:35 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:36 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:36 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:36 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:40 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:40 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:40 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:42 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:42 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:42 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.133
+2026-09-15 22:09:42 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:42 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:42 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:45 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:45 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:45 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:45 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:45 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:45 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:50 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:50 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:51 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:53 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:53 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:53 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.142
+2026-09-15 22:09:53 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:53 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:53 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:53 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:09:53 INFO    Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+2026-09-15 22:09:53 ERROR   Sending packet of 62 bytes to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:53 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:53 INFO    Sending UDP probe length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:53 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:53 INFO    Sending UDP probe length 1440 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:53 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:09:54 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:55 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:55 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:55 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:55 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:09:55 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:09:55 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:09:58 DEBUG   Received packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:58 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:09:58 INFO    Broadcasting packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:58 INFO    Got UDP probe request 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:58 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:09:58 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:00 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:00 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:04 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:04 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:04 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.174
+2026-09-15 22:10:04 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:04 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:04 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:05 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:05 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:05 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:06 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:06 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:06 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:10 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:10 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:11 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:13 NOTICE  Connection from 100.64.0.4 port 60950
+2026-09-15 22:10:14 DEBUG   Got ID from <unknown> (100.64.0.4 port 60950): 0 nodel 17.7
+2026-09-15 22:10:14 DEBUG   Sending ID to nodel (100.64.0.4 port 60950): 0 relay 17.7
+2026-09-15 22:10:14 DEBUG   Sending 13 bytes of raw metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Sending ACK to nodel (100.64.0.4 port 60950): 4 655 0 700000c
+2026-09-15 22:10:14 DEBUG   Sending 16 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Got ACK from nodel (100.64.0.4 port 60950): 4 655 0 700000c
+2026-09-15 22:10:14 NOTICE  Connection with nodel (100.64.0.4 port 60950) activated
+2026-09-15 22:10:14 DEBUG   Sending ADD_SUBNET to nodel (100.64.0.4 port 60950): 10 432941b4 nodeb 10.77.0.3
+2026-09-15 22:10:14 DEBUG   Sending 28 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Sending ADD_EDGE to nodel (100.64.0.4 port 60950): 12 4bcb042a nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:10:14 DEBUG   Sending 68 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Sending ADD_SUBNET to nodel (100.64.0.4 port 60950): 10 74faeb60 nodel 10.77.0.4
+2026-09-15 22:10:14 DEBUG   Sending 28 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Sending ADD_SUBNET to nodel (100.64.0.4 port 60950): 10 c6e183c1 relay 10.77.0.1
+2026-09-15 22:10:14 DEBUG   Sending 28 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Sending ADD_EDGE to nodel (100.64.0.4 port 60950): 12 5320ca1b relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+2026-09-15 22:10:14 DEBUG   Sending 65 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Sending ADD_EDGE to everyone (BROADCAST): 12 8300764 relay nodel 100.64.0.4 655 700000c 0 100.64.0.10 655
+2026-09-15 22:10:14 DEBUG   Sending 64 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:14 DEBUG   Sending 64 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Got ADD_SUBNET from nodel (100.64.0.4 port 60950): 10 4076ae1 nodeb 10.77.0.3
+2026-09-15 22:10:14 DEBUG   Got ADD_EDGE from nodel (100.64.0.4 port 60950): 12 d9ad0ede nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:10:14 DEBUG   Got ADD_SUBNET from nodel (100.64.0.4 port 60950): 10 467dfcab nodel 10.77.0.4
+2026-09-15 22:10:14 DEBUG   Got ADD_SUBNET from nodel (100.64.0.4 port 60950): 10 1882ae21 relay 10.77.0.1
+2026-09-15 22:10:14 DEBUG   Got ADD_EDGE from nodel (100.64.0.4 port 60950): 12 9deaea4f relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+2026-09-15 22:10:14 DEBUG   Got ADD_EDGE from nodel (100.64.0.4 port 60950): 12 2de36274 nodel relay 100.64.0.10 655 700000c 0 192.168.130.5 655
+2026-09-15 22:10:14 DEBUG   Forwarding ADD_EDGE from nodel (100.64.0.4 port 60950): 12 2de36274 nodel relay 100.64.0.10 655 700000c 0 192.168.130.5 655
+2026-09-15 22:10:14 DEBUG   Sending 68 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:14 DEBUG   UDP address of nodel set to 100.64.0.4 port 655
+2026-09-15 22:10:14 DEBUG   Node nodel (100.64.0.4 port 655) became reachable
+2026-09-15 22:10:14 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:14 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:14 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.121
+2026-09-15 22:10:14 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:14 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:14 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:14 DEBUG   Got REQ_KEY from nodel (100.64.0.4 port 60950): 15 nodel nodeb 15 AAAAAAIAeT/Xv+eiJc4uu2lBHJCqrdD70OZfkY7Ob+QmTejFiA6Q+ciH7fa1xx1zg929K4WcdWdgVpYDpOKw0C8KOZ6DrB
+2026-09-15 22:10:14 DEBUG   Sending REQ_KEY to nodeb (100.64.0.3 port 58222): 15 nodel nodeb 15 AAAAAAIAeT/Xv+eiJc4uu2lBHJCqrdD70OZfkY7Ob+QmTejFiA6Q+ciH7fa1xx1zg929K4WcdWdgVpYDpOKw0C8KOZ6DrB
+2026-09-15 22:10:14 DEBUG   Sending 113 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:14 DEBUG   Got REQ_KEY from nodel (100.64.0.4 port 60950): 15 nodel relay 15 AAAAAAIAV+d9sMG7nmHV7ju1N5PxrzAAlg/mwnRIy0tITh+fLL2d/avG+iscRhjZEL3MjUQWxQ+/Km77fgy/NWQvQNZhyB
+2026-09-15 22:10:14 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 60950): 16 relay nodel AAAAAAIApXSW8hhuPpppITB0WWgVAlZmuCFh/1arj24hQKWxvgCU3Pizh8rev6Hgdzpa5zzoJj3IztuIZDMneR11UGg4zA -1 -1 -1 0
+2026-09-15 22:10:14 DEBUG   Sending 121 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:14 DEBUG   Got PACKET from nodel (100.64.0.4 port 60950): 17 18
+2026-09-15 22:10:14 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:10:14 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:10:14 DEBUG   Got PACKET from nodel (100.64.0.4 port 60950): 17 18
+2026-09-15 22:10:14 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:10:14 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:10:14 DEBUG   Got PACKET from nodel (100.64.0.4 port 60950): 17 18
+2026-09-15 22:10:14 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:10:14 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:10:14 DEBUG   Got PACKET from nodel (100.64.0.4 port 60950): 17 18
+2026-09-15 22:10:14 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:10:14 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:10:14 DEBUG   Got PACKET from nodel (100.64.0.4 port 60950): 17 18
+2026-09-15 22:10:14 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:10:14 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:10:14 DEBUG   Got PACKET from nodel (100.64.0.4 port 60950): 17 18
+2026-09-15 22:10:14 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:10:14 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:10:15 DEBUG   Got ANS_KEY from nodel (100.64.0.4 port 60950): 16 nodel relay AAAABA4n7OHyKeg27onODHm5T1VTj8AlmRKivNK6jVS+CzC4wx7ZN3tVfkJsIcOIPtmLNiWK8SsvR60aR1icVEFk2B9D -1 -1 -1 0
+2026-09-15 22:10:15 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 60950): 16 relay nodel AAAABAoDcYQZGKPqV9ncb1na2pUiDQtB/01C1ONWoZ4M1feFFe6iJWohOgd7TLwlu7B+3UQwZ+Ff9eGeyfctQotY100C -1 -1 -1 0
+2026-09-15 22:10:15 DEBUG   Sending 119 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:15 INFO    SPTPS key exchange with nodel (100.64.0.4 port 655) successful
+2026-09-15 22:10:15 DEBUG   Got UDP_INFO from nodeb (100.64.0.3 port 58222): 22 nodeb nodel 192.168.120.5 655
+2026-09-15 22:10:15 DEBUG   Sending UDP_INFO to nodel (100.64.0.4 port 60950): 22 nodeb nodel 100.64.0.3 41655
+2026-09-15 22:10:15 DEBUG   Sending 32 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:15 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 58222): 16 nodeb nodel AAAAAAIAZkUrAFHsjlZ2EISBr9cKHePMhPKKMkJNXpABkNHu0enlYwU+Os17/TTn9P+tDsa8h5wOXcfwd8b6ZTWByq65jD -1 -1 -1 0
+2026-09-15 22:10:15 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 60950): 16 nodeb nodel AAAAAAIAZkUrAFHsjlZ2EISBr9cKHePMhPKKMkJNXpABkNHu0enlYwU+Os17/TTn9P+tDsa8h5wOXcfwd8b6ZTWByq65jD -1 -1 -1 0
+2026-09-15 22:10:15 DEBUG   Sending 121 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:15 DEBUG   Got MTU_INFO from nodeb (100.64.0.3 port 58222): 23 nodeb nodel 1518
+2026-09-15 22:10:15 DEBUG   Sending MTU_INFO to nodel (100.64.0.4 port 60950): 23 nodeb nodel 1439
+2026-09-15 22:10:15 DEBUG   Sending 20 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:15 DEBUG   Got ANS_KEY from nodel (100.64.0.4 port 60950): 16 nodel nodeb AAAABAosETCuuC4S5QVEQWjWSG2662FDHpADOtJ/yyfZmMf2S88bFHoBzRyBSlM24xbcTcbD03nguRQxuxpQuGzOU26B -1 -1 -1 0
+2026-09-15 22:10:15 DEBUG   Appending reflexive UDP address to ANS_KEY from nodel to nodeb
+2026-09-15 22:10:15 DEBUG   Sending ANS_KEY to nodeb (100.64.0.3 port 58222): 16 nodel nodeb AAAABAosETCuuC4S5QVEQWjWSG2662FDHpADOtJ/yyfZmMf2S88bFHoBzRyBSlM24xbcTcbD03nguRQxuxpQuGzOU26B -1 -1 -1 0 100.64.0.4 655
+2026-09-15 22:10:15 DEBUG   Sending 134 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:15 DEBUG   Got MTU_INFO from nodel (100.64.0.4 port 60950): 23 nodel nodeb 1518
+2026-09-15 22:10:15 INFO    Using provisional MTU 1518 for node nodel (100.64.0.4 port 655)
+2026-09-15 22:10:15 DEBUG   Sending MTU_INFO to nodeb (100.64.0.3 port 58222): 23 nodel nodeb 1518
+2026-09-15 22:10:15 DEBUG   Sending 20 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:15 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 58222): 16 nodeb nodel AAAABAoYoIA7Jq5Eynii98OrUeTVmQvQGt+cKEuvJ5kcmNbDXgaURJRyhpIMgYjrTb4+Q8psFdpwrJFlxdK9UEZHAlDC -1 -1 -1 0
+2026-09-15 22:10:15 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 60950): 16 nodeb nodel AAAABAoYoIA7Jq5Eynii98OrUeTVmQvQGt+cKEuvJ5kcmNbDXgaURJRyhpIMgYjrTb4+Q8psFdpwrJFlxdK9UEZHAlDC -1 -1 -1 0
+2026-09-15 22:10:15 DEBUG   Sending 119 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:15 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:15 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:15 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:15 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 60950): 21 117
+2026-09-15 22:10:15 INFO    Sending packet from nodel (100.64.0.4 port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:15 INFO    Sending UDP probe length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:15 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:15 INFO    Sending UDP probe length 1440 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:15 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:16 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:16 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (TCP)
+2026-09-15 22:10:16 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 60950): 21 117
+2026-09-15 22:10:16 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:16 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:16 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:10:16 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:10:16 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:10:16 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:10:16 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:10:16 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:10:16 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:10:16 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:10:16 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:10:16 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:10:16 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:10:16 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:10:16 WARNING Error sending UDP SPTPS packet to nodel (100.64.0.4 port 655): Network is unreachable
+2026-09-15 22:10:16 DEBUG   Got UDP_INFO from nodel (100.64.0.4 port 60950): 22 nodel nodeb 192.168.130.5 655
+2026-09-15 22:10:16 DEBUG   Sending UDP_INFO to nodeb (100.64.0.3 port 58222): 22 nodel nodeb 100.64.0.4 655
+2026-09-15 22:10:16 DEBUG   Sending 30 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:16 INFO    Got UDP probe request 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:16 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:16 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:16 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:16 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:16 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:17 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 60950): 21 117
+2026-09-15 22:10:17 INFO    Sending packet from nodel (100.64.0.4 port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:17 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (TCP)
+2026-09-15 22:10:17 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 60950): 21 117
+2026-09-15 22:10:17 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:17 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:17 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 655)
+2026-09-15 22:10:17 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:10:17 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:10:17 DEBUG   UDP address of nodel set to 100.64.0.4 port 45620
+2026-09-15 22:10:17 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:17 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:17 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 60950): 21 117
+2026-09-15 22:10:18 INFO    Sending packet from nodel (100.64.0.4 port 45620) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:18 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (TCP)
+2026-09-15 22:10:18 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 60950): 21 117
+2026-09-15 22:10:18 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:18 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:18 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:18 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:18 WARNING Error sending UDP SPTPS packet to nodel (100.64.0.4 port 45620): Network is unreachable
+2026-09-15 22:10:18 INFO    Got type 2 UDP probe reply 18 from nodel (100.64.0.4 port 45620) rtt=0.101
+2026-09-15 22:10:19 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:19 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:19 INFO    Got type 2 UDP probe reply 18 from nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:19 INFO    Got UDP probe request 1439 from nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:19 INFO    Sending type 2 probe reply length 1439 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:19 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:19 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 60950): 21 117
+2026-09-15 22:10:19 INFO    Sending packet from nodel (100.64.0.4 port 45620) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:19 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:19 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:19 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (TCP)
+2026-09-15 22:10:19 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 60950): 21 117
+2026-09-15 22:10:19 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:19 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:19 INFO    Using system-provided maximum tinc MTU for nodel (100.64.0.4 port 45620): 1439
+2026-09-15 22:10:19 INFO    Sending UDP probe length 1439 to nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:19 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 45620) via nodel (100.64.0.4 port 45620) (UDP)
+2026-09-15 22:10:19 INFO    Got type 2 UDP probe reply 1439 from nodel (100.64.0.4 port 45620)
+2026-09-15 22:10:19 INFO    Fixing MTU of nodel (100.64.0.4 port 45620) to 1439 after 1 probes
+2026-09-15 22:10:22 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:23 DEBUG   Sending PING to nodel (100.64.0.4 port 60950): 8
+2026-09-15 22:10:23 DEBUG   Sending 2 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:23 ERROR   Metadata socket read error for nodel (100.64.0.4 port 60950): Connection reset by peer
+2026-09-15 22:10:23 NOTICE  Closing connection with nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:23 DEBUG   Sending DEL_EDGE to everyone (BROADCAST): 13 3cc071b relay nodel
+2026-09-15 22:10:23 DEBUG   Sending 23 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:23 DEBUG   Sending 23 bytes of metadata to nodel (100.64.0.4 port 60950)
+2026-09-15 22:10:23 DEBUG   Node nodel (100.64.0.4 port 45620) became unreachable
+2026-09-15 22:10:23 DEBUG   Sending DEL_EDGE to everyone (BROADCAST): 13 9b3b371c nodel relay
+2026-09-15 22:10:23 DEBUG   Sending 24 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:25 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:25 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:25 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:25 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:25 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.159
+2026-09-15 22:10:25 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:25 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:25 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:25 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:27 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:27 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:27 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:30 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:30 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:33 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:35 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:35 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:35 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:35 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:35 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.126
+2026-09-15 22:10:35 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:35 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:35 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:35 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:37 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:37 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:37 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:40 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:40 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:42 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:45 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:45 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:45 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:46 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:46 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:46 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:47 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:47 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:47 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:51 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:51 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:51 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:51 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.069
+2026-09-15 22:10:52 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:55 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:55 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:10:55 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:57 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:57 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:10:57 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:10:57 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:10:57 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:10:57 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:00 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:00 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:01 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:01 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:01 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.152
+2026-09-15 22:11:02 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:03 DEBUG   Received packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:03 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:11:03 INFO    Broadcasting packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:03 INFO    Got UDP probe request 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:03 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:03 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:05 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:11:05 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:05 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:11:06 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:11:06 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:11:06 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:07 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:11:07 INFO    Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+2026-09-15 22:11:07 ERROR   Sending packet of 62 bytes to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:07 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:07 INFO    Sending UDP probe length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:07 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:07 INFO    Sending UDP probe length 1440 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:07 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:07 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:10 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:10 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:12 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:12 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:12 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.137
+2026-09-15 22:11:12 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:12 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:12 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:12 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:15 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:11:15 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:15 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:11:17 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:11:17 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:11:17 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:20 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:20 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:21 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:22 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:22 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:22 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.112
+2026-09-15 22:11:22 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:22 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:22 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:25 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:11:25 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:25 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:11:26 DEBUG   Got PING from nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:11:26 DEBUG   Sending PONG to nodeb (100.64.0.3 port 58222): 9
+2026-09-15 22:11:26 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:30 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:30 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:30 NOTICE  Connection from 100.64.0.4 port 59064
+2026-09-15 22:11:30 DEBUG   Got ID from <unknown> (100.64.0.4 port 59064): 0 nodel 17.7
+2026-09-15 22:11:30 DEBUG   Sending ID to nodel (100.64.0.4 port 59064): 0 relay 17.7
+2026-09-15 22:11:30 DEBUG   Sending 13 bytes of raw metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:30 DEBUG   Sending ACK to nodel (100.64.0.4 port 59064): 4 655 0 700000c
+2026-09-15 22:11:30 DEBUG   Sending 16 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:30 DEBUG   Got ACK from nodel (100.64.0.4 port 59064): 4 655 0 700000c
+2026-09-15 22:11:30 NOTICE  Connection with nodel (100.64.0.4 port 59064) activated
+2026-09-15 22:11:30 DEBUG   Sending ADD_SUBNET to nodel (100.64.0.4 port 59064): 10 88162c8b nodeb 10.77.0.3
+2026-09-15 22:11:30 DEBUG   Sending 28 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:30 DEBUG   Sending ADD_EDGE to nodel (100.64.0.4 port 59064): 12 fe7270b9 nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:11:30 DEBUG   Sending 68 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:30 DEBUG   Sending ADD_SUBNET to nodel (100.64.0.4 port 59064): 10 a4f2d3db nodel 10.77.0.4
+2026-09-15 22:11:30 DEBUG   Sending 28 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:30 DEBUG   Sending ADD_SUBNET to nodel (100.64.0.4 port 59064): 10 c5d7357b relay 10.77.0.1
+2026-09-15 22:11:30 DEBUG   Sending 28 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:30 DEBUG   Sending ADD_EDGE to nodel (100.64.0.4 port 59064): 12 4cecf2b2 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+2026-09-15 22:11:30 DEBUG   Sending 65 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:30 DEBUG   Sending ADD_EDGE to everyone (BROADCAST): 12 b8e192a9 relay nodel 100.64.0.4 655 700000c 0 100.64.0.10 655
+2026-09-15 22:11:30 DEBUG   Sending 65 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:30 DEBUG   Sending 65 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:30 DEBUG   Got ADD_SUBNET from nodel (100.64.0.4 port 59064): 10 d917e42c nodeb 10.77.0.3
+2026-09-15 22:11:30 DEBUG   Got ADD_EDGE from nodel (100.64.0.4 port 59064): 12 18a7649a nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:11:30 DEBUG   Got ADD_SUBNET from nodel (100.64.0.4 port 59064): 10 16a0b547 nodel 10.77.0.4
+2026-09-15 22:11:30 DEBUG   Got ADD_SUBNET from nodel (100.64.0.4 port 59064): 10 48f373f1 relay 10.77.0.1
+2026-09-15 22:11:30 DEBUG   Got ADD_EDGE from nodel (100.64.0.4 port 59064): 12 fb9afb73 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+2026-09-15 22:11:30 DEBUG   Got ADD_EDGE from nodel (100.64.0.4 port 59064): 12 a64c4538 nodel relay 100.64.0.10 655 700000c 0 192.168.130.5 655
+2026-09-15 22:11:30 DEBUG   Forwarding ADD_EDGE from nodel (100.64.0.4 port 59064): 12 a64c4538 nodel relay 100.64.0.10 655 700000c 0 192.168.130.5 655
+2026-09-15 22:11:30 DEBUG   Sending 68 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:30 DEBUG   UDP address of nodel set to 100.64.0.4 port 655
+2026-09-15 22:11:30 DEBUG   Node nodel (100.64.0.4 port 655) became reachable
+2026-09-15 22:11:31 DEBUG   Got REQ_KEY from nodel (100.64.0.4 port 59064): 15 nodel nodeb 15 AAAAAAIATsDl1H2jjPIZwkqymGsjTq1Macxyk0Um2409X5diP0+7Hunox3cemlrOTa6T82P3ccfMYxuR94g6LHYJuPL3xC
+2026-09-15 22:11:31 DEBUG   Sending REQ_KEY to nodeb (100.64.0.3 port 58222): 15 nodel nodeb 15 AAAAAAIATsDl1H2jjPIZwkqymGsjTq1Macxyk0Um2409X5diP0+7Hunox3cemlrOTa6T82P3ccfMYxuR94g6LHYJuPL3xC
+2026-09-15 22:11:31 DEBUG   Sending 113 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:31 DEBUG   Got REQ_KEY from nodel (100.64.0.4 port 59064): 15 nodel relay 15 AAAAAAIAI9HSzjRksn8XcAF79I+NbLjXjhk7QRA68+Ma2HuIZt5iEcLd137SNnHoY/dJ842pKayZ2K3qWD/TBKC2fGqp1D
+2026-09-15 22:11:31 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 59064): 16 relay nodel AAAAAAIA0Q50kFXtwJuY5YOXzyK1iTiXYxyq0B6nkASHkJgJDkz7LDgxxG40iHc3f5G7cVlIFWvIv3na5o+uJr878Ku2NB -1 -1 -1 0
+2026-09-15 22:11:31 DEBUG   Sending 121 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:31 DEBUG   Got PACKET from nodel (100.64.0.4 port 59064): 17 18
+2026-09-15 22:11:31 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:11:31 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:11:31 DEBUG   Got PACKET from nodel (100.64.0.4 port 59064): 17 18
+2026-09-15 22:11:31 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:11:31 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:11:31 DEBUG   Got PACKET from nodel (100.64.0.4 port 59064): 17 18
+2026-09-15 22:11:31 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:11:31 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:11:31 DEBUG   Got PACKET from nodel (100.64.0.4 port 59064): 17 18
+2026-09-15 22:11:31 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:11:31 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:11:31 DEBUG   Got PACKET from nodel (100.64.0.4 port 59064): 17 18
+2026-09-15 22:11:31 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:11:31 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:11:31 DEBUG   Got PACKET from nodel (100.64.0.4 port 59064): 17 18
+2026-09-15 22:11:31 DEBUG   Received packet of 18 bytes from nodel (100.64.0.4 port 655)
+2026-09-15 22:11:31 WARNING Cannot route packet from nodel (100.64.0.4 port 655): unknown type 0
+2026-09-15 22:11:31 DEBUG   Got ANS_KEY from nodel (100.64.0.4 port 59064): 16 nodel relay AAAABAoQXw5XCfRSD42U/739s0ktDd/+AhpInO3WaH1nvskTjg920I9kTe7IJH/+TcPmIAcx1t5Kg7H9w3xFpsdge2rC -1 -1 -1 0
+2026-09-15 22:11:31 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 59064): 16 relay nodel AAAABA4efh9clKAb6dpyprd6vLtU3rsDTDidfFtDFSXi4mZjCX6x/LiF3fRdOpXEGdHjpBOmp04UoUOcGJZE0LS34UmD -1 -1 -1 0
+2026-09-15 22:11:31 DEBUG   Sending 119 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:31 INFO    SPTPS key exchange with nodel (100.64.0.4 port 655) successful
+2026-09-15 22:11:31 DEBUG   Got UDP_INFO from nodeb (100.64.0.3 port 58222): 22 nodeb nodel 192.168.120.5 655
+2026-09-15 22:11:31 DEBUG   Sending UDP_INFO to nodel (100.64.0.4 port 59064): 22 nodeb nodel 100.64.0.3 41655
+2026-09-15 22:11:31 DEBUG   Sending 32 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:31 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 58222): 16 nodeb nodel AAAAAAIA775oLF9yV3styUXOfwW/VioxcfolWvrK0oX0raWZLj3cdQ/90Gx0xW+p2hjg+twHM3WjopVJc6f/nFo881TmBC -1 -1 -1 0
+2026-09-15 22:11:31 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 59064): 16 nodeb nodel AAAAAAIA775oLF9yV3styUXOfwW/VioxcfolWvrK0oX0raWZLj3cdQ/90Gx0xW+p2hjg+twHM3WjopVJc6f/nFo881TmBC -1 -1 -1 0
+2026-09-15 22:11:31 DEBUG   Sending 121 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:31 DEBUG   Got MTU_INFO from nodeb (100.64.0.3 port 58222): 23 nodeb nodel 1518
+2026-09-15 22:11:31 DEBUG   Sending MTU_INFO to nodel (100.64.0.4 port 59064): 23 nodeb nodel 1439
+2026-09-15 22:11:31 DEBUG   Sending 20 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:31 DEBUG   Got ANS_KEY from nodel (100.64.0.4 port 59064): 16 nodel nodeb AAAABA4pv6nJtXwSb3VIKxe0d8h6K5Ak5wu1me+7e/RSsk1GD6qNaUFU/MSRw/PLbHqUW8aYJlmTU28c0b+51qfcG2HB -1 -1 -1 0
+2026-09-15 22:11:31 DEBUG   Appending reflexive UDP address to ANS_KEY from nodel to nodeb
+2026-09-15 22:11:31 DEBUG   Sending ANS_KEY to nodeb (100.64.0.3 port 58222): 16 nodel nodeb AAAABA4pv6nJtXwSb3VIKxe0d8h6K5Ak5wu1me+7e/RSsk1GD6qNaUFU/MSRw/PLbHqUW8aYJlmTU28c0b+51qfcG2HB -1 -1 -1 0 100.64.0.4 655
+2026-09-15 22:11:31 DEBUG   Sending 134 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:31 DEBUG   Got MTU_INFO from nodel (100.64.0.4 port 59064): 23 nodel nodeb 1518
+2026-09-15 22:11:31 INFO    Using provisional MTU 1518 for node nodel (100.64.0.4 port 655)
+2026-09-15 22:11:31 DEBUG   Sending MTU_INFO to nodeb (100.64.0.3 port 58222): 23 nodel nodeb 1518
+2026-09-15 22:11:31 DEBUG   Sending 20 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:31 DEBUG   Got ANS_KEY from nodeb (100.64.0.3 port 58222): 16 nodeb nodel AAAABAIIS+J94HT6d8sX33LPkamLwTSV3Nu/9l2rcmNUXyvaAzCe2s7ihtaYY9W05oEcRMcnd6gsHC3EK7+WDgyfkESA -1 -1 -1 0
+2026-09-15 22:11:31 DEBUG   Sending ANS_KEY to nodel (100.64.0.4 port 59064): 16 nodeb nodel AAAABAIIS+J94HT6d8sX33LPkamLwTSV3Nu/9l2rcmNUXyvaAzCe2s7ihtaYY9W05oEcRMcnd6gsHC3EK7+WDgyfkESA -1 -1 -1 0
+2026-09-15 22:11:31 DEBUG   Sending 119 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:32 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 59064): 21 117
+2026-09-15 22:11:32 INFO    Sending packet from nodel (100.64.0.4 port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:32 INFO    Sending UDP probe length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:32 INFO    Sending UDP probe length 1440 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:32 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:32 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (TCP)
+2026-09-15 22:11:32 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 59064): 21 117
+2026-09-15 22:11:32 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:32 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:32 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:11:32 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:11:32 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:11:32 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:11:32 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:11:32 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:11:32 WARNING Error sending UDP SPTPS packet to nodel (100.64.0.4 port 655): Network is unreachable
+2026-09-15 22:11:32 INFO    Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:32 DEBUG   Got UDP_INFO from nodel (100.64.0.4 port 59064): 22 nodel nodeb 192.168.130.5 655
+2026-09-15 22:11:32 DEBUG   Sending UDP_INFO to nodeb (100.64.0.3 port 58222): 22 nodel nodeb 100.64.0.4 655
+2026-09-15 22:11:32 DEBUG   Sending 30 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:32 INFO    Got UDP probe request 1439 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:32 INFO    Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:32 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:33 INFO    Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:33 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:33 INFO    Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.131
+2026-09-15 22:11:33 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 59064): 21 117
+2026-09-15 22:11:33 INFO    Sending packet from nodel (100.64.0.4 port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:33 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (TCP)
+2026-09-15 22:11:33 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 59064): 21 117
+2026-09-15 22:11:33 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:33 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:33 INFO    Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:33 INFO    Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+2026-09-15 22:11:33 INFO    Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:33 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 655)
+2026-09-15 22:11:33 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 655)
+2026-09-15 22:11:33 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 655) via nodel (100.64.0.4 port 655) (UDP)
+2026-09-15 22:11:33 DEBUG   UDP address of nodel set to 100.64.0.4 port 46161
+2026-09-15 22:11:33 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:33 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:33 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:33 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:33 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:33 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Got UDP probe request 18 from nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 59064): 21 117
+2026-09-15 22:11:34 INFO    Sending packet from nodel (100.64.0.4 port 46161) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:34 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (TCP)
+2026-09-15 22:11:34 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 59064): 21 117
+2026-09-15 22:11:34 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:34 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:34 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Sending UDP probe length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 WARNING Error sending UDP SPTPS packet to nodel (100.64.0.4 port 46161): Network is unreachable
+2026-09-15 22:11:34 INFO    Got type 2 UDP probe reply 18 from nodel (100.64.0.4 port 46161) rtt=0.101
+2026-09-15 22:11:34 INFO    Got type 2 UDP probe reply 18 from nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 DEBUG   Got SPTPS_PACKET from nodel (100.64.0.4 port 59064): 21 117
+2026-09-15 22:11:34 INFO    Sending packet from nodel (100.64.0.4 port 46161) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+2026-09-15 22:11:34 INFO    Sending packet from nodeb (100.64.0.3 port 41655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (TCP)
+2026-09-15 22:11:34 DEBUG   Sending SPTPS_PACKET to nodel (100.64.0.4 port 59064): 21 117
+2026-09-15 22:11:34 DEBUG   Sending 7 bytes of metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:34 DEBUG   Sending 117 bytes of raw metadata to nodel (100.64.0.4 port 59064)
+2026-09-15 22:11:34 INFO    Sending type 2 probe reply length 18 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Using system-provided maximum tinc MTU for nodel (100.64.0.4 port 46161): 1439
+2026-09-15 22:11:34 INFO    Sending UDP probe length 1439 to nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Sending packet from relay (MYSELF port 655) to nodel (100.64.0.4 port 46161) via nodel (100.64.0.4 port 46161) (UDP)
+2026-09-15 22:11:34 INFO    Got type 2 UDP probe reply 1439 from nodel (100.64.0.4 port 46161)
+2026-09-15 22:11:34 INFO    Fixing MTU of nodel (100.64.0.4 port 46161) to 1439 after 1 probes
+2026-09-15 22:11:35 DEBUG   Sending PING to nodeb (100.64.0.3 port 58222): 8
+2026-09-15 22:11:35 DEBUG   Sending 2 bytes of metadata to nodeb (100.64.0.3 port 58222)
+2026-09-15 22:11:35 DEBUG   Got PONG from nodeb (100.64.0.3 port 58222): 9

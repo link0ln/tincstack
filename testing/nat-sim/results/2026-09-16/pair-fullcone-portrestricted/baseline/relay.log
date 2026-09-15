@@ -1,0 +1,265 @@
+tincd 1.1pre18 (Sep 15 2026 21:28:59) starting, debug level 5
+/dev/net/tun is a Linux tun/tap device (tun mode)
+Listening on 0.0.0.0 port 655
+Executing script tinc-up
+Ready
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+Connection from 100.64.0.2 port 45794
+Got ID from <unknown> (100.64.0.2 port 45794): 0 nodea 17.7
+Sending ID to nodea (100.64.0.2 port 45794): 0 relay 17.7
+Sending 13 bytes of raw metadata to nodea (100.64.0.2 port 45794)
+Sending ACK to nodea (100.64.0.2 port 45794): 4 655 0 700000c
+Sending 16 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got ACK from nodea (100.64.0.2 port 45794): 4 655 1 700000c
+Connection with nodea (100.64.0.2 port 45794) activated
+Sending ADD_SUBNET to nodea (100.64.0.2 port 45794): 10 70adff0f relay 10.77.0.1
+Sending 28 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending ADD_EDGE to everyone (BROADCAST): 12 195416aa relay nodea 100.64.0.2 655 700000c 0 100.64.0.10 655
+Sending 65 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got ADD_SUBNET from nodea (100.64.0.2 port 45794): 10 135c2eb6 nodea 10.77.0.2
+Forwarding ADD_SUBNET from nodea (100.64.0.2 port 45794): 10 135c2eb6 nodea 10.77.0.2
+Got ADD_EDGE from nodea (100.64.0.2 port 45794): 12 52805cb9 nodea relay 100.64.0.10 655 700000c 0 192.168.110.5 655
+Forwarding ADD_EDGE from nodea (100.64.0.2 port 45794): 12 52805cb9 nodea relay 100.64.0.10 655 700000c 0 192.168.110.5 655
+UDP address of nodea set to 100.64.0.2 port 655
+Node nodea (100.64.0.2 port 655) became reachable
+Connection from 100.64.0.3 port 36716
+Got ID from <unknown> (100.64.0.3 port 36716): 0 nodeb 17.7
+Sending ID to nodeb (100.64.0.3 port 36716): 0 relay 17.7
+Sending 13 bytes of raw metadata to nodeb (100.64.0.3 port 36716)
+Sending ACK to nodeb (100.64.0.3 port 36716): 4 655 0 700000c
+Sending 16 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got ACK from nodeb (100.64.0.3 port 36716): 4 655 1 700000c
+Connection with nodeb (100.64.0.3 port 36716) activated
+Sending ADD_SUBNET to nodeb (100.64.0.3 port 36716): 10 30d47e0b nodea 10.77.0.2
+Sending 28 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending ADD_EDGE to nodeb (100.64.0.3 port 36716): 12 2af21a19 nodea relay 100.64.0.10 655 700000c 0 192.168.110.5 655
+Sending 68 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending ADD_SUBNET to nodeb (100.64.0.3 port 36716): 10 5abd764 relay 10.77.0.1
+Sending 27 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending ADD_EDGE to nodeb (100.64.0.3 port 36716): 12 67a1e55c relay nodea 100.64.0.2 655 700000c 0 100.64.0.10 655
+Sending 65 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending ADD_EDGE to everyone (BROADCAST): 12 66c977e relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+Sending 64 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending 64 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got ADD_SUBNET from nodeb (100.64.0.3 port 36716): 10 420daca5 nodeb 10.77.0.3
+Forwarding ADD_SUBNET from nodeb (100.64.0.3 port 36716): 10 420daca5 nodeb 10.77.0.3
+Sending 28 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got ADD_EDGE from nodeb (100.64.0.3 port 36716): 12 a8edaa6 nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+Forwarding ADD_EDGE from nodeb (100.64.0.3 port 36716): 12 a8edaa6 nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+Sending 67 bytes of metadata to nodea (100.64.0.2 port 45794)
+UDP address of nodeb set to 100.64.0.3 port 655
+Node nodeb (100.64.0.3 port 655) became reachable
+Got REQ_KEY from nodea (100.64.0.2 port 45794): 15 nodea nodeb 15 AAAAAAIALybLJwV0qH/MYXiK2xZa/T5/6/1BBJvoNIXWF1Rq3UlhNYtswFKO2hF+Qu10g0irgM9nmWAP7AGY9ueweURRgB
+Sending REQ_KEY to nodeb (100.64.0.3 port 36716): 15 nodea nodeb 15 AAAAAAIALybLJwV0qH/MYXiK2xZa/T5/6/1BBJvoNIXWF1Rq3UlhNYtswFKO2hF+Qu10g0irgM9nmWAP7AGY9ueweURRgB
+Sending 113 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got REQ_KEY from nodea (100.64.0.2 port 45794): 15 nodea relay 15 AAAAAAIAjbjILNycrWtAArP1INVm4K/J00Hmh3DYd292GLHiKisjhw/PqhxxYGyHIbcFxqTGmuupkA8d99wAIrcubY+fqA
+Sending ANS_KEY to nodea (100.64.0.2 port 45794): 16 relay nodea AAAAAAIAtnYCe9f7AGC5N+LuU6V9y84Dw4X6QYOIi1Q3HN2kqwWTcVt8bm6Ig12XMokjJRN9SDNyrj+DUCjnftXzZBfzFB -1 -1 -1 0
+Sending 121 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got PACKET from nodea (100.64.0.2 port 45794): 17 18
+Received packet of 18 bytes from nodea (100.64.0.2 port 655)
+Cannot route packet from nodea (100.64.0.2 port 655): unknown type 0
+Got PACKET from nodea (100.64.0.2 port 45794): 17 18
+Received packet of 18 bytes from nodea (100.64.0.2 port 655)
+Cannot route packet from nodea (100.64.0.2 port 655): unknown type 0
+Got ANS_KEY from nodea (100.64.0.2 port 45794): 16 nodea relay AAAABA4hB1kIc1IaW5LaOhcoh2pTacOPMBK4tRlt0qrdzXmLhNVdZQJK9fmYoL06KHzK4MKQlVsD2nPR1y1vjAwnNVvD -1 -1 -1 0
+Sending ANS_KEY to nodea (100.64.0.2 port 45794): 16 relay nodea AAAABAo2T+Poj8cvKWwzUp9ROHKDzD8Pv+sRFqFTfsKHP9sMqrWUIAESMkKUTFNq/6Ny3Bc4CTEcaUmUikr5YdmBI7fC -1 -1 -1 0
+Sending 119 bytes of metadata to nodea (100.64.0.2 port 45794)
+SPTPS key exchange with nodea (100.64.0.2 port 655) successful
+Got UDP_INFO from nodeb (100.64.0.3 port 36716): 22 nodeb nodea 192.168.120.5 655
+Sending UDP_INFO to nodea (100.64.0.2 port 45794): 22 nodeb nodea 100.64.0.3 655
+Sending 30 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got ANS_KEY from nodeb (100.64.0.3 port 36716): 16 nodeb nodea AAAAAAIA7qYsi54ZicxGKteg93SZz7lUjlmLb9C5ZZz9CKwFAIWwN9Y0mMEtfHZUSMBJUyiXJ2SDekQ1E1pYT4JvcxFHwB -1 -1 -1 0
+Sending ANS_KEY to nodea (100.64.0.2 port 45794): 16 nodeb nodea AAAAAAIA7qYsi54ZicxGKteg93SZz7lUjlmLb9C5ZZz9CKwFAIWwN9Y0mMEtfHZUSMBJUyiXJ2SDekQ1E1pYT4JvcxFHwB -1 -1 -1 0
+Sending 121 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got MTU_INFO from nodeb (100.64.0.3 port 36716): 23 nodeb nodea 1518
+Sending MTU_INFO to nodea (100.64.0.2 port 45794): 23 nodeb nodea 1518
+Sending 20 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got ANS_KEY from nodea (100.64.0.2 port 45794): 16 nodea nodeb AAAABAo/+EgtR7ccGmI9VnDioql/f5fzs+NcEs1lgV8fPUF0nMQLoEd1KWKkzeKLzgyC6NOtNLz35RYeNl+le24jq9XB -1 -1 -1 0
+Sending ANS_KEY to nodeb (100.64.0.3 port 36716): 16 nodea nodeb AAAABAo/+EgtR7ccGmI9VnDioql/f5fzs+NcEs1lgV8fPUF0nMQLoEd1KWKkzeKLzgyC6NOtNLz35RYeNl+le24jq9XB -1 -1 -1 0
+Sending 119 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got MTU_INFO from nodea (100.64.0.2 port 45794): 23 nodea nodeb 1518
+Sending MTU_INFO to nodeb (100.64.0.3 port 36716): 23 nodea nodeb 1518
+Sending 20 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got ANS_KEY from nodeb (100.64.0.3 port 36716): 16 nodeb nodea AAAABAobgsUIOJovEY90fTrNr+IjDb5f8iAVEBMZX5BJkEaT92OySVAAQ1GpbwaxEKjoqVr06sHYvtuqdXIrY8vvgESC -1 -1 -1 0
+Sending ANS_KEY to nodea (100.64.0.2 port 45794): 16 nodeb nodea AAAABAobgsUIOJovEY90fTrNr+IjDb5f8iAVEBMZX5BJkEaT92OySVAAQ1GpbwaxEKjoqVr06sHYvtuqdXIrY8vvgESC -1 -1 -1 0
+Sending 119 bytes of metadata to nodea (100.64.0.2 port 45794)
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+Sending packet of 62 bytes to nodea (100.64.0.2 port 655)
+Sending PACKET to nodea (100.64.0.2 port 45794): 17 62
+Sending 6 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending 62 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Error sending UDP SPTPS packet to nodea (100.64.0.2 port 655): Network is unreachable
+Sending packet of 62 bytes to nodeb (100.64.0.3 port 655)
+Sending PACKET to nodeb (100.64.0.3 port 36716): 17 62
+Sending 6 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending 62 bytes of metadata to nodeb (100.64.0.3 port 36716)
+No valid key known yet for nodeb (100.64.0.3 port 655)
+Sending REQ_KEY to nodeb (100.64.0.3 port 36716): 15 relay nodeb 15 AAAAAAIAICZ7Wgz9McYXlIUjtlqJXy8u45jVoNA1ZqsgIeOR7Zj5VyyEkARtnq1WeAKkDpvO+fGIvPPr1cRxPRdxEH18aA
+Sending 113 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+Sending PACKET to nodeb (100.64.0.3 port 36716): 17 18
+Sending 6 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending 18 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+Sending PACKET to nodeb (100.64.0.3 port 36716): 17 18
+Sending 6 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending 18 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got ANS_KEY from nodeb (100.64.0.3 port 36716): 16 nodeb relay AAAAAAIAOh8O++/2DC4gW6m3OTdCUvzoWvmi44+3FF8rGZSJWTLwIvgq/l/tVm7K6pCGQ5Gx1t89+TG2SGR1+9VrwkADrD -1 -1 -1 0
+Sending ANS_KEY to nodeb (100.64.0.3 port 36716): 16 relay nodeb AAAABAoyKNbf9bTIdF+NuuXfqJzwdgp1e76RyTHfqdikeORGCDyur1eeKYBPF+56hy1IxS8xx43VdXRtigo/V+D7WFCA -1 -1 -1 0
+Sending 119 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got ANS_KEY from nodeb (100.64.0.3 port 36716): 16 nodeb relay AAAABAoXRZUYu4Huk8JkdN0uhyp6JX0T6FrKdB6SknURFpUNTVh5zHS5Ohrzj/VYmmOBqRtwzMbbqLOF8JXBQdMJJztA -1 -1 -1 0
+SPTPS key exchange with nodeb (100.64.0.3 port 655) successful
+Got SPTPS_PACKET from nodea (100.64.0.2 port 45794): 21 117
+Sending packet from nodea (100.64.0.2 port 655) to nodeb (100.64.0.3 port 655) via nodeb (100.64.0.3 port 655) (TCP)
+Sending SPTPS_PACKET to nodeb (100.64.0.3 port 36716): 21 117
+Sending 7 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending 117 bytes of raw metadata to nodeb (100.64.0.3 port 36716)
+Got UDP probe request 18 from nodeb (100.64.0.3 port 655)
+Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 655) via nodeb (100.64.0.3 port 655) (UDP)
+UDP address of nodeb set to 100.64.0.3 port 41655
+Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Got SPTPS_PACKET from nodeb (100.64.0.3 port 36716): 21 117
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (TCP)
+Sending SPTPS_PACKET to nodea (100.64.0.2 port 45794): 21 117
+Sending 7 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending 117 bytes of raw metadata to nodea (100.64.0.2 port 45794)
+Got UDP_INFO from nodea (100.64.0.2 port 45794): 22 nodea nodeb 192.168.110.5 655
+Sending UDP_INFO to nodeb (100.64.0.3 port 36716): 22 nodea nodeb 100.64.0.2 655
+Sending 30 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got UDP probe request 18 from nodea (100.64.0.2 port 655)
+Sending type 2 probe reply length 18 to nodea (100.64.0.2 port 655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+UDP address of nodea set to 100.64.0.2 port 40655
+Got UDP probe request 18 from nodea (100.64.0.2 port 40655)
+Sending type 2 probe reply length 18 to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Got SPTPS_PACKET from nodea (100.64.0.2 port 45794): 21 117
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (TCP)
+Sending SPTPS_PACKET to nodeb (100.64.0.3 port 36716): 21 117
+Sending 7 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending 117 bytes of raw metadata to nodeb (100.64.0.3 port 36716)
+Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=1410.216
+Got UDP probe request 1439 from nodeb (100.64.0.3 port 41655)
+Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Got SPTPS_PACKET from nodeb (100.64.0.3 port 36716): 21 117
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (TCP)
+Sending SPTPS_PACKET to nodea (100.64.0.2 port 45794): 21 117
+Sending 7 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending 117 bytes of raw metadata to nodea (100.64.0.2 port 45794)
+Received packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+Sending packet of 62 bytes to nodea (100.64.0.2 port 40655)
+Sending PACKET to nodea (100.64.0.2 port 45794): 17 62
+Sending 6 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending 62 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got type 2 UDP probe reply 18 from nodea (100.64.0.2 port 40655) rtt=1665.091
+Got UDP probe request 1439 from nodea (100.64.0.2 port 40655)
+Sending type 2 probe reply length 1439 to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Got PACKET from nodea (100.64.0.2 port 45794): 17 62
+Received packet of 62 bytes from nodea (100.64.0.2 port 40655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodea (100.64.0.2 port 40655)
+Sending packet of 62 bytes to nodeb (100.64.0.3 port 41655)
+Sending PACKET to nodeb (100.64.0.3 port 36716): 17 62
+Sending 6 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending 62 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending type 2 probe reply length 1439 to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Using system-provided maximum tinc MTU for nodeb (100.64.0.3 port 41655): 1439
+Sending UDP probe length 1439 to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+Fixing MTU of nodeb (100.64.0.3 port 41655) to 1439 after 1 probes
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (TCP)
+Sending SPTPS_PACKET to nodea (100.64.0.2 port 45794): 21 117
+Sending 7 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending 117 bytes of raw metadata to nodea (100.64.0.2 port 45794)
+Sending type 2 probe reply length 1439 to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Using system-provided maximum tinc MTU for nodea (100.64.0.2 port 40655): 1439
+Sending UDP probe length 1439 to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Got UDP_INFO from nodeb (100.64.0.3 port 36716): 22 nodeb nodea 192.168.120.5 655
+Sending UDP_INFO to nodea (100.64.0.2 port 45794): 22 nodeb nodea 100.64.0.3 41655
+Sending 32 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got type 2 UDP probe reply 1439 from nodea (100.64.0.2 port 40655)
+Fixing MTU of nodea (100.64.0.2 port 40655) to 1439 after 1 probes
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Got UDP_INFO from nodea (100.64.0.2 port 45794): 22 nodea nodeb 192.168.110.5 655
+Sending UDP_INFO to nodeb (100.64.0.3 port 36716): 22 nodea nodeb 100.64.0.2 40655
+Sending 32 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Sending PING to nodea (100.64.0.2 port 45794): 8
+Sending 2 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending PING to nodeb (100.64.0.3 port 36716): 8
+Sending 2 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got PONG from nodea (100.64.0.2 port 45794): 9
+Got PONG from nodeb (100.64.0.3 port 36716): 9
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (MYSELF port 655)
+Sending packet of 62 bytes to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Sending packet of 62 bytes to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Got UDP_INFO from nodeb (100.64.0.3 port 36716): 22 nodeb nodea 192.168.120.5 655
+Sending UDP_INFO to nodea (100.64.0.2 port 45794): 22 nodeb nodea 100.64.0.3 41655
+Sending 32 bytes of metadata to nodea (100.64.0.2 port 45794)
+Got PING from nodeb (100.64.0.3 port 36716): 8
+Sending PONG to nodeb (100.64.0.3 port 36716): 9
+Sending 2 bytes of metadata to nodeb (100.64.0.3 port 36716)
+Got PING from nodea (100.64.0.2 port 45794): 8
+Sending PONG to nodea (100.64.0.2 port 45794): 9
+Sending 2 bytes of metadata to nodea (100.64.0.2 port 45794)
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Sending packet from nodea (100.64.0.2 port 40655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending packet from nodeb (100.64.0.3 port 41655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Received packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodeb (100.64.0.3 port 41655)
+Sending packet of 62 bytes to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Received packet of 62 bytes from nodea (100.64.0.2 port 40655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodea (100.64.0.2 port 40655)
+Sending packet of 62 bytes to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Got type 2 UDP probe reply 18 from nodeb (100.64.0.3 port 41655) rtt=0.077
+Got type 2 UDP probe reply 1439 from nodeb (100.64.0.3 port 41655)
+Got UDP probe request 18 from nodeb (100.64.0.3 port 41655)
+Sending type 2 probe reply length 18 to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Got type 2 UDP probe reply 1439 from nodea (100.64.0.2 port 40655)
+Got UDP probe request 18 from nodea (100.64.0.2 port 40655)
+Sending type 2 probe reply length 18 to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Sending type 2 probe reply length 62 to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 40655)
+Sending packet from relay (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+Sending type 2 probe reply length 62 to nodeb (100.64.0.3 port 41655)
+Sending packet from relay (MYSELF port 655) to nodeb (100.64.0.3 port 41655) via nodeb (100.64.0.3 port 41655) (UDP)
+Got type 2 UDP probe reply 18 from nodea (100.64.0.2 port 40655) rtt=0.067
