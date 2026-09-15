@@ -743,6 +743,15 @@ host SDK/NDK mounted read-only; no core source or meson change was needed.
   feeds the same path), then folds the invitation's `Ifconfig`/`Route` from
   `invitation-data` into the YAML options (`VpnInterfaceConfigurationTest.invitationDataAddressingIsFoldedIntoTheYaml`).
   On-device proof `[ ]` until the core's join emits YAML.
+  **Update 2026-09-16 (after merging stream A, `47b4bbb`):** the core's
+  `tinc join` is YAML-native on master — it writes only `tinc.yaml`
+  (`InterfaceAddress`/`InterfaceRoute` options, own + inviter host records,
+  keys) and leaves **no** `invitation-data` file. The app's fold-in of
+  `invitation-data` is therefore dead code, and its `Ifconfig`/`Route` keys do
+  not match the core's `InterfaceAddress`/`InterfaceRoute` (see Known Issues,
+  schema naming). It still works because the app derives the address from
+  own `Subnet` + `AddressPool` when `Ifconfig` is absent. The on-device proof
+  remains open only for lack of a device.
 - [x] 🟠 **One file on Android too** (brief point 2). Today the app keeps a
   second file, `network.conf` (`Address`, `Route`, `DNSServer`,
   `AllowApplication`, `DisallowApplication`). Fold these into the network's
@@ -776,7 +785,7 @@ host SDK/NDK mounted read-only; no core source or meson change was needed.
   the tunnel. **Status:** the picker and the one-file config are proven on the
   JVM; the APK is built from the core for all 4 ABIs. Awaits a device: install +
   `VpnService.establish()`, `tincd` subprocess start via the fd socket, QR scan,
-  and end-to-end join (the last also blocked on stream A, above).
+  and end-to-end join (core side unblocked by stream A; see the update above).
 - **Found during M8:**
   - 🟠 (core, stream A) `tinc join` and `tinc init` in YAML mode
     (`-c x/tinc.yaml`) write a classic `tinc.conf`/`hosts/` tree next to the
@@ -856,6 +865,17 @@ milestone as "Found during Mk" (consolidated into Known Issues at merge).
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
 
+- 🟠 **Two names for the interface address in the schema.** Stream A's core
+  writes `InterfaceAddress`/`InterfaceRoute` into the joined node's `options:`
+  (and `autoif.c` reads them on Linux); stream E's Android app reads
+  `Ifconfig`/`Route` from the same `options:` and still looks for the
+  `invitation-data` side-file that the YAML-native join no longer produces.
+  Found 2026-09-16 at merge. Impact today: none visible (the app falls back to
+  own `Subnet` + `AddressPool`), but a join that carries extra routes loses them
+  on Android, and the schema doc lists both spellings. Fix in a consolidation
+  pass: pick `InterfaceAddress`/`InterfaceRoute` (the daemon already implements
+  them), make the app read them, delete the `invitation-data` path, update
+  docs/config-schema.md §"Android interface options".
 - ~~🟠 `Port = 0` on the founding node breaks re-connection after its restart.~~
   **Resolved 2026-09-16** by decision 3: founding node materialises `655`,
   invitees `0` (verified: empty file → listens on 655; `ConnectTo` present →
