@@ -57,8 +57,11 @@ int addressfamily = AF_UNSPEC;
   ends of a network must agree on and that cannot make the invitee read,
   serve or execute anything (never a path, a URL, a command, a
   per-node listener setting). Prefix patterns are deliberately not
-  supported: a wildcard such as "Https*" would also have matched a future
-  HttpsDecoyRoot or HttpsDecoyUpstream. Per-node preferences
+  supported: the former "Https*" wildcard also matched HttpsDecoyRoot (a
+  directory the invitee would serve) and HttpsDecoyUpstream (a URL it
+  would proxy to), which are VAR_SERVER without VAR_SAFE for a reason;
+  the Obfs* shaping knobs and HttpsSni are listed one by one. Per-node
+  preferences
   (PreferredTransports, Port, ConnectTo, TlsCert/TlsKey, ...) stay out.
   (Security review R, 2026-09-16.)
 */
@@ -72,7 +75,10 @@ const char *const PROPAGATED_OPTIONS[] = {
 	"ObfsJunkPacketMinSize",
 	"ObfsJunkPacketMaxSize",
 	"ObfsInitHeaderJunkSize",
+	"ObfsTransportHeaderJunkSize",
 	"ObfsInitMagicHeader",
+	"ObfsTransportMagicHeader",
+	"HttpsSni",
 	NULL,
 };
 
@@ -556,8 +562,9 @@ int cmd_invite(int argc, char *argv[]) {
 		return 1;
 	}
 
-	// Check validity of the new node's name
-	if(!check_id(argv[1])) {
+	// Check validity of the new node's name (alphabet and length: it becomes
+	// a hosts/ file name and a YAML key on both ends)
+	if(!invitation_name_ok(argv[1])) {
 		fprintf(stderr, "Invalid name for node.\n");
 		return 1;
 	}
