@@ -232,6 +232,10 @@ bool transport_read_config(void) {
 
 	(void)pmask;
 	logger(DEBUG_ALWAYS, LOG_INFO, "Transports accept=%s prefer=%s%s", transport_mask_to_string(transport_accept_mask, buf), pbuf, single_flow ? " (SingleFlow)" : "");
+
+	/* Re-read the decoy config so HttpsDecoyRoot/HttpsDecoyUpstream changes take
+	   effect on reload (this runs on every setup_myself_reloadable). */
+	decoy_read_config();
 	return true;
 }
 

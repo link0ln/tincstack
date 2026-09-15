@@ -95,6 +95,8 @@ typedef struct https_session_t {
 	char *rbuf;            /* accumulated HTTP head */
 	size_t rlen, rcap;
 
+	uint8_t server_fp[TLS_FP_LEN]; /* client: the verified server cert fingerprint */
+
 	bool established_after_write; /* server: become established once wbuf drains */
 } https_session_t;
 
@@ -309,6 +311,10 @@ static bool verify_server_cert(https_session_t *s) {
 		return false;
 	}
 
+	/* Remember it: the authenticator is signed over the *server's* cert
+	   fingerprint, which the server checks against its own (tls_own_fp). */
+	memcpy(s->server_fp, fp, TLS_FP_LEN);
+
 	/* Pinned fingerprint from the peer's host record. */
 	splay_tree_t *tree = create_configuration();
 	char *pinned = NULL;
@@ -355,7 +361,9 @@ static bool build_client_request(https_session_t *s) {
 	uint64_t ts = (uint64_t) now.tv_sec;
 
 	uint8_t msg[AUTH_MSG_LEN];
-	auth_message(msg, tls_own_fp, exporter, nonce, ts); /* server_fp == the cert we just verified == our peer's; both sides use it */
+	/* Sign over the SERVER's cert fingerprint (the one we just verified), which
+	   the server checks against its own tls_own_fp. */
+	auth_message(msg, s->server_fp, exporter, nonce, ts);
 
 	/* Sign with our own Ed25519 node key. */
 	ecdsa_t *key = myself->connection->ecdsa;
