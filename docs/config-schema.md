@@ -45,6 +45,17 @@ networks:
       # ── address pool (point 8) ────────────────────────────────────────────
       AddressPool: 10.210.0.0/24   # network the inviter assigns invitee IPs from
                                    # default when starting a NEW network: 10.<rnd>.0.0/24
+      AddressDiscovery: no         # `tinc invite`: ask tinc-vpn.org for our public
+                                   # address when no Address is set. Off by default
+                                   # (fingerprint + stall on filtered networks); the
+                                   # default-route source address is used instead.
+
+      # ── interface addressing (built-in tinc-up, see below) ────────────────
+      InterfaceAddress: 10.210.0.3/24  # address/prefix for the tun interface.
+                                   # Set by `tinc join` from the invitation's
+                                   # Ifconfig; default = own Subnet + AddressPool prefix
+      InterfaceRoute: [10.220.0.0/24]  # extra routes via the interface (from the
+                                   # invitation's Route lines); "net gw" form allowed
 
       # ── transport selection & negotiation (points 5, 6, 7) ────────────────
       Transports: [plain, obfs, https, quic]   # ACCEPT list: what this listener
@@ -92,9 +103,10 @@ networks:
         ...
 
     # ── per-network scripts (optional) ───────────────────────────────────────
-    scripts:
-      tinc-up: |               # rarely needed; device IP is set programmatically
-        ...
+    scripts:                   # each entry is written to <runtime dir>/<name>
+      tinc-up: |               # (mode 0700) on every daemon start and run as the
+        ...                    # script of that name. Rarely needed: see
+                               # "Built-in interface setup" below.
 
     # ── peer host records (the host database) ────────────────────────────────
     hosts:
@@ -132,6 +144,67 @@ An existing file that does not parse is **refused**, never overwritten. No
 (`cache/`, `invitations/`, pid/socket if `/var/run` is unwritable) go under
 `<dir of file>/<netname>/`.
 
+## Built-in interface setup (Linux)
+
+Every YAML-mode node knows its own address, so no hand-written `tinc-up` is
+needed. When the daemon brings the device up it looks for `<runtime
+dir>/tinc-up` (materialised from `scripts.tinc-up` if present, or dropped in
+by hand). If there is none, on Linux it runs the equivalent of
+
+```
+ip addr replace <InterfaceAddress> dev $INTERFACE     # or <own Subnet host>/<AddressPool prefix>
+ip link set $INTERFACE up
+ip route replace <InterfaceRoute> dev $INTERFACE      # one per InterfaceRoute
+```
+
+itself (`core/tincd/src/autoif.c`). Windows sets the address through
+`WintunAddress`; Android hands the daemon a pre-configured fd; neither uses
+this path. A `scripts.tinc-up` in the YAML always wins over the built-in.
+
+## Invitation and join in YAML mode
+
+`tinc -c tinc.yaml invite <name>` (the inviter) writes an invitation that
+carries, beyond upstream tinc's `Name`/`NetName`/`ConnectTo`:
+
+- every **propagated server option** the inviter has set — the list is
+  `PROPAGATED_OPTIONS[]` in `core/tincd/src/invitation.c`: `Mode`, `Broadcast`,
+  `AddressPool`, `Transports`, `TlsFingerprint` and every option starting with
+  `Obfs`, `Https` or `Quic`. Per-node settings (`Port`, `ConnectTo`,
+  `PreferredTransports`, …) are deliberately not propagated;
+- the invitee's address from the pool: `Subnet = a.b.c.d/32` (its host record)
+  and `Ifconfig = a.b.c.d/<pool prefix>` (its interface address);
+- the inviter's own host record, with a `Port` line guaranteed (the inviter's
+  `Port` normally lives in `options:`, not in its host record).
+
+The address is the **lowest free host address of `AddressPool`**, skipping the
+network and broadcast addresses, every `Subnet` in `hosts:` (own record
+included), addresses promised by pending invitations in `<runtime
+dir>/invitations/`, and — when the daemon is running — every subnet it currently
+sees (`tinc dump subnets`); an address held by a live node is never re-issued
+even if its host record was edited away. Deleting a pending invitation file
+frees its address. The pool is only as consistent as the inviter's view of it:
+let one node (or nodes that can see each other) do the inviting.
+
+`tinc -c new.yaml join <invite>` (the invitee; the file may be absent or empty)
+writes the joined network into the YAML — `-n` names it, else the invitation's
+`NetName`, else `tincstack` — and nothing else: no `tinc.conf`, `hosts/`,
+`*_key.priv` or `tinc-up.invitation`. It stores `Name`, the propagated options,
+`ConnectTo = <inviter>`, `InterfaceAddress`/`InterfaceRoute` (from
+`Ifconfig`/`Route`; `dhcp`/`slaac` forms are not supported and are ignored with a
+message), its own host record (`Subnet`, generated `Ed25519PublicKey` and RSA
+public key) and the inviter's host record, then runs the same materialiser as an
+empty-file start to generate the keys. **Invitee defaults:** `Port = 0` and
+`UDPRebindOnWake = yes` (it always dials out; a fresh NAT mapping per start is
+what it wants). The founding node keeps `Port = 655`.
+
+On the inviter, the daemon persists the invitee's learned `Ed25519PublicKey`
+**and its assigned `Subnet`** into `hosts.<name>` when the invitation is
+redeemed, so the address stays reserved after the invitation file is gone.
+An invitation is only consumed once that record is stored: if storing fails,
+the inviter puts the invitation back (log: `… was not completed; it can be
+used again`), the invitee removes what `tinc join` had written, and the same
+invitation string can simply be retried.
+
 ## Android-specific interface config
 
 Android's VPN interface parameters (routes, DNS, per-app split routing) do **not**
@@ -156,6 +229,14 @@ the picker UI, not the plumbing.
 - The daemon persists **learned peer keys** (`Ed25519PublicKey`) into
   `hosts.<name>` at runtime via `yamlconf_append_host_line()`. This is how a
   joined node's key reaches the inviter's config.
+- **Runtime reconfiguration** goes through the CLI: `tinc -c tinc.yaml set|add|
+  del|get [node.]Variable [value]` edits `options:` (server variables; a repeated
+  variable such as `ConnectTo` becomes a list) or `hosts.<node>` (host
+  variables) with tinc's usual variable table and validation, saves atomically,
+  and asks a running daemon to reload. `tinc reload` (and every reload) makes
+  the daemon **re-read the YAML from disk** before re-parsing, so edits made by
+  the CLI or a GUI take effect without a restart. Nothing ever creates a
+  `tinc.conf` next to the YAML.
 - A GUI that also writes the file must treat the daemon as a concurrent writer:
   write atomically (temp + rename), never truncate-in-place over the keys, and
   re-read before merging. The tinc-manager adoption fixes this (its current

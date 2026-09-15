@@ -85,50 +85,235 @@ no manual editing.
 
 ---
 
-## Milestone M2 — invitation & one-line onboarding in YAML mode (principle 3) 🔴
+## Milestone M2 — invitation & one-line onboarding in YAML mode (principle 3) ✅ (2026-09-16, stream A)
 
 Close the gap that upstream invitations bypass YAML mode and carry no pool/
-transport/cert material.
+transport/cert material. All runs below: image `tincstack/core:ws-a` built
+from this tree, two containers `wsa-a`/`wsa-b` on docker network `wsa-net`,
+`-v /tmp/wsa-{a,b}:/etc/tincstack`, `tincd -c /etc/tincstack/tinc.yaml -D -d3`.
 
-- [ ] 🔴 Route `tinc join` and `finalize_join()` through the YAML writer so a
+- [x] 🔴 Route `tinc join` and `finalize_join()` through the YAML writer so a
   joined node writes its `tinc.yaml` (identity + inherited options + inviter host
-  record), not a classic on-disk tree. **Proof:** join produces a valid
-  `tinc.yaml`; no stray `tinc.conf`/`hosts/` tree appears.
-- [ ] 🔴 Extend the invitation payload beyond upstream's (name/ConnectTo/Mode) to
+  record), not a classic on-disk tree. **Proof:** `finalize_join_yaml()` in
+  `invitation.c` (network name: `-n`, else the invitation's `NetName`, else
+  `tincstack`; refuses an already-set-up network). On `wsa-b` with **no file at
+  all**: `tinc -c /etc/tincstack/tinc.yaml join 10.16.10.2:655/Misf…` →
+  `Materialised defaults into '/etc/tincstack/tinc.yaml' [tincstack]:
+  ed25519_priv Ed25519PublicKey rsa_priv RSA-public` → `Configuration stored
+  in: /etc/tincstack/tinc.yaml [tincstack]` → `Invitation successfully
+  accepted.` (exit 0). `find /tmp/wsa-b -type f` afterwards: `tinc.yaml` (0600)
+  and, after the daemon start, `tincstack/cache/nodea` — **no** `tinc.conf`,
+  `hosts/`, `*_key.priv` or `tinc-up.invitation`. The YAML holds
+  `options: {Name: peer, ConnectTo: nodea, Mode: router, AddressPool:
+  10.138.0.0/24, InterfaceAddress: 10.138.0.2/24, Port: 0, UDPRebindOnWake:
+  yes}`, `hosts.peer` (Subnet 10.138.0.2/32 + Ed25519PublicKey + RSA public),
+  `hosts.nodea` (inviter's record incl. `Address` and `Port = 655`), and
+  `keys.ed25519_priv`/`rsa_priv`. The daemon then started from that file alone
+  (`Listening on 0.0.0.0 port 36703` … `Connection with nodea … activated`).
+- [x] 🔴 Extend the invitation payload beyond upstream's (name/ConnectTo/Mode) to
   carry: assigned pool address + subnet, routes, active `Transports` and their
-  parameters, and the HTTPS-front certificate fingerprint/material. **Proof:** a
-  joined node's `options` match the inviter's for every propagated field.
-- [ ] 🟠 Inviter persists the invitee's learned Ed25519 key back into its YAML
+  parameters, and the HTTPS-front certificate fingerprint/material. **Proof:**
+  `PROPAGATED_OPTIONS[]` in `invitation.c` (one table; `*` suffix = prefix
+  match: `Mode, Broadcast, AddressPool, Transports, TlsFingerprint, Obfs*,
+  Https*, Quic*`) drives both `cmd_invite` (copies every matching option from
+  the inviter's `options:`) and the join side (accepts a propagated option even
+  before it is in `variables[]`, so streams B/G only add table entries).
+  Invitation file written on `wsa-a`: `Name = peer / NetName = tincstack /
+  ConnectTo = nodea / Mode = router / AddressPool = 10.138.0.0/24 / Subnet =
+  10.138.0.2/32 / Ifconfig = 10.138.0.2/24 / #---- / Name = nodea / Subnet …
+  Ed25519PublicKey … RSA … Address = 10.16.10.2 / Port = 655`. Joined node's
+  `options` vs inviter's: `Mode: router` = `Mode: router`, `AddressPool:
+  10.138.0.0/24` = `AddressPool: 10.138.0.0/24` (the only propagated fields
+  the inviter had set; `Transports`/`Obfs*`/`Https*`/`Quic*`/`TlsFingerprint`
+  are carried by the same table once M4/M5 define them — no Transports or
+  certificate exists yet in this tree, so that part of the proof is deferred
+  to those milestones by construction, not skipped). `Ifconfig`/`Route` become
+  `InterfaceAddress`/`InterfaceRoute` options (documented in
+  `docs/config-schema.md`); `dhcp`/`dhcp6`/`slaac` forms are ignored with a
+  message in YAML mode.
+- [x] 🟠 Inviter persists the invitee's learned Ed25519 key back into its YAML
   (`yamlconf_append_host_line`, already present) — verify it fires in YAML mode.
-  **Proof:** after join, inviter's `tinc.yaml` `hosts:` contains the invitee.
-- [ ] 🟠 **Runtime reconfiguration in YAML mode** (brief point 3: "tinc must read
+  **Proof:** by inspection it could **not** fire: `finalize_invitation()`
+  (`protocol_auth.c`) wrote `hosts/<name>` with a raw `fopen`, and in YAML mode
+  no `hosts/` directory exists (`tincd.c` skips `DIR_HOSTS`), so the daemon
+  would have logged `Error trying to create …/hosts/peer` and cancelled the
+  invitation (defect, below; fixed before the run, not reproduced live).
+  Fixed to go through `append_config_file()` and to
+  persist the promised `Subnet` as well (captured from the invitation file into
+  `c->config_tree` when it is streamed). `wsa-a` log: `Invitation lRba…
+  successfully sent to peer` → `Key successfully received from peer`; its
+  `tinc.yaml` afterwards: `hosts.peer: | Ed25519PublicKey = xV39… / Subnet =
+  10.138.0.2/32`. The in-memory document is updated too, so the running daemon
+  serves the new record without a reload.
+- [x] 🟠 **Runtime reconfiguration in YAML mode** (brief point 3: "tinc must read
   *and write* the config on every platform, because parameters are changed
   online"). `tinc set/add/del/get` and `tinc reload` operate on the YAML
   (`options:` for server variables, `hosts.<name>` for host variables) instead
   of the classic tree; the daemon re-reads the YAML on reload. This is the one
   path the Windows GUI, Android app and obfs/transport controls all use.
-  **Proof:** `tinc -c x.yaml set UDPDiscoveryBurst 7` → YAML updated, no
-  `tinc.conf` created; `tinc reload` → daemon logs the new value.
-- [ ] 🟠 **Invitee NAT defaults** (brief point 4): a node that joins by invite
+  **Proof:** `cmd_config` runs its unchanged line editor over a temporary
+  stream of the options/host text and writes the result back with
+  `yamlconf_set_options_text()` / `yamlconf_host_set_text()` + atomic save;
+  `read_server_config()` re-reads the YAML from disk on every (re)load. On
+  `wsa-a`: `tinc … get UDPDiscoveryBurst` → `No matching configuration
+  variables found.` (exit 1); `tinc … set UDPDiscoveryBurst 7` → exit 0, YAML
+  `options:` gained `UDPDiscoveryBurst: 7`; `find /tmp/wsa-a -name tinc.conf`
+  → nothing; daemon log: `Got 'reload' command` … `UDPDiscoveryBurst 7,
+  UDPRebindOnWake no` (auto-reload after set, and again after `tinc … reload`
+  exit 0). Lists: `add ConnectTo peer`, `add ConnectTo other` → YAML
+  `ConnectTo:\n - peer\n - other`, `get ConnectTo` → `peer` `other`; `del
+  ConnectTo other` → `peer`; `del ConnectTo` → gone. Host vars: `set
+  peer.Weight 5` → `hosts.peer` gains `Weight = 5`; `get peer.Subnet` →
+  `10.138.0.2/32`; `del peer.Weight` → gone. Unknown variable still refused
+  (`Bogus: is not a known configuration variable!`). Classic mode re-checked in
+  the same image: `tinc -c /tmp/x init foo; set Mode switch; get Mode; add/del
+  ConnectTo` still edit `tinc.conf`/`hosts/foo`.
+- [x] 🟠 **Invitee NAT defaults** (brief point 4): a node that joins by invite
   materialises `Port = 0` and `UDPRebindOnWake = yes` (it always dials out, so
   a stable inbound port is not needed); the founding node keeps tinc's standard
-  port 655 (done in M1). **Proof:** joined node's `options:` carry both; the
-  founding node's do not.
+  port 655 (done in M1). **Proof:** joined node `wsa-b` `options:` carry
+  `Port: 0` and `UDPRebindOnWake: yes` (its log: `Listening on 0.0.0.0 port
+  36703`, `UDPDiscoveryBurst 5, UDPRebindOnWake yes`); founding node `wsa-a`
+  has `Port: 655`, no `UDPRebindOnWake` (`… port 655`, `UDPRebindOnWake no`).
+- [x] 🟠 **Interface addressing without a script** (needed for the acceptance
+  ping; brief point 2). `scripts.<name>` in the YAML are written to the runtime
+  dir (0700) on every start; when no `tinc-up` exists on Linux, the daemon runs
+  a built-in `ip addr replace <own Subnet host>/<AddressPool prefix> dev
+  $INTERFACE; ip link set up` (+ `InterfaceRoute`s) — `autoif.c`, documented in
+  `docs/config-schema.md`. **Proof:** both nodes' logs: `Built-in tinc-up: ip
+  addr replace 10.138.0.1/24 dev tincstack` / `… 10.138.0.2/24 …`, `Interface
+  tincstack configured with … (built-in tinc-up)`; `ip -4 addr show dev
+  tincstack` → `inet 10.138.0.1/24` and `inet 10.138.0.2/24`. Script path:
+  a YAML with `scripts.tinc-up` → log `Wrote 1 script(s) from
+  '/etc/tincstack/tinc.yaml' into '/etc/tincstack/tiny'`, `Executing script
+  tinc-up`, file `-rwx------ tiny/tinc-up`, the script's own marker file
+  written, interface `10.98.0.1/30` from the script (built-in not used).
 - **Acceptance:** two fresh `docker run` nodes, one invite string pasted to the
   second, mesh reachable (ping across the tunnel) with **no** manual config on
-  either side.
+  either side. **Met 2026-09-16.** Run (throwaway shell harness, not
+  committed; full output recorded here): `docker network create wsa-net`; A:
+  `docker run -d --name wsa-a --hostname nodea --network wsa-net --cap-add
+  NET_ADMIN --device /dev/net/tun -v /tmp/wsa-a:/etc/tincstack
+  tincstack/core:ws-a tincd -c /etc/tincstack/tinc.yaml -D -d3` on an empty
+  dir → `Materialised defaults … Name=nodea … Port=655 AddressPool=10.138.0.0/24
+  Subnet=10.138.0.1/32 …` → `Ready`; `docker exec wsa-a tinc -c
+  /etc/tincstack/tinc.yaml invite peer` → `Assigned address 10.138.0.2/24 to
+  peer.` + `10.16.10.2:655/MisfHNPEsx…` (one line, exit 0)
+  (Address = container IP via the M1 fallback, no phone-home); B: `docker run
+  … --name wsa-b … sleep infinity`, `docker exec wsa-b tinc -c
+  /etc/tincstack/tinc.yaml join <that string>` → accepted (above); `docker exec
+  -d wsa-b tincd -c /etc/tincstack/tinc.yaml -D -d3` → `Connection with nodea
+  (10.16.10.2 port 655) activated`. `docker exec wsa-b ping -c 3 10.138.0.1` →
+  `3 packets transmitted, 3 received, 0% packet loss` (rtt 0.13–0.43 ms);
+  `docker exec wsa-a ping -c 3 10.138.0.2` → `3 received, 0% loss`. `tinc dump
+  nodes` on A: `peer id 97a9… at 10.16.10.3 port 36703 … nexthop peer via peer
+  distance 1`; on B: `nodea id 0bab… at 10.16.10.2 port 655 … nexthop nodea
+  via nodea distance 1` — both direct (`via` = the node itself).
+- **Found during M2** (fixed unless stated; the merger consolidates into Known
+  Issues):
+  - 🔴 Daemon-side invitation acceptance could not work in YAML mode (found
+    by code inspection before the first run, not reproduced live):
+    `finalize_invitation()` did `access()`/`fopen("hosts/<name>")` directly,
+    and YAML mode creates no `hosts/` directory, so the create fails and the
+    invitee is cancelled. Fixed (routes through `append_config_file()`, also
+    stores `Subnet`).
+  - 🟠 The inviter's `Port` was missing from the invitee's copy of the inviter
+    host record (upstream copies only the host file; ours keeps `Port` in
+    `options:`), so an inviter on a non-655 port could not be dialled back.
+    Fixed (`copy_config_replacing_port()` appends `Port = <actual>`).
+  - 🟠 The daemon's in-memory YAML went stale after `append_config_file()` and
+    after any CLI/GUI edit: `reload_configuration()` re-read only the classic
+    files through `config_fopen()`, which serves the *old* document. Fixed
+    (`read_server_config()` re-reads the file; append mirrors in memory).
+  - 🟠 Phone-home to `tinc-vpn.org/host.cgi` (Known Issue from M1) is now
+    **opt-in** via `AddressDiscovery = yes`; default uses the default-route
+    source address (`Warning: using local address …` stays). In the container
+    run the external lookup would have produced the host's public IP, which the
+    second container cannot reach — the acceptance would have failed.
+  - 🟡 Upstream bug: `cmd_invite` tested `open()` with `if(!ifd)` (fd 0 vs
+    -1), so a failed create was reported as success. Fixed (`< 0`).
+  - 🟠 (reported by stream C from its two-node lab, same root cause as the
+    first item) **an invitation was burned when storing the invitee failed**:
+    the daemon unlinked the claimed invitation right after sending it, so a
+    failure while persisting the key left the invitee with `Invitation
+    cancelled` and a retry with `tried to use non-existing invitation`.
+    Fixed: the claimed `<cookie>.used` file now lives until the key is stored
+    (`connection_t.invitation_file`, `invitation_release()` in
+    `protocol_auth.c`, called from `free_connection()` too); on any failure it
+    is renamed back and the invitee's `tinc join` rolls its own YAML back
+    (deletes the file it created, or just the network it added). In-flight
+    `.used` files still reserve their address in the pool and expire with the
+    same one-week deadline. **Proof** (run 2026-09-16, `wsa-a`/`wsa-b`):
+    inviter's save broken on purpose (`mkdir /tmp/wsa-a/tinc.yaml.tmp`); B
+    `tinc … join <url>` → `Timed out waiting for the server to reply.` /
+    `Removed /etc/tincstack/tinc.yaml again (join did not complete).` (exit 1;
+    `find /tmp/wsa-b -type f` empty); A log: `Error trying to store the key
+    of peer in /etc/tincstack/tinc.yaml: Is a directory` / `Invitation for
+    peer … was not completed; it can be used again`; `invitations/` again
+    holds `jZkSh1Tc…` (no `.used`); `tinc … invite other` meanwhile →
+    `Assigned address 10.145.0.3/24` (`.2` still reserved). `rmdir` the
+    blocker, B re-runs the **same** `tinc … join <url>` → `Invitation
+    successfully accepted.`; A's `hosts.peer` = key + `Subnet =
+    10.145.0.2/32`; B's daemon up, `ping 10.145.0.2` from A → `2 received,
+    0% loss`.
+  - 🟢 (stream C) the YAML runtime dir flapped between 0700 (`make_names()`)
+    and 0755 (`makedirs()` re-chmods on every CLI call). Fixed by creating it
+    0755 like a classic confbase (secrets are in `invitations/` 0700 and the
+    0600 YAML). Proof: `stat -c %a /tmp/wsa-a/tincstack` → `755` before and
+    after `tinc … invite`.
+  - 🟢 `tinc join` prints `YAML config … does not exist yet; it will be
+    created` twice (make_names() runs again once the NetName is known).
+    Cosmetic, left.
+  - Files touched outside stream A's area, all minimal: `net_setup.c` (built-in
+    tinc-up fallback in `device_enable()`, one log line in
+    `setup_myself_reloadable()`), `connection.h` (one field), `connection.c`
+    (one call + include), `protocol.h` (one declaration), `meson.build` (two
+    new sources).
+  - 🟡 Not covered: `Ifconfig = dhcp|dhcp6|slaac` and non-Linux built-in
+    addressing (the built-in logs a warning and does nothing; Windows uses
+    `WintunAddress`, Android its fd). Documented in the schema.
 
 ---
 
-## Milestone M3 — IP address pool & auto-assignment (point 8) 🟠
+## Milestone M3 — IP address pool & auto-assignment (point 8) ✅ (2026-09-16, stream A)
 
-- [ ] 🟠 Reimplement the pool allocator (`allocate_vpn_ip` algorithm from the
+- [x] 🟠 Reimplement the pool allocator (`allocate_vpn_ip` algorithm from the
   vless prototype) against tinc's host DB + invitation store: lowest free address
   in `AddressPool`, skipping used and pending. Land in `invitation.c`/new file.
-  **Proof:** three sequential invites get `.2/.3/.4`; a freed address is reused.
-- [ ] 🟡 Collision safety: refuse to reuse an address held by a live node.
-  **Proof:** unit/integration check with a pending + a live holder.
+  **Proof:** `core/tincd/src/pool.c` (`pool_allocate()`, CLI side, called by
+  `cmd_invite`): skips network/broadcast, every `Subnet` of every host record
+  (own included; YAML `hosts:` or classic `hosts/`), every `Subnet` in
+  `<runtime>/invitations/*` (24-char names), and live subnets from
+  `REQ_DUMP_SUBNETS`. Fresh node `wsa-c` with `AddressPool: 10.99.0.0/24`
+  (own Subnet `.1`): `tinc … invite x` → `Assigned address 10.99.0.2/24 to
+  x.`, `invite y` → `10.99.0.3/24`, `invite z` → `10.99.0.4/24`; pending files
+  carry `Subnet = 10.99.0.2/32|.3|.4`. `rm invitations/<y's file>`; `invite w`
+  → `Assigned address 10.99.0.3/24 to w.` (freed address reused). Exhaustion:
+  pool `10.98.0.0/30` → `p1` gets `.2`, `invite p2` → `No free address left
+  in AddressPool 10.98.0.0/30 (4 in use).` (exit 1, no invitation file).
+  A node without `AddressPool` (classic mode) invites as before, with no
+  `Subnet`/`Ifconfig` lines.
+- [x] 🟡 Collision safety: refuse to reuse an address held by a live node.
+  **Proof:** integration check on the running pair from M2 — `peer` is live at
+  `10.138.0.2`; its Subnet removed from the inviter's host DB with `tinc … del
+  peer.Subnet` (`tinc dump subnets` still shows `10.138.0.2 owner peer`);
+  `tinc … invite q` → `Address 10.138.0.2 is held by live node peer,
+  skipping.` / `Assigned address 10.138.0.3/24 to q.`; the pending file
+  carries `Subnet = 10.138.0.3/32`. (Pending holders are covered by the
+  `.2/.3/.4` run above: `.2` and `.3` were only *pending*, and `z` still got
+  `.4`.)
 - **Acceptance:** invitees are L3-reachable immediately, no manual `Subnet`.
+  **Met** — the M2 acceptance ping ran with the invitee's `Subnet` and
+  interface address coming solely from the invitation.
+- **Found during M3:**
+  - 🟡 The pool is only as consistent as the inviter's local view: two nodes
+    inviting concurrently from the same `AddressPool` (every joined node
+    inherits it) can hand out the same address; only the live-node check
+    catches it. Mitigation: invite from one node, or from nodes that see each
+    other. Documented in `docs/config-schema.md`; a mesh-wide reservation is
+    out of scope for M3.
+  - 🟢 A `Subnet` wider than /32 in any host record reserves its whole range
+    (by design); an IPv6 `AddressPool` is rejected (IPv4 only, as in M1).
 
 ---
 
