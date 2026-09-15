@@ -23,3 +23,5 @@ platforms/android/**/.gradle/
 # Linux compose deployment: local env + any bind-mounted runtime data
 platforms/linux/docker/.env
 platforms/linux/docker/data/
+# agent worktrees
+.claude/
