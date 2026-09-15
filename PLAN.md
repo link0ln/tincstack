@@ -441,7 +441,7 @@ this order (cheapest / most-contained first). Full wire formats go in
 
 ---
 
-## Milestone M6 — Linux delivery (point 1c) ✅ (2026-09-16, one 🟢 cleanup open)
+## Milestone M6 — Linux delivery (point 1c) ✅ (2026-09-16; 🟢 cleanup closed by stream H)
 
 - [x] 🟠 `platforms/linux/docker/`: `docker-compose.yml` + auto-init entrypoint
   that relies on M1 (daemon self-configures) rather than templating config in
@@ -506,10 +506,38 @@ this order (cheapest / most-contained first). Full wire formats go in
   (`two-nodes.sh` exit 0). Follow-ups: replace `tincstack-yaml` with the now
   YAML-aware `tinc set` and drop the stopgap `tinc-up` (the core's built-in
   Linux addressing from M2 covers it) — tracked as a 🟢 cleanup below.
-- [ ] 🟢 Cleanup after M2 landed: route the env mapping through `tinc set`
+- [x] 🟢 Cleanup after M2 landed: route the env mapping through `tinc set`
   (YAML-aware since M2) and delete `tincstack-yaml`; delete the stopgap
   `tinc-up` (the core's built-in Linux interface addressing covers it) and
   verify `two-nodes.sh` still passes. **Proof:** both files gone, run exit 0.
+  **Done 2026-09-16 (stream H):** `tincstack-yaml`, `tinc-up` and the
+  `python3-minimal` install are gone from `platforms/linux/docker/`; the
+  entrypoint uses `tinc -c tinc.yaml set Name`, `set <Name>.Address`,
+  `set <Name>.Port` (an absent file is first created empty, since the CLI
+  refuses a missing document; a stopgap `tinc-up` left in an old volume is
+  removed). `LAB=wsh TINCSTACK_TAG=ws-h ./two-nodes.sh` → a: `entrypoint:
+  hosts.node_a Address = wsh-a-node-1` → `Materialised … Port=655` → `Ready`;
+  invitation `wsh-a-node-1:655/<cookie>`; b: `entrypoint: hosts.node_b Port =
+  656` → `Ready` → `Connection with node_a … activated`; both logs `Interface
+  tincstack configured with 10.250.0.{1,2}/24 (built-in tinc-up)`, `ip -br
+  addr show dev tincstack` → `tincstack UNKNOWN 10.250.0.1/24 …` / `… 10.250.0.2/24 …`,
+  no `tinc-up` in either runtime dir (asserted by the script); ping both ways
+  `3 received, 0% packet loss`; `PASS: two-node tunnel up`, exit 0.
+  shellcheck (koalaman/shellcheck:stable, `-x`) clean on all five scripts;
+  `docker compose config` clean with and without the lab overlay.
+  **Core gap found (kept as a minimal bridge, not a template):** tinc's
+  variable table marks `Port` host-only, so `tinc set Port` can only write
+  `hosts.<Name>`, while the daemon materialises `options.Port`; with both
+  present `config_compare` (conf.c) picks by line number — measured: a joined
+  node with `Port = 656` in its host record and materialised `Port: 0`
+  listened on an ephemeral port (38055). The entrypoint therefore also passes
+  `tincd -o Port=$PORT` (command-line options rank first in the same
+  comparator); verified on real containers: founding node without
+  `NODE_NAME` + `PORT=700` → `Listening on … port 700`, invitation
+  `…:700/`, invitee with `PORT=656` → `Listening on … port 656`, connection
+  activated, restart keeps identity and port. Fix belongs to the core
+  (`Port` as `VAR_SERVER|VAR_HOST` in `variables[]`, or YAML-mode routing of
+  host-only variables to `options:`), then the `-o` line goes.
 - **Found during M6** (2026-09-16):
   - 🔴 **Daemon-side invitation acceptance is not YAML-aware** (for stream A,
     M2 box 1/3). Reproduction: zero-config node, `tinc invite node_b`, a second
