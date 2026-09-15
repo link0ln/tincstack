@@ -19,6 +19,7 @@
 
 #include "system.h"
 
+#include "conf.h"
 #include "control_common.h"
 #include "crypto.h"
 #include "ecdsa.h"
@@ -47,7 +48,7 @@ static void scan_for_hostname(const char *filename, char **hostname, char **port
 		return;
 	}
 
-	FILE *f = fopen(filename, "r");
+	FILE *f = config_fopen(filename, "r");
 
 	if(!f) {
 		return;
@@ -100,6 +101,41 @@ static void scan_for_hostname(const char *filename, char **hostname, char **port
 	}
 
 	fclose(f);
+}
+
+/* Source address the OS would use towards the public Internet, as a string.
+   Uses a connected UDP socket (no datagram is sent). NULL if unavailable. */
+static char *guess_local_address(void) {
+	struct addrinfo *ai = str2addrinfo("192.0.2.1", "9", SOCK_DGRAM);  /* TEST-NET-1: never routed to a real host */
+
+	if(!ai) {
+		return NULL;
+	}
+
+	char *result = NULL;
+	int s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+
+	if(s >= 0 && !connect(s, ai->ai_addr, ai->ai_addrlen)) {
+		sockaddr_t local;
+		socklen_t len = sizeof(local);
+
+		if(!getsockname(s, &local.sa, &len)) {
+			char host[NI_MAXHOST];
+
+			if(!getnameinfo(&local.sa, len, host, sizeof(host), NULL, 0, NI_NUMERICHOST)) {
+				if(strcmp(host, "0.0.0.0") && strcmp(host, "127.0.0.1")) {
+					result = xstrdup(host);
+				}
+			}
+		}
+	}
+
+	if(s >= 0) {
+		closesocket(s);
+	}
+
+	freeaddrinfo(ai);
+	return result;
 }
 
 static bool get_my_hostname(char **out_address, char **out_port) {
@@ -200,6 +236,17 @@ static bool get_my_hostname(char **out_address, char **out_port) {
 		}
 	}
 
+	// Last resort: the address of the interface holding the default route.
+	// Correct on a LAN / container network; behind NAT it is only a hint, so
+	// say so loudly. No packet is sent (UDP connect() only selects a source).
+	if(!hostname) {
+		hostname = guess_local_address();
+
+		if(hostname) {
+			fprintf(stderr, "Warning: using local address %s for the invitation; behind NAT, set Address to the public address.\n", hostname);
+		}
+	}
+
 	if(!tty) {
 		if(!hostname) {
 			fprintf(stderr, "Could not determine the external address or hostname. Please set Address manually.\n");
@@ -249,14 +296,13 @@ again:
 save:
 
 	if(*filename) {
-		FILE *f = fopen(filename, "a");
+		char *myname_copy = get_my_name(false);
 
-		if(f) {
-			fprintf(f, "\nAddress = %s\n", hostname);
-			fclose(f);
-		} else {
+		if(!myname_copy || !append_config_file(myname_copy, "Address", hostname)) {
 			fprintf(stderr, "Could not append Address to %s: %s\n", filename, strerror(errno));
 		}
+
+		free(myname_copy);
 	}
 
 done:
@@ -294,7 +340,7 @@ exit:
 // system to allocate any available port'. This obviously won't do for invitation
 // files, so replace it with an actual port we've obtained previously.
 static bool copy_config_replacing_port(FILE *out, const char *filename, const char *port) {
-	FILE *in = fopen(filename, "r");
+	FILE *in = config_fopen(filename, "r");
 
 	if(!in) {
 		fprintf(stderr, "Could not open %s: %s\n", filename, strerror(errno));
@@ -357,7 +403,10 @@ int cmd_invite(int argc, char *argv[]) {
 	char filename[PATH_MAX];
 	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", confbase, argv[1]);
 
-	if(!access(filename, F_OK)) {
+	FILE *existing = config_fopen(filename, "r");
+
+	if(existing) {
+		fclose(existing);
 		fprintf(stderr, "A host config file for %s already exists!\n", argv[1]);
 		return 1;
 	}
@@ -563,7 +612,7 @@ int cmd_invite(int argc, char *argv[]) {
 	fprintf(f, "ConnectTo = %s\n", myname);
 
 	// Copy Broadcast and Mode
-	FILE *tc = fopen(tinc_conf, "r");
+	FILE *tc = config_fopen(tinc_conf, "r");
 
 	if(tc) {
 		char buf[1024];

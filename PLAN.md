@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-15
+**Last Updated:** 2026-09-16
 
 A self-hosted mesh VPN distribution on a hardened tinc 1.1 core, with opt-in
 circumvention transports and per-platform delivery (Linux/Windows/Android).
@@ -37,26 +37,48 @@ principles this plan serves. Source decisions and evidence are in
 
 ---
 
-## Milestone M1 — zero-config daemon (principles 2 & 5) 🔴
+## Milestone M1 — zero-config daemon (principles 2 & 5) ✅ (2026-09-16)
 
 The daemon must start against an empty/absent config and become invite-ready with
 no manual editing.
 
-- [ ] 🔴 On startup with an empty or missing YAML, materialise defaults into the
+- [x] 🔴 On startup with an empty or missing YAML, materialise defaults into the
   file: a network stanza, `Name` (hostname-derived, sanitised), `Mode=router`,
   `Port=0`, `AddressPool=10.<rand>.0.0/24`, this node's `Subnet` = pool's `.1`,
   and generate the Ed25519 (and legacy RSA) keypair folded into `keys:`.
   Implement in the daemon (`net_setup.c` / `names.c` / `yamlconf.c`), so it works
   identically on every platform, not in a shell wrapper.
-  **Proof:** `docker run` with an empty `tinc.yaml` mounted → daemon starts, the
-  file is populated, `tinc dump nodes` lists self.
-- [ ] 🔴 `AddressPool` option: parse, default-select a /24 when starting a fresh
-  network, store in the network's options. **Proof:** two empty inits pick
-  distinct pools; a configured pool is respected.
-- [ ] 🟠 `tinc invite` works against a zero-config node with no extra setup.
-  **Proof:** fresh node → `tinc invite peer1` prints a one-line string.
+  **Proof:** `core/tincd/src/zeroconf.c` (`zeroconf_materialise()`, called from
+  `tincd.c` before `read_server_config`). Run 2026-09-16 with
+  `docker run --cap-add NET_ADMIN --device /dev/net/tun -v <dir>:/etc/tincstack
+  tincstack/core:dev tincd -c /etc/tincstack/tinc.yaml -D` against (a) a 0-byte
+  `tinc.yaml` and (b) no file at all: log
+  `Materialised defaults into '/etc/tincstack/tinc.yaml' [tincstack]: Name=<hostname>
+  Mode=router Port=0 AddressPool=10.169.0.0/24 Subnet=10.169.0.1/32 ed25519_priv
+  Ed25519PublicKey rsa_priv RSA-public` → `Ready`; file written mode 0600 with
+  `options/hosts/keys`; `tinc -c …/tinc.yaml dump nodes` → `<name> id … at MYSELF`.
+  Restart → no second materialisation (idempotent). An unparsable existing file
+  is refused, not overwritten. No `-n` → first network in the file, else
+  `tincstack`. No `hosts/` tree is created in YAML mode.
+- [x] 🔴 `AddressPool` option: parse, default-select a /24 when starting a fresh
+  network, store in the network's options. **Proof:** parsed + validated in
+  `setup_myself_reloadable()` (`address_pool` global, `net.h`), registered in the
+  CLI variable table. Two empty inits (same run as above) picked `10.169.0.0/24`
+  and `10.185.0.0/24`; a file pre-set to `AddressPool: 10.99.0.0/24` kept it and
+  got `Subnet = 10.99.0.1/32`; log `AddressPool 10.99.0.0/24 (first host
+  10.99.0.1/32)`. Invalid pool → startup error naming the option.
+- [x] 🟠 `tinc invite` works against a zero-config node with no extra setup.
+  **Proof:** CLI reads `Name`, own host record and `Mode`/`Broadcast` through
+  `config_fopen()` (YAML-aware) instead of raw `fopen`; discovered `Address` is
+  persisted through `append_config_file()` into the YAML. Fresh node →
+  `tinc -c /etc/tincstack/tinc.yaml invite peer1` →
+  `172.17.0.4:43941/5GiFnXYd…` (one line, exit 0); `invitations/<hash>` created;
+  `Address = 172.17.0.4` appended to the node's YAML host record. See Known
+  Issues for the address-discovery caveats this exposed.
 - **Acceptance:** a single `docker run` with no prepared config yields a running,
-  invite-issuing node.
+  invite-issuing node. **Met** (run above). Unit check for the YAML
+  read/modify/write path: load→save→load is byte-stable on the daemon-generated
+  file (throwaway test run in the build-stage container).
 
 ---
 
@@ -225,6 +247,26 @@ Adopt `tincapp` (Kotlin) into `platforms/android/`.
 
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
+
+- 🟠 **`Port = 0` on the founding node breaks re-connection after its restart.**
+  Found in M1: the invitation embeds the daemon's *current* ephemeral port
+  (`43941`); the inviter's next restart gets a new port, so every invitee's
+  `ConnectTo` record goes stale. Upstream tinc has the same trap; the plan's own
+  M1 default makes it the norm. Decide in M2: the first node of a network (no
+  `ConnectTo`) should materialise a fixed random high port instead of `0`, or
+  M6 must pin `Port` via env for the container node. Blast radius: every
+  invite-based onboarding.
+- 🟠 **`tinc invite` phones home to `tinc-vpn.org/host.cgi`** to discover the
+  external address when no `Address` is configured (upstream behaviour). For a
+  circumvention product this is a network fingerprint and, on a filtered
+  network, a connect stall. Found in M1. Fix in M2/M6: make discovery opt-in
+  and have the Linux entrypoint set `Address` explicitly.
+- 🟡 **Local-address fallback for invitations is only a hint.** M1 added a
+  last-resort fallback (default-route source address) so a zero-config node can
+  invite without a TTY; behind NAT it yields a private address. It prints a
+  warning; M6 must set `Address` from env for real deployments.
+- 🟢 **YAML emitter adds a blank line after every literal block** (pre-existing
+  cosmetic quirk of `emit_scalar_value`). Parses fine; round-trip is stable.
 
 - 🟠 **tinc-manager save is non-atomic** over the only copy of the private keys
   (truncate-in-place). Fix in M7.

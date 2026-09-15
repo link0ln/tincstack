@@ -134,6 +134,7 @@ src_lib_common = [
   'version.c',
   'xoshiro.c',
   'yamlconf.c',
+  'zeroconf.c',
 ]
 
 src_tinc = [

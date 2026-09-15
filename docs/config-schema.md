@@ -99,6 +99,29 @@ networks:
         Transports = quic, https, plain   # peer's advertised carriers
 ```
 
+## Zero-config materialisation (first run)
+
+When `tincd -c <file>.yaml` starts and the file is empty, comment-only or absent,
+the daemon fills in what is missing for the selected network **before** reading
+the config (`core/tincd/src/zeroconf.c`), then writes the file back (mode 0600,
+atomic temp+rename). Nothing already present is changed.
+
+| field | default | note |
+|---|---|---|
+| network name | `-n <net>`, else the first network in the file, else `tincstack` | the CLI resolves it the same way, so `tinc -c file.yaml …` finds the daemon |
+| `options.Name` | first label of the hostname, non-`[A-Za-z0-9_]` → `_`; `node_<hex>` if unusable | `$HOST`/`$VAR` forms are honoured if present |
+| `options.Mode` | `router` | |
+| `options.Port` | `0` | see PLAN Known Issues: the founding node may need a fixed port |
+| `options.AddressPool` | `10.<random 1–254>.0.0/24` | validated: IPv4, prefix 8–30 |
+| `hosts.<Name>` `Subnet` | first host of the pool, `/32` | |
+| `keys.ed25519_priv` + `hosts.<Name>` `Ed25519PublicKey` | generated | public line is re-derived if only the private key exists |
+| `keys.rsa_priv` + `hosts.<Name>` RSA public PEM | generated (2048) | unless built with `-Dcrypto=nolegacy` |
+
+An existing file that does not parse is **refused**, never overwritten. No
+`hosts/` directory is created next to a YAML config; runtime side-files
+(`cache/`, `invitations/`, pid/socket if `/var/run` is unwritable) go under
+`<dir of file>/<netname>/`.
+
 ## Android-specific interface config
 
 Android's VPN interface parameters (routes, DNS, per-app split routing) do **not**

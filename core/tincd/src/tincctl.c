@@ -33,6 +33,7 @@
 #include "fsck.h"
 #include "info.h"
 #include "invitation.h"
+#include "conf.h"
 #include "names.h"
 #include "rsagen.h"
 #include "utils.h"
@@ -1595,7 +1596,7 @@ size_t rstrip(char *value) {
 }
 
 char *get_my_name(bool verbose) {
-	FILE *f = fopen(tinc_conf, "r");
+	FILE *f = config_fopen(tinc_conf, "r");
 
 	if(!f) {
 		if(verbose) {
@@ -1681,6 +1682,7 @@ static ecdsa_t *get_pubkey(FILE *f) {
 const var_t variables[] = {
 	/* Server configuration */
 	{"AddressFamily", VAR_SERVER | VAR_SAFE},
+	{"AddressPool", VAR_SERVER | VAR_SAFE},
 	{"AutoConnect", VAR_SERVER | VAR_SAFE},
 	{"BindToAddress", VAR_SERVER | VAR_MULTIPLE},
 	{"BindToInterface", VAR_SERVER},

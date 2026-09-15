@@ -48,6 +48,8 @@
 #include "event.h"
 #include "logger.h"
 #include "names.h"
+#include "yamlconf.h"
+#include "zeroconf.h"
 #include "net.h"
 #include "process.h"
 #include "protocol.h"
@@ -422,7 +424,8 @@ static bool drop_privs(void) {
 
 #endif // HAVE_WINDOWS
 
-	makedirs(DIR_CACHE | DIR_HOSTS | DIR_INVITATIONS);
+	/* YAML mode has no hosts/ tree: the host database lives in the YAML. */
+	makedirs(DIR_CACHE | DIR_INVITATIONS | (yamlconf_path ? 0 : DIR_HOSTS));
 
 	return sandbox_enter();
 }
@@ -587,6 +590,12 @@ int main(int argc, char **argv) {
 	random_init();
 	crypto_init();
 	prng_init();
+
+	/* YAML mode: an empty/absent config is valid; fill in defaults + keys
+	   so the daemon starts and is invite-ready (zero-config first run). */
+	if(!zeroconf_materialise()) {
+		return 1;
+	}
 
 	if(!read_server_config(&config_tree)) {
 		return 1;

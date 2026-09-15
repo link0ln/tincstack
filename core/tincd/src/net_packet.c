@@ -93,6 +93,7 @@ int udp_discovery_timeout = 30;
    trick a manual UDP hole-puncher uses. Once UDP is confirmed we fall back to a
    single keepalive probe, so the burst only costs traffic during hole punching. */
 int udp_discovery_burst = 5;
+char *address_pool = NULL;
 
 #define MAX_SEQNO 1073741824
 

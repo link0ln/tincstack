@@ -42,9 +42,43 @@ bool yamlconf_is_yaml_path(const char *path);
    uses %TEMP% on Windows, tmpfile() on POSIX. Caller fclose()s it. */
 FILE *yamlconf_content_fp(const char *content);
 
-/* Parse a YAML config file. Returns NULL on error. */
+/* Parse a YAML config file. Returns NULL on error (unreadable or not a
+   mapping). An empty or comment-only file parses to an empty document. */
 yamlconf_t *yamlconf_load(const char *path);
 void yamlconf_free(yamlconf_t *yc);
+
+/* An empty document (no networks). */
+yamlconf_t *yamlconf_new(void);
+
+/* Name of the first network in the document, or NULL if there is none.
+   Owned by yc. */
+const char *yamlconf_first_network(yamlconf_t *yc);
+bool yamlconf_has_network(yamlconf_t *yc, const char *net);
+
+/* ---- in-memory mutation (call yamlconf_save() to persist) ---------------- */
+
+/* Scalar option networks.<net>.options.<key>, or NULL if absent / not a
+   scalar. Owned by yc. */
+const char *yamlconf_get_option(yamlconf_t *yc, const char *net, const char *key);
+
+/* Set networks.<net>.options.<key> to a scalar, creating the path as needed
+   and replacing any existing value (scalar or list). */
+void yamlconf_set_option(yamlconf_t *yc, const char *net, const char *key, const char *value);
+
+/* Set networks.<net>.keys.<which> ("ed25519_priv" | "rsa_priv") to a PEM. */
+void yamlconf_set_key_pem(yamlconf_t *yc, const char *net, const char *which, const char *pem);
+
+/* True if networks.<net>.hosts.<name> exists. */
+bool yamlconf_has_host(yamlconf_t *yc, const char *net, const char *name);
+
+/* Append one host-file line ("key = value", or raw text if value is NULL)
+   to networks.<net>.hosts.<name>, creating the host entry if needed. */
+void yamlconf_host_add_line(yamlconf_t *yc, const char *net, const char *name,
+                            const char *key, const char *value);
+
+/* Write the document to `path` atomically (temp file + rename). The file is
+   created mode 0600 since it holds private keys. Returns true on success. */
+bool yamlconf_save(yamlconf_t *yc, const char *path);
 
 /* Newly-allocated tinc.conf-equivalent text for `net` (caller frees), or NULL.
    Bools become yes/no; list options expand to one line each. */

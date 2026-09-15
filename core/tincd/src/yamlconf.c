@@ -378,7 +378,21 @@ yamlconf_t *yamlconf_load(const char *path) {
 	yamlconf_t *yc = calloc(1, sizeof(*yc));
 	yc->root = parse_text(text);
 	free(text);
+
+	/* An empty / comment-only file parses to an empty scalar: treat it as an
+	   empty document so the daemon can materialise defaults into it. */
+	if(yc->root && yc->root->type == Y_SCALAR && yc->root->scalar[0] == 0) {
+		yval_free(yc->root);
+		yc->root = yval_new(Y_MAP);
+	}
+
 	if(!yc->root || yc->root->type != Y_MAP) { yamlconf_free(yc); return NULL; }
+	return yc;
+}
+
+yamlconf_t *yamlconf_new(void) {
+	yamlconf_t *yc = calloc(1, sizeof(*yc));
+	yc->root = yval_new(Y_MAP);
 	return yc;
 }
 
@@ -440,6 +454,22 @@ const char **yamlconf_host_names(yamlconf_t *yc, const char *net) {
 	for(size_t i = 0; i < n; i++) arr[i] = hosts->keys[i];
 	arr[n] = NULL;
 	return arr;
+}
+
+const char *yamlconf_first_network(yamlconf_t *yc) {
+	const yval_t *nets = map_get(yc->root, "networks");
+	if(!nets || nets->type != Y_MAP || !nets->npairs) return NULL;
+	return nets->keys[0];
+}
+
+bool yamlconf_has_network(yamlconf_t *yc, const char *net) {
+	const yval_t *n = net_node(yc, net);
+	return n && n->type == Y_MAP;
+}
+
+const char *yamlconf_get_option(yamlconf_t *yc, const char *net, const char *key) {
+	const yval_t *v = map_get(map_get(net_node(yc, net), "options"), key);
+	return (v && v->type == Y_SCALAR) ? v->scalar : NULL;
 }
 
 /* ---- emitter (for write-back) ------------------------------------------- */
@@ -504,10 +534,120 @@ static void emit_node(sbuf_t *b, const yval_t *v, int indent) {
 
 static yval_t *map_get_or_create_map(yval_t *m, const char *key) {
 	yval_t *v = map_get(m, key);
-	if(v) return v;
+	if(v && v->type == Y_MAP) return v;
+	if(v) {                                  /* wrong type (e.g. "hosts:" left empty) */
+		for(size_t i = 0; i < m->npairs; i++) {
+			if(m->vals[i] == v) {
+				yval_free(v);
+				m->vals[i] = yval_new(Y_MAP);
+				return m->vals[i];
+			}
+		}
+	}
 	v = yval_new(Y_MAP);
 	map_put(m, strdup(key), v);
 	return v;
+}
+
+static void map_set_scalar(yval_t *m, const char *key, const char *value) {
+	yval_t *v = map_get(m, key);
+	if(v) {
+		for(size_t i = 0; i < m->npairs; i++) {
+			if(m->vals[i] == v) {
+				yval_free(v);
+				m->vals[i] = yval_new(Y_SCALAR);
+				m->vals[i]->scalar = strdup(value);
+				return;
+			}
+		}
+	}
+	v = yval_new(Y_SCALAR);
+	v->scalar = strdup(value);
+	map_put(m, strdup(key), v);
+}
+
+static yval_t *net_node_create(yamlconf_t *yc, const char *net) {
+	return map_get_or_create_map(map_get_or_create_map(yc->root, "networks"), net);
+}
+
+void yamlconf_set_option(yamlconf_t *yc, const char *net, const char *key, const char *value) {
+	map_set_scalar(map_get_or_create_map(net_node_create(yc, net), "options"), key, value);
+}
+
+void yamlconf_set_key_pem(yamlconf_t *yc, const char *net, const char *which, const char *pem) {
+	map_set_scalar(map_get_or_create_map(net_node_create(yc, net), "keys"), which, pem);
+}
+
+bool yamlconf_has_host(yamlconf_t *yc, const char *net, const char *name) {
+	const yval_t *h = map_get(map_get(net_node(yc, net), "hosts"), name);
+	return h && h->type == Y_SCALAR;
+}
+
+static void host_add_line(yval_t *hosts, const char *name, const char *line) {
+	yval_t *host = map_get(hosts, name);
+
+	if(host && host->type == Y_SCALAR) {
+		size_t n = strlen(host->scalar) + strlen(line) + 2;
+		char *merged = malloc(n);
+
+		if(host->scalar[0]) {
+			snprintf(merged, n, "%s\n%s", host->scalar, line);
+		} else {
+			snprintf(merged, n, "%s", line);
+		}
+
+		free(host->scalar);
+		host->scalar = merged;
+	} else {
+		map_set_scalar(hosts, name, line);
+	}
+}
+
+void yamlconf_host_add_line(yamlconf_t *yc, const char *net, const char *name,
+                            const char *key, const char *value) {
+	yval_t *hosts = map_get_or_create_map(net_node_create(yc, net), "hosts");
+
+	if(value) {
+		size_t n = strlen(key) + strlen(value) + 4;
+		char *line = malloc(n);
+		snprintf(line, n, "%s = %s", key, value);
+		host_add_line(hosts, name, line);
+		free(line);
+	} else {
+		host_add_line(hosts, name, key);
+	}
+}
+
+/* Serialise and replace `path` atomically. Private keys live in this file, so
+   it is created 0600 (POSIX). */
+static bool write_atomic(const char *path, const char *data, size_t len) {
+	char tmp[1024];
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+#ifdef _WIN32
+	FILE *f = fopen(tmp, "wb");
+#else
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+#endif
+	if(!f) return false;
+	bool ok = fwrite(data, 1, len, f) == len;
+	ok = !fclose(f) && ok;
+	if(!ok) { remove(tmp); return false; }
+#ifdef _WIN32
+	if(!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) { remove(tmp); return false; }
+#else
+	if(rename(tmp, path)) { remove(tmp); return false; }
+#endif
+	return true;
+}
+
+bool yamlconf_save(yamlconf_t *yc, const char *path) {
+	sbuf_t b = {0};
+	emit_node(&b, yc->root, 0);
+	if(!b.buf) sb_puts(&b, "");
+	bool ok = write_atomic(path, b.buf, b.len);
+	free(b.buf);
+	return ok;
 }
 
 bool yamlconf_append_host_line(const char *path, const char *net,
@@ -521,50 +661,12 @@ bool yamlconf_append_host_line(const char *path, const char *net,
 	if(lockfd >= 0) flock(lockfd, LOCK_EX);
 #endif
 	bool ok = false;
-	char *text = read_file(path);
-	if(!text) goto out;
-	yval_t *root = parse_text(text);
-	free(text);
-	if(!root || root->type != Y_MAP) { yval_free(root); goto out; }
+	yamlconf_t *yc = yamlconf_load(path);
+	if(!yc) goto out;
 
-	yval_t *nets = map_get_or_create_map(root, "networks");
-	yval_t *netm = map_get_or_create_map(nets, net);
-	yval_t *hosts = map_get_or_create_map(netm, "hosts");
-	yval_t *host = map_get(hosts, name);
-
-	char line[1024];
-	snprintf(line, sizeof(line), "%s = %s", key, value);
-	if(host && host->type == Y_SCALAR) {
-		size_t n = strlen(host->scalar) + strlen(line) + 2;
-		char *merged = malloc(n);
-		snprintf(merged, n, "%s\n%s", host->scalar, line);
-		free(host->scalar);
-		host->scalar = merged;
-	} else {
-		yval_t *hv = yval_new(Y_SCALAR);
-		hv->scalar = strdup(line);
-		map_put(hosts, strdup(name), hv);
-	}
-
-	sbuf_t b = {0};
-	emit_node(&b, root, 0);
-	yval_free(root);
-
-	/* atomic-ish replace: write temp then rename */
-	char tmp[1024];
-	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-	FILE *f = fopen(tmp, "wb");
-	if(f) {
-		fwrite(b.buf, 1, b.len, f);
-		fclose(f);
-#ifdef _WIN32
-		MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
-#else
-		rename(tmp, path);
-#endif
-		ok = true;
-	}
-	free(b.buf);
+	yamlconf_host_add_line(yc, net, name, key, value);
+	ok = yamlconf_save(yc, path);
+	yamlconf_free(yc);
 out:
 #ifdef _WIN32
 	if(lock != INVALID_HANDLE_VALUE) CloseHandle(lock);

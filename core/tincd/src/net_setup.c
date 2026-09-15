@@ -47,6 +47,7 @@
 #include "keys.h"
 #include "sandbox.h"
 #include "yamlconf.h"
+#include "zeroconf.h"
 
 #ifdef HAVE_MINIUPNPC
 #include "upnp.h"
@@ -417,6 +418,22 @@ bool setup_myself_reloadable(void) {
 	get_config_int(lookup_config(&config_tree, "UDPDiscoveryInterval"), &udp_discovery_interval);
 	get_config_int(lookup_config(&config_tree, "UDPDiscoveryTimeout"), &udp_discovery_timeout);
 	get_config_int(lookup_config(&config_tree, "UDPDiscoveryBurst"), &udp_discovery_burst);
+
+	free(address_pool);
+	address_pool = NULL;
+
+	if(get_config_string(lookup_config(&config_tree, "AddressPool"), &address_pool)) {
+		char first[64];
+
+		if(!zeroconf_pool_first_host(address_pool, first, sizeof(first))) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Invalid AddressPool `%s' (expected IPv4 a.b.c.d/8..30)", address_pool);
+			free(address_pool);
+			address_pool = NULL;
+			return false;
+		}
+
+		logger(DEBUG_ALWAYS, LOG_INFO, "AddressPool %s (first host %s)", address_pool, first);
+	}
 
 	if(udp_discovery_burst < 1) {
 		udp_discovery_burst = 1;

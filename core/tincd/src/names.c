@@ -56,7 +56,19 @@ void make_names(bool daemon) {
 		yamlconf_global = yamlconf_load(yamlconf_path);
 
 		if(!yamlconf_global) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Could not read YAML config `%s'", yamlconf_path);
+			if(access(yamlconf_path, F_OK)) {
+				logger(DEBUG_ALWAYS, LOG_INFO, "YAML config `%s' does not exist yet; it will be created", yamlconf_path);
+			} else {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Could not parse YAML config `%s'", yamlconf_path);
+			}
+		}
+
+		/* No -n given: use the first network in the file, or a default name
+		   for a brand-new file, so a bare `-c tinc.yaml` always maps to
+		   exactly one network (zero-config first run). */
+		if(!netname) {
+			const char *first = yamlconf_global ? yamlconf_first_network(yamlconf_global) : NULL;
+			netname = xstrdup(first ? first : "tincstack");
 		}
 
 		char *dir = xstrdup(yamlconf_path);

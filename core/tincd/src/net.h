@@ -143,6 +143,11 @@ extern int udp_discovery_interval;
 extern int udp_discovery_timeout;
 extern int udp_discovery_burst;
 
+/* AddressPool: the IPv4 prefix invitees are assigned addresses from
+   (ARCHITECTURE.md §7). Parsed and validated at startup; the allocator that
+   hands out addresses lands with the invitation work. NULL if unset. */
+extern char *address_pool;
+
 extern int mtu_info_interval;
 extern int udp_info_interval;
 
