@@ -1,0 +1,8 @@
+nodea id 0babe5ea84dc at 100.64.0.2 port 655 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 105a nexthop nodea via nodea distance 1 pmtu 1518 (min 0 max 1518) rx 6 284 tx 8 496
+nodeb id c5888a302717 at 100.64.0.3 port 41655 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 00da nexthop nodeb via nodeb distance 1 pmtu 1439 (min 1439 max 1439) rx 4 248 tx 8 496 rtt 0.089
+relay id 75b4babbcd84 at MYSELF port 655 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 0858 nexthop relay via relay distance 0 pmtu 1518 (min 0 max 1518) rx 5 310 tx 8 496
+
+nodea to relay at 100.64.0.10 port 655 local 192.168.110.5 port 655 options 700000c weight 0
+nodeb to relay at 100.64.0.10 port 655 local 192.168.120.5 port 655 options 700000c weight 0
+relay to nodea at 100.64.0.2 port 655 local 100.64.0.10 port 655 options 700000c weight 0
+relay to nodeb at 100.64.0.3 port 655 local 100.64.0.10 port 655 options 700000c weight 0

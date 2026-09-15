@@ -1,0 +1,1 @@
+{"a":"portrestricted","b":"symmetric","image":"baseline","rtt_ms":0,"expected":"no","direct_ab":0,"direct_ba":0,"t_ab":90,"t_ba":6,"reach_ab":"none, forwarded via relay","reach_ba":"none, forwarded via relay","ping":1,"verdict":"PASS"}

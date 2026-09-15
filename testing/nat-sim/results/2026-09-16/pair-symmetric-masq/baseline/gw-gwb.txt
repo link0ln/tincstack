@@ -1,0 +1,18 @@
+-P INPUT ACCEPT
+-P FORWARD DROP
+-P OUTPUT ACCEPT
+-A FORWARD -i int -o ext -j ACCEPT
+-A FORWARD -i ext -o int -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i ext -o int -j DROP
+
+-P PREROUTING ACCEPT
+-P INPUT ACCEPT
+-P OUTPUT ACCEPT
+-P POSTROUTING ACCEPT
+-A POSTROUTING -o ext -j MASQUERADE
+
+udp      17 119 src=192.168.120.5 dst=100.64.0.10 sport=655 dport=655 src=100.64.0.10 dst=100.64.0.3 sport=655 dport=655 [ASSURED] mark=0 use=1
+udp      17 28 src=192.168.120.5 dst=100.64.0.2 sport=655 dport=655 [UNREPLIED] src=100.64.0.2 dst=100.64.0.3 sport=655 dport=655 mark=0 use=1
+udp      17 28 src=100.64.0.2 dst=100.64.0.3 sport=658 dport=655 [UNREPLIED] src=100.64.0.3 dst=100.64.0.2 sport=655 dport=658 mark=0 use=1
+tcp      6 431999 ESTABLISHED src=192.168.120.5 dst=100.64.0.10 sport=32772 dport=655 src=100.64.0.10 dst=100.64.0.3 sport=655 dport=32772 [ASSURED] mark=0 use=1
+udp      17 26 src=192.168.120.5 dst=100.64.0.2 sport=655 dport=687 [UNREPLIED] src=100.64.0.2 dst=100.64.0.3 sport=687 dport=655 mark=0 use=1

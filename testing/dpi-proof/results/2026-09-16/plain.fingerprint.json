@@ -1,0 +1,78 @@
+{
+ "port": 655,
+ "summary": {
+  "tcp_payload_segments": 16,
+  "udp_datagrams": 84,
+  "fingerprints_present": [
+   "tcp_id_line",
+   "tcp_sptps_handshake",
+   "udp_constant_srcid",
+   "udp_null_dstid",
+   "udp_probe_size",
+   "udp_seqno_counter"
+  ]
+ },
+ "fingerprints": {
+  "tcp_id_line": {
+   "present": true,
+   "count": 2,
+   "evidence": [
+    "0 dpib 17.7",
+    "0 dpia 17.7"
+   ]
+  },
+  "tcp_sptps_handshake": {
+   "present": true,
+   "count": 3,
+   "evidence": [
+    "record len=65 type=0x80",
+    "record len=65 type=0x80",
+    "record len=64 type=0x80"
+   ]
+  },
+  "udp_size_histogram": {
+   "present": null,
+   "count": 84,
+   "evidence": {
+    "51": 40,
+    "81": 2,
+    "261": 40,
+    "1472": 2
+   }
+  },
+  "udp_null_dstid": {
+   "present": true,
+   "count": 84,
+   "evidence": "84/84 datagrams start with 6 zero bytes"
+  },
+  "udp_constant_srcid": {
+   "present": true,
+   "count": 2,
+   "evidence": {
+    "192.168.99.2:655": "4ef947c77397",
+    "192.168.99.1:655": "4a455efa8842"
+   }
+  },
+  "udp_seqno_counter": {
+   "present": true,
+   "count": 2,
+   "evidence": {
+    "192.168.99.2:655": {
+     "first": 2,
+     "last": 43,
+     "monotone_ratio": 1.0
+    },
+    "192.168.99.1:655": {
+     "first": 2,
+     "last": 43,
+     "monotone_ratio": 1.0
+    }
+   }
+  },
+  "udp_probe_size": {
+   "present": true,
+   "count": 40,
+   "evidence": "40 datagrams of exactly 51 bytes (tinc MIN_PROBE_SIZE)"
+  }
+ }
+}

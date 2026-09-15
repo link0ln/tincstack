@@ -40,3 +40,8 @@ platforms/android/**/*.iml
 platforms/android/.idea/
 *.keystore
 *.jks
+# M9 lab runtime data (keys/configs generated at run time)
+testing/smoke/run/
+# committed lab evidence: logs under results/ are the proof, not runtime noise
+!testing/nat-sim/results/**/*.log
+!testing/dpi-proof/results/**/*.log

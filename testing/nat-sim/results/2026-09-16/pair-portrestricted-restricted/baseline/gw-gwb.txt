@@ -1,0 +1,23 @@
+-P INPUT ACCEPT
+-P FORWARD DROP
+-P OUTPUT ACCEPT
+-A FORWARD -s 192.168.120.5/32 -i int -o ext -p udp -m recent --set --name wsf_allow --mask 255.255.255.255 --rdest -j ACCEPT
+-A FORWARD -i int -o ext -j ACCEPT
+-A FORWARD -i ext -o int -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -d 192.168.120.5/32 -i ext -o int -p udp -m udp --dport 655 -m recent --rcheck --seconds 300 --name wsf_allow --mask 255.255.255.255 --rsource -j ACCEPT
+-A FORWARD -i ext -o int -j DROP
+
+-P PREROUTING ACCEPT
+-P INPUT ACCEPT
+-P OUTPUT ACCEPT
+-P POSTROUTING ACCEPT
+-A PREROUTING -i ext -p udp -m udp --dport 41655 -j DNAT --to-destination 192.168.120.5:655
+-A POSTROUTING -s 192.168.120.5/32 -o ext -p udp -m udp --sport 655 -j SNAT --to-source 100.64.0.3:41655
+-A POSTROUTING -o ext -j MASQUERADE
+
+udp      17 25 src=100.64.0.2 dst=100.64.0.3 sport=40655 dport=655 [UNREPLIED] src=100.64.0.3 dst=100.64.0.2 sport=655 dport=40655 mark=0 use=1
+udp      17 119 src=100.64.0.2 dst=100.64.0.3 sport=40655 dport=41655 src=192.168.120.5 dst=100.64.0.2 sport=655 dport=40655 [ASSURED] mark=0 use=1
+tcp      6 431994 ESTABLISHED src=192.168.120.5 dst=100.64.0.10 sport=49110 dport=655 src=100.64.0.10 dst=100.64.0.3 sport=655 dport=49110 [ASSURED] mark=0 use=1
+udp      17 23 src=192.168.120.5 dst=100.64.0.2 sport=655 dport=655 [UNREPLIED] src=100.64.0.2 dst=100.64.0.3 sport=655 dport=41655 mark=0 use=1
+udp      17 119 src=192.168.120.5 dst=100.64.0.10 sport=655 dport=655 src=100.64.0.10 dst=100.64.0.3 sport=655 dport=41655 [ASSURED] mark=0 use=1
+udp      17 16 src=100.64.0.10 dst=100.64.0.3 sport=655 dport=655 [UNREPLIED] src=100.64.0.3 dst=100.64.0.10 sport=655 dport=655 mark=0 use=1

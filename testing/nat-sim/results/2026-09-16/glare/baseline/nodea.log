@@ -1,0 +1,430 @@
+tincd 1.1pre18 (Sep 15 2026 21:28:59) starting, debug level 5
+/dev/net/tun is a Linux tun/tap device (tun mode)
+Listening on 0.0.0.0 port 655
+Executing script tinc-up
+Ready
+Trying to connect to relay (100.64.0.10 port 655)
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodea (MYSELF port 655)
+Connected to relay (100.64.0.10 port 655)
+Sending ID to relay (100.64.0.10 port 655): 0 nodea 17.7
+Sending 13 bytes of raw metadata to relay (100.64.0.10 port 655)
+Got ID from relay (100.64.0.10 port 655): 0 relay 17.7
+Sending ACK to relay (100.64.0.10 port 655): 4 655 1 700000c
+Sending 16 bytes of metadata to relay (100.64.0.10 port 655)
+Got ACK from relay (100.64.0.10 port 655): 4 655 0 700000c
+Connection with relay (100.64.0.10 port 655) activated
+Sending ADD_SUBNET to relay (100.64.0.10 port 655): 10 69be90a7 nodea 10.77.0.2
+Sending 28 bytes of metadata to relay (100.64.0.10 port 655)
+Sending ADD_EDGE to everyone (BROADCAST): 12 46691725 nodea relay 100.64.0.10 655 700000c 0 192.168.110.5 655
+Sending 68 bytes of metadata to relay (100.64.0.10 port 655)
+Got ADD_SUBNET from relay (100.64.0.10 port 655): 10 583eacd3 nodeb 10.77.0.3
+Forwarding ADD_SUBNET from relay (100.64.0.10 port 655): 10 583eacd3 nodeb 10.77.0.3
+Got ADD_EDGE from relay (100.64.0.10 port 655): 12 17d45fc5 nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 17d45fc5 nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+Got ADD_SUBNET from relay (100.64.0.10 port 655): 10 3e6cb721 relay 10.77.0.1
+Forwarding ADD_SUBNET from relay (100.64.0.10 port 655): 10 3e6cb721 relay 10.77.0.1
+Got ADD_EDGE from relay (100.64.0.10 port 655): 12 4ff4bb52 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 4ff4bb52 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+Got ADD_EDGE from relay (100.64.0.10 port 655): 12 d3125e relay nodea 100.64.0.2 655 700000c 0 100.64.0.10 655
+Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 d3125e relay nodea 100.64.0.2 655 700000c 0 100.64.0.10 655
+UDP address of relay set to 100.64.0.10 port 655
+UDP address of nodeb set to 100.64.0.3 port 655
+Node nodeb (100.64.0.3 port 655) became reachable
+Node relay (100.64.0.10 port 655) became reachable
+Got PACKET from relay (100.64.0.10 port 655): 17 62
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Got REQ_KEY from relay (100.64.0.10 port 655): 15 relay nodea 15 AAAAAAIAzNF8ks8Qv0N1x/6fU2qMPtXsPt9zLTxXZeTox8nMDMI6gIDeG3x5rPx2pVQqPv9E1gEFUN3Cmpm+psgcy6HbZA
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodea relay AAAAAAIAtT/Gs6YXsv9XIBL+EDzY1KYyf5HO21EKk+gBvegX3AnSu2fpeio1VvQznNO57vZ/w/4qACGwvLaNfmRXachPdC -1 -1 -1 0
+Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+Got PACKET from relay (100.64.0.10 port 655): 17 18
+Received packet of 18 bytes from relay (100.64.0.10 port 655)
+Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+Got PACKET from relay (100.64.0.10 port 655): 17 18
+Received packet of 18 bytes from relay (100.64.0.10 port 655)
+Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+Got ANS_KEY from relay (100.64.0.10 port 655): 16 relay nodea AAAABA4oOzfLxXegQi7QH6dAkNULXgjFoAiQXQP/+0/+EK7tQ7PcD2grU6X6yfBRIU0PEtcILsIC5sLIfEfkLcL6JTUA -1 -1 -1 0
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodea relay AAAABAo7GBt5qJpXByjnt5mcyLy6UOpTDLEiQdzOoaX/3apu8XNB9DMh/ZA+aS8HvDz8CRT53H6ya09z8p/8tJfbgFGB -1 -1 -1 0
+Sending 119 bytes of metadata to relay (100.64.0.10 port 655)
+SPTPS key exchange with relay (100.64.0.10 port 655) successful
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 655)
+No valid key known yet for nodeb (100.64.0.3 port 655)
+Sending REQ_KEY to relay (100.64.0.10 port 655): 15 nodea nodeb 15 AAAAAAIAlRj2pZJNzw++Zqk8nweel6tVgk05yceKmbyA/K/TV3YNWSsoEQ1wMg7rtlaL1RRYzGYSxz1JBeBEkYQqiYy0KC
+Sending 113 bytes of metadata to relay (100.64.0.10 port 655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 655)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.226
+Got REQ_KEY from relay (100.64.0.10 port 655): 15 nodeb nodea 15 AAAAAAIA06VSSodKGB9CoqI3xgqoIrU7fIXa0jFglNsYkHzonKmpXzkk/S9/Dayi5bFBdEm5Khp51+3owSt+Q0P6BI9EsD
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodea nodeb 192.168.110.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Got REQ_KEY from nodeb while we already started a SPTPS session!
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodea nodeb AAAAAAIAULrcKkYzzcI6Fw0rJV1RInABudq0GNwwmV0VlmfDppkcYuUO5tRqcAUp4tIaVr9CyrYEW2eEqF2CVgnczjZbAB -1 -1 -1 0
+Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodeb nodea 100.64.0.3 41655
+UDP address of nodeb set to 100.64.0.3 port 41655
+Got ANS_KEY from relay (100.64.0.10 port 655): 16 nodeb nodea AAAAAAIAOxg+wMmc6wiMSemhzgHcrLI6FXDK6zBwXapdQS/8VsnCqXkVWYzyrf4b+k99yo3/Xhz1f4sgDROQbIN9QoIlwC -1 -1 -1 0
+Invalid packet seqno: 0 != 1 from nodeb (100.64.0.3 port 41655)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodeb nodea 1518
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodea (MYSELF port 655)
+Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+Sending PACKET to relay (100.64.0.10 port 655): 17 62
+Sending 6 bytes of metadata to relay (100.64.0.10 port 655)
+Sending 62 bytes of metadata to relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Using system-provided maximum tinc MTU for relay (100.64.0.10 port 655): 1439
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Fixing MTU of relay (100.64.0.10 port 655) to 1439 after 1 probes
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got PACKET from relay (100.64.0.10 port 655): 17 62
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Autoconnecting to nodeb
+Trying to connect to nodeb (100.64.0.3 port 655)
+Error while connecting to nodeb (100.64.0.3 port 655): Connection refused
+Closing connection with nodeb (100.64.0.3 port 655)
+Could not set up a meta connection to nodeb
+Trying to re-establish outgoing connection in 5 seconds
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Could not set up a meta connection to nodeb
+Trying to re-establish outgoing connection in 10 seconds
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodea (MYSELF port 655)
+Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Got type 2 UDP probe reply 62 from relay (100.64.0.10 port 655)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+No key from nodeb after 10 seconds, restarting SPTPS
+Sending REQ_KEY to relay (100.64.0.10 port 655): 15 nodea nodeb 15 AAAAAAIAKrQv6pyGcatOALorEauGEZTX3pgssdrSNBUvLZub9hHkmG1vUTJtgpVlveWA7MmC3wwuQLFNX8Y9TnahmuxKLB
+Sending 113 bytes of metadata to relay (100.64.0.10 port 655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1440 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.446
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Got REQ_KEY from relay (100.64.0.10 port 655): 15 nodeb nodea 15 AAAAAAIAmvSS8JH32zLvcFeCJGGl65KcY1PwqoC8HsX8AednIthfVjniFeM7O4xwyOIvWLIHlLwoawElNr46gXN1+lAmGC
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodea nodeb 192.168.110.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Got REQ_KEY from nodeb while we already started a SPTPS session!
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodea nodeb AAAAAAIA9XbTtJ5NfcZHepcPgo9OETjzJVrRNzpNrMAx0Ib4pEvyF3vvjcidPMtiwL2MO+org6LNu8bQTBPjTAUBA+FfqD -1 -1 -1 0
+Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodeb nodea 100.64.0.3 41655
+Got ANS_KEY from relay (100.64.0.10 port 655): 16 nodeb nodea AAAAAAIAuNAOejwJdnFQFXbETUfqsgiWB178l3vp/JbHYq3ALNmS2RxnR0x/15JYGkuVqwICPHa3aOhBq0lJFKijJGOcDA -1 -1 -1 0 100.64.0.3 41655
+Invalid packet seqno: 0 != 1 from nodeb (100.64.0.3 port 41655)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodeb nodea 1439
+Using provisional MTU 1439 for node nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Could not set up a meta connection to nodeb
+Trying to re-establish outgoing connection in 15 seconds
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending type 2 probe reply length 62 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.064
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+No key from nodeb after 10 seconds, restarting SPTPS
+Sending REQ_KEY to relay (100.64.0.10 port 655): 15 nodea nodeb 15 AAAAAAIAyhSmXRlNypesEpkFLV7tq4UR50KveuDYFQRq/U3DgQfFy8SzxVVX7CfcEj4cmRDio2LgxTaK9waRrySe35Kp4D
+Sending 113 bytes of metadata to relay (100.64.0.10 port 655)
+Got REQ_KEY from relay (100.64.0.10 port 655): 15 nodeb nodea 15 AAAAAAIAJNUOURVi8bid0x9rihQEHoITpsYDhnyJ3ooVFF2E80xIg59OPOW+k9Ue4xQ2697SvD7lxUuvh1FcBM40kK1gMD
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodea nodeb 192.168.110.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Got REQ_KEY from nodeb while we already started a SPTPS session!
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodea nodeb AAAAAAIABNn+gh/Ke813Z4ZSg/CrBAlXIcSFl469qi99pXp8yPWItQijamcKvgJFTi2D/dmo0kmJx3Gk0wZ8yH6CvOU1mA -1 -1 -1 0
+Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodeb nodea 100.64.0.3 41655
+Got ANS_KEY from relay (100.64.0.10 port 655): 16 nodeb nodea AAAAAAIAkY8dtPhg8Exz98w+kxrFptxSO5Otqaqkt5672HCd0WPRrkV7zuJRpRnuhHkbZDSSHikoWYKr1sT06n1UqOpcPB -1 -1 -1 0 100.64.0.3 41655
+Invalid packet seqno: 0 != 1 from nodeb (100.64.0.3 port 41655)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodeb nodea 1439
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodea (MYSELF port 655)
+Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1440 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Could not set up a meta connection to nodeb
+Trying to re-establish outgoing connection in 20 seconds
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.104
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+No key from nodeb after 10 seconds, restarting SPTPS
+Sending REQ_KEY to relay (100.64.0.10 port 655): 15 nodea nodeb 15 AAAAAAIA64ScODBoA2Ct0d6/WVIttAP6kRAho57G9QNnU0irAASL6BfpVKvJTsKufwUW7WGbHfeUfXWwKiIycelN70dJwA
+Sending 113 bytes of metadata to relay (100.64.0.10 port 655)
+Got REQ_KEY from relay (100.64.0.10 port 655): 15 nodeb nodea 15 AAAAAAIApeqUbpJr7Fp7WtTDd4iATq1wPmF00lLnZK/hWduT0iYcVii54EXNhFCOeFwyXTKrPElOTOckXwB1Kds9lCCdHB
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodea nodeb 192.168.110.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Got REQ_KEY from nodeb while we already started a SPTPS session!
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodea nodeb AAAAAAIArvjB+va0OEQjq4oK+XK9/bxCsAiB94uaS94PgZtE52vfDYpG6p2feVe79oYCW69av/x1uYTXI+kMr2L86DqLTB -1 -1 -1 0
+Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodeb nodea 100.64.0.3 41655
+Got ANS_KEY from relay (100.64.0.10 port 655): 16 nodeb nodea AAAAAAIASe9pom+vUZjP98adJ9TgMHwlGnHRl8ncYe4U7t49hcPEeZTSPV0TWUtIBa6EUS5ydPOpXp1t4Euiu22scSGesC -1 -1 -1 0 100.64.0.3 41655
+Invalid packet seqno: 0 != 1 from nodeb (100.64.0.3 port 41655)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodeb nodea 1439
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending type 2 probe reply length 62 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1440 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.099
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodea (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodeb (100.64.0.3 port 41655)
+No valid key known yet for nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Sending UDP probe length 18 to nodeb (100.64.0.3 port 41655)
+Got REQ_KEY from relay (100.64.0.10 port 655): 15 nodeb nodea 15 AAAAAAIAA1oJlp6RnNkJkEkN8lD52kezeqRAF77UwzI0JNfCik5O4WQZ81ZRlwlufexEKALXOQLALdZ71z7p7CYvXUM3ZA
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodea nodeb 192.168.110.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Got REQ_KEY from nodeb while we already started a SPTPS session!
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodea nodeb AAAAAAIAuRX15CHl7oAKuV2l4qTdrq92iu03xV4GC2/x+4q1AbBxlXPtN/xsS/uZo8Kg/xcvxI6u7UfWCo1Hq2czQ3zydB -1 -1 -1 0
+Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+Got ANS_KEY from relay (100.64.0.10 port 655): 16 nodeb nodea AAAABA4+tc9u0xnRSc1kNjgeAJidnouLfqWI1eIsiJj/LEXfzuJ9n5qcFoUneZptdt0UM/mjdCu0aWhGHcRos1Ufu4fD -1 -1 -1 0 100.64.0.3 41655
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodea nodeb AAAABAo5IEgXqXcK267XKzsQ43KHrXVc6DKWyP3MrM9+6ewD/tghGsb2w0GBUMBkwlIRWpnWiSEWmSitwDfEW6mvBttD -1 -1 -1 0
+Sending 119 bytes of metadata to relay (100.64.0.10 port 655)
+SPTPS key exchange with nodeb (100.64.0.3 port 41655) successful
+Using reflexive UDP address from nodeb: 100.64.0.3 port 41655
+UDP address of nodeb set to 100.64.0.3 port 41655
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodeb nodea 1439

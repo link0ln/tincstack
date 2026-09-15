@@ -1,0 +1,1363 @@
+tincd 1.1pre18 (Sep 15 2026 21:28:59) starting, debug level 5
+/dev/net/tun is a Linux tun/tap device (tun mode)
+Listening on 0.0.0.0 port 655
+Executing script tinc-up
+Ready
+Trying to connect to relay (100.64.0.10 port 655)
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+Connected to relay (100.64.0.10 port 655)
+Sending ID to relay (100.64.0.10 port 655): 0 nodeb 17.7
+Sending 13 bytes of raw metadata to relay (100.64.0.10 port 655)
+Got ID from relay (100.64.0.10 port 655): 0 relay 17.7
+Sending ACK to relay (100.64.0.10 port 655): 4 655 0 700000c
+Sending 16 bytes of metadata to relay (100.64.0.10 port 655)
+Got ACK from relay (100.64.0.10 port 655): 4 655 0 700000c
+Connection with relay (100.64.0.10 port 655) activated
+Sending ADD_SUBNET to relay (100.64.0.10 port 655): 10 647c09cd nodeb 10.77.0.3
+Sending 28 bytes of metadata to relay (100.64.0.10 port 655)
+Sending ADD_EDGE to everyone (BROADCAST): 12 7a267644 nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+Sending 68 bytes of metadata to relay (100.64.0.10 port 655)
+Got ADD_SUBNET from relay (100.64.0.10 port 655): 10 1a522d0c relay 10.77.0.1
+Forwarding ADD_SUBNET from relay (100.64.0.10 port 655): 10 1a522d0c relay 10.77.0.1
+Got ADD_EDGE from relay (100.64.0.10 port 655): 12 3a94c147 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 3a94c147 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+UDP address of relay set to 100.64.0.10 port 655
+Node relay (100.64.0.10 port 655) became reachable
+Got ADD_EDGE from relay (100.64.0.10 port 655): 12 42c1447e relay nodea 100.64.0.2 655 700000c 0 100.64.0.10 655
+Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 42c1447e relay nodea 100.64.0.2 655 700000c 0 100.64.0.10 655
+Got ADD_SUBNET from relay (100.64.0.10 port 655): 10 21caef7e nodea 10.77.0.2
+Forwarding ADD_SUBNET from relay (100.64.0.10 port 655): 10 21caef7e nodea 10.77.0.2
+Got ADD_EDGE from relay (100.64.0.10 port 655): 12 5d5f486a nodea relay 100.64.0.10 655 700000c 0 192.168.110.5 655
+Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 5d5f486a nodea relay 100.64.0.10 655 700000c 0 192.168.110.5 655
+UDP address of nodea set to 100.64.0.2 port 655
+Node nodea (100.64.0.2 port 655) became reachable
+Got REQ_KEY from relay (100.64.0.10 port 655): 15 nodea nodeb 15 AAAAAAIA5vgq/hp3N6bKsBAFxdNXLnjkpyOJpoJQsDa5RdsBWSVpCJmZgkwTZshzgQXeKwHfeTHYRRH/OqiaO9cAGt7xiD
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb nodea AAAAAAIAoOKSKCeJpAcBpSUwbfpqScJLV6zhduIXaeOO7lSrn1+2uKum7/u+cgNg2cBQ/rg99OuM2tig2GIJLaxtAWs8SB -1 -1 -1 0
+Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodeb nodea 1518
+Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+Got ANS_KEY from relay (100.64.0.10 port 655): 16 nodea nodeb AAAABAojQLANwt1XXshpXnZbX/Ap5i1lNmqO/D14EbONaXF3J9hFEg7gBNgNXiXuoOTSVsJ0p9r+K67ahPP64+7Zlh4C -1 -1 -1 0
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb nodea AAAABAoyCAb9+Jbp0Q/4S75S52aeAsB8WqZStCfjQ7Sa/s2bJjRhHadbxGmBTxUWN7ufXiSgL3PSkHr13boykfsPLtlC -1 -1 -1 0
+Sending 119 bytes of metadata to relay (100.64.0.10 port 655)
+SPTPS key exchange with nodea (100.64.0.2 port 655) successful
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Got REQ_KEY from relay (100.64.0.10 port 655): 15 relay nodeb 15 AAAAAAIA2qJLR+eRivcESLvZaueFwTZb4n/HWOtjnfRRiTiAlaAqxpcnkuWra3G6GMzJqR9+4CohtKmsQP3QaebXOq+svC
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb relay AAAAAAIAKX4DO6AK35gNin9qFpBf97WqHrqMK00T3ykm7jJyLMmcvYRgavQ0QwrjgrPrWnRT4CaIGuFBqJwKqMUqblOskD -1 -1 -1 0
+Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+Got PACKET from relay (100.64.0.10 port 655): 17 18
+Received packet of 18 bytes from relay (100.64.0.10 port 655)
+Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+Got PACKET from relay (100.64.0.10 port 655): 17 18
+Received packet of 18 bytes from relay (100.64.0.10 port 655)
+Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+Got ANS_KEY from relay (100.64.0.10 port 655): 16 relay nodeb AAAABAYdApw/SodTZZqZY+ejbC/iMAVFL5xA7wl/f2MaIgGlzj1tF5jrBgk39OYJjcyoBmLWE0zqC4JpXUc2PjBF2vUA -1 -1 -1 0
+Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb relay AAAABAY8ERRDZ7a7UP5pC1lV7QU4srufIr2lF+TL7urvB6JfMfHbj6o6aeIb+DmOw1mRfUf+UqtI2CYDhc0+SoXktlCC -1 -1 -1 0
+Sending 119 bytes of metadata to relay (100.64.0.10 port 655)
+SPTPS key exchange with relay (100.64.0.10 port 655) successful
+Got PACKET from relay (100.64.0.10 port 655): 17 62
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+Sending PACKET to relay (100.64.0.10 port 655): 17 62
+Sending 6 bytes of metadata to relay (100.64.0.10 port 655)
+Sending 62 bytes of metadata to relay (100.64.0.10 port 655)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.200
+Got SPTPS_PACKET from relay (100.64.0.10 port 655): 21 117
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (TCP)
+Sending SPTPS_PACKET to relay (100.64.0.10 port 655): 21 117
+Sending 7 bytes of metadata to relay (100.64.0.10 port 655)
+Sending 117 bytes of raw metadata to relay (100.64.0.10 port 655)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Using system-provided maximum tinc MTU for relay (100.64.0.10 port 655): 1439
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Fixing MTU of relay (100.64.0.10 port 655) to 1439 after 1 probes
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got PACKET from relay (100.64.0.10 port 655): 17 62
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Autoconnecting to nodea
+Trying to connect to nodea (100.64.0.2 port 655)
+Error while connecting to nodea (100.64.0.2 port 655): Connection refused
+Closing connection with nodea (100.64.0.2 port 655)
+Could not set up a meta connection to nodea
+Trying to re-establish outgoing connection in 5 seconds
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Could not set up a meta connection to nodea
+Trying to re-establish outgoing connection in 10 seconds
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got type 2 UDP probe reply 62 from relay (100.64.0.10 port 655)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1440 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.070
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Could not set up a meta connection to nodea
+Trying to re-establish outgoing connection in 15 seconds
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.042
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 62 from relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1440 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.041
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Could not set up a meta connection to nodea
+Trying to re-establish outgoing connection in 20 seconds
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.060
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1440 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.067
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Could not set up a meta connection to nodea
+Trying to re-establish outgoing connection in 25 seconds
+Read packet of 62 bytes from Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.045
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Received packet of 62 bytes from relay (100.64.0.10 port 655)
+Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1440 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.045
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Could not set up a meta connection to nodea
+Trying to re-establish outgoing connection in 30 seconds
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.100
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Sending PING to relay (100.64.0.10 port 655): 8
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Got PONG from relay (100.64.0.10 port 655): 9
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 1440 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Connection from localhost port unix
+Got ID from <control> (localhost port unix): 0 ^DC6D4419CC2989A8A7957CD9538721170287D65F481F0D083CB4E3B75C71D5EA 0
+Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+Sending 13 bytes of raw metadata to <control> (localhost port unix)
+Sending ACK to <control> (localhost port unix): 4 0 19157
+Sending 10 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 3 nodea
+Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 655 0 0 0 0 700000c 105a relay nodea 2 1518 0 1518 1789513163 -1 87 8526 87 8526
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789513163 -1 92 8836 95 9022
+Sending 115 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789513163 100 10 532 4 248
+Sending 122 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 4 nodea
+Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 5 nodea
+Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+Sending 35 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+Sending 33 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+Sending 29 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+Sending 26 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Connection closed by <control> (localhost port unix)
+Closing connection with <control> (localhost port unix)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Connection from localhost port unix
+Got ID from <control> (localhost port unix): 0 ^DC6D4419CC2989A8A7957CD9538721170287D65F481F0D083CB4E3B75C71D5EA 0
+Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+Sending 13 bytes of raw metadata to <control> (localhost port unix)
+Sending ACK to <control> (localhost port unix): 4 0 19157
+Sending 10 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 3 nodea
+Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 655 0 0 0 0 700000c 105a relay nodea 2 1518 0 1518 1789513163 -1 89 8722 89 8722
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789513163 -1 94 9032 97 9218
+Sending 115 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789513163 100 10 532 4 248
+Sending 122 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 4 nodea
+Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 5 nodea
+Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+Sending 35 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+Sending 33 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+Sending 29 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+Sending 26 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Connection closed by <control> (localhost port unix)
+Closing connection with <control> (localhost port unix)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.051
+Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+Connection from localhost port unix
+Got ID from <control> (localhost port unix): 0 ^DC6D4419CC2989A8A7957CD9538721170287D65F481F0D083CB4E3B75C71D5EA 0
+Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+Sending 13 bytes of raw metadata to <control> (localhost port unix)
+Sending ACK to <control> (localhost port unix): 4 0 19157
+Sending 10 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 3 nodea
+Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 655 0 0 0 0 700000c 105a relay nodea 2 1518 0 1518 1789513163 -1 91 8918 91 8918
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789513163 -1 96 9228 99 9414
+Sending 115 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789513163 51 10 532 4 248
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 4 nodea
+Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 5 nodea
+Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+Sending 35 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+Sending 33 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+Sending 29 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+Sending 26 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Connection closed by <control> (localhost port unix)
+Closing connection with <control> (localhost port unix)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Connection from localhost port unix
+Got ID from <control> (localhost port unix): 0 ^DC6D4419CC2989A8A7957CD9538721170287D65F481F0D083CB4E3B75C71D5EA 0
+Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+Sending 13 bytes of raw metadata to <control> (localhost port unix)
+Sending ACK to <control> (localhost port unix): 4 0 19157
+Sending 10 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 3 nodea
+Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 655 0 0 0 0 700000c 105a relay nodea 2 1518 0 1518 1789513163 -1 92 9016 92 9016
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789513163 -1 97 9326 100 9512
+Sending 116 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789513163 51 10 532 4 248
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 4 nodea
+Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 5 nodea
+Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+Sending 35 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+Sending 33 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+Sending 29 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+Sending 26 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Connection closed by <control> (localhost port unix)
+Closing connection with <control> (localhost port unix)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Connection from localhost port unix
+Got ID from <control> (localhost port unix): 0 ^DC6D4419CC2989A8A7957CD9538721170287D65F481F0D083CB4E3B75C71D5EA 0
+Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+Sending 13 bytes of raw metadata to <control> (localhost port unix)
+Sending ACK to <control> (localhost port unix): 4 0 19157
+Sending 10 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 3 nodea
+Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 655 0 0 0 0 700000c 105a relay nodea 2 1518 0 1518 1789513163 -1 93 9114 93 9114
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789513163 -1 98 9424 101 9610
+Sending 116 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789513163 51 10 532 4 248
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 4 nodea
+Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 5 nodea
+Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+Sending 35 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+Sending 33 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+Sending 29 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+Sending 26 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Connection closed by <control> (localhost port unix)
+Closing connection with <control> (localhost port unix)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got UDP probe request 18 from relay (100.64.0.10 port 655)
+Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got PING from relay (100.64.0.10 port 655): 8
+Sending PONG to relay (100.64.0.10 port 655): 9
+Sending 2 bytes of metadata to relay (100.64.0.10 port 655)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+Connection from localhost port unix
+Got ID from <control> (localhost port unix): 0 ^DC6D4419CC2989A8A7957CD9538721170287D65F481F0D083CB4E3B75C71D5EA 0
+Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+Sending 13 bytes of raw metadata to <control> (localhost port unix)
+Sending ACK to <control> (localhost port unix): 4 0 19157
+Sending 10 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 3 nodea
+Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 655 0 0 0 0 700000c 105a relay nodea 2 1518 0 1518 1789513163 -1 100 9800 100 9800
+Sending 123 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789513163 -1 105 10110 108 10296
+Sending 119 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789513163 51 10 532 4 248
+Sending 121 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 3
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 4 nodea
+Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+Sending 71 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+Sending 68 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 4
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Got CONTROL from <control> (localhost port unix): 18 5 nodea
+Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+Sending 35 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+Sending 21 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+Sending 33 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+Sending 29 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+Sending 26 bytes of metadata to <control> (localhost port unix)
+Sending CONTROL to <control> (localhost port unix): 18 5
+Sending 5 bytes of metadata to <control> (localhost port unix)
+Connection closed by <control> (localhost port unix)
+Closing connection with <control> (localhost port unix)
+Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+Read packet of 98 bytes from Linux tun/tap device (tun mode)
+Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)

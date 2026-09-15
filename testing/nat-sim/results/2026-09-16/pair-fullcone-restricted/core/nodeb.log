@@ -1,0 +1,374 @@
+2026-09-15 22:17:44 NOTICE  tincd 1.1pre18 (Sep 15 2026 21:28:28) starting, debug level 5
+2026-09-15 22:17:44 INFO    /dev/net/tun is a Linux tun/tap device (tun mode)
+2026-09-15 22:17:44 NOTICE  Listening on 0.0.0.0 port 655
+2026-09-15 22:17:44 INFO    Executing script tinc-up
+2026-09-15 22:17:44 NOTICE  Ready
+2026-09-15 22:17:44 INFO    Trying to connect to relay (100.64.0.10 port 655)
+2026-09-15 22:17:44 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:44 INFO    Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+2026-09-15 22:17:44 INFO    Connected to relay (100.64.0.10 port 655)
+2026-09-15 22:17:44 DEBUG   Sending ID to relay (100.64.0.10 port 655): 0 nodeb 17.7
+2026-09-15 22:17:44 DEBUG   Sending 13 bytes of raw metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:44 DEBUG   Got ID from relay (100.64.0.10 port 655): 0 relay 17.7
+2026-09-15 22:17:44 DEBUG   Sending ACK to relay (100.64.0.10 port 655): 4 655 1 700000c
+2026-09-15 22:17:44 DEBUG   Sending 16 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:44 DEBUG   Got ACK from relay (100.64.0.10 port 655): 4 655 0 700000c
+2026-09-15 22:17:44 NOTICE  Connection with relay (100.64.0.10 port 655) activated
+2026-09-15 22:17:44 DEBUG   Sending ADD_SUBNET to relay (100.64.0.10 port 655): 10 2c07132d nodeb 10.77.0.3
+2026-09-15 22:17:44 DEBUG   Sending 28 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:44 DEBUG   Sending ADD_EDGE to everyone (BROADCAST): 12 49c1d4c1 nodeb relay 100.64.0.10 655 700000c 0 192.168.120.5 655
+2026-09-15 22:17:44 DEBUG   Sending 68 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:44 DEBUG   Got ADD_SUBNET from relay (100.64.0.10 port 655): 10 2276ac22 relay 10.77.0.1
+2026-09-15 22:17:44 DEBUG   Forwarding ADD_SUBNET from relay (100.64.0.10 port 655): 10 2276ac22 relay 10.77.0.1
+2026-09-15 22:17:44 DEBUG   Got ADD_EDGE from relay (100.64.0.10 port 655): 12 7aa63ac7 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+2026-09-15 22:17:44 DEBUG   Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 7aa63ac7 relay nodeb 100.64.0.3 655 700000c 0 100.64.0.10 655
+2026-09-15 22:17:44 DEBUG   UDP address of relay set to 100.64.0.10 port 655
+2026-09-15 22:17:44 DEBUG   Node relay (100.64.0.10 port 655) became reachable
+2026-09-15 22:17:44 DEBUG   Caching recent address for relay
+2026-09-15 22:17:44 DEBUG   Got ADD_EDGE from relay (100.64.0.10 port 655): 12 cb4795e3 relay nodea 100.64.0.2 655 700000c 0 100.64.0.10 655
+2026-09-15 22:17:44 DEBUG   Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 cb4795e3 relay nodea 100.64.0.2 655 700000c 0 100.64.0.10 655
+2026-09-15 22:17:44 DEBUG   Got ADD_SUBNET from relay (100.64.0.10 port 655): 10 8f34688a nodea 10.77.0.2
+2026-09-15 22:17:44 DEBUG   Forwarding ADD_SUBNET from relay (100.64.0.10 port 655): 10 8f34688a nodea 10.77.0.2
+2026-09-15 22:17:44 DEBUG   Got ADD_EDGE from relay (100.64.0.10 port 655): 12 69804bd5 nodea relay 100.64.0.10 655 700000c 0 192.168.110.5 655
+2026-09-15 22:17:44 DEBUG   Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 69804bd5 nodea relay 100.64.0.10 655 700000c 0 192.168.110.5 655
+2026-09-15 22:17:44 DEBUG   UDP address of nodea set to 100.64.0.2 port 655
+2026-09-15 22:17:44 DEBUG   Node nodea (100.64.0.2 port 655) became reachable
+2026-09-15 22:17:44 DEBUG   Got REQ_KEY from relay (100.64.0.10 port 655): 15 nodea nodeb 15 AAAAAAIASwdk9wXKbxZZW2yTWVNaH391xLsGyTRKX7Nrh0D72E8MndKxjUqNxtmAvM/LMQHq8NiPndY+lZMGDYKhnkWKCD
+2026-09-15 22:17:44 DEBUG   Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+2026-09-15 22:17:44 DEBUG   Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:44 DEBUG   Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb nodea AAAAAAIAKYzmLhk8evebXBMBjQfR90S2XeCiwgrVtz9Du9oRc4DxcdMN+XPrlltRPltS+5ox0W4mSIvkcgKCTCuhOcJAtA -1 -1 -1 0
+2026-09-15 22:17:44 DEBUG   Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:44 DEBUG   Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodeb nodea 1518
+2026-09-15 22:17:44 DEBUG   Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 DEBUG   Got ANS_KEY from relay (100.64.0.10 port 655): 16 nodea nodeb AAAABA4uW6fDHtJWiFtUyhzfAS5Gu4YQyaJdX7hPdbkaZfyeFpFjVabLfxmOrBDIGLYm1N2X9zmFokg7hqz4g0tOHUgD -1 -1 -1 0
+2026-09-15 22:17:46 DEBUG   Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb nodea AAAABA4fKgc+RStCrOTnmR8GMDFKUMrEaf48qMQxo/wm2aO+fY/48K7bobRf2GCGW5WtCrmd+acH2gy+TB2dxzHOFyhD -1 -1 -1 0
+2026-09-15 22:17:46 DEBUG   Sending 119 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 INFO    SPTPS key exchange with nodea (100.64.0.2 port 655) successful
+2026-09-15 22:17:46 DEBUG   Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+2026-09-15 22:17:46 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 62
+2026-09-15 22:17:46 DEBUG   Received packet of 62 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:46 INFO    Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 DEBUG   Got REQ_KEY from relay (100.64.0.10 port 655): 15 relay nodeb 15 AAAAAAIALyvpzu4j8XP1VNX6bNC6AgidhHarPmn/BeEdRL9qCVUXr2zd/Ys96Sm6DgB6D/hMYEuQnj8zsSNe+QsB4neTYC
+2026-09-15 22:17:46 DEBUG   Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb relay AAAAAAIA9odeYXgrAnGAN1rZlnyNHbdOwn49IP9pIBxjPWJZLAbbrhzQstt31Y5/NCKi8RTGGr96odgLFK/6VbpR8x5wmA -1 -1 -1 0
+2026-09-15 22:17:46 DEBUG   Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 22:17:46 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 22:17:46 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 22:17:46 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 22:17:46 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 22:17:46 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 22:17:46 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 22:17:46 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 22:17:46 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 22:17:46 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 22:17:46 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 22:17:46 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:46 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 22:17:47 DEBUG   Got ANS_KEY from relay (100.64.0.10 port 655): 16 relay nodeb AAAABAI/Z1FrE+1G0TqxIPOB96BYvN22fLbnrmfg2f5sxY8/iw1Q21anjr06qc79cbrErzMQcKD5utwxKEhIF5T4L2mB -1 -1 -1 0
+2026-09-15 22:17:47 DEBUG   Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb relay AAAABAYpyv8x5daDFQ/YfP3xsdqvdaj2kqDBdE61h40Bpj0oHPSKfEh4hgvkv/zHiXYysb6k4ckWUbtzcKDBgZbPjuuA -1 -1 -1 0
+2026-09-15 22:17:47 DEBUG   Sending 119 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    SPTPS key exchange with relay (100.64.0.10 port 655) successful
+2026-09-15 22:17:47 DEBUG   Got SPTPS_PACKET from relay (100.64.0.10 port 655): 21 117
+2026-09-15 22:17:47 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+2026-09-15 22:17:47 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:47 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:47 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (TCP)
+2026-09-15 22:17:47 DEBUG   Sending SPTPS_PACKET to relay (100.64.0.10 port 655): 21 117
+2026-09-15 22:17:47 DEBUG   Sending 7 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 DEBUG   Sending 117 bytes of raw metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:47 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=0.148
+2026-09-15 22:17:47 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 DEBUG   Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 655
+2026-09-15 22:17:47 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 62
+2026-09-15 22:17:47 DEBUG   Received packet of 62 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:47 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:47 INFO    Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+2026-09-15 22:17:48 DEBUG   Got SPTPS_PACKET from relay (100.64.0.10 port 655): 21 117
+2026-09-15 22:17:48 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+2026-09-15 22:17:48 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:48 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:48 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:48 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (TCP)
+2026-09-15 22:17:48 DEBUG   Sending SPTPS_PACKET to relay (100.64.0.10 port 655): 21 117
+2026-09-15 22:17:48 DEBUG   Sending 7 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:48 DEBUG   Sending 117 bytes of raw metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:48 INFO    Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:48 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:48 INFO    Using system-provided maximum tinc MTU for relay (100.64.0.10 port 655): 1439
+2026-09-15 22:17:48 INFO    Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:48 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:48 INFO    Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+2026-09-15 22:17:48 INFO    Fixing MTU of relay (100.64.0.10 port 655) to 1439 after 1 probes
+2026-09-15 22:17:48 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:48 INFO    Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+2026-09-15 22:17:48 ERROR   Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+2026-09-15 22:17:48 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:49 INFO    Autoconnecting to nodea
+2026-09-15 22:17:49 INFO    Trying to connect to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 DEBUG   Error while connecting to nodea (100.64.0.2 port 655): Connection refused
+2026-09-15 22:17:49 NOTICE  Closing connection with nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 ERROR   Could not set up a meta connection to nodea
+2026-09-15 22:17:49 NOTICE  Trying to re-establish outgoing connection in 5 seconds
+2026-09-15 22:17:49 INFO    Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+2026-09-15 22:17:49 INFO    Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+2026-09-15 22:17:49 INFO    Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+2026-09-15 22:17:49 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:49 DEBUG   Got SPTPS_PACKET from relay (100.64.0.10 port 655): 21 117
+2026-09-15 22:17:49 DEBUG   Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+2026-09-15 22:17:49 DEBUG   Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:49 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:49 DEBUG   Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodeb nodea 1518
+2026-09-15 22:17:49 DEBUG   Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 22:17:49 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:49 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:49 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:49 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:49 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:49 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:49 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:49 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:49 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:50 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 655)
+2026-09-15 22:17:50 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:50 INFO    Got UDP probe request 18 from nodea (100.64.0.2 port 655)
+2026-09-15 22:17:50 INFO    Sending type 2 probe reply length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 22:17:50 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 655) via nodea (100.64.0.2 port 655) (UDP)
+2026-09-15 22:17:50 DEBUG   UDP address of nodea set to 100.64.0.2 port 40655
+2026-09-15 22:17:50 INFO    Got UDP probe request 18 from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:50 INFO    Sending type 2 probe reply length 18 to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:50 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:50 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:50 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:50 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 22:17:51 INFO    Got type 2 UDP probe reply 98 from nodea (100.64.0.2 port 40655) rtt=2047.723
+2026-09-15 22:17:51 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:51 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:51 INFO    Got UDP probe request 1439 from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:51 INFO    Sending type 2 probe reply length 1439 to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:51 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:51 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:51 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:51 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:51 INFO    Sending type 2 probe reply length 1439 to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:51 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:51 INFO    Using system-provided maximum tinc MTU for nodea (100.64.0.2 port 40655): 1439
+2026-09-15 22:17:51 INFO    Sending UDP probe length 1439 to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:51 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:51 INFO    Got type 2 UDP probe reply 1439 from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:51 INFO    Fixing MTU of nodea (100.64.0.2 port 40655) to 1439 after 1 probes
+2026-09-15 22:17:51 NOTICE  Connection from localhost port unix
+2026-09-15 22:17:52 DEBUG   Got ID from <control> (localhost port unix): 0 ^649635D2D7639D195F81A2868B565727AFD3B28C261CBB7E643AAB6BCCB258C5 0
+2026-09-15 22:17:52 DEBUG   Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+2026-09-15 22:17:52 DEBUG   Sending 13 bytes of raw metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending ACK to <control> (localhost port unix): 4 0 383
+2026-09-15 22:17:52 DEBUG   Sending 8 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Got CONTROL from <control> (localhost port unix): 18 3 nodea
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 40655 0 0 0 0 700000c da relay nodea 2 1439 1439 1439 1789510664 2047723 5 490 5 490
+2026-09-15 22:17:52 DEBUG   Sending 125 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789510664 -1 7 614 7 614
+2026-09-15 22:17:52 DEBUG   Sending 111 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789510664 148 8 232 1 62
+2026-09-15 22:17:52 DEBUG   Sending 120 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3
+2026-09-15 22:17:52 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Got CONTROL from <control> (localhost port unix): 18 4 nodea
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+2026-09-15 22:17:52 DEBUG   Sending 71 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+2026-09-15 22:17:52 DEBUG   Sending 71 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+2026-09-15 22:17:52 DEBUG   Sending 68 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+2026-09-15 22:17:52 DEBUG   Sending 68 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4
+2026-09-15 22:17:52 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Got CONTROL from <control> (localhost port unix): 18 5 nodea
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+2026-09-15 22:17:52 DEBUG   Sending 35 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+2026-09-15 22:17:52 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+2026-09-15 22:17:52 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+2026-09-15 22:17:52 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+2026-09-15 22:17:52 DEBUG   Sending 33 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+2026-09-15 22:17:52 DEBUG   Sending 29 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+2026-09-15 22:17:52 DEBUG   Sending 26 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5
+2026-09-15 22:17:52 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 NOTICE  Connection closed by <control> (localhost port unix)
+2026-09-15 22:17:52 NOTICE  Closing connection with <control> (localhost port unix)
+2026-09-15 22:17:52 NOTICE  Connection from localhost port unix
+2026-09-15 22:17:52 DEBUG   Got ID from <control> (localhost port unix): 0 ^649635D2D7639D195F81A2868B565727AFD3B28C261CBB7E643AAB6BCCB258C5 0
+2026-09-15 22:17:52 DEBUG   Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+2026-09-15 22:17:52 DEBUG   Sending 13 bytes of raw metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending ACK to <control> (localhost port unix): 4 0 383
+2026-09-15 22:17:52 DEBUG   Sending 8 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Got CONTROL from <control> (localhost port unix): 18 3 nodea
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 40655 0 0 0 0 700000c da relay nodea 2 1439 1439 1439 1789510664 2047723 5 490 5 490
+2026-09-15 22:17:52 DEBUG   Sending 125 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789510664 -1 7 614 7 614
+2026-09-15 22:17:52 DEBUG   Sending 111 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789510664 148 8 232 1 62
+2026-09-15 22:17:52 DEBUG   Sending 120 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3
+2026-09-15 22:17:52 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Got CONTROL from <control> (localhost port unix): 18 4 nodea
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+2026-09-15 22:17:52 DEBUG   Sending 71 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+2026-09-15 22:17:52 DEBUG   Sending 71 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+2026-09-15 22:17:52 DEBUG   Sending 68 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+2026-09-15 22:17:52 DEBUG   Sending 68 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4
+2026-09-15 22:17:52 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Got CONTROL from <control> (localhost port unix): 18 5 nodea
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+2026-09-15 22:17:52 DEBUG   Sending 35 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+2026-09-15 22:17:52 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+2026-09-15 22:17:52 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+2026-09-15 22:17:52 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+2026-09-15 22:17:52 DEBUG   Sending 33 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+2026-09-15 22:17:52 DEBUG   Sending 29 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+2026-09-15 22:17:52 DEBUG   Sending 26 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5
+2026-09-15 22:17:52 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:52 NOTICE  Connection closed by <control> (localhost port unix)
+2026-09-15 22:17:52 NOTICE  Closing connection with <control> (localhost port unix)
+2026-09-15 22:17:52 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:52 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:52 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:52 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:52 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:52 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:52 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:52 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:52 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:52 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:52 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:52 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:52 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:52 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:52 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:52 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:52 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:53 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:53 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:53 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:53 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:53 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:53 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:53 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:53 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:53 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:53 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:53 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:53 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:53 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:53 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:53 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:53 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:53 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:53 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:54 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 22:17:54 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:54 INFO    Sending packet from nodeb (MYSELF port 655) to nodea (100.64.0.2 port 40655) via nodea (100.64.0.2 port 40655) (UDP)
+2026-09-15 22:17:54 DEBUG   Received packet of 98 bytes from nodea (100.64.0.2 port 40655)
+2026-09-15 22:17:54 DEBUG   Writing packet of 98 bytes to Linux tun/tap device (tun mode)
+2026-09-15 22:17:54 NOTICE  Connection from localhost port unix
+2026-09-15 22:17:54 DEBUG   Got ID from <control> (localhost port unix): 0 ^649635D2D7639D195F81A2868B565727AFD3B28C261CBB7E643AAB6BCCB258C5 0
+2026-09-15 22:17:54 DEBUG   Sending ID to <control> (localhost port unix): 0 nodeb 17.7
+2026-09-15 22:17:54 DEBUG   Sending 13 bytes of raw metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending ACK to <control> (localhost port unix): 4 0 383
+2026-09-15 22:17:54 DEBUG   Sending 8 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Got CONTROL from <control> (localhost port unix): 18 3 nodea
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 nodea 0babe5ea84dc 100.64.0.2 port 40655 0 0 0 0 700000c da relay nodea 2 1439 1439 1439 1789510664 2047723 13 1274 13 1274
+2026-09-15 22:17:54 DEBUG   Sending 129 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 nodeb c5888a302717 MYSELF port 655 0 0 0 0 700000c 58 nodeb nodeb 0 1518 0 1518 1789510664 -1 15 1398 15 1398
+2026-09-15 22:17:54 DEBUG   Sending 115 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3 relay 75b4babbcd84 100.64.0.10 port 655 0 0 0 0 700000c 8da relay relay 1 1439 1439 1439 1789510664 148 8 232 1 62
+2026-09-15 22:17:54 DEBUG   Sending 120 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 3
+2026-09-15 22:17:54 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Got CONTROL from <control> (localhost port unix): 18 4 nodea
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 nodea relay 100.64.0.10 port 655 192.168.110.5 port 655 700000c 0
+2026-09-15 22:17:54 DEBUG   Sending 71 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 nodeb relay 100.64.0.10 port 655 192.168.120.5 port 655 700000c 0
+2026-09-15 22:17:54 DEBUG   Sending 71 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 relay nodea 100.64.0.2 port 655 100.64.0.10 port 655 700000c 0
+2026-09-15 22:17:54 DEBUG   Sending 68 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4 relay nodeb 100.64.0.3 port 655 100.64.0.10 port 655 700000c 0
+2026-09-15 22:17:54 DEBUG   Sending 68 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 4
+2026-09-15 22:17:54 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Got CONTROL from <control> (localhost port unix): 18 5 nodea
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 ff:ff:ff:ff:ff:ff (broadcast)
+2026-09-15 22:17:54 DEBUG   Sending 35 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.1 relay
+2026-09-15 22:17:54 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.2 nodea
+2026-09-15 22:17:54 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 10.77.0.3 nodeb
+2026-09-15 22:17:54 DEBUG   Sending 21 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 255.255.255.255 (broadcast)
+2026-09-15 22:17:54 DEBUG   Sending 33 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 224.0.0.0/4 (broadcast)
+2026-09-15 22:17:54 DEBUG   Sending 29 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5 ff00::/8 (broadcast)
+2026-09-15 22:17:54 DEBUG   Sending 26 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 DEBUG   Sending CONTROL to <control> (localhost port unix): 18 5
+2026-09-15 22:17:54 DEBUG   Sending 5 bytes of metadata to <control> (localhost port unix)
+2026-09-15 22:17:54 NOTICE  Connection closed by <control> (localhost port unix)
+2026-09-15 22:17:54 NOTICE  Closing connection with <control> (localhost port unix)

@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-16
+**Last Updated:** 2026-09-16 (M9 closed by stream F)
 
 A self-hosted mesh VPN distribution on a hardened tinc 1.1 core, with opt-in
 circumvention transports and per-platform delivery (Linux/Windows/Android).
@@ -997,27 +997,121 @@ host SDK/NDK mounted read-only; no core source or meson change was needed.
 
 ---
 
-## Milestone M9 — verification harness 🟡
+## Milestone M9 — verification harness 🟡 (2026-09-16, stream F)
 
-- [ ] 🟠 `testing/nat-sim/`: port the netmaker NAT lab to tinc — Docker gateway
-  containers with `iptables` DNAT/SNAT for cone / restricted-cone, **plus** the
-  missing symmetric-NAT and two-tier-CGNAT variants and **TCP-meta handling**,
-  with pass/fail exit codes. **Proof:** the burst/rebind NAT features are shown to
-  punch through restricted-cone where a baseline build does not.
-- [ ] 🟠 **The laptop scenario is a named regression test** (brief point 4 says
-  "resolved", not "vendored"): node behind two-tier CGNAT, direct UDP up, then
-  (a) peer restarts, (b) the node's clock jumps ≥ 30 s (sleep/resume path that
-  triggers `rebind_udp_sockets`), (c) its NAT mapping is dropped by the lab.
-  Pass = direct UDP re-established within 60 s with no process restart and no
-  `Invalid packet seqno` livelock in the log. Run against the core and against
-  upstream tinc 1.1 to show the delta. **Proof:** the lab's exit code + both
-  logs checked in under `testing/nat-sim/results/`.
-- [ ] 🟡 `testing/dpi-proof/`: tcpdump-based check (netns+veth skeleton from
-  `awg-proof.sh`) that each obfuscation tier changes the wire image away from the
-  SPTPS fingerprint. **Proof:** captured before/after byte patterns.
-- [ ] 🟢 Wire the core build + a smoke `docker compose` ping test into a single
-  `make check` (or script). **Proof:** one command builds core and asserts a
-  cross-node ping.
+All of M9 runs in Docker only (`make check`); the NAT/DPI labs live in **one
+privileged container** built from `testing/image/Dockerfile` (core binaries +
+upstream 1.1pre18 baseline binaries + iptables/conntrack/tcpdump/python3) and
+use network namespaces + veth inside it. Docker-network gateway containers (the
+netmaker shape) do not work on Docker 28+/Cilium hosts: bridged packets to
+another network's addresses are dropped by the daemon's nft rules. Details:
+`testing/nat-sim/README.md`.
+
+- [x] 🟠 `testing/nat-sim/`: NAT lab with gateway namespaces implementing
+  **full-cone, restricted-cone (address-dependent), port-restricted** (static
+  SNAT/DNAT pairs, external port ≠ listen port), **symmetric**
+  (`MASQUERADE --random-fully`), **masq** (stock Linux MASQUERADE — on kernel
+  ≥ 6.7 measured as *EIM-after-first + APDF*, i.e. no longer endpoint-
+  independent), **udpblock** (TCP-meta only), and a **two-tier CGNAT** (home
+  masq → carrier masq with 10/30 s UDP conntrack windows). Each profile is
+  validated by `udpprobe.py` before use (`lab.sh validate-nat`: 6/6 classified
+  as declared, `results/2026-09-16/validate-nat.jsonl`). Pair scenarios
+  (5×5 + 3 udpblock) with a public relay, pass/fail per scenario, exit code,
+  matrix in `results/2026-09-16/summary.md`. **Proof (run 2026-09-16, core AND
+  upstream baseline):** 56 scenarios (28 per binary), matrix exit 0. Every
+  traversable pair came up direct on both sides within 6–10 s (core) /
+  6–18 s (baseline); the 8 non-traversable pairs (symmetric/masq ×
+  port-restricted/masq/symmetric) carried traffic via the relay for both
+  binaries (baseline's masq × portrestricted came up direct by a port-sharing
+  coincidence, documented); the 3 udpblock pairs carried traffic over the
+  TCP meta path for both (**TCP-meta handling**).
+  The restricted-cone *delta* named in the original proof line is **not**
+  observed for a plain pair: with a 1 ms RTT lab both binaries punch every
+  traversable pair within ~10 s; the delta shows up in the laptop regression
+  below (stage c), which is where `UDPRebindOnWake` acts. A dynamic
+  endpoint-independent NAT cannot be built from stock netfilter on this
+  kernel, so the cone profiles are static-per-port (faithful for `Port = 655`
+  nodes; the rebinding node sits behind `masq`) — recorded in the README.
+- [x] 🟠 **Laptop regression** (`lab.sh laptop`, named test): L behind two-tier
+  CGNAT with `UDPRebindOnWake = yes`, P behind restricted-cone, R public.
+  Stages: (a) P's tincd restarted; (b) L frozen 70 s with SIGSTOP/SIGCONT
+  (`docker pause` would freeze the whole lab container; for tincd's 1-second
+  timer it is the same: `Awaking from dead after 71 seconds of sleep`);
+  (c) frozen again while the carrier conntrack is flushed and inbound to L's
+  old socket is black-holed (the field's "stuck mapping"; netfilter cannot keep
+  a re-created mapping filtered, so the effect is applied by inside socket).
+  Pass = direct UDP *and* a tunnel ping within 60 s per stage, same process,
+  < 20 `Invalid packet seqno` / `REQ_KEY … already started` lines.
+  **Proof (`results/2026-09-16/laptop/`, exit 1 = baseline failed):**
+  core PASS — setup 6 s, peer-restart 8 s, sleep-resume 6 s, mapping-dropped
+  4 s; log `Awaking from dead after 71 seconds` → `Rebound UDP socket 0 to a
+  fresh source port` ×2, L's UDP port 655 → 45620 → 46161, probe replies from
+  P resume 4 s after wake. **baseline FAIL** — setup 12 s, peer-restart 8 s,
+  sleep-resume 4 s, **mapping-dropped: no recovery in 60 s**; port stays 655,
+  `Awaking from dead` but no rebind, probes to P's reflexive address go out and
+  no reply ever returns (`baseline/nodel.log` after the `=== stage c` marker);
+  traffic falls back to the relay (ping still ok). No seqno livelock in either
+  binary in this scenario (0 lines) — the livelock signature appears instead in
+  the glare scenario below.
+- [x] 🟡 `testing/dpi-proof/`: netns + veth + `tcpdump -w` skeleton in the lab
+  container (`run.sh capture <profile>`, profiles = tinc.conf overlays for
+  M5's tiers), `fingerprint.py` (stdlib pcap parser) reporting six
+  fingerprints — cleartext `0 <name> 17.7` ID line, plaintext SPTPS handshake
+  record `[len][0x80]` on TCP, the 6-byte null destination id, the constant
+  6-byte source node id, the cleartext 32-bit seqno counter, the 51-byte probe
+  size — plus the size histogram; `compare.py before after` exits 1 while any
+  baseline fingerprint survives. **Proof:**
+  `results/2026-09-16/plain.report.txt` — all six PRESENT on the core's plain
+  wire image (84 datagrams, 16 TCP segments); `run.sh compare plain plain`
+  exits 1 (harness self-test).
+- [x] 🟢 `make check` = build core + baseline images, two-node docker compose
+  smoke test in **YAML mode** with explicit configs (`testing/smoke/`, keys
+  generated at run time, cross-node ping both ways), `validate-nat`, the NAT
+  quick subset (4 pairs, core), dpi baseline; non-zero on any failure, no
+  interactive step. `make lint` = shellcheck in a container (clean).
+  **Proof:** `make check` run 2026-09-16 → exit 0 in ~6 min:
+  `smoke: PASS (cross-node ping both ways, YAML mode)`, `validate-nat: all 6
+  profiles behave as declared`, 5 quick pairs PASS, `baseline fingerprints
+  present: …six…`, `make check: OK`. Note: `make check` re-runs its subset
+  into `results/<today>/`, so the committed 2026-09-16 tree carries the full
+  matrix plus that re-run (identical outcomes).
+- **Found during M9** (core sources untouched; evidence under
+  `testing/nat-sim/results/2026-09-16/`):
+  - 🟠 **REQ_KEY glare has no tie-break (upstream 1.1pre18 and core).** When
+    both nodes start sending to each other in the same instant, both send
+    `REQ_KEY`; each side stops its own SPTPS session and becomes a responder,
+    so each `ANS_KEY` hits a fresh responder expecting seqno 1 →
+    `Invalid packet seqno: 0 != 1`; recovery relies on the "No key from X after
+    N seconds, restarting SPTPS" timer, whose N is 30 s in the core (patch 1)
+    vs 10 s upstream, and both timers were armed together so the retry can
+    collide again. `lab.sh glare` (full-cone × full-cone, both sides ping at
+    once): run 1 core 31 s / baseline 12 s to the first key (1 restart each);
+    run 2 core 64 s (3 restarts) / baseline 45 s (7 restarts). Repro: any two
+    nodes that begin exchanging traffic simultaneously (e.g. all nodes
+    reconnecting after a relay restart). Impact: 30–90 s of relay-only traffic
+    per glare; the 30 s cooldown triples the cost of each round. Fix
+    candidates: name-based tie-break in `req_key_ext_h` (`REQ_KEY` case:
+    the lexicographically smaller name ignores the incoming request while its
+    own session is pending), and/or jitter on the cooldown. Owner: core.
+  - 🟡 **`scripts:` stanza of `docs/config-schema.md` is not implemented** in
+    `yamlconf.c` (no `scripts` key is read); in YAML mode `tinc-up` has to be
+    a side-file at `<dir>/<netname>/tinc-up`. The smoke test does exactly
+    that. Owner: A/C (M2/M6) or schema doc.
+  - 🟡 **Linux MASQUERADE is not endpoint-independent on kernels ≥ 6.7**
+    (measured: first destination keeps the source port, every later
+    destination shares one other port). Any tincstack node behind a current
+    Linux router behaves like a symmetric NAT towards the *first* peer it
+    talks to; `UDP_INFO` learned via the relay carries the relay-facing port.
+    Deployment docs (M6) should say so; the core copes because the peer learns
+    the real port from the first authenticated datagram.
+  - 🟢 `tinc info <peer>` reports "directly with UDP" from local state and
+    keeps saying so after the peer restarted or the node slept, until a packet
+    fails — a health check must send traffic (the lab pings).
+  - 🟢 upstream's `tinc` CLI links the non-wide `libncurses.so.6`; the lab
+    image ships both variants.
+- **Acceptance:** one command (`make check`) builds and verifies; the named
+  regression shows the delta between the patched core and upstream with logs
+  checked in. **Met.**
 
 ---
 

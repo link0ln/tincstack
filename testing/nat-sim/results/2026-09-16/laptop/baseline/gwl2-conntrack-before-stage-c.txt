@@ -1,0 +1,5 @@
+tcp      6 115 TIME_WAIT src=10.200.0.2 dst=100.64.0.10 sport=34920 dport=655 src=100.64.0.10 dst=100.64.0.4 sport=655 dport=34920 [ASSURED] mark=0 use=1
+tcp      6 431998 ESTABLISHED src=10.200.0.2 dst=100.64.0.10 sport=44356 dport=655 src=100.64.0.10 dst=100.64.0.4 sport=655 dport=44356 [ASSURED] mark=0 use=1
+udp      17 8 src=10.200.0.2 dst=100.64.0.3 sport=655 dport=655 [UNREPLIED] src=100.64.0.3 dst=100.64.0.4 sport=655 dport=655 mark=0 use=1
+udp      17 28 src=10.200.0.2 dst=100.64.0.10 sport=655 dport=655 src=100.64.0.10 dst=100.64.0.4 sport=655 dport=655 [ASSURED] mark=0 use=1
+udp      17 29 src=10.200.0.2 dst=100.64.0.3 sport=655 dport=41655 src=100.64.0.3 dst=100.64.0.4 sport=41655 dport=655 [ASSURED] mark=0 use=1
