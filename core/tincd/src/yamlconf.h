@@ -42,10 +42,33 @@ bool yamlconf_is_yaml_path(const char *path);
    uses %TEMP% on Windows, tmpfile() on POSIX. Caller fclose()s it. */
 FILE *yamlconf_content_fp(const char *content);
 
-/* Parse a YAML config file. Returns NULL on error (unreadable or not a
-   mapping). An empty or comment-only file parses to an empty document. */
+/* Parse a YAML config file. Returns NULL on error (unreadable, larger than
+   64 MiB, a parse error, or not a mapping). An empty or comment-only file
+   parses to an empty document. The parser is strict: a line it cannot place
+   in the tree, an empty or over-long (>255) key, or nesting deeper than 64
+   levels is an error, never silently dropped -- the file is written back by
+   the daemon, so dropped lines would be lost on the next save. Duplicate
+   keys in one mapping: the last one wins (as in PyYAML). */
 yamlconf_t *yamlconf_load(const char *path);
 void yamlconf_free(yamlconf_t *yc);
+
+/* Same parser on an in-memory document (modified in place); NULL on error. */
+yamlconf_t *yamlconf_parse(char *text);
+
+/* Serialise the document exactly as yamlconf_save() would write it. Caller
+   frees. Scalars that would not read back verbatim are double-quoted.
+   Returns NULL (and yamlconf_save() fails with EINVAL) if the document holds
+   a mapping key the parser would refuse -- empty or longer than 255 bytes --
+   so that a document which would not load is never written. */
+char *yamlconf_emit(yamlconf_t *yc);
+
+/* Serialise writers on `<path>.lock` (stable inode; the config file itself
+   is replaced by every save). Re-entrant within a process. yamlconf_save()
+   and yamlconf_append_host_line() lock on their own; a caller doing a
+   read-modify-write of its own should hold the lock across the whole
+   sequence. */
+bool yamlconf_lock(const char *path);
+void yamlconf_unlock(void);
 
 /* An empty document (no networks). */
 yamlconf_t *yamlconf_new(void);
@@ -118,8 +141,10 @@ bool yamlconf_reload_global(void);
 void yamlconf_host_add_line(yamlconf_t *yc, const char *net, const char *name,
                             const char *key, const char *value);
 
-/* Write the document to `path` atomically (temp file + rename). The file is
-   created mode 0600 since it holds private keys. Returns true on success. */
+/* Write the document to `path` atomically (temp file + rename) under the
+   writers' lock. The file is created mode 0600 since it holds private keys.
+   Returns true on success; false (errno EINVAL) if the document cannot be
+   emitted, see yamlconf_emit(). */
 bool yamlconf_save(yamlconf_t *yc, const char *path);
 
 /* Newly-allocated tinc.conf-equivalent text for `net` (caller frees), or NULL.

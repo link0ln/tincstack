@@ -1992,8 +1992,27 @@ static int cmd_config(int argc, char *argv[]) {
 	}
 
 	if(yamlconf_path) {
+		/* A write is a read-modify-write of a file the daemon also writes
+		   (learned keys): take the writers' lock and re-read under it, so
+		   nothing the daemon stored since we started is lost. */
+		if(action != GET) {
+			if(!yamlconf_lock(yamlconf_path)) {
+				fprintf(stderr, "Could not lock %s: %s\n", yamlconf_path, strerror(errno));
+				free(yaml_host);
+				return 1;
+			}
+
+			if(!access(yamlconf_path, F_OK) && !yamlconf_reload_global()) {
+				fprintf(stderr, "Could not re-read YAML config %s\n", yamlconf_path);
+				yamlconf_unlock();
+				free(yaml_host);
+				return 1;
+			}
+		}
+
 		if(!yamlconf_global) {
 			fprintf(stderr, "Could not read YAML config %s\n", yamlconf_path);
+			yamlconf_unlock();
 			free(yaml_host);
 			return 1;
 		}
@@ -2016,6 +2035,7 @@ static int cmd_config(int argc, char *argv[]) {
 
 	if(!f) {
 		fprintf(stderr, "Could not open configuration file %s: %s\n", filename, strerror(errno));
+		yamlconf_unlock();
 		free(yaml_host);
 		return 1;
 	}
@@ -2039,6 +2059,7 @@ static int cmd_config(int argc, char *argv[]) {
 		if(!tf) {
 			fprintf(stderr, "Could not open temporary file %s: %s\n", tmpfile, strerror(errno));
 			fclose(f);
+			yamlconf_unlock();
 			free(yaml_host);
 			return 1;
 		}
@@ -2159,6 +2180,7 @@ static int cmd_config(int argc, char *argv[]) {
 		// Could we find what we had to remove?
 		if(action == DEL && !removed) {
 			fclose(tf);
+			yamlconf_unlock();
 			free(yaml_host);
 			fprintf(stderr, "No configuration variables deleted.\n");
 			return 1;
@@ -2182,7 +2204,10 @@ static int cmd_config(int argc, char *argv[]) {
 		free(text);
 		free(yaml_host);
 
-		if(!yamlconf_save(yamlconf_global, yamlconf_path)) {
+		bool saved = yamlconf_save(yamlconf_global, yamlconf_path);
+		yamlconf_unlock();
+
+		if(!saved) {
 			fprintf(stderr, "Error writing %s: %s\n", yamlconf_path, strerror(errno));
 			return 1;
 		}

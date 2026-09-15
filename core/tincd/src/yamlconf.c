@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -121,22 +122,40 @@ static char *unquote(char *s) {
 
 /* ---- parser -------------------------------------------------------------- */
 
-typedef struct { line_t *lines; size_t n; size_t i; } parser_t;
+/* The parser is strict about what it does not understand: a line it cannot
+   place in the tree is a parse error, never silently dropped. This file is
+   written back by the daemon (materialisation, learned keys, `tinc set'), so
+   a parser that ignored a badly indented tail would let the next save
+   discard the operator's keys and host records. A file that does not parse
+   is refused and left untouched (yamlconf_load() returns NULL). */
+
+#define YAML_MAX_DEPTH 64        /* nesting levels; the schema needs 4 */
+#define YAML_MAX_KEY 255         /* longest mapping key accepted */
+
+typedef struct {
+	line_t *lines;
+	size_t n;
+	size_t i;
+	int depth;
+	bool error;
+} parser_t;
 
 static yval_t *parse_flow_seq(const char *s) {       /* "[a, b, c]" */
 	yval_t *seq = yval_new(Y_SEQ);
 	const char *p = strchr(s, '[');
 	if(!p) return seq;
 	p++;
-	char buf[1024];
 	while(*p && *p != ']') {
-		size_t k = 0;
-		while(*p && *p != ',' && *p != ']' && k < sizeof(buf) - 1) buf[k++] = *p++;
-		buf[k] = 0;
+		size_t len = strcspn(p, ",]");
+		char *buf = malloc(len + 1);
+		memcpy(buf, p, len);
+		buf[len] = 0;
+		p += len;
 		char *t = trim(buf);
 		yval_t *it = yval_new(Y_SCALAR);
 		it->scalar = strdup(unquote(t));
 		seq_add(seq, it);
+		free(buf);
 		if(*p == ',') p++;
 	}
 	return seq;
@@ -147,28 +166,41 @@ static size_t next_sig(parser_t *p, size_t from) {   /* index of next non-skip l
 	return from;
 }
 
+static bool line_is_blank(const line_t *ln) {
+	return ln->raw[0] == 0 || leading_spaces(ln->raw) == (int) strlen(ln->raw);
+}
+
 static yval_t *parse_block_scalar(parser_t *p, int parent_indent) {
-	/* collect lines more indented than parent; dedent by the first one's indent */
+	/* Collect every line more indented than the parent (blank lines
+	   included) and dedent by the smallest indentation among them, so a
+	   value whose first line is itself indented survives a round trip. The
+	   header's chomping/indentation indicators (|-, |+, |2) are accepted and
+	   ignored: trailing newlines are always stripped. */
 	size_t j = next_sig(p, p->i);
 	if(j >= p->n || p->lines[j].indent <= parent_indent) {
 		yval_t *v = yval_new(Y_SCALAR); v->scalar = strdup(""); return v;
 	}
-	int base = p->lines[j].indent;
+	size_t end = p->i;
+	int base = -1;
+	while(end < p->n) {
+		line_t *ln = &p->lines[end];
+		if(line_is_blank(ln)) { end++; continue; }
+		if(ln->indent <= parent_indent) break;
+		if(base < 0 || ln->indent < base) base = ln->indent;
+		end++;
+	}
 	char *acc = strdup("");
 	size_t acclen = 0;
 	bool first = true;
-	while(p->i < p->n) {
+	for(; p->i < end; p->i++) {
 		line_t *ln = &p->lines[p->i];
-		bool blank = (ln->raw[0] == 0) || (leading_spaces(ln->raw) == (int) strlen(ln->raw));
-		if(!blank && ln->indent <= parent_indent) break;
-		const char *content = blank ? "" : (ln->indent >= base ? ln->raw + base : trim(ln->raw));
+		const char *content = line_is_blank(ln) ? "" : ln->raw + base;
 		size_t clen = strlen(content);
 		acc = realloc(acc, acclen + clen + 2);
 		if(!first) acc[acclen++] = '\n';
 		memcpy(acc + acclen, content, clen);
 		acclen += clen; acc[acclen] = 0;
 		first = false;
-		p->i++;
 	}
 	/* strip trailing newlines (chomp) */
 	while(acclen && acc[acclen - 1] == '\n') acc[--acclen] = 0;
@@ -177,9 +209,17 @@ static yval_t *parse_block_scalar(parser_t *p, int parent_indent) {
 
 static yval_t *parse_node(parser_t *p, int min_indent);
 
+static int hexval(char c) {
+	if(c >= '0' && c <= '9') return c - '0';
+	if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
+
 /* Parse a double-quoted YAML scalar (single line), processing escapes.
    PyYAML emits this form for strings whose block representation would be
-   ambiguous (e.g. lines with trailing spaces), encoding newlines as \n. */
+   ambiguous (e.g. lines with trailing spaces), encoding newlines as \n; the
+   emitter below does the same. Output never exceeds the input length. */
 static char *parse_dq_scalar(const char *s) {
 	if(*s == '"') {
 		s++;
@@ -205,8 +245,32 @@ static char *parse_dq_scalar(const char *s) {
 				out[k++] = '\r';
 				break;
 
+			case 'a':
+				out[k++] = '\a';
+				break;
+
+			case 'b':
+				out[k++] = '\b';
+				break;
+
+			case 'e':
+				out[k++] = 0x1b;
+				break;
+
+			case 'f':
+				out[k++] = '\f';
+				break;
+
+			case 'v':
+				out[k++] = '\v';
+				break;
+
 			case '"':
 				out[k++] = '"';
+				break;
+
+			case '/':
+				out[k++] = '/';
 				break;
 
 			case '\\':
@@ -215,6 +279,16 @@ static char *parse_dq_scalar(const char *s) {
 
 			case '0':
 				out[k++] = '\0';
+				break;
+
+			case 'x':
+				if(hexval(s[1]) >= 0 && hexval(s[2]) >= 0) {
+					out[k++] = (char)(hexval(s[1]) * 16 + hexval(s[2]));
+					s += 2;
+				} else {
+					out[k++] = 'x';
+				}
+
 				break;
 
 			default:
@@ -232,19 +306,50 @@ static char *parse_dq_scalar(const char *s) {
 	return out;
 }
 
+/* Store key/val, replacing an existing key in place (last one wins, the
+   way PyYAML builds a dict) so a GUI and the daemon agree on the value. */
+static void map_put_or_replace(yval_t *m, char *key, yval_t *val) {
+	for(size_t i = 0; i < m->npairs; i++) {
+		if(!strcmp(m->keys[i], key)) {
+			yval_free(m->vals[i]);
+			m->vals[i] = val;
+			free(key);
+			return;
+		}
+	}
+
+	map_put(m, key, val);
+}
+
 static yval_t *parse_map(parser_t *p, int indent) {
 	yval_t *map = yval_new(Y_MAP);
-	while(p->i < p->n) {
+	while(p->i < p->n && !p->error) {
 		size_t j = next_sig(p, p->i);
 		if(j >= p->n) break;
 		if(p->lines[j].indent != indent) break;          /* dedent / nested */
 		p->i = j;
 		char *line = p->lines[p->i].raw + indent;
-		char *colon = strchr(line, ':');
-		if(!colon) { p->i++; continue; }
-		*colon = 0;
-		char keybuf[256];
-		snprintf(keybuf, sizeof(keybuf), "%s", trim(line));
+		char *key;
+		char *colon;
+		char *dqkey = NULL;
+		if(line[0] == '"') {
+			/* "quoted key": the emitter writes keys this way when they
+			   contain ':' or other characters a plain key cannot hold. */
+			char *end = line + 1;
+			while(*end && *end != '"') end += (*end == '\\' && end[1]) ? 2 : 1;
+			if(!*end) { p->error = true; break; }
+			colon = end + 1 + strspn(end + 1, " \t");
+			if(*colon != ':') { p->error = true; break; }
+			*end = 0;
+			dqkey = parse_dq_scalar(line + 1);
+			key = dqkey;
+		} else {
+			colon = strchr(line, ':');
+			if(!colon) { p->error = true; break; }          /* not "key: ..." */
+			*colon = 0;
+			key = trim(line);
+		}
+		if(!*key || strlen(key) > YAML_MAX_KEY) { free(dqkey); p->error = true; break; }
 		char *rest = trim(colon + 1);
 		p->i++;
 		yval_t *val;
@@ -260,18 +365,20 @@ static yval_t *parse_map(parser_t *p, int indent) {
 			val->scalar = parse_dq_scalar(rest);
 		} else if(rest[0] == '[') {
 			val = parse_flow_seq(rest);
+		} else if(!strcmp(rest, "{}")) {
+			val = yval_new(Y_MAP);
 		} else {
 			val = yval_new(Y_SCALAR);
 			val->scalar = strdup(unquote(rest));
 		}
-		map_put(map, strdup(keybuf), val);
+		map_put_or_replace(map, dqkey ? dqkey : strdup(key), val);
 	}
 	return map;
 }
 
 static yval_t *parse_seq(parser_t *p, int indent) {
 	yval_t *seq = yval_new(Y_SEQ);
-	while(p->i < p->n) {
+	while(p->i < p->n && !p->error) {
 		size_t j = next_sig(p, p->i);
 		if(j >= p->n) break;
 		if(p->lines[j].indent != indent) break;
@@ -283,6 +390,10 @@ static yval_t *parse_seq(parser_t *p, int indent) {
 		if(item[0] == 0) {
 			p->i++;
 			val = parse_node(p, indent + 1);
+		} else if(item[0] == '"') {
+			p->i++;
+			val = yval_new(Y_SCALAR);
+			val->scalar = parse_dq_scalar(item);
 		} else {
 			p->i++;
 			val = yval_new(Y_SCALAR);
@@ -298,14 +409,34 @@ static yval_t *parse_node(parser_t *p, int min_indent) {
 	if(j >= p->n || p->lines[j].indent < min_indent) {
 		yval_t *v = yval_new(Y_SCALAR); v->scalar = strdup(""); return v;
 	}
+	if(++p->depth > YAML_MAX_DEPTH) {
+		p->error = true;
+		p->depth--;
+		yval_t *v = yval_new(Y_SCALAR); v->scalar = strdup(""); return v;
+	}
 	p->i = j;
 	int indent = p->lines[j].indent;
 	char *line = p->lines[j].raw + indent;
+	yval_t *v;
 	if(line[0] == '-' && (line[1] == ' ' || line[1] == 0))
-		return parse_seq(p, indent);
-	return parse_map(p, indent);
+		v = parse_seq(p, indent);
+	else
+		v = parse_map(p, indent);
+	p->depth--;
+	return v;
 }
 
+/* Document markers and directives are ignored like comments. */
+static bool line_is_marker(const char *content) {
+	if(content[0] == '%') return true;
+	if(!strncmp(content, "---", 3) || !strncmp(content, "...", 3))
+		return content[3] == 0 || content[3] == ' ' || content[3] == '\t';
+	return false;
+}
+
+/* Parse a whole document. Returns NULL on a parse error (a line that cannot
+   be placed in the tree, a key that is empty or too long, nesting deeper
+   than YAML_MAX_DEPTH). `text` is modified in place. */
 static yval_t *parse_text(char *text) {
 	/* split into lines */
 	size_t cap = 64, n = 0;
@@ -322,15 +453,19 @@ static yval_t *parse_text(char *text) {
 		const char *content = raw + ind;
 		lines[n].raw = raw;
 		lines[n].indent = ind;
-		lines[n].skip = (content[0] == 0 || content[0] == '#');
+		lines[n].skip = (content[0] == 0 || content[0] == '#' || (ind == 0 && line_is_marker(content)));
 		n++;
 		if(!eol) break;
 		s = eol + 1;
 	}
-	parser_t p = { lines, n, 0 };
+	parser_t p = { lines, n, 0, 0, false };
 	yval_t *root = parse_node(&p, 0);
+	if(!p.error && next_sig(&p, p.i) < n) {
+		p.error = true;                    /* significant lines left over */
+	}
 	for(size_t i = 0; i < n; i++) free(lines[i].raw);
 	free(lines);
+	if(p.error) { yval_free(root); return NULL; }
 	return root;
 }
 
@@ -372,26 +507,27 @@ bool yamlconf_is_yaml_path(const char *path) {
 	       (n > 4 && !strcasecmp(path + n - 4, ".yml"));
 }
 
+#define YAML_MAX_FILE (64u * 1024u * 1024u)   /* refuse anything larger */
+
 static char *read_file(const char *path) {
 	FILE *f = fopen(path, "rb");
 	if(!f) return NULL;
-	fseek(f, 0, SEEK_END);
+	if(fseek(f, 0, SEEK_END)) { fclose(f); return NULL; }
 	long sz = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if(sz < 0) { fclose(f); return NULL; }
-	char *buf = malloc(sz + 1);
-	size_t rd = fread(buf, 1, sz, f);
+	if(sz < 0 || (unsigned long) sz > YAML_MAX_FILE || fseek(f, 0, SEEK_SET)) { fclose(f); return NULL; }
+	char *buf = malloc((size_t) sz + 1);
+	if(!buf) { fclose(f); return NULL; }
+	size_t rd = fread(buf, 1, (size_t) sz, f);
 	buf[rd] = 0;
 	fclose(f);
 	return buf;
 }
 
-yamlconf_t *yamlconf_load(const char *path) {
-	char *text = read_file(path);
-	if(!text) return NULL;
+/* Parse a document held in memory (the text is modified in place). NULL on
+   a parse error or when the document is not a mapping. Exposed for tests. */
+yamlconf_t *yamlconf_parse(char *text) {
 	yamlconf_t *yc = calloc(1, sizeof(*yc));
 	yc->root = parse_text(text);
-	free(text);
 
 	/* An empty / comment-only file parses to an empty scalar: treat it as an
 	   empty document so the daemon can materialise defaults into it. */
@@ -401,6 +537,14 @@ yamlconf_t *yamlconf_load(const char *path) {
 	}
 
 	if(!yc->root || yc->root->type != Y_MAP) { yamlconf_free(yc); return NULL; }
+	return yc;
+}
+
+yamlconf_t *yamlconf_load(const char *path) {
+	char *text = read_file(path);
+	if(!text) return NULL;
+	yamlconf_t *yc = yamlconf_parse(text);
+	free(text);
 	return yc;
 }
 
@@ -529,7 +673,7 @@ char *yamlconf_script_text(yamlconf_t *yc, const char *net, const char *name) {
 
 /* ---- emitter (for write-back) ------------------------------------------- */
 
-typedef struct { char *buf; size_t len, cap; } sbuf_t;
+typedef struct { char *buf; size_t len, cap; bool error; } sbuf_t;
 
 static void sb_puts(sbuf_t *b, const char *s) {
 	size_t n = strlen(s);
@@ -539,34 +683,120 @@ static void sb_puts(sbuf_t *b, const char *s) {
 
 static void sb_indent(sbuf_t *b, int n) { for(int i = 0; i < n; i++) sb_puts(b, " "); }
 
+static bool is_ctrl(unsigned char c) {
+	return c < 0x20 || c == 0x7f;
+}
+
+/* A plain (unquoted, single-line) scalar must read back as the same string:
+   no leading/trailing blanks, no indicator character in front, nothing the
+   line splitter or the key/value split would misread. */
+static bool plain_scalar_safe(const char *s) {
+	if(s[0] == 0) return false;
+	if(isspace((unsigned char) s[0]) || isspace((unsigned char) s[strlen(s) - 1])) return false;
+	if(strchr("[]{}\"'|>#&*!%@`,?:-", s[0])) {
+		/* "-x", "?x" and ":x" are plain in YAML, but keep it simple: quote
+		   anything starting with an indicator except a lone negative
+		   number, which is common in options. */
+		if(!(s[0] == '-' && isdigit((unsigned char) s[1]))) return false;
+	}
+	for(const unsigned char *p = (const unsigned char *) s; *p; p++) {
+		if(is_ctrl(*p)) return false;
+	}
+	if(strstr(s, ": ") || strstr(s, " #")) return false;
+	return true;
+}
+
+/* Every line of a literal block must survive parse_block_scalar(): no
+   control characters, no trailing blanks (the parser cannot distinguish a
+   blank line from an empty one), and no leading blanks on the first line
+   would be ambiguous for other YAML readers. */
+static bool block_scalar_safe(const char *s) {
+	if(s[0] == ' ' || s[0] == '\t') return false;
+	const char *p = s;
+	while(*p) {
+		const char *eol = strchr(p, '\n');
+		size_t len = eol ? (size_t)(eol - p) : strlen(p);
+		for(size_t i = 0; i < len; i++) {
+			if(is_ctrl((unsigned char) p[i])) return false;
+		}
+		if(len && p[len - 1] == ' ') return false;
+		if(!eol) break;
+		p = eol + 1;
+	}
+	if(strlen(s) && s[strlen(s) - 1] == '\n') return false;   /* chomping would lose it */
+	return true;
+}
+
+static void emit_dq_scalar(sbuf_t *b, const char *s) {
+	sb_puts(b, "\"");
+	char esc[8];
+	for(const unsigned char *p = (const unsigned char *) s; *p; p++) {
+		switch(*p) {
+		case '"': sb_puts(b, "\\\""); break;
+		case '\\': sb_puts(b, "\\\\"); break;
+		case '\n': sb_puts(b, "\\n"); break;
+		case '\t': sb_puts(b, "\\t"); break;
+		case '\r': sb_puts(b, "\\r"); break;
+		default:
+			if(is_ctrl(*p)) {
+				snprintf(esc, sizeof(esc), "\\x%02x", *p);
+				sb_puts(b, esc);
+			} else {
+				esc[0] = (char) *p; esc[1] = 0;
+				sb_puts(b, esc);
+			}
+		}
+	}
+	sb_puts(b, "\"");
+}
+
 static void emit_scalar_value(sbuf_t *b, const char *s, int indent) {
-	if(s[0] == 0) { sb_puts(b, " \"\"\n"); return; }
-	if(strchr(s, '\n')) {                       /* literal block */
+	if(strchr(s, '\n') && block_scalar_safe(s)) {   /* literal block */
 		sb_puts(b, " |\n");
 		const char *p = s;
 		while(*p) {
 			const char *eol = strchr(p, '\n');
 			size_t len = eol ? (size_t)(eol - p) : strlen(p);
-			sb_indent(b, indent + 2);
+			if(len) sb_indent(b, indent + 2);
 			char *line = malloc(len + 2);
 			memcpy(line, p, len); line[len] = '\n'; line[len + 1] = 0;
 			sb_puts(b, line); free(line);
-			if(!eol) { sb_puts(b, "\n"); break; }
+			if(!eol) break;
 			p = eol + 1;
 		}
 		return;
 	}
-	sb_puts(b, " "); sb_puts(b, s); sb_puts(b, "\n");
+	sb_puts(b, " ");
+	if(plain_scalar_safe(s)) sb_puts(b, s);
+	else emit_dq_scalar(b, s);
+	sb_puts(b, "\n");
+}
+
+/* A key is written plain only if the parser splits it back at the same
+   place: no ':' (the parser takes the first one), nothing that looks like
+   a quote, comment, indicator or control character, no outer blanks. */
+static bool plain_key_safe(const char *k) {
+	if(!plain_scalar_safe(k)) return false;
+	return strchr(k, ':') == NULL;
 }
 
 static void emit_node(sbuf_t *b, const yval_t *v, int indent) {
 	if(v->type == Y_MAP) {
 		for(size_t i = 0; i < v->npairs; i++) {
+			/* Never write what the parser would refuse: a key the setters
+			   accepted but that is empty or longer than YAML_MAX_KEY (a 300
+			   character node name from an invitation, say) fails the whole
+			   emit/save instead of producing a file that does not load. */
+			if(!*v->keys[i] || strlen(v->keys[i]) > YAML_MAX_KEY) b->error = true;
 			sb_indent(b, indent);
-			sb_puts(b, v->keys[i]); sb_puts(b, ":");
+			if(plain_key_safe(v->keys[i])) sb_puts(b, v->keys[i]);
+			else emit_dq_scalar(b, v->keys[i]);
+			sb_puts(b, ":");
 			const yval_t *val = v->vals[i];
 			if(val->type == Y_SCALAR) {
 				emit_scalar_value(b, val->scalar, indent);
+			} else if((val->type == Y_MAP && !val->npairs) || (val->type == Y_SEQ && !val->nitems)) {
+				sb_puts(b, val->type == Y_MAP ? " {}\n" : " []\n");
 			} else {
 				sb_puts(b, "\n");
 				emit_node(b, val, indent + 2);
@@ -576,7 +806,11 @@ static void emit_node(sbuf_t *b, const yval_t *v, int indent) {
 		for(size_t i = 0; i < v->nitems; i++) {
 			sb_indent(b, indent);
 			if(v->items[i]->type == Y_SCALAR) {
-				sb_puts(b, "- "); sb_puts(b, v->items[i]->scalar); sb_puts(b, "\n");
+				const char *s = v->items[i]->scalar;
+				sb_puts(b, "- ");
+				if(!strchr(s, '\n') && plain_scalar_safe(s)) sb_puts(b, s);
+				else emit_dq_scalar(b, s);
+				sb_puts(b, "\n");
 			} else {
 				sb_puts(b, "-\n");
 				emit_node(b, v->items[i], indent + 2);
@@ -771,48 +1005,128 @@ bool yamlconf_host_del(yamlconf_t *yc, const char *net, const char *name) {
 	return map_del(hosts, name);
 }
 
+/* ---- locking ------------------------------------------------------------- */
+
+/* Writers (the daemon persisting a learned key, `tinc set', a join, the
+   materialiser) serialise on `<path>.lock`, a file that is never replaced,
+   so its inode -- and therefore the lock -- is stable across the atomic
+   rename that every save performs. Locking the config file itself would
+   only ever protect the inode the locker happened to open, which the next
+   save replaces; two writers would then both hold "the" lock. The lock is
+   re-entrant within one process (single-threaded daemon and CLI) so a
+   caller that locks around a read-modify-write does not deadlock the save
+   inside it. */
+static int lock_depth;
+#ifdef _WIN32
+static HANDLE lock_handle = INVALID_HANDLE_VALUE;
+#else
+static int lock_fd = -1;
+#endif
+
+bool yamlconf_lock(const char *path) {
+	if(lock_depth > 0) {
+		lock_depth++;
+		return true;
+	}
+
+	size_t n = strlen(path) + 6;
+	char *lockpath = malloc(n);
+	if(!lockpath) return false;
+	snprintf(lockpath, n, "%s.lock", path);
+#ifdef _WIN32
+	/* Exclusive open: a second opener fails until the first closes. Spin
+	   briefly instead of failing outright. */
+	for(int tries = 0; tries < 200; tries++) {
+		lock_handle = CreateFileA(lockpath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+		                          OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		if(lock_handle != INVALID_HANDLE_VALUE) break;
+		Sleep(50);
+	}
+	free(lockpath);
+	if(lock_handle == INVALID_HANDLE_VALUE) return false;
+#else
+	lock_fd = open(lockpath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+	free(lockpath);
+	if(lock_fd < 0) return false;
+	if(flock(lock_fd, LOCK_EX)) { close(lock_fd); lock_fd = -1; return false; }
+#endif
+	lock_depth = 1;
+	return true;
+}
+
+void yamlconf_unlock(void) {
+	if(lock_depth <= 0) return;
+	if(--lock_depth > 0) return;
+#ifdef _WIN32
+	CloseHandle(lock_handle);
+	lock_handle = INVALID_HANDLE_VALUE;
+#else
+	close(lock_fd);          /* releases the flock */
+	lock_fd = -1;
+#endif
+}
+
+/* ---- save ---------------------------------------------------------------- */
+
 /* Serialise and replace `path` atomically. Private keys live in this file, so
-   it is created 0600 (POSIX). */
+   it is created 0600 (POSIX), the temporary is never a symlink target
+   (O_NOFOLLOW) and its data is on disk before it replaces the config. */
 static bool write_atomic(const char *path, const char *data, size_t len) {
-	char tmp[1024];
-	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	size_t n = strlen(path) + 5;
+	char *tmp = malloc(n);
+	if(!tmp) return false;
+	snprintf(tmp, n, "%s.tmp", path);
 #ifdef _WIN32
 	FILE *f = fopen(tmp, "wb");
 #else
-	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
 	FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+	if(!f && fd >= 0) close(fd);
 #endif
-	if(!f) return false;
+	if(!f) { free(tmp); return false; }
 	bool ok = fwrite(data, 1, len, f) == len;
-	ok = !fclose(f) && ok;
-	if(!ok) { remove(tmp); return false; }
-#ifdef _WIN32
-	if(!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) { remove(tmp); return false; }
-#else
-	if(rename(tmp, path)) { remove(tmp); return false; }
+	ok = !fflush(f) && ok;
+#ifndef _WIN32
+	ok = !fsync(fileno(f)) && ok;
 #endif
+	ok = !fclose(f) && ok;
+	if(!ok) { remove(tmp); free(tmp); return false; }
+#ifdef _WIN32
+	if(!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { remove(tmp); free(tmp); return false; }
+#else
+	if(rename(tmp, path)) { remove(tmp); free(tmp); return false; }
+#endif
+	free(tmp);
 	return true;
+}
+
+char *yamlconf_emit(yamlconf_t *yc) {
+	sbuf_t b = {0};
+	emit_node(&b, yc->root, 0);
+	if(!b.buf) sb_puts(&b, "");
+	if(b.error) { free(b.buf); return NULL; }
+	return b.buf;
 }
 
 bool yamlconf_save(yamlconf_t *yc, const char *path) {
 	sbuf_t b = {0};
 	emit_node(&b, yc->root, 0);
 	if(!b.buf) sb_puts(&b, "");
-	bool ok = write_atomic(path, b.buf, b.len);
+	if(b.error) { free(b.buf); errno = EINVAL; return false; }
+	bool ok = yamlconf_lock(path);
+	if(ok) {
+		ok = write_atomic(path, b.buf, b.len);
+		yamlconf_unlock();
+	}
 	free(b.buf);
 	return ok;
 }
 
 bool yamlconf_append_host_line(const char *path, const char *net,
                                const char *name, const char *key, const char *value) {
-	/* exclusive lock so two daemons don't corrupt the shared file */
-#ifdef _WIN32
-	HANDLE lock = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-	                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-#else
-	int lockfd = open(path, O_RDONLY);
-	if(lockfd >= 0) flock(lockfd, LOCK_EX);
-#endif
+	/* The whole read-modify-write runs under the lock, so a concurrent
+	   `tinc set' or a second daemon sharing the file cannot lose it. */
+	if(!yamlconf_lock(path)) return false;
 	bool ok = false;
 	yamlconf_t *yc = yamlconf_load(path);
 	if(!yc) goto out;
@@ -821,11 +1135,7 @@ bool yamlconf_append_host_line(const char *path, const char *net,
 	ok = yamlconf_save(yc, path);
 	yamlconf_free(yc);
 out:
-#ifdef _WIN32
-	if(lock != INVALID_HANDLE_VALUE) CloseHandle(lock);
-#else
-	if(lockfd >= 0) close(lockfd);
-#endif
+	yamlconf_unlock();
 	return ok;
 }
 

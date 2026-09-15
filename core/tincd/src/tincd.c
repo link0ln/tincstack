@@ -593,7 +593,7 @@ int main(int argc, char **argv) {
 
 	/* YAML mode: an empty/absent config is valid; fill in defaults + keys
 	   so the daemon starts and is invite-ready (zero-config first run). */
-	if(!zeroconf_materialise()) {
+	if(!zeroconf_materialise(true)) {
 		return 1;
 	}
 
