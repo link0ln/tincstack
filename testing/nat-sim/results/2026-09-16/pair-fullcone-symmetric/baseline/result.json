@@ -1,0 +1,1 @@
+{"a":"fullcone","b":"symmetric","image":"baseline","rtt_ms":0,"expected":"yes","direct_ab":1,"direct_ba":1,"t_ab":15,"t_ba":2,"reach_ab":"directly with UDP","reach_ba":"directly with UDP","ping":1,"verdict":"PASS"}

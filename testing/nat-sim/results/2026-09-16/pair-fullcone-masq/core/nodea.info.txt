@@ -1,0 +1,14 @@
+Node:         nodeb
+Node ID:      c5888a302717
+Address:      100.64.0.3 port 721
+Online since: 2026-09-15 22:18:13
+Status:       validkey visited reachable sptps udp_confirmed
+Options:      pmtu_discovery clamp_mss
+Protocol:     17.7
+Reachability: directly with UDP
+PMTU:         1439
+RTT:          0.134
+RX:           17 packets  1666 bytes
+TX:           18 packets  1764 bytes
+Edges:        relay
+Subnets:      10.77.0.3

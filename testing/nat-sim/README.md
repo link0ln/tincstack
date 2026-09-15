@@ -68,7 +68,7 @@ RFC 4787 vocabulary: mapping = EIM (endpoint-independent) or APDM
 | `fullcone` | static pair: `PREROUTING DNAT ext:P → inside:655`, `POSTROUTING SNAT inside:655 → ext:P` (P ≠ 655, i.e. non-port-preserving), plus `FORWARD` ACCEPT for any inbound to `inside:655` | EIM + EIF |
 | `restricted` | same static pair; inbound to `inside:655` accepted only if the inside host has sent UDP to that *source IP* before — `xt_recent` list keyed on destination address (`--rdest --set` on every outbound datagram, `--rsource --rcheck --seconds 300` inbound) | EIM + ADF |
 | `portrestricted` | same static pair; inbound only for conntrack `ESTABLISHED` tuples (exact ip:port) | EIM + APDF |
-| `masq` | stock `MASQUERADE` (what a Linux router / Linux CGN does), dynamic: works for any inside port | **EIM-after-first** + APDF: the first destination keeps the source port; every further destination shares one other port. Kernels ≥ 6.7 no longer give endpoint-independent mapping with plain MASQUERADE |
+| `masq` | stock `MASQUERADE` (what a Linux router / Linux CGN does), dynamic: works for any inside port | **EIM-after-first** + APDF in the probe (the first destination keeps the source port; the next three shared one other port), but tinc runs also showed three distinct ports — treat it as APDM-ish. Kernels ≥ 6.7 no longer give endpoint-independent mapping with plain MASQUERADE |
 | `symmetric` | `MASQUERADE --random-fully` + inbound only `ESTABLISHED` | APDM + APDF |
 | `udpblock` | all UDP dropped both ways; TCP MASQUERADEd | no UDP at all (TCP meta path only) |
 
@@ -116,6 +116,26 @@ Expected outcome table (RFC 5128 logic; tinc does no port prediction):
 | portrestricted | direct | direct | direct | relay | relay |
 | masq | direct | direct | relay | relay | relay |
 | symmetric | direct | direct | relay | relay | relay |
+
+Why `symmetric x fullcone` and `symmetric x restricted` come up direct (and
+this is not a mislabelled cone): in `results/2026-09-16/pair-restricted-symmetric/core/gw-gwb.txt`
+the symmetric gateway's conntrack maps `nodeb:655` to external port 760 towards
+the relay and 841 towards nodea (per-destination ports = APDM; udpprobe saw four
+different ports for four destinations). nodea first learns the relay-facing
+port via `UDP_INFO` ("UDP address of nodeb set to … port 760"), then nodeb's
+own probe arrives from the real port 841 — the address-dependent filter admits
+it because nodea had already sent to that IP — and tinc updates the peer
+address from the authenticated datagram ("… set to … port 841"). That is RFC
+5128 §3.3: symmetric ↔ full-cone/address-restricted is traversable; symmetric ↔
+port-restricted/symmetric is not, and the matrix shows exactly those as relay.
+
+`masq` is not deterministic beyond "the first destination keeps the source
+port": in the 2026-09-16 run the baseline's `masq x portrestricted` came up
+direct because gwa happened to give the relay flow and the peer flow the same
+external port (997, `pair-masq-portrestricted/baseline/gw-gwa.txt`), while the
+core's run of the same pair got three different ports (655/782/694) and stayed
+on the relay. `expected=no` pairs therefore only require the relay path to
+carry traffic; a direct cell there is luck, not a verdict.
 
 Verdict: `expected=yes` → PASS iff direct UDP on both sides within `--wait`
 and ping OK; `expected=no` → PASS iff ping OK (traffic must flow via the

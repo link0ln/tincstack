@@ -1,0 +1,12 @@
+Node:         nodea
+Node ID:      0babe5ea84dc
+Address:      100.64.0.2 port 842
+Online since: 2026-09-15 22:27:51
+Status:       validkey visited reachable sptps
+Options:      pmtu_discovery clamp_mss
+Protocol:     17.7
+Reachability: none, forwarded via relay
+RX:           102 packets  9996 bytes
+TX:           102 packets  9996 bytes
+Edges:        relay
+Subnets:      10.77.0.2
