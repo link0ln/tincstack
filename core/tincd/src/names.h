@@ -27,6 +27,7 @@ extern char *confdir;
 extern char *confbase;
 extern bool confbase_given;
 extern char *netname;
+extern bool netname_defaulted;
 extern char *myname;
 extern char *identname;
 extern char *unixsocketname;

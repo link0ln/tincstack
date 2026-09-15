@@ -27,6 +27,7 @@
 #include "yamlconf.h"
 
 char *netname = NULL;
+bool netname_defaulted = false; /* YAML mode: netname was not given, make_names() picked it */
 char *myname = NULL;
 char *confdir = NULL;           /* base configuration directory */
 char *confbase = NULL;          /* base configuration directory for this instance of tinc */
@@ -69,6 +70,7 @@ void make_names(bool daemon) {
 		if(!netname) {
 			const char *first = yamlconf_global ? yamlconf_first_network(yamlconf_global) : NULL;
 			netname = xstrdup(first ? first : "tincstack");
+			netname_defaulted = true;
 		}
 
 		char *dir = xstrdup(yamlconf_path);
