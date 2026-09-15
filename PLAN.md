@@ -408,26 +408,63 @@ this order (cheapest / most-contained first). Full wire formats go in
   Config surface per schema. **Proof:** `testing/dpi-proof` shows the SPTPS
   fingerprint absent on the wire and a tunnel that comes up from cold; relay path
   intact.
-- [ ] 🟠 **Certificate automation, shared by HTTPS front and QUIC** (decision 1).
+- [x] 🟠 **Certificate automation, shared by HTTPS front and QUIC** (decision 1).
   `TlsCert`/`TlsKey` if set; else generate a self-signed cert at first start
   and persist it in the YAML (`keys.tls_cert`/`keys.tls_key`), reused on every
   restart, replaceable by editing the two keys. Its fingerprint travels in the
-  invitation (M2). **Proof:** first start with no cert → keys present in the
-  YAML; restart → same fingerprint; dropping in a real cert → served without
-  any other change.
-- [ ] 🟠 **Default-on decoy on the TCP listen port** (point 6, REALITY-analogue).
+  invitation (M2). Done in `core/tincd/src/tls.{c,h}` (P-256 self-signed X.509v3,
+  generic `localhost` subject so a scanner cannot tie the port to a node,
+  10-year validity, SAN present); generated + persisted in `zeroconf.c`
+  (`keys.tls_cert/tls_key`, classic mode: `tls_cert.pem/tls_key.pem`); loaded
+  and contexts built in `tls_init()` (run from the https carrier's init, rebuilt
+  on reload only if the material changed). Fingerprint exposed in `tinc
+  info`/dump (`node.c`/`info.c`, back-compatible trailing token) and written as
+  `TlsFingerprint` into the node's own host record for M2 propagation.
+  **Proof:** `testing/transports/tls-front-test.sh` (2026-09-16, image ws-g1):
+  first start → `keys.tls_cert`/`keys.tls_key` + `TlsFingerprint` present;
+  restart → same fingerprint; `openssl s_client` served-cert fingerprint ==
+  persisted `TlsFingerprint`; `HttpsDecoyUpstream` reload → served content is the
+  upstream's. `PASS`.
+- [x] 🟠 **Default-on decoy on the TCP listen port** (point 6, REALITY-analogue).
   A client that does not complete a tinc handshake is answered as an HTTPS
   server with the node's certificate and gets static content
   (`HttpsDecoyRoot`, a default page ships) or a proxied upstream
-  (`HttpsDecoyUpstream`). No config needed. **Proof:** `curl -k https://node:655/`
-  on a zero-config node returns the decoy page; `nmap -sV` identifies the port
-  as https; an upstream tinc peer still connects plain.
-- [ ] 🟠 **`https` carrier** (point 6 + point 5). Real peers authenticate inside
+  (`HttpsDecoyUpstream`). No config needed. Done in `core/tincd/src/decoy.{c,h}`
+  (built-in generic page, `HttpsDecoyRoot` file serving with traversal guard,
+  `HttpsDecoyUpstream` proxy with Host rewrite) and the front dispatch in
+  `transport.c`: a TLS ClientHello → real TLS handshake (`https_accept`) →
+  decoy if it does not authenticate; a plain-HTTP prober → the same content over
+  HTTP (`decoy_serve_plain`, replaces the M4 stub 200). `https` is compiled and
+  accepted by default on OpenSSL builds, so this needs no option. No response
+  path emits a tinc string (grep-checked in the test). **Proof:**
+  `testing/transports/tls-front-test.sh` (2026-09-16): `curl -k https://node:655/`
+  returns the decoy over a valid TLS handshake; `openssl s_client` shows the
+  cert; `nmap -sV -p655` (throwaway `nicolaka/netshoot`) reports `http nginx`,
+  never tinc; `curl http://node:655/` returns the page too; with
+  `HttpsDecoyUpstream` set the response is the upstream's; an upstream-format
+  tinc peer still connects `plain` (see the https-carrier test's fallback path).
+  `PASS`. *(Note: nmap reports the port as `http (nginx)` rather than `https`
+  because the port also answers cleartext HTTP; either way it fingerprints as an
+  ordinary web server, not a VPN — the anti-probing goal.)*
+- [x] 🟠 **`https` carrier** (point 6 + point 5). Real peers authenticate inside
   the TLS session via material derived from tinc keys (no static bearer token
   in the clear); authenticated SPTPS (meta+data) rides the one TLS flow.
-  Selected by negotiation (M4), never a global mode. **Proof:** a peer that
-  prefers `https` tunnels through the front; a prober on the same port sees
-  only the decoy.
+  Selected by negotiation (M4), never a global mode. Done in
+  `core/tincd/src/https.c`: TLS client dial with a plausible SNI, peer-cert
+  pinning by `TlsFingerprint` (accept-on-first-use then pin), an Ed25519
+  authenticator over `server-cert-fp || RFC5705 exporter || nonce || timestamp`
+  carried in a WebSocket-upgrade `Cookie`, verified by the server against the
+  node's `Ed25519PublicKey`; success answers `101 Switching Protocols` and the
+  tinc meta byte stream runs inside TLS, with the link marked TCP-only-equivalent
+  so SPTPS data frames ride the same flow (single outward TLS flow, no UDP).
+  Registered compiled in `transport_table.c` and wired in `transport.c`. SPTPS
+  untouched. Wire format + authenticator in `docs/transports.md` §7. **Proof:**
+  `testing/transports/https-carrier-test.sh` (2026-09-16, image ws-g1): node A
+  `PreferredTransports: [https, plain]` tunnels to B, ping both ways `0% loss`;
+  `tinc dump connections` on both shows `transport https`; tcpdump on the port →
+  `UDP datagrams: 0`, no cleartext tinc ID line, no cleartext key material; a
+  live `curl -k` prober during the session gets the decoy; a forged and a
+  replayed authenticator each get the decoy (no `101`). `PASS`.
 - [ ] 🟡 **QUIC carrier** (point 7). msquic integration (reference: tinc-quic
   wiring) carrying SPTPS records over datagrams + one stream; certificate handling
   shared with the HTTPS front; connection migration for NAT rebind. **Proof:** a
@@ -438,6 +475,33 @@ this order (cheapest / most-contained first). Full wire formats go in
   **Proof:** a `set` survives `tinc reload`.
 - **Acceptance:** each carrier interoperates through the M4 negotiator; with all
   off, behaviour is identical to plain tinc.
+
+### Found during M5 (G1)
+
+- 🟢 **`nmap -sV` labels the port `http (nginx)`, not `https`.** The listen port
+  answers cleartext HTTP as well as TLS (both serve the decoy), so nmap's plain
+  probe wins the service-version race. Either way it fingerprints as an ordinary
+  web server, never as tinc, so the anti-probing goal holds; noted because the
+  M5 proof line said "identifies https". Blast radius: cosmetic (the scanner's
+  label). No fix planned.
+- 🟢 **The decoy upstream proxy fetches synchronously with a 3 s timeout**
+  (`decoy.c proxy_upstream`), briefly blocking the event loop for one prober,
+  rather than an async TCP splice. Acceptable for a low-volume decoy that is torn
+  down immediately; documented in `docs/transports.md` §7.5. If a busy public
+  decoy ever needs it, convert to an async splice. Blast radius: up to 3 s of
+  loop latency per unauthenticated TLS prober when `HttpsDecoyUpstream` is set.
+- 🟢 **TLS certificate hot-reload is partial.** A new `TlsCert`/`TlsKey` or an
+  edited `keys.tls_*` is picked up on daemon restart, not on `tinc reload`
+  (`tls_init` runs from the carrier init, not `setup_myself_reloadable`). The
+  decoy config (`HttpsDecoyRoot`/`HttpsDecoyUpstream`) *is* reload-aware. Blast
+  radius: an operator swapping in a real cert must restart the daemon. Fix would
+  be one `tls_init()` call on reload.
+- 🟢 Files touched outside the stream-G1 area, all minimal and reported here:
+  `node.{c,h}` (the `tls_fingerprint` field + the fingerprint dump token),
+  `connection.c` (the carrier dump token), `info.c` (print the fingerprint),
+  `net_setup.c` (set own fingerprint after `transport_init`), `tincctl.c` (new
+  variables + connection-dump parse). No changes to `net_packet.c`,
+  `invitation.c` or `sptps.c`.
 
 ---
 

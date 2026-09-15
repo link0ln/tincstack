@@ -26,7 +26,7 @@ front dispatch), `transport_table.c` (names + classifier, no daemon deps),
 | `TRANSPORT_PLAIN` | `plain` | always | TCP meta connection + UDP SPTPS data (upstream tinc) | done |
 | `TRANSPORT_SF`    | `sf`    | always | one UDP flow carries meta *and* data (single-flow) | done (M4) |
 | `TRANSPORT_OBFS`  | `obfs`  | M5 | obfuscated single UDP flow | reserved |
-| `TRANSPORT_HTTPS` | `https` | M5 | TLS front, meta+data in one TLS flow | reserved |
+| `TRANSPORT_HTTPS` | `https` | OpenSSL builds | TLS front, meta+data in one TLS flow | done (M5, G1) |
 | `TRANSPORT_QUIC`  | `quic`  | M5 | QUIC datagrams + one stream | reserved |
 | `TRANSPORT_TEST`  | `test`  | `-Dtransport_test=true` only | — (dial always fails) | test aid |
 
@@ -103,9 +103,9 @@ timeout (`net.c timeout_handler`), so it cannot occupy a slot forever.
 | first bytes | class | routed to |
 |---|---|---|
 | `30 20` (`"0 "`) | `TINC` | plain tinc meta parser (`receive_meta`) |
-| `16 03 00..04` | `TLS` | https carrier `accept` hook (M5); if none built, close (tarpit) |
-| `GET `/`HEAD `/`POST `/`PUT `/`DELETE `/`OPTIONS `/`PATCH `/`CONNECT `/`TRACE `/`PRI ` | `HTTP` | decoy handler (M4 stub: a minimal `200 OK`; M5: real decoy) |
-| first byte `0xA0..0xAF` | `OBFS` | obfs carrier `accept` hook (M5, reserved); if none built, close |
+| `16 03 00..04` | `TLS` | https carrier `accept` hook (§7): TLS handshake, then tinc auth or decoy |
+| `GET `/`HEAD `/`POST `/`PUT `/`DELETE `/`OPTIONS `/`PATCH `/`CONNECT `/`TRACE `/`PRI ` | `HTTP` | decoy handler (`decoy_serve_plain`: the real decoy over plain HTTP) |
+| first byte `0xA0..0xAF` | `OBFS` | obfs carrier `accept` hook (M5 G2, reserved); if none built, close |
 | `30` then not `20` | `UNKNOWN` | close + tarpit |
 | an uppercase letter that is a prefix of an HTTP method but not yet complete | `NEED_MORE` | wait for more bytes |
 | anything else | `UNKNOWN` | close + tarpit |
@@ -115,9 +115,11 @@ Notes:
   by a space and the name / `^controlcookie` / `?invitationkey`. Two bytes decide
   it; the protocol parser validates the remainder.
 - TLS is a handshake record (`0x16`) with a legacy record version `3.0`–`3.4`.
-- Only carriers in the **accept mask** are honoured. A TLS ClientHello when
-  `https` is not accepted (or not built) is closed, not served, so the port does
-  not accidentally behave like a half-built web server before M5 lands the decoy.
+- Only carriers in the **accept mask** are honoured. On an OpenSSL build `https`
+  is compiled and accepted by default, so a TLS ClientHello always gets a real
+  TLS handshake and then either the tinc carrier (if it authenticates) or the
+  decoy (§7) — the port is probe-resistant with no configuration (decision 1).
+  On a non-OpenSSL build `https` is not compiled and a TLS ClientHello is closed.
 
 ### UDP decision table (`transport_classify_udp`, given the accept mask)
 
@@ -277,9 +279,119 @@ dies before it activates advances to the next candidate automatically (§2).
 
 | option | default | meaning |
 |---|---|---|
-| `Transports` | all compiled (`plain, sf`) | accept list; advertised; `plain` always included |
+| `Transports` | all compiled (`plain, sf, https`) | accept list; advertised; `plain` always included |
 | `PreferredTransports` | `plain` | dial order; always ends at `plain` |
 | `SingleFlow` | `no` | `yes` = dial `sf` first (TCP kept as fallback) |
+| `HttpsSni` | peer `Address` name, else `localhost` | SNI the https dial presents |
+| `TlsCert` / `TlsKey` | generated self-signed | PEM files; else `keys.tls_cert/tls_key` |
+| `HttpsDecoyRoot` | built-in page | static files served to probers |
+| `HttpsDecoyUpstream` | (unset) | `host:port` to proxy probers to instead |
 
-With all defaults, a node dials `plain` and accepts `plain,sf`: identical on the
-wire to upstream tinc, and interoperable with an unmodified upstream peer.
+With all defaults, a node dials `plain`, accepts `plain,sf,https`, and answers a
+TLS ClientHello with the decoy: identical on the tinc wire to upstream tinc for a
+plain/sf peer, and a plausible HTTPS server to everyone else.
+
+---
+
+## 7. The `https` carrier (M5, G1)
+
+The `https` carrier runs the tinc meta channel **and** the SPTPS data records
+inside one outward TLS flow, and makes the listen port look like an ordinary
+HTTPS server to anything that is not an authenticated tinc peer. It is the
+REALITY-analogue done correctly: no cleartext bearer token, no VPN-shaped bytes
+on the wire, and the certificate is not the trust root — SPTPS/Ed25519 is
+(principle 1). TLS is only a carrier and a decoy.
+
+### 7.1 Certificate
+
+One certificate per node, shared with the future QUIC carrier (decision 1).
+`TlsCert`/`TlsKey` name a real certificate if the operator has one; otherwise the
+daemon generates a self-signed **P-256** X.509v3 certificate at first start
+(`tls.c`) and persists both PEMs — in YAML mode under `keys.tls_cert` /
+`keys.tls_key`, in classic confbase mode as `tls_cert.pem` / `tls_key.pem` — so
+the fingerprint is stable across restarts and the cert is replaceable with no
+other change. The subject/SAN is a generic **`localhost`** on purpose: a scanner
+must not be able to tie the port to a specific mesh node (the tinc-vless front
+leaked its identity with a cert named after itself). The SHA-256 fingerprint is
+shown in `tinc info`/dump and written as `TlsFingerprint` into the node's own
+host record, so M2 propagation carries it in invitations and an invitee pins the
+inviter's certificate.
+
+### 7.2 Dial and certificate pinning
+
+`https_dial` opens a non-blocking TCP connection to the peer's front port and a
+TLS client handshake with a plausible SNI (`HttpsSni`, else the peer's `Address`
+if it is a hostname, else `localhost`). PKI verification is off
+(`SSL_VERIFY_NONE`); instead the peer's certificate is pinned by SHA-256
+fingerprint: if the peer's host record has a `TlsFingerprint`, it must match, or
+the dial fails; if none is pinned, the fingerprint is accepted on first use and
+written to the host record (logged). ALPN offers `http/1.1`.
+
+### 7.3 Authenticator
+
+After the TLS handshake the client sends **one** HTTP/1.1 request that looks like
+an ordinary WebSocket upgrade; the authenticator rides in a `Cookie: sid=<b64url>`
+value. The payload is:
+
+    ver(1) || namelen(1) || node-name || nonce(16) || timestamp_be(8) || Ed25519-sig
+
+where the signature is over
+
+    server-cert-fp(32) || TLS-exporter(32) || nonce(16) || timestamp_be(8)
+
+- **server-cert-fp** is the SHA-256 of the certificate the server just presented
+  (the client uses the fingerprint it verified; the server uses its own
+  `tls_own_fp`). This binds the authenticator to *this server's* identity.
+- **TLS-exporter** is 32 bytes from `SSL_export_keying_material` (RFC 5705) with
+  the label `EXPORTER-tincstack-https-v1`, computed identically by both ends of
+  the TLS session. This binds the authenticator to *this TLS session*: a captured
+  authenticator replayed on any new TLS session has the wrong exporter, so its
+  signature fails and it is treated exactly like a forgery.
+- the signature is made by the client's tinc **Ed25519 node key**; the server
+  verifies it with that node's `Ed25519PublicKey` from its host DB.
+
+The server also checks the node name is known and is not itself, the timestamp is
+within ±90 s, and the nonce has not been seen recently (a small replay cache;
+belt-and-suspenders on top of the exporter binding).
+
+### 7.4 Success and the meta+data flow
+
+On success the server answers `101 Switching Protocols` (a real
+`Sec-WebSocket-Accept` is computed, so the exchange is a textbook WebSocket
+upgrade to any observer that could see inside the TLS). From then on the raw tinc
+meta byte stream runs inside the TLS session: `send_meta*` → `transport_meta_flush`
+→ `https_send` (`SSL_write`), and inbound `SSL_read` → `receive_meta_bytes`. The
+carrier is a pipe; it never inspects a record.
+
+The link is marked **TCP-only-equivalent** (`OPTION_TCPONLY | OPTION_INDIRECT`,
+set before the ACK so it reaches the edge and the peer), so tinc's own data path
+frames the SPTPS **data** datagrams over the meta stream (`send_sptps_tcppacket`)
+instead of a separate UDP flow. The result is a single outward TLS flow (also
+PLAN point 5); `tcpdump` on the port shows only TLS records — no UDP, no
+cleartext tinc ID line. SPTPS itself is unchanged: `https` wraps its records.
+
+### 7.5 Failure = the decoy (probing resistance)
+
+If **anything** fails — not a TLS ClientHello, a completed TLS handshake with no
+valid authenticator, an unknown node, a bad signature, a stale timestamp, a
+replayed nonce — the server serves the decoy (`decoy.c`) and closes, identically
+to any other prober. That identical treatment *is* the active-probing resistance:
+a prober cannot tell a tinc node from a plain web server. The decoy is a static
+page (built-in default, or files under `HttpsDecoyRoot`) or a transparent proxy to
+`HttpsDecoyUpstream` (Host rewritten). The same decoy content is served over
+plain HTTP to a cleartext prober (`decoy_serve_plain`). No response path emits a
+tinc-identifying string.
+
+The client side also falls back: if the dial cannot pin the cert or the server
+answers anything other than `101`, `https_dial`'s connection dies before it
+activates and the outbound selector advances to the next carrier (ending at
+`plain`, §2).
+
+### 7.6 What a middlebox sees
+
+Only TLS records to the standard front port, with a normal-looking certificate
+and (if it could decrypt, which it cannot) a WebSocket upgrade. Whether `101`
+(success) or a static page (decoy) is chosen is invisible on the wire because it
+is inside TLS; `101 Switching Protocols` was chosen for the success case because
+WebSocket-over-HTTPS is ubiquitous and needs no polling. There is no separate
+UDP flow to correlate.
