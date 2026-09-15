@@ -4,7 +4,8 @@
     In YAML mode the daemon must start against an empty or absent config and
     become invite-ready with no manual editing (ARCHITECTURE.md principle 2).
     zeroconf_materialise() fills in whatever is missing for the current
-    network: Name, Mode, Port, AddressPool, the node's own Subnet, and the
+    network: Name, Mode, Port (655 for a founding node, 0 for one that dials
+    out via ConnectTo), AddressPool, the node's own Subnet, and the
     Ed25519 (and legacy RSA) key pairs, then writes the file back.
 */
 

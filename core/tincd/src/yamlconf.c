@@ -467,6 +467,10 @@ bool yamlconf_has_network(yamlconf_t *yc, const char *net) {
 	return n && n->type == Y_MAP;
 }
 
+bool yamlconf_has_option(yamlconf_t *yc, const char *net, const char *key) {
+	return map_get(map_get(net_node(yc, net), "options"), key) != NULL;
+}
+
 const char *yamlconf_get_option(yamlconf_t *yc, const char *net, const char *key) {
 	const yval_t *v = map_get(map_get(net_node(yc, net), "options"), key);
 	return (v && v->type == Y_SCALAR) ? v->scalar : NULL;

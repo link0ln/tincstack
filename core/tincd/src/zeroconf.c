@@ -226,11 +226,15 @@ bool zeroconf_materialise(void) {
 	}
 
 	/* --- scalar defaults --- */
-	static const struct {
+	/* Port: a founding node (nothing to ConnectTo) is the rendezvous for its
+	   invitees, so it keeps tinc's standard port; a node that dials out gets
+	   an ephemeral port (fresh NAT mapping per start). */
+	const char *port_default = yamlconf_has_option(yc, netname, "ConnectTo") ? "0" : "655";
+	const struct {
 		const char *key, *value;
 	} defaults[] = {
 		{"Mode", "router"},
-		{"Port", "0"},
+		{"Port", port_default},
 	};
 
 	for(size_t i = 0; i < sizeof(defaults) / sizeof(*defaults); i++) {

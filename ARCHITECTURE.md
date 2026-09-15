@@ -124,13 +124,19 @@ being statically pre-configured for it.
 
 Design:
 
-- Each node advertises, in its host record, a `Transports` list — the carriers it
-  is willing to speak, in preference order, e.g. `Transports = quic, https, obfs,
-  plain`. This is exchanged already, because host records propagate through the
-  mesh and through invitations.
-- On an outgoing connection the initiator picks the **highest carrier both sides
-  advertise** and dials it. Because the carrier is chosen from the intersection,
-  a node that only advertises `plain` is never dialed with QUIC.
+- Two lists, deliberately separate (decision 2026-09-16):
+  - **`Transports` — the accept list.** What this node's listener classifies and
+    answers. **Default: every carrier compiled in** (`plain, obfs, https, quic`).
+    It is advertised in the host record, so it propagates through the mesh and
+    through invitations. A peer whose record carries no list (upstream tinc) is
+    assumed `plain`.
+  - **`PreferredTransports` — the dial preference.** What this node initiates,
+    in order. **Default: `plain`.** This is the "tick QUIC in the Windows
+    client" knob: the ticking side changes only its own preference, and the
+    peer follows because its accept list already includes QUIC.
+- On an outgoing connection the initiator walks its preference list and dials
+  the first carrier present in the peer's accept list. One side's choice is
+  enough; nothing needs to be configured on both ends.
 - The listener runs a **single front port** that classifies an inbound connection
   by its first bytes (TLS record vs QUIC long-header vs tinc/obfs preamble) and
   dispatches to the matching handler. This is what makes "tick QUIC on the
@@ -154,14 +160,24 @@ classifier must be designed against the actual byte patterns).
 Goal: to a scanner or a probing middlebox, the listen port behaves like an
 ordinary HTTPS server; to a real peer it carries the tunnel.
 
-Design (REALITY-style, done correctly this time):
+Design (REALITY-style, done correctly this time). Two things that are easy to
+conflate are kept apart (decision 2026-09-16):
 
-- The front terminates TLS using a certificate the operator configures
-  (`tls_cert` / `tls_key` in the config — a real domain certificate). **If none
-  is configured, the daemon generates a self-signed certificate at first start**
-  so the service always comes up; the operator can drop in a real certificate
-  later with no other change. This is the "full automation, server independent of
-  settings" requirement.
+- **Probe resistance on the listen port is default-on.** Whatever carriers the
+  peers use, a client that reaches the TCP listen port without a valid tinc
+  handshake is answered as an HTTPS server: TLS handshake with the node's
+  certificate, then decoy content or a proxied upstream. This needs no
+  configuration and no real certificate, because of the next point.
+- **Carrying the tunnel inside TLS is a carrier** (`https` in §4), chosen per
+  connection by negotiation, not a global mode. With `plain` selected the data
+  path stays UDP; only unknown clients ever see the decoy.
+- **One certificate per node, shared by the HTTPS front and the QUIC carrier.**
+  `TlsCert` / `TlsKey` name a real domain certificate if the operator has one.
+  **If not, the daemon generates a self-signed certificate at first start and
+  persists it in the YAML** (`keys.tls_cert` / `keys.tls_key`) so it is stable
+  across restarts and can be replaced later with no other change. This is the
+  "full automation, server independent of settings" requirement, and it is why
+  QUIC needs no separate certificate setup.
 - A real peer authenticates inside the TLS session using key material derived
   from the tinc node keys (an authenticator carried in the ClientHello / early
   data), so a peer is distinguishable from a scanner **without** a static bearer

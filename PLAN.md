@@ -44,7 +44,8 @@ no manual editing.
 
 - [x] 🔴 On startup with an empty or missing YAML, materialise defaults into the
   file: a network stanza, `Name` (hostname-derived, sanitised), `Mode=router`,
-  `Port=0`, `AddressPool=10.<rand>.0.0/24`, this node's `Subnet` = pool's `.1`,
+  `Port=655` (founding node; `0` when `ConnectTo` is present — decision 3),
+  `AddressPool=10.<rand>.0.0/24`, this node's `Subnet` = pool's `.1`,
   and generate the Ed25519 (and legacy RSA) keypair folded into `keys:`.
   Implement in the daemon (`net_setup.c` / `names.c` / `yamlconf.c`), so it works
   identically on every platform, not in a shell wrapper.
@@ -58,7 +59,9 @@ no manual editing.
   Ed25519PublicKey rsa_priv RSA-public` → `Ready`; file written mode 0600 with
   `options/hosts/keys`; `tinc -c …/tinc.yaml dump nodes` → `<name> id … at MYSELF`.
   Restart → no second materialisation (idempotent). An unparsable existing file
-  is refused, not overwritten. No `-n` → first network in the file, else
+  is refused, not overwritten. Port rule re-verified 2026-09-16: empty file →
+  `Port=655 … Listening on 0.0.0.0 port 655`; file with `ConnectTo: [hub]` →
+  `Port=0 … Listening on 0.0.0.0 port 32857`. No `-n` → first network in the file, else
   `tincstack`. No `hosts/` tree is created in YAML mode.
 - [x] 🔴 `AddressPool` option: parse, default-select a /24 when starting a fresh
   network, store in the network's options. **Proof:** parsed + validated in
@@ -108,8 +111,8 @@ transport/cert material.
   `tinc.conf` created; `tinc reload` → daemon logs the new value.
 - [ ] 🟠 **Invitee NAT defaults** (brief point 4): a node that joins by invite
   materialises `Port = 0` and `UDPRebindOnWake = yes` (it always dials out, so
-  a stable inbound port is not needed), the founding node keeps a stable port
-  (see Open decisions). **Proof:** joined node's `options:` carry both; the
+  a stable inbound port is not needed); the founding node keeps tinc's standard
+  port 655 (done in M1). **Proof:** joined node's `options:` carry both; the
   founding node's do not.
 - **Acceptance:** two fresh `docker run` nodes, one invite string pasted to the
   second, mesh reachable (ping across the tunnel) with **no** manual config on
@@ -134,13 +137,15 @@ transport/cert material.
 The negotiation model does not exist in any prior work; build the frame before the
 individual carriers.
 
-- [ ] 🟠 `Transports` option: parse the willingness list; advertise it in the host
-  record; propagate through invitations. Default `[plain]`. **Proof:** a peer's
-  advertised list is visible in `tinc dump`/host record.
-- [ ] 🟠 Outbound carrier selection: dial the highest carrier common to both
-  sides; fall back down the list to `plain` on handshake failure. **Proof:**
-  matrix test — each (advertised-A × advertised-B) pair dials the expected
-  carrier.
+- [ ] 🟠 `Transports` (accept list, default = all compiled carriers) and
+  `PreferredTransports` (dial preference, default `[plain]`): parse both;
+  advertise `Transports` in the host record; propagate through invitations.
+  **Proof:** a peer's accept list is visible in `tinc dump`/host record; a node
+  with no list is treated as `plain`.
+- [ ] 🟠 Outbound carrier selection: walk own preference list, dial the first
+  carrier in the peer's accept list; fall back down the list to `plain` on
+  handshake failure. **Proof:** matrix test — each (preference-A × accept-B)
+  pair dials the expected carrier; ticking QUIC on A alone makes A→B use QUIC.
 - [ ] 🟠 Inbound front dispatcher: one listen port classifies a new connection by
   its first bytes and routes to the right handler (plain / obfs / TLS / QUIC).
   **Proof:** the classifier's decision table (in `docs/transports.md`) with a test
@@ -172,15 +177,26 @@ this order (cheapest / most-contained first). Full wire formats go in
   Config surface per schema. **Proof:** `testing/dpi-proof` shows the SPTPS
   fingerprint absent on the wire and a tunnel that comes up from cold; relay path
   intact.
-- [ ] 🟠 **HTTPS-mimicking front** (point 6 + point 5). TLS terminates on the
-  listen port; real peers authenticate via material derived from tinc keys inside
-  the session; unauthenticated probers get static content or a proxied upstream;
-  authenticated SPTPS (meta+data) rides the one TLS flow. **Cert automation:**
-  use `TlsCert`/`TlsKey` if set, else generate a self-signed cert at first start
-  so the service always comes up. **Proof:** `curl https://node/` from an
-  unauthenticated client gets plausible web content and a valid TLS handshake; a
-  peer connects and tunnels; starting with no cert configured still comes up (self
-  -signed).
+- [ ] 🟠 **Certificate automation, shared by HTTPS front and QUIC** (decision 1).
+  `TlsCert`/`TlsKey` if set; else generate a self-signed cert at first start
+  and persist it in the YAML (`keys.tls_cert`/`keys.tls_key`), reused on every
+  restart, replaceable by editing the two keys. Its fingerprint travels in the
+  invitation (M2). **Proof:** first start with no cert → keys present in the
+  YAML; restart → same fingerprint; dropping in a real cert → served without
+  any other change.
+- [ ] 🟠 **Default-on decoy on the TCP listen port** (point 6, REALITY-analogue).
+  A client that does not complete a tinc handshake is answered as an HTTPS
+  server with the node's certificate and gets static content
+  (`HttpsDecoyRoot`, a default page ships) or a proxied upstream
+  (`HttpsDecoyUpstream`). No config needed. **Proof:** `curl -k https://node:655/`
+  on a zero-config node returns the decoy page; `nmap -sV` identifies the port
+  as https; an upstream tinc peer still connects plain.
+- [ ] 🟠 **`https` carrier** (point 6 + point 5). Real peers authenticate inside
+  the TLS session via material derived from tinc keys (no static bearer token
+  in the clear); authenticated SPTPS (meta+data) rides the one TLS flow.
+  Selected by negotiation (M4), never a global mode. **Proof:** a peer that
+  prefers `https` tunnels through the front; a prober on the same port sees
+  only the decoy.
 - [ ] 🟡 **QUIC carrier** (point 7). msquic integration (reference: tinc-quic
   wiring) carrying SPTPS records over datagrams + one stream; certificate handling
   shared with the HTTPS front; connection migration for NAT rebind. **Proof:** a
@@ -281,47 +297,45 @@ Adopt `tincapp` (Kotlin) into `platforms/android/`.
 
 ---
 
-## Open decisions (the plan deviates from the brief here — owner to confirm)
+## Execution — work streams (2026-09-16)
 
-Found during the 2026-09-16 cross-check of PLAN.md against the original brief.
-Each has a recommendation; none is implemented until confirmed.
+Priority order for the whole programme: **M2+M3 (🔴, onboarding) → M4 (🟠,
+transport frame) → M5 (🟠, carriers, after M4) → M6/M7/M8 (🟠, platforms, in
+parallel) → M9 (🟠 NAT lab, 🟡 rest)**. Independent streams run in parallel in
+separate git worktrees and are merged into `master` in this order; each stream
+ticks only its own milestone's boxes and lists defects it finds under its own
+milestone as "Found during Mk" (consolidated into Known Issues at merge).
 
-1. **HTTPS decoy: default-on or opt-in?** The brief (point 6) reads "when the
-   tinc ports are accessed, *by default* the service answers as an HTTP/HTTPS
-   server". The plan made the whole HTTPS front opt-in (`HttpsFront: no`).
-   These are two different things and should be split: (a) **probe resistance
-   on the listen port** — any non-tinc client gets a TLS handshake + decoy page
-   (self-signed cert auto-generated) — is cheap and can be **default-on**;
-   (b) **carrying the tunnel inside TLS** (meta+data over one TCP/TLS flow) costs
-   the UDP data path and stays **opt-in / negotiated**. *Recommendation:* adopt
-   the split; update ARCHITECTURE §5 and M5 accordingly.
-2. **Transport willingness default.** The brief (point 7) says: tick QUIC on the
-   Windows client and the *other side must follow*. The plan's default
-   `Transports: [plain]` means a peer that never ticked QUIC will refuse it.
-   *Recommendation:* separate **accept list** (what the listener classifies and
-   answers; default = every carrier compiled in) from **dial preference** (what
-   this node initiates; default `plain`). Then one side's tick is enough, which
-   is what the brief asks for. Update ARCHITECTURE §4 / M4.
-3. **Founding node port.** The plan's M1 default `Port = 0` makes the first
-   node's invitations stale after its first restart (Known Issues). The brief
-   only asks for "working defaults". *Recommendation:* a node with no
-   `ConnectTo` materialises a fixed random high port (persisted in the YAML);
-   invitees materialise `Port = 0`. Implement in M2 alongside the invitee
-   defaults.
+| stream | milestone(s) | area (files it owns) | depends on |
+|---|---|---|---|
+| A | M2, M3 | `invitation.c`, `tincctl.c` (set/add/del), `conf.c`, `yamlconf.*`, `zeroconf.*`, daemon-side invitation handling | M1 (done) |
+| B | M4 | new `transport.*`, `net_socket.c`, `net.c`, `net_packet.c`, `meta.c`, option parsing; **not** `invitation.c` (A propagates `Transports` through a generic option list) | M1 |
+| C | M6 | `platforms/linux/docker/` | M1; join proof needs A |
+| D | M7 | `platforms/windows/` | M1; invite UI needs A's CLI |
+| E | M8 | `platforms/android/` | M1 |
+| F | M9 | `testing/nat-sim/`, `testing/dpi-proof/` skeleton | core as built |
+| G | M5 | carriers, cert automation, decoy, obfs CLI | **B merged** |
+
+## Decisions taken (2026-09-16, owner confirmed)
+
+1. **Probe resistance on the listen port is default-on; the TLS carrier is
+   negotiated.** One certificate per node, shared by the HTTPS front and QUIC,
+   self-signed at first start and persisted in the YAML, replaceable later.
+   (ARCHITECTURE §5, M5.)
+2. **`Transports` = accept list (default all); `PreferredTransports` = dial
+   preference (default `plain`).** One side's tick is enough. (ARCHITECTURE §4,
+   M4.)
+3. **Founding node keeps port 655; invitees get `Port = 0`.** (M1 done, M2.)
 
 ## Known Issues / carried-over defects
 
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
 
-- 🟠 **`Port = 0` on the founding node breaks re-connection after its restart.**
-  Found in M1: the invitation embeds the daemon's *current* ephemeral port
-  (`43941`); the inviter's next restart gets a new port, so every invitee's
-  `ConnectTo` record goes stale. Upstream tinc has the same trap; the plan's own
-  M1 default makes it the norm. Decide in M2: the first node of a network (no
-  `ConnectTo`) should materialise a fixed random high port instead of `0`, or
-  M6 must pin `Port` via env for the container node. Blast radius: every
-  invite-based onboarding.
+- ~~🟠 `Port = 0` on the founding node breaks re-connection after its restart.~~
+  **Resolved 2026-09-16** by decision 3: founding node materialises `655`,
+  invitees `0` (verified: empty file → listens on 655; `ConnectTo` present →
+  ephemeral).
 - 🟠 **`tinc invite` phones home to `tinc-vpn.org/host.cgi`** to discover the
   external address when no `Address` is configured (upstream behaviour). For a
   circumvention product this is a network fingerprint and, on a filtered

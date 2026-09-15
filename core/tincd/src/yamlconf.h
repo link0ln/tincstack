@@ -61,6 +61,9 @@ bool yamlconf_has_network(yamlconf_t *yc, const char *net);
    scalar. Owned by yc. */
 const char *yamlconf_get_option(yamlconf_t *yc, const char *net, const char *key);
 
+/* True if networks.<net>.options.<key> is present (scalar or list). */
+bool yamlconf_has_option(yamlconf_t *yc, const char *net, const char *key);
+
 /* Set networks.<net>.options.<key> to a scalar, creating the path as needed
    and replacing any existing value (scalar or list). */
 void yamlconf_set_option(yamlconf_t *yc, const char *net, const char *key, const char *value);

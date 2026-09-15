@@ -47,9 +47,10 @@ networks:
                                    # default when starting a NEW network: 10.<rnd>.0.0/24
 
       # ── transport selection & negotiation (points 5, 6, 7) ────────────────
-      Transports: [plain]      # willingness list, preference order. One of/any of:
-                               #   plain | obfs | https | quic
-                               # negotiation picks the highest common carrier
+      Transports: [plain, obfs, https, quic]   # ACCEPT list: what this listener
+                               # answers. Default: every carrier compiled in.
+      PreferredTransports: [plain]   # DIAL preference, in order; the first one
+                               # present in the peer's accept list is used
                                # (ARCHITECTURE.md §4). Default: [plain].
 
       # obfuscated-UDP tier (point 6, cheap tier; redesigned mechanism)
@@ -64,7 +65,9 @@ networks:
       HttpsFront: no                # enable the TLS front on the listen port
       HttpsFrontPort: 443
       TlsCert: /etc/tincstack/fullchain.pem   # real domain cert; optional
-      TlsKey:  /etc/tincstack/privkey.pem     # if absent → self-signed at start
+      TlsKey:  /etc/tincstack/privkey.pem     # if absent → self-signed generated
+                                              # at first start into keys: below;
+                                              # shared by the HTTPS front and QUIC
       HttpsDecoyRoot: /var/www/decoy          # static content for probers; a
                                               # default page ships if unset
       HttpsDecoyUpstream: ""                  # or transparently proxy probers here
@@ -80,6 +83,12 @@ networks:
         ...
       rsa_priv: |              # legacy; optional
         -----BEGIN RSA PRIVATE KEY-----
+        ...
+      tls_cert: |              # self-signed, generated at first start if no
+        -----BEGIN CERTIFICATE-----      # TlsCert/TlsKey; replace freely
+        ...
+      tls_key: |
+        -----BEGIN PRIVATE KEY-----
         ...
 
     # ── per-network scripts (optional) ───────────────────────────────────────
@@ -112,7 +121,7 @@ atomic temp+rename). Nothing already present is changed.
 | network name | `-n <net>`, else the first network in the file, else `tincstack` | the CLI resolves it the same way, so `tinc -c file.yaml …` finds the daemon |
 | `options.Name` | first label of the hostname, non-`[A-Za-z0-9_]` → `_`; `node_<hex>` if unusable | `$HOST`/`$VAR` forms are honoured if present |
 | `options.Mode` | `router` | |
-| `options.Port` | `0` | see PLAN Known Issues: the founding node may need a fixed port |
+| `options.Port` | `655` if no `ConnectTo` (founding node), else `0` | invitees dial out, so a fresh NAT mapping per start beats a stable port |
 | `options.AddressPool` | `10.<random 1–254>.0.0/24` | validated: IPv4, prefix 8–30 |
 | `hosts.<Name>` `Subnet` | first host of the pool, `/32` | |
 | `keys.ed25519_priv` + `hosts.<Name>` `Ed25519PublicKey` | generated | public line is re-derived if only the private key exists |
