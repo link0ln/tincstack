@@ -1358,14 +1358,15 @@ static int cmd_dump(int argc, char *argv[]) {
 		break;
 
 		case REQ_DUMP_CONNECTIONS: {
-			int n = sscanf(line, "%*d %*d %4095s %4095s port %4095s %x %d %x", node, host, port, &options, &socket, &status.value);
+			char carrier[4096] = "plain";
+			int n = sscanf(line, "%*d %*d %4095s %4095s port %4095s %x %d %x %4095s", node, host, port, &options, &socket, &status.value, carrier);
 
-			if(n != 6) {
+			if(n < 6) {
 				fprintf(stderr, "Unable to parse connection dump from tincd.\n");
 				return 1;
 			}
 
-			printf("%s at %s port %s options %x socket %d status %x\n", node, host, port, options, socket, status.value);
+			printf("%s at %s port %s options %x socket %d status %x transport %s\n", node, host, port, options, socket, status.value, carrier);
 		}
 		break;
 
@@ -1741,6 +1742,12 @@ const var_t variables[] = {
 	{"ObfsTransportMagicHeader", VAR_SERVER | VAR_SAFE},
 	{"StrictSubnets", VAR_SERVER | VAR_SAFE},
 	{"PreferredTransports", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
+	/* https carrier / TLS front (M5) */
+	{"TlsCert", VAR_SERVER},
+	{"TlsKey", VAR_SERVER},
+	{"HttpsSni", VAR_SERVER | VAR_SAFE},
+	{"HttpsDecoyRoot", VAR_SERVER},
+	{"HttpsDecoyUpstream", VAR_SERVER},
 	{"TunnelServer", VAR_SERVER | VAR_SAFE},
 	{"UDPDiscovery", VAR_SERVER | VAR_SAFE},
 	{"UDPDiscoveryKeepaliveInterval", VAR_SERVER | VAR_SAFE},
@@ -1774,6 +1781,7 @@ const var_t variables[] = {
 	{"PublicKeyFile", VAR_SERVER | VAR_HOST | VAR_OBSOLETE},
 	{"Subnet", VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
 	{"TCPOnly", VAR_SERVER | VAR_HOST | VAR_SAFE},
+	{"TlsFingerprint", VAR_HOST | VAR_SAFE},
 	{"Transports", VAR_SERVER | VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
 	{"Weight", VAR_HOST | VAR_SAFE},
 	{NULL, 0}

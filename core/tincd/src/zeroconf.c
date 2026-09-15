@@ -19,6 +19,7 @@
 #include "logger.h"
 #include "names.h"
 #include "random.h"
+#include "tls.h"
 #include "utils.h"
 #include "xalloc.h"
 #include "yamlconf.h"
@@ -351,13 +352,69 @@ bool zeroconf_materialise(void) {
 	   this build understands); an operator who narrows `Transports` in
 	   options: overrides it at runtime. Kept in sync with
 	   transport_compiled_mask() in transport_table.c. */
+	/* The compiled-in default accept list. Kept in sync with
+	   transport_compiled_mask() in transport_table.c; hardcoded here because
+	   zeroconf.c is in the common library, below the daemon transport code. */
+#ifdef HAVE_OPENSSL
+	static const char *const default_transports = "plain, sf, obfs, https";
+#else
+	static const char *const default_transports = "plain, sf, obfs";
+#endif
+
 	if(!host_text_has(host, "Transports", NULL)) {
-		yamlconf_host_add_line(yc, netname, name, "Transports", "plain, sf, obfs");
+		yamlconf_host_add_line(yc, netname, name, "Transports", default_transports);
 		changed = true;
-		NOTE("Transports=plain,sf,obfs ");
+		NOTE("Transports=%s ", default_transports);
 	}
 
 	free(host);
+
+#ifdef HAVE_OPENSSL
+
+	/* --- TLS certificate (shared by the HTTPS front and QUIC; decision 1) ---
+	   If neither TlsCert/TlsKey nor keys.tls_cert/tls_key is present, generate
+	   a self-signed P-256 certificate and persist it, then advertise its
+	   SHA-256 fingerprint in our own host record so it propagates through the
+	   mesh and through invitations (M2), letting an invitee pin the inviter's
+	   cert. The certificate uses a generic `localhost' subject on purpose (see
+	   tls.c): a scanner must not be able to tie the port to this node. */
+	const char *tls_cert_pem = yamlconf_key_pem(yc, netname, "tls_cert");
+	const char *tls_key_pem = yamlconf_key_pem(yc, netname, "tls_key");
+	char tls_fp_hex[TLS_FP_HEX_LEN] = "";
+
+	if(!tls_cert_pem || !tls_key_pem) {
+		char *cert = NULL, *key = NULL;
+
+		if(!tls_generate_pem(TLS_DEFAULT_CN, &cert, &key)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "TLS certificate generation failed");
+			free(name);
+			yamlconf_free(fresh ? yc : NULL);
+			return false;
+		}
+
+		yamlconf_set_key_pem(yc, netname, "tls_cert", cert);
+		yamlconf_set_key_pem(yc, netname, "tls_key", key);
+		tls_cert_pem_fingerprint(cert, tls_fp_hex);
+		memzero(key, strlen(key));
+		free(cert);
+		free(key);
+		changed = true;
+		NOTE("tls_cert/tls_key ");
+	} else {
+		tls_cert_pem_fingerprint(tls_cert_pem, tls_fp_hex);
+	}
+
+	host = yamlconf_host_text(yc, netname, name);
+
+	if(tls_fp_hex[0] && !host_text_has(host, "TlsFingerprint", NULL)) {
+		yamlconf_host_add_line(yc, netname, name, "TlsFingerprint", tls_fp_hex);
+		changed = true;
+		NOTE("TlsFingerprint ");
+	}
+
+	free(host);
+
+#endif
 
 	/* --- Ed25519 key pair --- */
 	const char *ed_pem = yamlconf_key_pem(yc, netname, "ed25519_priv");

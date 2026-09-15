@@ -87,16 +87,25 @@ networks:
       # (aliases: junkcount/jc jmin jmax initjunk/s1 transportjunk/s2
       #           initmagic/h1 transportmagic/h2). Changes persist to this YAML.
 
-      # HTTPS-mimicking front (point 6; active-probing resistance)
-      HttpsFront: no                # enable the TLS front on the listen port
-      HttpsFrontPort: 443
-      TlsCert: /etc/tincstack/fullchain.pem   # real domain cert; optional
-      TlsKey:  /etc/tincstack/privkey.pem     # if absent → self-signed generated
-                                              # at first start into keys: below;
-                                              # shared by the HTTPS front and QUIC
-      HttpsDecoyRoot: /var/www/decoy          # static content for probers; a
-                                              # default page ships if unset
-      HttpsDecoyUpstream: ""                  # or transparently proxy probers here
+      # HTTPS front & the `https` carrier (point 6; active-probing resistance).
+      # M5 (G1): the decoy is DEFAULT-ON on the tinc listen port whenever tinc is
+      # built against OpenSSL -- no option enables it, and `https' is in the
+      # default accept list. There is no separate front port: a TLS ClientHello
+      # on the normal listen port gets a TLS handshake with the node's cert and
+      # then either the `https' carrier (authenticated peer) or the decoy.
+      TlsCert: /etc/tincstack/fullchain.pem   # real cert (PEM, leaf + chain); optional
+      TlsKey:  /etc/tincstack/privkey.pem     # matching private key (PEM). If either
+                                              # is unset a self-signed P-256 cert is
+                                              # generated at first start into
+                                              # keys.tls_cert/tls_key below and reused
+                                              # on every restart; shared with QUIC.
+      HttpsSni: www.example.com               # SNI the `https' DIAL presents; default =
+                                              # the peer's Address if it is a hostname,
+                                              # else `localhost'
+      HttpsDecoyRoot: /var/www/decoy          # static files served to probers; a
+                                              # generic default page ships if unset
+      HttpsDecoyUpstream: "example.com:80"    # or transparently proxy probers here
+                                              # (host:port; Host header rewritten)
 
       # QUIC carrier (point 7)
       QuicPort: 443
@@ -128,12 +137,18 @@ networks:
       node-a: |                # this node's own host file
         Ed25519PublicKey = ...
         Subnet = 10.210.0.1/32
+        TlsFingerprint = 6316...e2d3       # SHA-256 of this node's TLS cert;
+                                           # written at first start, propagated
+                                           # in invitations, pinned by peers
       node-b: |
         Address = 198.51.100.7
         Port = 443
         Ed25519PublicKey = ...
         Subnet = 10.210.0.2/32
         Transports = quic, https, plain   # peer's advertised carriers
+        TlsFingerprint = 6776...64f2      # pinned; the `https' dial verifies the
+                                          # peer cert against it (accept-on-first-
+                                          # use then pin if absent)
 ```
 
 ## Zero-config materialisation (first run)
@@ -153,6 +168,7 @@ atomic temp+rename). Nothing already present is changed.
 | `hosts.<Name>` `Subnet` | first host of the pool, `/32` | |
 | `keys.ed25519_priv` + `hosts.<Name>` `Ed25519PublicKey` | generated | public line is re-derived if only the private key exists |
 | `keys.rsa_priv` + `hosts.<Name>` RSA public PEM | generated (2048) | unless built with `-Dcrypto=nolegacy` |
+| `keys.tls_cert` + `keys.tls_key` + `hosts.<Name>` `TlsFingerprint` | generated (self-signed P-256, `localhost` subject, 10 y) | OpenSSL builds only; skipped if `TlsCert`/`TlsKey` files are set; the fingerprint is the cert's SHA-256 |
 
 An existing file that does not parse is **refused**, never overwritten. No
 `hosts/` directory is created next to a YAML config; runtime side-files

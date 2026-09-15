@@ -33,7 +33,14 @@ static const struct {
 	[TRANSPORT_PLAIN] = { "plain", true },
 	[TRANSPORT_SF]    = { "sf",    true },
 	[TRANSPORT_OBFS]  = { "obfs",  true },
+#ifdef HAVE_OPENSSL
+	/* The https carrier (TLS front + decoy) is compiled whenever tinc is built
+	   against OpenSSL, so it is in the default accept list and the port is
+	   probe-resistant by default (PLAN decision 1). */
+	[TRANSPORT_HTTPS] = { "https", true },
+#else
 	[TRANSPORT_HTTPS] = { "https", false },
+#endif
 	[TRANSPORT_QUIC]  = { "quic",  false },
 #ifdef HAVE_TRANSPORT_TEST
 	[TRANSPORT_TEST]  = { "test",  true },
