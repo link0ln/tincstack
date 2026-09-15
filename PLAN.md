@@ -433,6 +433,24 @@ this order (cheapest / most-contained first). Full wire formats go in
   shared with the HTTPS front; connection migration for NAT rebind. **Proof:** a
   QUIC-negotiated link tunnels; falls back to a common carrier when one side lacks
   QUIC.
+  - Stream Q (2026-09-16): dependency + spike. Library decided: **ngtcp2 1.25.0
+    + GnuTLS backend**, not msquic (msquic owns its sockets/threads and cannot
+    take datagrams from the M4 front's UDP socket; comparison in
+    docs/transports.md §7.1). `core/Dockerfile.build-quic` builds it from a
+    sha256-pinned tarball: build stage 60 s (ngtcp2 16 s of it), runtime image
+    +5.4 MB (100.3 vs 94.9 MB); pkg-config resolves `libngtcp2` and
+    `libngtcp2_crypto_gnutls` 1.25.0. Spike `testing/quic-spike/run.sh`, three
+    consecutive runs `ALL PASS` (9/9): handshake with PEM EC P-256 cert + SHA-256
+    pin (`PIN ok sha256=…`, `alpn=h3 sni=cdn.example.net TLS1.3`), wrong pin
+    rejected (TLS alert 42), datagrams 5/5 both ways, one bidi stream both ways,
+    NAT rebind (server `PATH_VALIDATION success remote=127.0.0.1:<new port>`,
+    traffic continues), explicit migration with a fresh CID, clean close; wire
+    capture: first packet `c3 00 00 00 01 08 …` (long header, fixed bit, Initial,
+    version 1, 1200 bytes). Design for G3 in docs/transports.md §7. Found: the §3
+    UDP classifier only catches long headers; 1-RTT short-header packets need a
+    keyed CID lookup (§7.6) before the carrier can work; `active_connection_id_limit`
+    must be > 2 (spike: 8) or the second migration fails. Carrier not integrated;
+    box stays open.
 - [ ] 🟡 Runtime control CLI for obfuscation (`tinc obfs status|set|…`) **with
   persistence** to the YAML (the prototype's changes were lost on reload).
   **Proof:** a `set` survives `tinc reload`.
