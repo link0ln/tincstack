@@ -44,7 +44,13 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
                  testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
                  testing/transports/obfs-test.sh testing/transports/matrix-test.sh \
-                 testing/transports/classify-test.sh
+                 testing/transports/classify-test.sh \
+                 platforms/windows/build-core-win.sh platforms/windows/build-exe.sh \
+                 platforms/windows/pyinstaller-in-wine.sh \
+                 platforms/android/docker/emulator.sh \
+                 platforms/android/docker/emulator-entrypoint.sh \
+                 platforms/android/docker/join-on-emulator.sh \
+                 platforms/android/docker/ui-join.sh
 
 .PHONY: check build-core build-baseline build-lab smoke nat-quick nat-full laptop \
         validate-nat dpi-baseline lint secrets clean promote

@@ -1651,8 +1651,27 @@ registry image.
   better answer. Add as a matrix leg with a manifest merge once a first release
   has gone out on amd64. Home SBC nodes are the obvious users, so this is a real
   gap, not a cosmetic one.
-- [ ] **`tincmgr.exe` in the Windows asset** — stream X is building it; the
-  `windows` job ships only `tincd.exe`/`tinc.exe` until that lands.
+- [x] **`tincmgr.exe` is in the Windows asset** (stream X merged). The job runs
+  the repository's own `platforms/windows/build-core-win.sh` and
+  `build-exe.sh`, so CI and a developer run the same two commands. `wintun.dll`
+  is fetched from wintun.net and gated on its **Authenticode signature**
+  verifying to `O=WireGuard LLC` rather than on a checksum pinned in the
+  workflow — a hash in the file is only as trustworthy as whoever typed it, and
+  this host cannot reach wintun.net to obtain one honestly. The observed
+  SHA-256 is printed for the record. Verified here with the copy the repo group
+  already had: `osslsigncode verify` → signer `O=WireGuard LLC`, chain to
+  DigiCert EV Code Signing, timestamped 2021-10-17, `Signature verification:
+  ok`, `Succeeded`. The ZIP carries `tincmgr.exe`, the standalone
+  `tincd.exe`/`tinc.exe` and `SHA256SUMS`; everything is **unsigned**, which
+  the release notes say.
+- [x] **`platforms/windows/build-core-win.sh` was committed non-executable**
+  (mode 100644), so the documented one-command build died with exit 126,
+  "Permission denied". Found by running it on merged master — stream X never
+  ran that script, it reproduced its steps by hand. Fixed with
+  `git update-index --chmod=+x`; the whole chain then ran clean here:
+  `build-core-win.sh` → `tincd.exe`/`tinc.exe`, `build-exe.sh` → 57 665 247 B
+  `dist/tincmgr.exe`, `PE32+ executable (GUI) x86-64`, Wine smoke test
+  `SELFTEST OK`.
 
 ---
 

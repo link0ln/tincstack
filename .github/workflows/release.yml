@@ -3,7 +3,8 @@
 #   ghcr.io/<owner>/tincstack/core:<tag>   the daemon image (QUIC carrier built in)
 #   ghcr.io/<owner>/tincstack/node:<tag>   the compose-ready Linux node
 #     both also tagged `latest`
-#   tincstack-<tag>-windows-x86_64.zip     tincd.exe + tinc.exe (mingw cross-build)
+#   tincstack-<tag>-windows-x86_64.zip     tincmgr.exe (the GUI manager, one file)
+#                                          plus the standalone tincd.exe/tinc.exe
 #   tincstack-<tag>.apk                    the Android app
 #   tincstack-<tag>-source.tar.gz          the tree at the tag, for Linux hosts
 #                                          (they run it through docker compose)
@@ -161,23 +162,59 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Cross-build the core with mingw-w64
-        run: |
-          docker build -f core/Dockerfile.build-win -t tincstack/core-win:rel core/
-          mkdir -p dist/windows
-          docker run --rm -v "$PWD/dist/windows:/out" tincstack/core-win:rel
+        run: platforms/windows/build-core-win.sh
 
-      - name: Assert both artefacts are PE32+ binaries
+      # wintun.dll is a Microsoft-signed driver shim distributed by WireGuard
+      # LLC, not something this repository builds or carries. It is fetched
+      # here and its Authenticode signature is verified against the system
+      # trust store, which is a stronger provenance check than a checksum
+      # pinned in this file: the observed SHA-256 is printed for the record,
+      # but the gate is "signed by WireGuard LLC and the signature verifies".
+      - name: Fetch and verify wintun.dll
         run: |
+          set -eu
+          curl -fSL --retry 3 --retry-all-errors -o wintun.zip \
+            "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip"
+          sha256sum wintun.zip
+          unzip -q -o wintun.zip -d wintun-src
+          dll=$(find wintun-src -type f -name wintun.dll -path '*amd64*' | head -n1)
+          test -n "$dll"
+          cp "$dll" platforms/windows/resources/wintun.dll
+          sha256sum platforms/windows/resources/wintun.dll
+          docker run --rm -v "$PWD/platforms/windows/resources:/w:ro" debian:12-slim sh -c '
+            set -eu
+            apt-get update >/dev/null
+            apt-get install -y --no-install-recommends osslsigncode ca-certificates >/dev/null
+            osslsigncode verify /w/wintun.dll > /tmp/v.txt 2>&1 || { cat /tmp/v.txt; exit 1; }
+            grep -q "O=WireGuard LLC" /tmp/v.txt || { echo "not signed by WireGuard LLC"; cat /tmp/v.txt; exit 1; }
+            grep -q "Signature verification: ok" /tmp/v.txt || { cat /tmp/v.txt; exit 1; }
+            grep -E "Subject:|Signature verification:|Number of verified" /tmp/v.txt | head -3
+          '
+        env:
+          WINTUN_VERSION: '0.14.1'
+
+      - name: Build tincmgr.exe (Windows CPython + PyInstaller under Wine)
+        run: SMOKE=1 platforms/windows/build-exe.sh
+
+      - name: Assert every artefact is a PE32+ binary
+        run: |
+          mkdir -p dist/windows
+          cp platforms/windows/resources/tincd.exe \
+             platforms/windows/resources/tinc.exe \
+             platforms/windows/dist/tincmgr.exe dist/windows/
           docker run --rm -v "$PWD/dist/windows:/w:ro" debian:12-slim \
             sh -c 'apt-get update >/dev/null \
                    && apt-get install -y --no-install-recommends file >/dev/null \
-                   && file /w/tincd.exe /w/tinc.exe | tee /dev/stderr \
-                      | grep -c "PE32+ executable" | grep -qx 2'
+                   && file /w/tincd.exe /w/tinc.exe /w/tincmgr.exe | tee /dev/stderr \
+                      | grep -c "PE32+ executable" | grep -qx 3'
 
       - name: Package
         run: |
-          cp platforms/windows/build-windows.md dist/windows/README-build.md || true
+          set -eu
+          cp platforms/windows/build-windows.md dist/windows/README-build.md
           cd dist/windows
+          sha256sum ./*.exe > SHA256SUMS
+          cat SHA256SUMS
           zip -9 "../../tincstack-${{ needs.meta.outputs.version }}-windows-x86_64.zip" ./*
 
       - uses: actions/upload-artifact@v4
@@ -309,9 +346,15 @@ jobs:
 
           ## Windows
 
-          \`tincstack-$VERSION-windows-x86_64.zip\` — \`tincd.exe\` and \`tinc.exe\`,
-          cross-built with mingw-w64. \`wintun.dll\` is not included: it is a
-          Microsoft-signed binary from https://www.wintun.net/.
+          \`tincstack-$VERSION-windows-x86_64.zip\` contains \`tincmgr.exe\`, the
+          single-file GUI manager, with the cross-built core and \`wintun.dll\`
+          already inside it, plus the standalone \`tincd.exe\` and \`tinc.exe\` for
+          command-line use, and \`SHA256SUMS\`.
+
+          \`wintun.dll\` is fetched from https://www.wintun.net/ during the build
+          and its Authenticode signature is verified to be WireGuard LLC's before
+          it is bundled. **The artefacts are unsigned**, so Windows SmartScreen
+          will warn about them.
 
           ## Android
 
