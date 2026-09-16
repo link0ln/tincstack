@@ -22,6 +22,10 @@
 #   The images default to tincstack/core:${TINCSTACK_TAG} and ...-noquic; PFX
 #   names the containers, network and data directory and NETBASE is the lab
 #   /24, so two copies of this lab can run side by side on one host.
+# Every section of this test lives in a sec_<name> function dispatched by name
+# from $ONLY at the end of the file, and the poll helpers are passed to
+# wait_for as command names, so shellcheck sees no call site for any of them.
+# shellcheck disable=SC2329  # every function here is invoked indirectly
 set -e
 [ -n "$QUIC_TRACE" ] && set -x
 
@@ -50,7 +54,7 @@ note() { echo "  $1"; }
 miss() { echo "  MISS: $1"; fail=1; }
 
 cleanup() {
-	docker rm -f ${PFX}-a ${PFX}-b ${PFX}-r ${PFX}-gw ${PFX}-cap >/dev/null 2>&1 || true
+	docker rm -f "$PFX-a" "$PFX-b" "$PFX-r" "$PFX-gw" "$PFX-cap" >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 }
 [ -z "$KEEP" ] && trap cleanup EXIT
@@ -135,13 +139,13 @@ dumpc() { docker exec "${PFX}-$1" tinc -c /etc/tincstack/tinc.yaml -n wsg3 dump 
 pingok() { docker exec "${PFX}-$1" ping -c3 -W2 "$2" 2>&1 | tail -2 | grep -q "0% packet loss"; }
 waitping() { # name target tries
 	i=0
-	while [ $i -lt "$3" ]; do
+	while [ "$i" -lt "$3" ]; do
 		if pingok "$1" "$2"; then return 0; fi
 		i=$((i + 1))
 	done
 	return 1
 }
-stopall() { [ -n "$KEEP" ] && { echo "KEEP set: leaving containers up"; exit 0; }; docker rm -f ${PFX}-a ${PFX}-b ${PFX}-r ${PFX}-gw ${PFX}-cap >/dev/null 2>&1 || true; }
+stopall() { [ -n "$KEEP" ] && { echo "KEEP set: leaving containers up"; exit 0; }; docker rm -f "$PFX-a" "$PFX-b" "$PFX-r" "$PFX-gw" "$PFX-cap" >/dev/null 2>&1 || true; }
 
 sec_a() {
 # ============================================================================
@@ -149,11 +153,15 @@ echo "===== (a) quic-negotiated link: A prefers quic, B default ====="
 reset_cfgs
 merge "$BASE-a" nodea "$BASE-b" nodeb "$B_IP" "$B_VPN" "$A_VPN"
 merge "$BASE-b" nodeb "$BASE-a" nodea "$A_IP" "$A_VPN" "$B_VPN"
-grep -q "quic" "$BASE-b/tinc.yaml" && note "B's own host record advertises quic (zeroconf default list)" || miss "B does not advertise quic"
+if grep -q "quic" "$BASE-b/tinc.yaml"; then
+	note "B's own host record advertises quic (zeroconf default list)"
+else
+	miss "B does not advertise quic"
+fi
 
 start b "$B_IP" "$BASE-b"
 sleep 2
-docker run -d --name ${PFX}-cap --net container:${PFX}-b --cap-add NET_RAW "$TOOLS" \
+docker run -d --name "$PFX-cap" --net "container:$PFX-b" --cap-add NET_RAW "$TOOLS" \
 	tcpdump -n -l -x -i eth0 'port 655' >/dev/null 2>&1
 start a "$A_IP" "$BASE-a"
 sleep 6
@@ -161,21 +169,48 @@ setvpn b "$B_VPN"
 setvpn a "$A_VPN"
 sleep 2
 
-waitping a "$B_VPN" 3 && note "A -> B ping 0% loss" || miss "A -> B ping failed"
-waitping b "$A_VPN" 3 && note "B -> A ping 0% loss" || miss "B -> A ping failed"
-docker exec ${PFX}-a ping -c40 -i0.1 -W2 "$B_VPN" >/dev/null 2>&1 || true
+if waitping a "$B_VPN" 3; then
+	note "A -> B ping 0% loss"
+else
+	miss "A -> B ping failed"
+fi
+if waitping b "$A_VPN" 3; then
+	note "B -> A ping 0% loss"
+else
+	miss "B -> A ping failed"
+fi
+docker exec "$PFX-a" ping -c40 -i0.1 -W2 "$B_VPN" >/dev/null 2>&1 || true
 sleep 1
 
-dumpc a | grep -q "transport quic" && note "A dump connections: transport quic" || miss "A dump connections lacks quic: $(dumpc a)"
-dumpc b | grep -q "transport quic" && note "B dump connections: transport quic" || miss "B dump connections lacks quic: $(dumpc b)"
-docker exec ${PFX}-b tinc -c /etc/tincstack/tinc.yaml -n wsg3 info nodea 2>/dev/null | grep -q "Transports:.*quic" \
-	&& note "tinc info nodea on B lists quic in Transports" || miss "tinc info does not list quic"
-docker logs ${PFX}-a 2>&1 | grep -q "Dialling nodeb .* via quic" && note "A log: Dialling nodeb via quic" || miss "A never dialled quic"
-docker logs ${PFX}-b 2>&1 | grep -q "quic: authenticated peer nodea" && note "B log: quic: authenticated peer nodea" || miss "B did not authenticate A over quic"
+if dumpc a | grep -q "transport quic"; then
+	note "A dump connections: transport quic"
+else
+	miss "A dump connections lacks quic: $(dumpc a)"
+fi
+if dumpc b | grep -q "transport quic"; then
+	note "B dump connections: transport quic"
+else
+	miss "B dump connections lacks quic: $(dumpc b)"
+fi
+if docker exec "$PFX-b" tinc -c /etc/tincstack/tinc.yaml -n wsg3 info nodea 2>/dev/null | grep -q "Transports:.*quic"; then
+	note "tinc info nodea on B lists quic in Transports"
+else
+	miss "tinc info does not list quic"
+fi
+if docker logs "$PFX-a" 2>&1 | grep -q "Dialling nodeb .* via quic"; then
+	note "A log: Dialling nodeb via quic"
+else
+	miss "A never dialled quic"
+fi
+if docker logs "$PFX-b" 2>&1 | grep -q "quic: authenticated peer nodea"; then
+	note "B log: quic: authenticated peer nodea"
+else
+	miss "B did not authenticate A over quic"
+fi
 
-docker stop ${PFX}-cap >/dev/null 2>&1
-docker logs ${PFX}-cap > "$BASE-cap.txt" 2>&1
-docker rm -f ${PFX}-cap >/dev/null 2>&1
+docker stop "$PFX-cap" >/dev/null 2>&1
+docker logs "$PFX-cap" > "$BASE-cap.txt" 2>&1
+docker rm -f "$PFX-cap" >/dev/null 2>&1
 
 if python3 - "$BASE-cap.txt" <<'PYEOF'
 import re, sys
@@ -223,23 +258,34 @@ merge "$BASE-a" nodea "$BASE-b" nodeb "$B_IP" "$B_VPN" "$A_VPN"
 merge "$BASE-b" nodeb "$BASE-a" nodea "$A_IP" "$A_VPN" "$B_VPN"
 # B must not dial A first (its autoconnect would pick plain): B only listens.
 sed -i 's/^      AddressPool:/      AutoConnect: no\n      AddressPool:/' "$BASE-b/tinc.yaml"
-nat() { docker run --rm --net container:${PFX}-a --cap-add NET_ADMIN "$TOOLS" "$@"; }
+nat() { docker run --rm --net "container:$PFX-a" --cap-add NET_ADMIN "$TOOLS" "$@"; }
 
 start b "$B_IP" "$BASE-b"
 sleep 2
-docker run -d --name ${PFX}-a --network "$NET" --ip "$A_IP" --cap-add NET_ADMIN --device /dev/net/tun \
+docker run -d --name "$PFX-a" --network "$NET" --ip "$A_IP" --cap-add NET_ADMIN --device /dev/net/tun \
 	-v "$BASE-a":/etc/tincstack "$IMG" sleep 3600 >/dev/null
 nat iptables -t nat -A POSTROUTING -p udp -d "$B_IP" -j SNAT --to-source "$A_IP:40000-40000"
-docker exec -d ${PFX}-a tincd -c /etc/tincstack/tinc.yaml -n wsg3 -D -d3 --logfile=/etc/tincstack/a.log
+docker exec -d "$PFX-a" tincd -c /etc/tincstack/tinc.yaml -n wsg3 -D -d3 --logfile=/etc/tincstack/a.log
 sleep 6
 setvpn b "$B_VPN"
 setvpn a "$A_VPN"
 sleep 2
-waitping a "$B_VPN" 3 && note "tunnel up behind the NAT (A -> B 0% loss)" || miss "no tunnel through the NAT"
-dumpc b | grep nodea | grep -q "transport quic" && note "B dump connections: $(dumpc b | grep nodea | sed 's/ options.*transport/ transport/')" \
-	|| miss "B is not on quic: $(dumpc b | grep nodea); B log: $(docker logs ${PFX}-b 2>&1 | grep -iE 'quic|nodea' | tail -5 | tr '\n' '|')"
-dumpc b | grep nodea | grep -q "port 40000" && note "B sees A's mapped port 40000" || miss "B does not see port 40000"
-hs1=$(docker logs ${PFX}-b 2>&1 | grep -c "quic: connection from" || true)
+if waitping a "$B_VPN" 3; then
+	note "tunnel up behind the NAT (A -> B 0% loss)"
+else
+	miss "no tunnel through the NAT"
+fi
+if dumpc b | grep nodea | grep -q "transport quic"; then
+	note "B dump connections: $(dumpc b | grep nodea | sed 's/ options.*transport/ transport/')"
+else
+	miss "B is not on quic: $(dumpc b | grep nodea); B log: $(docker logs "$PFX-b" 2>&1 | grep -iE 'quic|nodea' | tail -5 | tr '\n' '|')"
+fi
+if dumpc b | grep nodea | grep -q "port 40000"; then
+	note "B sees A's mapped port 40000"
+else
+	miss "B does not see port 40000"
+fi
+hs1=$(docker logs "$PFX-b" 2>&1 | grep -c "quic: connection from" || true)
 
 # Flip the mapping: same flow, new source port. conntrack is flushed so the
 # very next datagram leaves with the new port -- a NAT rebind as B sees it.
@@ -247,17 +293,39 @@ nat iptables -t nat -R POSTROUTING 1 -p udp -d "$B_IP" -j SNAT --to-source "$A_I
 nat conntrack -F >/dev/null 2>&1 || true
 note "NAT mapping flipped 40000 -> 40001, conntrack flushed"
 sleep 1
-docker exec ${PFX}-a ping -c5 -i0.2 -W2 "$B_VPN" >/dev/null 2>&1 || true
+docker exec "$PFX-a" ping -c5 -i0.2 -W2 "$B_VPN" >/dev/null 2>&1 || true
 sleep 2
-waitping a "$B_VPN" 3 && note "A -> B ping still 0% loss after the rebind" || miss "ping broke after the rebind"
-waitping b "$A_VPN" 3 && note "B -> A ping still 0% loss after the rebind" || miss "reverse ping broke after the rebind"
-docker logs ${PFX}-b 2>&1 | grep "quic: path validated" | tail -1 | grep -q "40001" \
-	&& note "B log: $(docker logs ${PFX}-b 2>&1 | grep 'quic: path validated' | tail -1 | sed 's/.*quic:/quic:/')" \
-	|| miss "B did not log path validation to port 40001: $(docker logs ${PFX}-b 2>&1 | grep -i 'path' | tail -3)"
-hs2=$(docker logs ${PFX}-b 2>&1 | grep -c "quic: connection from" || true)
-[ "$hs1" = "$hs2" ] && [ "$hs2" -ge 1 ] && note "no re-handshake (B saw $hs2 QUIC connection before and after)" || miss "B re-handshook ($hs1 -> $hs2 connections)"
-dumpc b | grep nodea | grep -q "port 40001" && note "B dump connections: nodea now at port 40001" || miss "B's connection address did not follow: $(dumpc b | grep nodea)"
-grep -q "Dialling nodeb" "$BASE-a/a.log" && ! grep -q "falling back" "$BASE-a/a.log" && note "A never fell back or re-dialled" || miss "A re-dialled: $(grep -iE 'carrier|Dialling' "$BASE-a/a.log" | tr '\n' '|')"
+if waitping a "$B_VPN" 3; then
+	note "A -> B ping still 0% loss after the rebind"
+else
+	miss "ping broke after the rebind"
+fi
+if waitping b "$A_VPN" 3; then
+	note "B -> A ping still 0% loss after the rebind"
+else
+	miss "reverse ping broke after the rebind"
+fi
+if docker logs "$PFX-b" 2>&1 | grep "quic: path validated" | tail -1 | grep -q "40001"; then
+	note "B log: $(docker logs "$PFX-b" 2>&1 | grep 'quic: path validated' | tail -1 | sed 's/.*quic:/quic:/')"
+else
+	miss "B did not log path validation to port 40001: $(docker logs "$PFX-b" 2>&1 | grep -i 'path' | tail -3)"
+fi
+hs2=$(docker logs "$PFX-b" 2>&1 | grep -c "quic: connection from" || true)
+if [ "$hs1" = "$hs2" ] && [ "$hs2" -ge 1 ]; then
+	note "no re-handshake (B saw $hs2 QUIC connection before and after)"
+else
+	miss "B re-handshook ($hs1 -> $hs2 connections)"
+fi
+if dumpc b | grep nodea | grep -q "port 40001"; then
+	note "B dump connections: nodea now at port 40001"
+else
+	miss "B's connection address did not follow: $(dumpc b | grep nodea)"
+fi
+if grep -q "Dialling nodeb" "$BASE-a/a.log" && ! grep -q "falling back" "$BASE-a/a.log"; then
+	note "A never fell back or re-dialled"
+else
+	miss "A re-dialled: $(grep -iE 'carrier|Dialling' "$BASE-a/a.log" | tr '\n' '|')"
+fi
 stopall
 }
 
@@ -284,22 +352,38 @@ for case in accept build blocked; do
 
 	start b "$B_IP" "$BASE-b" "$bimg"
 	sleep 2
-	[ $case = blocked ] && docker exec ${PFX}-b iptables -A INPUT -p udp --dport 655 -j DROP
+	[ "$case" = blocked ] && docker exec "$PFX-b" iptables -A INPUT -p udp --dport 655 -j DROP
 	start a "$A_IP" "$BASE-a"
-	[ $case = blocked ] && sleep 10 || sleep 5
+	if [ "$case" = blocked ]; then sleep 10; else sleep 5; fi
 	setvpn b "$B_VPN"
 	setvpn a "$A_VPN"
 	sleep 2
 	echo "  -- $label"
-	waitping a "$B_VPN" 4 && note "tunnel up, A -> B 0% loss" || miss "$case: no tunnel"
-	dumpc a | grep nodeb | grep -q "transport plain" && note "A dump connections: transport plain" || miss "$case: A not on plain: $(dumpc a)"
+	if waitping a "$B_VPN" 4; then
+		note "tunnel up, A -> B 0% loss"
+	else
+		miss "$case: no tunnel"
+	fi
+	if dumpc a | grep nodeb | grep -q "transport plain"; then
+		note "A dump connections: transport plain"
+	else
+		miss "$case: A not on plain: $(dumpc a)"
+	fi
 	case $case in
 	blocked)
-		docker logs ${PFX}-a 2>&1 | grep -q "Carrier quic failed for nodeb, falling back to plain" \
-			&& note "A log: Carrier quic failed for nodeb, falling back to plain (M4 fallback)" || miss "$case: no fallback line in A's log" ;;
+		if docker logs "$PFX-a" 2>&1 | grep -q "Carrier quic failed for nodeb, falling back to plain"; then
+			note "A log: Carrier quic failed for nodeb, falling back to plain (M4 fallback)"
+		else
+			miss "$case: no fallback line in A's log"
+		fi
+		;;
 	*)
-		docker logs ${PFX}-a 2>&1 | grep -q "Carrier candidates for nodeb: plain" \
-			&& note "A log: Carrier candidates for nodeb: plain (quic not in B's accept list)" || miss "$case: A did not exclude quic: $(docker logs ${PFX}-a 2>&1 | grep 'Carrier candidates')" ;;
+		if docker logs "$PFX-a" 2>&1 | grep -q "Carrier candidates for nodeb: plain"; then
+			note "A log: Carrier candidates for nodeb: plain (quic not in B's accept list)"
+		else
+			miss "$case: A did not exclude quic: $(docker logs "$PFX-a" 2>&1 | grep 'Carrier candidates')"
+		fi
+		;;
 	esac
 	stopall
 done
@@ -324,11 +408,27 @@ start b "$B_IP" "$BASE-b"
 sleep 2
 start a "$A_IP" "$BASE-a"
 sleep 8
-docker logs ${PFX}-b 2>&1 | grep -q "quic: authenticator from .* rejected" && note "B log: quic: authenticator from A rejected" || miss "B did not reject the wrong-key authenticator: $(docker logs ${PFX}-b 2>&1 | grep -i quic | tail -3)"
-docker logs ${PFX}-b 2>&1 | grep -q "quic: authenticated peer" && miss "B authenticated a wrong-key peer!" || note "B never authenticated the wrong-key peer"
-docker logs ${PFX}-a 2>&1 | grep -q "Carrier quic failed for nodeb, falling back to plain" && note "A log: Carrier quic failed for nodeb, falling back to plain" || miss "A did not fall back: $(docker logs ${PFX}-a 2>&1 | grep -i 'carrier\|quic' | tail -3)"
-docker logs ${PFX}-a 2>&1 | grep -q "via plain" && note "A then dialled plain (which fails SPTPS auth too, as it must)" || miss "A never dialled plain"
-docker logs ${PFX}-b 2>&1 | grep -qiE "tinc|sptps" || true
+if docker logs "$PFX-b" 2>&1 | grep -q "quic: authenticator from .* rejected"; then
+	note "B log: quic: authenticator from A rejected"
+else
+	miss "B did not reject the wrong-key authenticator: $(docker logs "$PFX-b" 2>&1 | grep -i quic | tail -3)"
+fi
+if docker logs "$PFX-b" 2>&1 | grep -q "quic: authenticated peer"; then
+	miss "B authenticated a wrong-key peer!"
+else
+	note "B never authenticated the wrong-key peer"
+fi
+if docker logs "$PFX-a" 2>&1 | grep -q "Carrier quic failed for nodeb, falling back to plain"; then
+	note "A log: Carrier quic failed for nodeb, falling back to plain"
+else
+	miss "A did not fall back: $(docker logs "$PFX-a" 2>&1 | grep -i 'carrier\|quic' | tail -3)"
+fi
+if docker logs "$PFX-a" 2>&1 | grep -q "via plain"; then
+	note "A then dialled plain (which fails SPTPS auth too, as it must)"
+else
+	miss "A never dialled plain"
+fi
+docker logs "$PFX-b" 2>&1 | grep -qiE "tinc|sptps" || true
 stopall
 }
 
@@ -356,21 +456,45 @@ start r "$R_IP" "$BASE-r"
 sleep 2
 start a "$A_IP" "$BASE-a"
 start b "$B_IP" "$BASE-b"
-docker exec ${PFX}-a iptables -A INPUT  -s "$B_IP" -j DROP
-docker exec ${PFX}-a iptables -A OUTPUT -d "$B_IP" -j DROP
-docker exec ${PFX}-b iptables -A INPUT  -s "$A_IP" -j DROP
-docker exec ${PFX}-b iptables -A OUTPUT -d "$A_IP" -j DROP
+docker exec "$PFX-a" iptables -A INPUT  -s "$B_IP" -j DROP
+docker exec "$PFX-a" iptables -A OUTPUT -d "$B_IP" -j DROP
+docker exec "$PFX-b" iptables -A INPUT  -s "$A_IP" -j DROP
+docker exec "$PFX-b" iptables -A OUTPUT -d "$A_IP" -j DROP
 sleep 6
 setvpn r "$R_VPN"
 setvpn a "$A_VPN"
 setvpn b "$B_VPN"
 sleep 2
-dumpc r | grep nodea | grep -q "transport quic" && note "R: A's link is quic" || miss "A-R not quic: $(dumpc r)"
-dumpc r | grep nodeb | grep -q "transport plain" && note "R: B's link is plain" || miss "R-B not plain: $(dumpc r)"
-waitping a "$R_VPN" 3 && note "A -> R over quic 0% loss" || miss "A -> R failed"
-waitping a "$B_VPN" 10 && note "A -> B relayed through R (mixed quic/plain hops) 0% loss" || miss "A -> B relay failed"
-waitping b "$A_VPN" 5 && note "B -> A relayed 0% loss" || miss "B -> A relay failed"
-docker exec ${PFX}-a ping -c1 -W1 "$B_IP" >/dev/null 2>&1 && miss "A can reach B directly (DROP not effective)" || note "A <-> B direct path confirmed severed"
+if dumpc r | grep nodea | grep -q "transport quic"; then
+	note "R: A's link is quic"
+else
+	miss "A-R not quic: $(dumpc r)"
+fi
+if dumpc r | grep nodeb | grep -q "transport plain"; then
+	note "R: B's link is plain"
+else
+	miss "R-B not plain: $(dumpc r)"
+fi
+if waitping a "$R_VPN" 3; then
+	note "A -> R over quic 0% loss"
+else
+	miss "A -> R failed"
+fi
+if waitping a "$B_VPN" 10; then
+	note "A -> B relayed through R (mixed quic/plain hops) 0% loss"
+else
+	miss "A -> B relay failed"
+fi
+if waitping b "$A_VPN" 5; then
+	note "B -> A relayed 0% loss"
+else
+	miss "B -> A relay failed"
+fi
+if docker exec "$PFX-a" ping -c1 -W1 "$B_IP" >/dev/null 2>&1; then
+	miss "A can reach B directly (DROP not effective)"
+else
+	note "A <-> B direct path confirmed severed"
+fi
 stopall
 }
 
@@ -390,10 +514,10 @@ merge "$BASE-b" nodeb "$BASE-a" nodea "$A_IP" "$A_VPN" "$B_VPN"
 sed -i 's/^      AddressPool:/      AutoConnect: no\n      AddressPool:/' "$BASE-b/tinc.yaml"
 # A pings B every 5 s so a black-holed UDP path is declared dead in ~10 s.
 sed -i 's/^      AddressPool:/      PingInterval: 5\n      AddressPool:/' "$BASE-a/tinc.yaml"
-closes_of_a() { docker logs ${PFX}-a 2>&1 | grep -c "Closing connection with nodeb" || true; }
+closes_of_a() { docker logs "$PFX-a" 2>&1 | grep -c "Closing connection with nodeb" || true; }
 closed_since() { [ "$(closes_of_a)" -gt "$1" ]; }
-alog_has() { docker logs ${PFX}-a 2>&1 | grep -q "$1"; }
-tunnel_up() { docker exec ${PFX}-a ping -c1 -W1 "$B_VPN" >/dev/null 2>&1; }
+alog_has() { docker logs "$PFX-a" 2>&1 | grep -q "$1"; }
+tunnel_up() { docker exec "$PFX-a" ping -c1 -W1 "$B_VPN" >/dev/null 2>&1; }
 wait_for() { # deadline-s command...: poll until the command succeeds
 	deadline=$(( $(date +%s) + $1 )); shift
 	while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -404,10 +528,14 @@ wait_for() { # deadline-s command...: poll until the command succeeds
 }
 l2_check() { # label
 	if wait_for 60 tunnel_up && dumpc a | grep nodeb | grep -q "transport quic" && dumpc b | grep nodea | grep -q "transport quic"; then
-		pl=$(docker exec ${PFX}-a ping -c5 -i0.2 -W2 "$B_VPN" 2>&1 | grep -o '[0-9]*% packet loss')
-		[ "$pl" = "0% packet loss" ] && note "L-2 $1: A is back on quic (both ends), tunnel $pl" || miss "L-2 $1: back on quic but tunnel loss: $pl"
+		pl=$(docker exec "$PFX-a" ping -c5 -i0.2 -W2 "$B_VPN" 2>&1 | grep -o '[0-9]*% packet loss')
+		if [ "$pl" = "0% packet loss" ]; then
+			note "L-2 $1: A is back on quic (both ends), tunnel $pl"
+		else
+			miss "L-2 $1: back on quic but tunnel loss: $pl"
+		fi
 	else
-		miss "L-2 $1: A reconnected over '$(dumpc a | grep nodeb | grep -o 'transport [a-z]*')' (expected quic); A log: $(docker logs ${PFX}-a 2>&1 | grep -E 'Carrier|via ' | tail -4 | tr '\n' '|')"
+		miss "L-2 $1: A reconnected over '$(dumpc a | grep nodeb | grep -o 'transport [a-z]*')' (expected quic); A log: $(docker logs "$PFX-a" 2>&1 | grep -E 'Carrier|via ' | tail -4 | tr '\n' '|')"
 	fi
 }
 
@@ -417,38 +545,46 @@ start a "$A_IP" "$BASE-a"
 wait_for 20 alog_has "Connection with nodeb .* activated" || miss "L-2: no quic link to begin with"
 setvpn b "$B_VPN"
 setvpn a "$A_VPN"
-waitping a "$B_VPN" 3 && dumpc a | grep nodeb | grep -q "transport quic" && note "L-2: tunnel up over quic" || miss "L-2: initial link is not quic: $(dumpc a)"
+if waitping a "$B_VPN" 3 && dumpc a | grep nodeb | grep -q "transport quic"; then
+	note "L-2: tunnel up over quic"
+else
+	miss "L-2: initial link is not quic: $(dumpc a)"
+fi
 
 # (1) reload: B closes the activated link cleanly.
 c0=$(closes_of_a)
-docker exec ${PFX}-b tinc -c /etc/tincstack/tinc.yaml -n wsg3 reload >/dev/null 2>&1 || true
+docker exec "$PFX-b" tinc -c /etc/tincstack/tinc.yaml -n wsg3 reload >/dev/null 2>&1 || true
 wait_for 20 closed_since "$c0" || miss "L-2 reload: B's reload did not drop A's link"
 l2_check "reload"
 
 # (2) UDP black-hole at B until A declares the link dead, then lifted.
 c0=$(closes_of_a)
-docker exec ${PFX}-b iptables -I INPUT -p udp -s "$A_IP" -j DROP
+docker exec "$PFX-b" iptables -I INPUT -p udp -s "$A_IP" -j DROP
 wait_for 60 closed_since "$c0" || miss "L-2 black-hole: A never declared the link dead"
-docker exec ${PFX}-b iptables -D INPUT -p udp -s "$A_IP" -j DROP
+docker exec "$PFX-b" iptables -D INPUT -p udp -s "$A_IP" -j DROP
 l2_check "UDP black-hole"
 
 # (3) kill -9: B's daemon dies and stays down until A's first re-dial has
 # failed -- before the fix that single failure downgraded A to plain.
 c0=$(closes_of_a)
-docker kill -s KILL ${PFX}-b >/dev/null
+docker kill -s KILL "$PFX-b" >/dev/null
 wait_for 30 closed_since "$c0" || miss "L-2 kill: A did not notice B's death"
 if wait_for 40 alog_has "Carrier quic failed for nodeb before activation (1/3) but worked before, retrying it"; then
-	note "L-2 kill: A log: $(docker logs ${PFX}-a 2>&1 | grep 'before activation (1/3)' | tail -1 | sed 's/.*Carrier/Carrier/')"
+	note "L-2 kill: A log: $(docker logs "$PFX-a" 2>&1 | grep 'before activation (1/3)' | tail -1 | sed 's/.*Carrier/Carrier/')"
 else
-	miss "L-2 kill: A did not retry quic after the failed re-dial: $(docker logs ${PFX}-a 2>&1 | grep -E 'Carrier' | tail -3 | tr '\n' '|')"
+	miss "L-2 kill: A did not retry quic after the failed re-dial: $(docker logs "$PFX-a" 2>&1 | grep -E 'Carrier' | tail -3 | tr '\n' '|')"
 fi
-docker start ${PFX}-b >/dev/null
+docker start "$PFX-b" >/dev/null
 l2_check "kill -9 + restart"
-docker logs ${PFX}-a 2>&1 | grep -q "falling back to plain" && miss "L-2: A fell back to plain at some point" || note "L-2: A never fell back to plain"
+if docker logs "$PFX-a" 2>&1 | grep -q "falling back to plain"; then
+	miss "L-2: A fell back to plain at some point"
+else
+	note "L-2: A never fell back to plain"
+fi
 stopall
 }
 
-for sec in ${ONLY:-a b c d f l}; do sec_$sec; done
+for sec in ${ONLY:-a b c d f l}; do sec_"$sec"; done
 
 echo "==========================================="
 if [ "$fail" = 0 ]; then

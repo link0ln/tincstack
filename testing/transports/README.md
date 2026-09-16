@@ -25,6 +25,9 @@ on start — only those. Two concurrent runs:
 `LAB` moves all five — including the two off-path attacker addresses of the
 replay/reflection checks. `classify-test.sh` creates no named container.
 
+`make lint` shellchecks every script here at shellcheck's default (full)
+severity; keep them clean rather than lowering the bar.
+
 ## classify-test.sh — front classifier unit test
 
 Compiles `classify_test.c` against the real `transport_table.c` (the classifier

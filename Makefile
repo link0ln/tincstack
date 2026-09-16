@@ -26,15 +26,18 @@ DATE ?= $(shell date +%Y-%m-%d)
 export CORE_IMAGE := tincstack/core:$(TAG)
 export BASELINE_IMAGE := tincstack/baseline:$(TAG)
 SHELLCHECK_IMAGE ?= koalaman/shellcheck:stable
+# Every shell script here is linted at shellcheck's default (full) severity.
+# The transport proofs used to be linted at -S warning because of pre-existing
+# SC2086/SC2015 findings; those were cleaned up (stream U), so there is one
+# list and one severity again.
 SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-sim/natlab.sh \
                  testing/nat-sim/natprofile.sh testing/dpi-proof/run.sh testing/dpi-proof/capture.sh \
-                 testing/smoke/run.sh platforms/linux/docker/two-nodes.sh
-# The transport proofs predate the lint target and carry info-level findings
-# (SC2086/SC2015 style); they are linted at warning severity so real defects
-# fail `make lint` without a rewrite of every proof script.
-TEST_SCRIPTS := testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
-                testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
-                testing/transports/matrix-test.sh testing/transports/classify-test.sh
+                 testing/smoke/run.sh platforms/linux/docker/two-nodes.sh \
+                 platforms/linux/docker/yaml-scripts.sh \
+                 testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
+                 testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
+                 testing/transports/obfs-test.sh testing/transports/matrix-test.sh \
+                 testing/transports/classify-test.sh
 
 .PHONY: check build-core build-baseline build-lab smoke nat-quick nat-full laptop \
         validate-nat dpi-baseline lint clean promote
@@ -76,7 +79,6 @@ dpi-baseline: build-lab
 
 lint:
 	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x $(SHELL_SCRIPTS)
-	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x -S warning $(TEST_SCRIPTS)
 
 clean:
 	testing/nat-sim/lab.sh clean
