@@ -182,6 +182,7 @@ src_tincd = [
   'transport.c',
   'transport_table.c',
   'transport_sf.c',
+  'authn.c',
   'https.c',
   'decoy.c',
 ]

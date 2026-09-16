@@ -524,6 +524,15 @@ static bool load_or_generate(char **cert_pem, char **key_pem, const char **sourc
 	return true;
 }
 
+/* Hand the node certificate's PEM to another carrier (the quic carrier's
+   GnuTLS backend) without a second load path: the same load_or_generate() the
+   HTTPS front uses. Caller frees both; the key PEM should be zeroed after use. */
+bool tls_current_pem(char **cert_pem, char **key_pem) {
+	const char *source = NULL;
+	*cert_pem = *key_pem = NULL;
+	return load_or_generate(cert_pem, key_pem, &source);
+}
+
 /* ---- init / exit --------------------------------------------------------- */
 
 bool tls_init(void) {

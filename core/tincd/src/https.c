@@ -39,11 +39,10 @@
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 
+#include "authn.h"
 #include "conf.h"
 #include "connection.h"
-#include "ecdsa.h"
 #include "event.h"
-#include "keys.h"
 #include "logger.h"
 #include "meta.h"
 #include "names.h"
@@ -59,13 +58,8 @@
 
 #include "decoy.h"
 
-/* Exporter label binding the authenticator to this TLS session (RFC 5705). */
-#define HTTPS_EXPORTER_LABEL "EXPORTER-tincstack-https-v1"
-#define HTTPS_EXPORTER_LEN 32
-#define HTTPS_NONCE_LEN 16
-#define HTTPS_SIG_MAX 64                /* Ed25519 signature length */
-#define HTTPS_TS_SKEW 90               /* seconds of clock skew tolerated */
-#define HTTPS_AUTH_VERSION 1
+/* The authenticator itself (format, signature, replay cache) is shared with
+   the quic carrier: authn.{c,h}. Here it only rides a Cookie value. */
 #define HTTPS_MAX_HEAD 16384           /* cap on the HTTP request/response head */
 #define WS_MAGIC "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -99,38 +93,6 @@ typedef struct https_session_t {
 
 	bool established_after_write; /* server: become established once wbuf drains */
 } https_session_t;
-
-/* A tiny replay cache: (nonce -> expiry). The exporter binding already stops
-   cross-session replay (a captured authenticator has the wrong exporter for a
-   new TLS session, so its signature fails); this is belt-and-suspenders for
-   the same-second window. */
-#define REPLAY_SLOTS 256
-static struct {
-	uint8_t nonce[HTTPS_NONCE_LEN];
-	time_t expiry;
-} replay[REPLAY_SLOTS];
-
-static bool replay_seen(const uint8_t *nonce) {
-	size_t free_slot = REPLAY_SLOTS;
-
-	for(size_t i = 0; i < REPLAY_SLOTS; i++) {
-		if(replay[i].expiry > now.tv_sec && !memcmp(replay[i].nonce, nonce, HTTPS_NONCE_LEN)) {
-			return true;
-		}
-
-		if(replay[i].expiry <= now.tv_sec && free_slot == REPLAY_SLOTS) {
-			free_slot = i;
-		}
-	}
-
-	if(free_slot == REPLAY_SLOTS) {
-		free_slot = (size_t)(now.tv_sec) % REPLAY_SLOTS; /* evict something */
-	}
-
-	memcpy(replay[free_slot].nonce, nonce, HTTPS_NONCE_LEN);
-	replay[free_slot].expiry = now.tv_sec + 2 * HTTPS_TS_SKEW;
-	return false;
-}
 
 /* ---- forward decls ------------------------------------------------------- */
 
@@ -272,24 +234,11 @@ static int read_head(https_session_t *s) {
 	}
 }
 
-/* ---- authenticator ------------------------------------------------------- */
-
-/* message = server_fp(32) || exporter(32) || nonce(16) || ts_be(8) */
-static void auth_message(uint8_t *msg, const uint8_t *server_fp, const uint8_t *exporter, const uint8_t *nonce, uint64_t ts) {
-	memcpy(msg, server_fp, TLS_FP_LEN);
-	memcpy(msg + TLS_FP_LEN, exporter, HTTPS_EXPORTER_LEN);
-	memcpy(msg + TLS_FP_LEN + HTTPS_EXPORTER_LEN, nonce, HTTPS_NONCE_LEN);
-
-	for(int i = 0; i < 8; i++) {
-		msg[TLS_FP_LEN + HTTPS_EXPORTER_LEN + HTTPS_NONCE_LEN + i] = (uint8_t)(ts >> (8 * (7 - i)));
-	}
-}
-
-#define AUTH_MSG_LEN (TLS_FP_LEN + HTTPS_EXPORTER_LEN + HTTPS_NONCE_LEN + 8)
+/* ---- authenticator (authn.c) binding: the TLS-session exporter ---------- */
 
 static bool exporter_value(SSL *ssl, uint8_t *out) {
-	return SSL_export_keying_material(ssl, out, HTTPS_EXPORTER_LEN,
-	                                  HTTPS_EXPORTER_LABEL, strlen(HTTPS_EXPORTER_LABEL),
+	return SSL_export_keying_material(ssl, out, AUTHN_EXPORTER_LEN,
+	                                  AUTHN_EXPORTER_LABEL, strlen(AUTHN_EXPORTER_LABEL),
 	                                  NULL, 0, 0) == 1;
 }
 
@@ -346,61 +295,24 @@ static bool verify_server_cert(https_session_t *s) {
 }
 
 static bool build_client_request(https_session_t *s) {
-	uint8_t exporter[HTTPS_EXPORTER_LEN];
+	uint8_t exporter[AUTHN_EXPORTER_LEN];
 
 	if(!exporter_value(s->ssl, exporter)) {
 		return false;
 	}
 
-	uint8_t nonce[HTTPS_NONCE_LEN];
+	/* The shared authenticator (authn.c), signed over the SERVER's cert
+	   fingerprint (the one we just verified) and this TLS session's
+	   exporter; the server checks it against its own tls_own_fp. */
+	uint8_t payload[AUTHN_MAX_LEN];
+	size_t plen = authn_build(s->server_fp, exporter, payload, sizeof(payload));
 
-	if(RAND_bytes(nonce, sizeof(nonce)) != 1) {
+	if(!plen) {
 		return false;
 	}
 
-	uint64_t ts = (uint64_t) now.tv_sec;
-
-	uint8_t msg[AUTH_MSG_LEN];
-	/* Sign over the SERVER's cert fingerprint (the one we just verified), which
-	   the server checks against its own tls_own_fp. */
-	auth_message(msg, s->server_fp, exporter, nonce, ts);
-
-	/* Sign with our own Ed25519 node key. */
-	ecdsa_t *key = myself->connection->ecdsa;
-	size_t siglen = ecdsa_size(key);
-
-	if(siglen > HTTPS_SIG_MAX) {
-		return false;
-	}
-
-	uint8_t sig[HTTPS_SIG_MAX];
-
-	if(!ecdsa_sign(key, msg, sizeof(msg), sig)) {
-		return false;
-	}
-
-	/* payload = ver(1) namelen(1) name nonce ts_be(8) sig */
-	size_t namelen = strlen(myself->name);
-	size_t plen = 2 + namelen + HTTPS_NONCE_LEN + 8 + siglen;
-	uint8_t *payload = xmalloc(plen);
-	size_t o = 0;
-	payload[o++] = HTTPS_AUTH_VERSION;
-	payload[o++] = (uint8_t) namelen;
-	memcpy(payload + o, myself->name, namelen);
-	o += namelen;
-	memcpy(payload + o, nonce, HTTPS_NONCE_LEN);
-	o += HTTPS_NONCE_LEN;
-
-	for(int i = 0; i < 8; i++) {
-		payload[o++] = (uint8_t)(ts >> (8 * (7 - i)));
-	}
-
-	memcpy(payload + o, sig, siglen);
-	o += siglen;
-
-	char b64[B64_SIZE(2 + 256 + HTTPS_NONCE_LEN + 8 + HTTPS_SIG_MAX)];
+	char b64[B64_SIZE(AUTHN_MAX_LEN)];
 	b64encode_tinc_urlsafe(payload, b64, plen);
-	free(payload);
 
 	uint8_t wskey_raw[16];
 	RAND_bytes(wskey_raw, sizeof(wskey_raw));
@@ -469,97 +381,19 @@ static bool verify_client_auth(https_session_t *s, char **out_name) {
 	uint8_t payload[1024];
 	size_t plen = b64decode_tinc(sid, payload, sizeof(payload));
 
-	if(plen < 2 + HTTPS_NONCE_LEN + 8 + 1) {
+	if(!plen) {
 		return false;
 	}
 
-	size_t o = 0;
-
-	if(payload[o++] != HTTPS_AUTH_VERSION) {
-		return false;
-	}
-
-	size_t namelen = payload[o++];
-
-	if(namelen == 0 || o + namelen + HTTPS_NONCE_LEN + 8 > plen) {
-		return false;
-	}
-
-	char name[MAX_STRING_SIZE];
-
-	if(namelen >= sizeof(name)) {
-		return false;
-	}
-
-	memcpy(name, payload + o, namelen);
-	name[namelen] = 0;
-	o += namelen;
-
-	if(!check_id(name) || !strcmp(name, myself->name)) {
-		return false;
-	}
-
-	const uint8_t *nonce = payload + o;
-	o += HTTPS_NONCE_LEN;
-	uint64_t ts = 0;
-
-	for(int i = 0; i < 8; i++) {
-		ts = (ts << 8) | payload[o++];
-	}
-
-	const uint8_t *sig = payload + o;
-	size_t siglen = plen - o;
-
-	/* Freshness. */
-	int64_t skew = (int64_t) now.tv_sec - (int64_t) ts;
-
-	if(skew < -HTTPS_TS_SKEW || skew > HTTPS_TS_SKEW) {
-		logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: stale authenticator from %s (skew %lld s)", s->c->hostname, (long long) skew);
-		return false;
-	}
-
-	/* The peer's Ed25519 public key from our host DB. */
-	splay_tree_t *tree = NULL;
-	ecdsa_t *pubkey = read_ecdsa_public_key(&tree, name);
-
-	if(!pubkey) {
-		if(tree) {
-			exit_configuration(tree);
-		}
-
-		return false;
-	}
-
-	uint8_t exporter[HTTPS_EXPORTER_LEN];
+	uint8_t exporter[AUTHN_EXPORTER_LEN];
 
 	if(!exporter_value(s->ssl, exporter)) {
-		ecdsa_free(pubkey);
-		exit_configuration(tree);
 		return false;
 	}
 
-	uint8_t msg[AUTH_MSG_LEN];
-	auth_message(msg, tls_own_fp, exporter, nonce, ts);
-
-	bool ok = (siglen == ecdsa_size(pubkey)) && ecdsa_verify(pubkey, msg, sizeof(msg), sig);
-	ecdsa_free(pubkey);
-
-	if(tree) {
-		exit_configuration(tree);
-	}
-
-	if(!ok) {
-		logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: authenticator signature check failed for claimed %s", name);
-		return false;
-	}
-
-	if(replay_seen(nonce)) {
-		logger(DEBUG_CONNECTIONS, LOG_WARNING, "https: replayed authenticator from %s; serving decoy", s->c->hostname);
-		return false;
-	}
-
-	*out_name = xstrdup(name);
-	return true;
+	/* Shared verification (authn.c): name known, signature over our own cert
+	   fingerprint + this session's exporter, freshness, replay cache. */
+	return authn_verify(payload, plen, tls_own_fp, exporter, "https", s->c->hostname, out_name);
 }
 
 static void build_ws_accept(const char *head, char *out, size_t outlen) {
