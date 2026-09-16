@@ -6,25 +6,32 @@
 #   * tcpdump on the port shows only TLS records -- no UDP, no cleartext tinc
 #     ID line;
 #   * a prober on the same port during the session gets the decoy;
-#   * a forged/replayed authenticator gets the decoy.
+#   * a forged/replayed authenticator gets the decoy;
+#   * (review M5-1) with B's HttpsDecoyUpstream black-holed, TLS probes at B do
+#     not delay the tunnel ping A->B;
+#   * (review M5-7) a TLS bump (socat with its own certificate) between A and
+#     B on A's first dial leaves NO TlsFingerprint pin in A's host record for
+#     B; a legitimate first dial pins B's real fingerprint once SPTPS
+#     authenticated the peer.
 #
 # All tooling runs in throwaway containers sharing a node's netns; nothing is
-# installed on the host. Test data under /tmp/wsg1-* only.
+# installed on the host. Test data under /tmp/wsl-* only.
 #
 # Usage: testing/transports/https-carrier-test.sh [image]
 set -e
 
-IMG=${1:-tincstack/core:ws-g1}
+IMG=${1:-tincstack/core:${TINCSTACK_TAG:-ws-l}}
 TOOLS=nicolaka/netshoot
-NET=wsg1https
-BASE=/tmp/wsg1-https
+NET=wslhttps
+BASE=/tmp/wsl-https
 A_IP=10.42.9.10
 B_IP=10.42.9.11
 A_VPN=10.192.0.1
 B_VPN=10.192.0.2
+MITM_IP=10.42.9.30
 
 cleanup() {
-	docker rm -f wsg1h-a wsg1h-b wsg1h-cap >/dev/null 2>&1 || true
+	docker rm -f wslh-a wslh-b wslh-cap wslh-mitm >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -109,20 +116,20 @@ print("configs merged")
 PYEOF
 
 start() { # name ip dir
-	docker run -d --name "wsg1h-$1" --network "$NET" --ip "$2" --cap-add NET_ADMIN \
+	docker run -d --name "wslh-$1" --network "$NET" --ip "$2" --cap-add NET_ADMIN \
 		--device /dev/net/tun -v "$3":/etc/tincstack "$IMG" \
 		tincd -c /etc/tincstack/tinc.yaml -n wsg1 -D -d3 >/dev/null
 }
 setvpn() { # name vpnip
-	docker exec "wsg1h-$1" ip addr add "$2/24" dev wsg1 2>/dev/null || true
-	docker exec "wsg1h-$1" ip link set wsg1 up
+	docker exec "wslh-$1" ip addr add "$2/24" dev wsg1 2>/dev/null || true
+	docker exec "wslh-$1" ip link set wsg1 up
 }
 
 echo "===== https carrier: bring up the tunnel ====="
 start b "$B_IP" "$BASE-b"
 sleep 2
 # capture on B's tinc port for the whole bring-up + ping
-docker run -d --name wsg1h-cap --net container:wsg1h-b --cap-add NET_RAW "$TOOLS" \
+docker run -d --name wslh-cap --net container:wslh-b --cap-add NET_RAW "$TOOLS" \
 	tcpdump -n -l -A -i eth0 'port 655' >/dev/null 2>&1
 start a "$A_IP" "$BASE-a"
 sleep 6
@@ -130,19 +137,19 @@ setvpn b "$B_VPN"
 setvpn a "$A_VPN"
 sleep 2
 
-ping_ab=$(docker exec wsg1h-a ping -c3 -W2 "$B_VPN" 2>&1 | tail -2)
-ping_ba=$(docker exec wsg1h-b ping -c3 -W2 "$A_VPN" 2>&1 | tail -2)
+ping_ab=$(docker exec wslh-a ping -c3 -W2 "$B_VPN" 2>&1 | tail -2)
+ping_ba=$(docker exec wslh-b ping -c3 -W2 "$A_VPN" 2>&1 | tail -2)
 echo "$ping_ab" | grep -q "0% packet loss" && note "A -> B ping over the tunnel works" || miss "A -> B ping failed"
 echo "$ping_ba" | grep -q "0% packet loss" && note "B -> A ping over the tunnel works" || miss "B -> A ping failed"
 
 # `tinc dump connections' must show the https carrier on both ends.
-dca=$(docker exec wsg1h-a tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections 2>/dev/null || true)
-dcb=$(docker exec wsg1h-b tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections 2>/dev/null || true)
+dca=$(docker exec wslh-a tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections 2>/dev/null || true)
+dcb=$(docker exec wslh-b tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections 2>/dev/null || true)
 echo "$dca" | grep -q "transport https" && note "A dump connections shows transport https" || miss "A does not show transport https"
 echo "$dcb" | grep -q "transport https" && note "B dump connections shows transport https" || miss "B does not show transport https"
 
 echo "===== prober during the session gets the decoy ====="
-pr=$(docker run --rm --net container:wsg1h-b "$TOOLS" curl -sk https://127.0.0.1:655/ || true)
+pr=$(docker run --rm --net container:wslh-b "$TOOLS" curl -sk https://127.0.0.1:655/ || true)
 echo "$pr" | grep -qi "It works" && note "a TLS prober during the session got the decoy" || miss "prober did not get the decoy"
 
 echo "===== forged / replayed authenticator gets the decoy ====="
@@ -150,12 +157,12 @@ echo "===== forged / replayed authenticator gets the decoy ====="
 # cannot verify it -> it serves the decoy, identical to any other prober. Sent
 # twice (replay): both get the decoy, never a 101.
 FORGED="AQdub2RlYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh"
-r1=$(docker run --rm --net container:wsg1h-b "$TOOLS" \
+r1=$(docker run --rm --net container:wslh-b "$TOOLS" \
 	curl -sk -D - -o /dev/null https://127.0.0.1:655/ws \
 	-H "Upgrade: websocket" -H "Connection: Upgrade" \
 	-H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
 	-H "Cookie: sid=$FORGED" 2>&1 | head -1 || true)
-r2=$(docker run --rm --net container:wsg1h-b "$TOOLS" \
+r2=$(docker run --rm --net container:wslh-b "$TOOLS" \
 	curl -sk -D - -o /dev/null https://127.0.0.1:655/ws \
 	-H "Upgrade: websocket" -H "Connection: Upgrade" \
 	-H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
@@ -165,11 +172,135 @@ echo "  replayed attempt: $r2"
 echo "$r1" | grep -q "101" && miss "forged authenticator was accepted (101)!" || note "forged authenticator got the decoy (no 101)"
 echo "$r2" | grep -q "101" && miss "replayed authenticator was accepted (101)!" || note "replayed authenticator got the decoy (no 101)"
 
-echo "===== tcpdump: only TLS, no UDP, no cleartext tinc ID ====="
+# The wire proof above is judged on the capture up to here: the review-R
+# sections below reload B (which closes and re-dials the link) and dial
+# through a bump, which is out of scope for the TLS-only check.
+docker stop wslh-cap >/dev/null 2>&1
+
+echo "===== M5-1: black-holed upstream at B must not stall B's loop ====="
+# 10.42.9.250 has no host: B's upstream connect never completes. Three TLS
+# probes hit B while A pings B through the tunnel. Before the fix each probe
+# blocked B's event loop for 3 s (connect + recv timeouts): RTT in seconds
+# and lost pings; after it the fetch is asynchronous.
+docker exec wslh-b sh -c "sed -i 's/      AddressPool:/      HttpsDecoyUpstream: 10.42.9.250:80\n      AddressPool:/' /etc/tincstack/tinc.yaml"
+docker exec wslh-b tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload >/dev/null 2>&1 || true
+# In YAML mode a reload sees every host record as changed and closes the
+# link; wait for A to re-establish it before measuring.
+deadline=$(( $(date +%s) + 30 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+	docker exec wslh-a ping -c1 -W1 "$B_VPN" >/dev/null 2>&1 && break
+	sleep 1
+done
+note "after B's reload A reconnected: $(docker exec wslh-a tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections 2>/dev/null | grep nodeb | grep -o 'transport [a-z]*')"
+for n in a b; do
+	[ "$(docker inspect -f '{{.State.Running}}' wslh-$n 2>/dev/null)" = true ] || { miss "node $n is not running before the M5-1 probes"; docker logs --tail 5 wslh-$n 2>&1 | sed 's/^/    /'; }
+done
+(for i in 1 2 3; do docker run --rm --net container:wslh-b "$TOOLS" curl -sk --max-time 10 -o /dev/null https://127.0.0.1:655/ >/dev/null 2>&1; done) &
+sleep 0.3
+pp=$(docker exec wslh-a ping -c 12 -i 0.5 -W 3 "$B_VPN" 2>&1 | tail -2)
+wait
+echo "$pp" | sed 's/^/    /'
+for n in a b; do
+	[ "$(docker inspect -f '{{.State.Running}}' wslh-$n 2>/dev/null)" = true ] || { miss "node $n died during the M5-1 probes"; docker logs --tail 8 wslh-$n 2>&1 | sed 's/^/    /'; }
+done
+pmax=$(echo "$pp" | grep -o 'rtt.*' | awk -F'/' '{print $6}')
+ploss=$(echo "$pp" | sed -n 's/.* \([0-9]*\)\(\.[0-9]*\)\{0,1\}% packet loss.*/\1/p')
+note "ping A->B during three probes against the black-holed upstream: loss ${ploss:-?}%, max RTT ${pmax:-?} ms"
+if [ "${ploss:-100}" = 0 ] && awk "BEGIN{exit !(${pmax:-99999} < 500)}"; then
+	note "M5-1: tunnel latency unaffected by decoy upstream probes"
+else
+	miss "M5-1: probes against the black-holed upstream stalled the tunnel (loss ${ploss:-?}%, max ${pmax:-?} ms)"
+fi
+
+echo "===== M5-7: a TLS bump on A's first dial must not leave a pin ====="
+b_fp=$(python3 - "$BASE-b/tinc.yaml" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+m = re.search(r'      nodeb: \|\n((?:        .*\n)+)', s)
+fp = re.search(r'TlsFingerprint = ([0-9a-fA-F]+)', m.group(1))
+print(fp.group(1).lower() if fp else "")
+PY
+)
+# Reset A: no pin for nodeb, Address -> the given one, and no cached address
+# (tinc dials the address cache before the host record's Address).
+unpin_a() { # address
+	rm -f "$BASE-a"/wsg1/cache/nodeb
+	python3 - "$BASE-a/tinc.yaml" "$1" <<'PY'
+import re, sys
+path, addr = sys.argv[1:3]
+s = open(path).read()
+def fix(m):
+    lines = [l for l in m.group(1).split('\n') if l.strip() and 'TlsFingerprint' not in l]
+    lines = [re.sub(r'Address = .*', 'Address = ' + addr, l) for l in lines]
+    return '      nodeb: |\n' + '\n'.join(lines) + '\n'
+s = re.sub(r'      nodeb: \|\n((?:        .*\n)+)', fix, s, count=1)
+open(path, 'w').write(s)
+PY
+}
+pin_of_a() {
+	python3 - "$BASE-a/tinc.yaml" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+m = re.search(r'      nodeb: \|\n((?:        .*\n)+)', s)
+fps = re.findall(r'TlsFingerprint = ([0-9a-fA-F]+)', m.group(1)) if m else []
+print(' '.join(f.lower() for f in fps))
+PY
+}
+docker rm -f wslh-a >/dev/null 2>&1 || true
+unpin_a "$MITM_IP"
+# The bump: its own P-256 certificate, re-encrypts towards B.
+docker run -d --name wslh-mitm --network "$NET" --ip "$MITM_IP" "$TOOLS" sh -c "
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout /tmp/k.pem -out /tmp/c.pem -subj /CN=localhost -days 1 >/dev/null 2>&1
+	cat /tmp/c.pem /tmp/k.pem > /tmp/mitm.pem
+	openssl x509 -in /tmp/c.pem -noout -fingerprint -sha256 | sed 's/.*=//;s/://g' | tr 'A-F' 'a-f' > /tmp/mitm.fp
+	exec socat openssl-listen:655,reuseaddr,fork,cert=/tmp/mitm.pem,verify=0 openssl-connect:$B_IP:655,verify=0" >/dev/null
+sleep 2
+mitm_fp=$(docker exec wslh-mitm cat /tmp/mitm.fp 2>/dev/null || true)
+start a "$A_IP" "$BASE-a"
+# Give A time for at least two dial attempts through the bump.
+deadline=$(( $(date +%s) + 15 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+	docker logs wslh-a 2>&1 | grep -q "falling back to plain" && break
+	sleep 1
+done
+pins=$(pin_of_a)
+note "MITM cert fingerprint: ${mitm_fp:-?}"
+note "A's pins for nodeb after dialling through the bump: '${pins:-none}'"
+if [ -z "$pins" ]; then
+	note "M5-7: no TlsFingerprint pinned from the unauthenticated (bumped) dial"
+elif echo "$pins" | grep -q "$mitm_fp"; then
+	miss "M5-7: A pinned the MITM's certificate on first contact"
+else
+	miss "M5-7: A pinned an unexpected fingerprint: $pins"
+fi
+docker logs wslh-a 2>&1 | grep -q "https: authenticated\|transport https" && miss "M5-7: A established https through the bump?!" || note "M5-7: https through the bump failed (no 101), as it must"
+
+echo "===== M5-7: a legitimate first dial pins B's real fingerprint ====="
+docker rm -f wslh-a wslh-mitm >/dev/null 2>&1 || true
+unpin_a "$B_IP"
+start a "$A_IP" "$BASE-a"
+deadline=$(( $(date +%s) + 20 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+	docker logs wslh-a 2>&1 | grep -q "pinning TlsFingerprint" && break
+	sleep 1
+done
 sleep 1
-docker stop wsg1h-cap >/dev/null 2>&1
-cap=$(docker logs wsg1h-cap 2>&1)
-docker rm -f wsg1h-cap >/dev/null 2>&1
+pins=$(pin_of_a)
+note "B's real fingerprint: $b_fp"
+note "A's pins for nodeb after a legitimate first dial: '${pins:-none}'"
+if [ "$pins" = "$b_fp" ]; then
+	note "M5-7: pinned exactly B's fingerprint, once, after SPTPS authenticated B"
+else
+	miss "M5-7: expected pin '$b_fp', got '${pins:-none}'"
+fi
+docker logs wslh-a 2>&1 | grep "SPTPS authenticated .* pinning" | head -1 | sed 's/^/    /'
+setvpn a "$A_VPN"
+sleep 1
+docker exec wslh-a ping -c2 -W2 "$B_VPN" 2>&1 | grep -q "0% packet loss" && note "M5-7: tunnel up over https after the pin" || miss "M5-7: tunnel not up after the legitimate dial"
+
+echo "===== tcpdump: only TLS, no UDP, no cleartext tinc ID ====="
+cap=$(docker logs wslh-cap 2>&1)
+docker rm -f wslh-cap >/dev/null 2>&1
 
 udp=$(echo "$cap" | grep -c "UDP" || true)
 # A cleartext tinc meta channel begins with an "0 <name>" ID line; inside TLS it
