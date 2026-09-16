@@ -1703,6 +1703,49 @@ Defects identified during the source audit, to fix as their milestone is reached
 - ~~🟠 **tincapp CMake points at a missing path** → last APK was vanilla tinc, not a
   fork.~~ **Resolved in M8:** CMake dropped, `platforms/android/native/build-core.sh`
   does an NDK meson cross-build of `core/tincd` per ABI (proof in M8).
+- 🟠 **A node cannot refuse cleartext tinc on its listening port.** Found in the
+  consolidation pass while writing up stream P's carrier ranking; no fix
+  attempted, because the answer is a design decision, not a patch.
+  Two independent places force it:
+  1. `transport_read_config()` (`transport.c`) adds `plain` back to the accept
+     mask whatever `Transports` says, with only a warning: *"Transports omits
+     `plain'; it is always accepted (upstream peers and the control connection
+     need it)"*.
+  2. Even without that, the front classifier's `TCP_CLASS_TINC` branch sets
+     `c->transport = &transports[TRANSPORT_PLAIN]` and returns `true` **without
+     consulting `transport_accept_mask` at all**, unlike the `TCP_CLASS_TLS`
+     branch right below it, which does check the mask for `https`.
+
+  **Impact.** Secrecy is unaffected: every carrier wraps SPTPS and SPTPS is
+  never bypassed, so a plain meta connection is still authenticated and
+  encrypted. What is lost is the thing this project exists for. An operator who
+  configures `Transports: [obfs]` because the node sits behind a DPI box still
+  answers an unadorned tinc handshake on its port, so the node stays
+  fingerprintable as tinc by anyone who can reach it — a probe, not a
+  man-in-the-middle, is enough. "Circumvention is opt-in" (guardrail 5) is not
+  the same as "cleartext is mandatory".
+
+  **Reproduction.** Set `Transports: [obfs]` on a node, restart, watch the
+  warning, then open a plain tinc meta connection to its port from a peer whose
+  own `PreferredTransports` is `plain`: it is accepted and activated.
+
+  **Options, for the owner to choose between:** (a) keep `plain` forced but
+  scope the force to the control connection and to peers that advertise no
+  carrier set, so the *listening socket* can still refuse it; (b) add an
+  explicit `AllowPlainMeta = no` so refusing is a deliberate act rather than a
+  side effect of an accept list; (c) leave it and document the limit loudly in
+  `docs/transports.md`. Whichever is chosen, the `TCP_CLASS_TINC` branch has to
+  consult the mask like the TLS branch does — that asymmetry is a bug on its
+  own terms.
+- 🟢 **Carrier ranking lets a peer impose more wrapping than you asked for**
+  (`transport_outranks_connection`, fixed order `plain < sf < obfs < https <
+  quic`). A node whose `PreferredTransports` is `plain` keeps an inbound `quic`
+  link instead of its own dial. This is deliberate ("more wrapping wins, and
+  both ends compile the same table so nothing is negotiated") and it is bounded:
+  the dialer's candidates are filtered by the mask the target advertises, so
+  removing a carrier from `Transports` does stop it — for every carrier except
+  `plain`, which is the item above. Recorded so the asymmetry is not rediscovered
+  as a defect: local preference loses to a remote peer's, silently.
 - 🟡 **YAML write-back re-emits the whole file**, dropping comments/formatting;
   editors must not rely on comment round-tripping. Documented in schema.
 - ~~🟡 **sendmmsg relay batching measured worse** by its author. Keep default-off or
