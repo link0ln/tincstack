@@ -25,6 +25,7 @@ import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
+import org.pacien.tincapp.context.AppPaths
 
 /**
  * @author euxane
@@ -34,8 +35,17 @@ internal object Executor {
 
   private fun read(stream: InputStream) = BufferedReader(InputStreamReader(stream)).readLines()
 
+  /**
+   * The core calls tmpfile(3) when it serialises keys into the YAML (see
+   * zeroconf.c / yamlconf_content_fp). Bionic's tmpfile() honours $TMPDIR and
+   * otherwise falls back to /data/local/tmp, which an app sandbox cannot
+   * write: without this the very first `tinc join` dies with "Could not
+   * serialise Ed25519 private key". Point it at our own cache instead.
+   */
   fun run(cmd: Command): Process = try {
-    ProcessBuilder(cmd.asList()).start()
+    ProcessBuilder(cmd.asList())
+      .also { it.environment()["TMPDIR"] = AppPaths.runtimeDir().absolutePath }
+      .start()
   } catch (e: IOException) {
     throw CommandExecutionException(e.message ?: "Could not start process.")
   }

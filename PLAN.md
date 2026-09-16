@@ -1034,9 +1034,14 @@ host SDK/NDK mounted read-only; no core source or meson change was needed.
   (picker output → real `VpnService.Builder` with `disallowedApplications`
   set and `allowedApplications` null). `testDebugUnitTest`: 23 tests, 0 failures.
   The screen itself was only compiled, not tapped — awaits a device.
-- [ ] 🟡 Verify invite/join (incl. QR, already present) writes the shared YAML
+- [x] 🟡 Verify invite/join (incl. QR, already present) writes the shared YAML
   schema. **Proof:** join on device produces a schema-conformant config.
-  **Blocked on stream A** (core in YAML mode): with the master core
+  **Done 2026-09-16 (stream Y)** on a real Android runtime — the emulator run
+  at the end of this box. The "blocked on stream A" paragraph that follows is
+  the historical record of why the box sat open; it stopped being true when
+  stream A merged (`47b4bbb`) and the only thing left was a runtime to run it
+  on.
+  **Was blocked on stream A** (core in YAML mode): with the master core
   (`tincstack/core:dev`) `tinc -c b/tinc.yaml -n mynet join <url>` prints
   "Configuration stored in: /etc/tincstack/mynet" and writes a **classic tree**
   (`tinc.conf` with `Name/ConnectTo/Mode`, `hosts/nodeA`, `hosts/nodeB`,
@@ -1079,7 +1084,47 @@ host SDK/NDK mounted read-only; no core source or meson change was needed.
   assembleDebug` in the `ws-e-android-build` container: `BUILD SUCCESSFUL in
   2m 35s`, EXIT=0, 25 tests / 0 failures (TincYamlTest 9, SplitRoutingTest 5,
   VpnInterfaceConfigurationTest 6, VpnServiceBuilderTest 5), APK 12.7 MB.
-  Still open here: only the on-device run.
+  **Proof 2026-09-16 (stream Y) — a real Android runtime, no device, nothing
+  on the host.** A headless emulator in Docker
+  (`platforms/android/docker/Dockerfile.emulator` + `emulator.sh`: SDK
+  command-line tools, platform-tools, `system-images;android-34;google_apis;
+  x86_64` and a baked AVD, booted `-no-window -gpu swiftshader_indirect
+  -no-snapshot` with `--device /dev/kvm`; Android 14 / API 34, the app's
+  `targetSdk`). One command, exit 0:
+  `platforms/android/docker/join-on-emulator.sh` → Linux inviter `node_a`
+  (`tincstack/node:wsy`, `PUBLIC_ADDRESS=10.44.77.10`, `AddressPool
+  10.239.0.0/24`) on docker network `wsy-lab`, emulator attached to it (the
+  guest reaches the inviter through the emulator's user-mode NAT), APK
+  installed clean, `appops set net.tincstack.android ACTIVATE_VPN allow`,
+  `tinc invite phone` → **the invitation driven through the UI**
+  (`docker/ui-join.sh`, `uiautomator dump` + taps: Configure → "Join network
+  via invitation URL or QR code" → the string typed into the `invitation_url`
+  field, i.e. exactly what `JoinNetworkToolDialogFragment.onActivityResult`
+  writes when the QR scanner returns → the dialog's Join button →
+  `Tinc.join`). The file the core wrote,
+  `/data/data/net.tincstack.android/files/networks/phonenet/tinc.yaml`
+  (keys redacted), is the shared schema: `networks.phonenet.options` (`Name:
+  phone`, `ConnectTo: node_a`, `Mode: router`, `AddressPool: 10.239.0.0/24`,
+  `InterfaceAddress: 10.239.0.2/24`, `Port: 0`, `UDPRebindOnWake: yes`),
+  `hosts.phone` / `hosts.node_a` (the inviter's `Address`, `Subnet`,
+  `Transports`, `TlsFingerprint`, keys), `keys.ed25519_priv`; no side-file,
+  no classic tree. Then the app's own CONNECT intent → `VpnService.establish()`
+  → `tun0 10.239.0.2/24` with `libtincd.so` running as the app's child, and
+  traffic both ways: guest → `10.239.0.1` 3/3 packets (0% loss), inviter →
+  `10.239.0.2` 3/3 (0% loss), inviter log `Connection with phone ... activated`.
+  The whole thing, from no emulator container to a torn-down lab, is
+  `real 1m27s`, EXIT=0, and leaves nothing behind. Unit tests alongside:
+  `./gradlew --no-daemon -PtincAbis=x86_64 -PtincCrypto=nolegacy assembleDebug
+  testDebugUnitTest` → `BUILD SUCCESSFUL`, EXIT=0, 25 tests / 0 failures
+  (TincYamlTest 9, SplitRoutingTest 5, VpnInterfaceConfigurationTest 6,
+  VpnServiceBuilderTest 5). Getting there needed three app-side fixes (TMPDIR
+  for the core subprocess, creating `networks/<net>/` before the join, the
+  manifest's intent action names) and turned up one core-side defect left for
+  the core stream; the `-PtincCrypto=openssl` default does not build at all —
+  all four in "Found during M8".
+  Not covered by this run: a physical device (ARM ABIs, real radio/NAT, sleep
+  and `UDPRebindOnWake`, the actual camera QR scan) and the app-picker screen,
+  which is still only compiled and unit-tested.
 - [x] 🟠 **One file on Android too** (brief point 2). Today the app keeps a
   second file, `network.conf` (`Address`, `Route`, `DNSServer`,
   `AllowApplication`, `DisallowApplication`). Fold these into the network's
@@ -1111,10 +1156,64 @@ host SDK/NDK mounted read-only; no core source or meson change was needed.
   after the daemon stops. Real `establish()` on a device not run here.
 - **Acceptance:** an Android user joins by invite/QR and chooses which apps use
   the tunnel. **Status:** the picker and the one-file config are proven on the
-  JVM; the APK is built from the core for all 4 ABIs. Awaits a device: install +
-  `VpnService.establish()`, `tincd` subprocess start via the fd socket, QR scan,
-  and end-to-end join (core side unblocked by stream A; see the update above).
+  JVM; the APK is built from the core for all 4 ABIs. Install,
+  `VpnService.establish()`, the `tincd` subprocess over the fd socket and the
+  end-to-end join are proven on an emulator (API 34, x86_64; stream Y, see the
+  box above). Still awaits a physical device: the ARM ABIs, a real radio and
+  NAT (sleep/`UDPRebindOnWake`), the camera QR scan, and the app-picker screen.
 - **Found during M8:**
+  - 🟠 (build, stream Y, 2026-09-16) **the documented Android build is
+    broken**: `-Dcrypto=openssl` against the LibreSSL 3.7.3 that
+    `native/build-core.sh` cross-compiles no longer compiles the core, because
+    `core/tincd/src/tls.c` (M5/G1, the TLS front) uses OpenSSL 3.0-only API —
+    `tls.c:165 EVP_EC_gen("P-256")` (undeclared → int-to-pointer) and
+    `tls.c:327 SSL_OP_NO_RENEGOTIATION` (undeclared). Measured:
+    `./gradlew -PtincAbis=x86_64 assembleDebug` → `3 errors generated`,
+    `:app:buildTincCore` non-zero, `BUILD FAILED in 1m 38s`, EXIT=1 (all three
+    errors land in `app/build/core/build/<abi>.build.log`, which the next build
+    overwrites). No LibreSSL release fixes it:
+    4.1.0 has `SSL_OP_NO_RENEGOTIATION` but still no `EVP_EC_gen` (checked by
+    grepping its headers). A second gap in the same path:
+    `build-core.sh` builds and installs only LibreSSL's **libcrypto** and its
+    fabricated `openssl.pc` requires only `libcrypto`, so even a compiling
+    `tls.c` would not link (`SSL_*` lives in libssl). Blast radius: every
+    Android build with the default crypto backend, i.e. the release APK; the
+    `https`/`quic` carriers on Android as a consequence. Workaround used for
+    the M8 proof: `-PtincCrypto=nolegacy` (SPTPS/Ed25519 only), which builds
+    and interoperates with an OpenSSL inviter over the `plain` carrier. Fix
+    belongs to the core stream (an OpenSSL-1.1/LibreSSL fallback in `tls.c`)
+    plus a libssl build here.
+  - 🟠 (core, stream Y, 2026-09-16) **the core cannot write keys inside an
+    Android app sandbox**: `zeroconf.c` serialises PEMs through
+    `capture_pem()` → `yamlconf_content_fp()` → `tmpfile(3)`, and bionic's
+    `tmpfile()` uses `$TMPDIR` or falls back to `/data/local/tmp`, which an app
+    UID cannot write. Measured on the emulator: the very first `tinc join`
+    fails with `Could not serialise Ed25519 private key` / `Could not write
+    .../tinc.yaml` / `Invitation cancelled` (exit 1) while the inviter logs
+    `Invitation ... successfully sent` then `was not completed`; the identical
+    command with `TMPDIR=<app cache>` exported succeeds
+    (`Invitation successfully accepted`). Worked around app-side (below), but
+    any other embedder without a writable `$TMPDIR` hits the same wall — the
+    core should fall back to a temp file in its own config/run directory.
+  - 🟡 (app, stream Y, fixed) the app never created `networks/<net>/` before
+    handing the path to `tinc join`, and the core does not create it either:
+    join died with `Could not lock .../tinc.yaml: No such file or directory`.
+    `Tinc.join` now creates the directory and removes it again if it is still
+    empty after a failed join.
+  - 🟡 (app, stream Y, fixed) `TMPDIR` is now set for every core subprocess
+    (`Executor.run` → the app's `cache/run`), which is what makes the join
+    above work.
+  - 🟡 (app, stream Y, fixed) the exported intent API was dead: the manifest
+    declared `org.pacien.tincapp.intent.action.CONNECT`/`.DISCONNECT` while
+    `intent/Actions.kt` builds the action names from `BuildConfig.
+    APPLICATION_ID` (`net.tincstack.android...`), so a matching external
+    intent launched `StartActivity` but its action never equalled
+    `Actions.ACTION_CONNECT` and nothing happened. The manifest now uses
+    `${applicationId}`; measured before/after on the emulator (nothing in the
+    app log vs. `Starting tinc daemon for network "phonenet"`).
+  - 🟢 (app, stream Y) after a successful join the "Join network" dialog is
+    re-shown when its `ConfigureActivity` is resumed, still holding the old
+    invitation. Cosmetic; not fixed.
   - 🟠 (core, stream A) `tinc join` and `tinc init` in YAML mode
     (`-c x/tinc.yaml`) write a classic `tinc.conf`/`hosts/` tree next to the
     YAML and never the YAML itself; the inviter times out the invitation. Until

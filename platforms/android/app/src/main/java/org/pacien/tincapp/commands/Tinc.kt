@@ -74,11 +74,18 @@ object Tinc {
     if (netName.isBlank())
       CompletableFuture.failedFuture(IllegalArgumentException("Network name cannot be blank."))
     else
-      Executor.call(Command(AppPaths.tinc().absolutePath)
-        .withOption("config", AppPaths.tincYamlFile(netName).absolutePath)
-        .withOption("net", netName)
-        .withArguments("join", invitationUrl))
-        .thenApply { it.joinToString("\n") }
+    // the core writes tinc.yaml into networks/<net>/ but does not create that
+    // directory: without it the join dies with "Could not lock ...tinc.yaml".
+    // A failed join leaves it empty, so it is taken back out again.
+      AppPaths.confDir(netName).let { dir ->
+        dir.mkdirs()
+        Executor.call(Command(AppPaths.tinc().absolutePath)
+          .withOption("config", AppPaths.tincYamlFile(netName).absolutePath)
+          .withOption("net", netName)
+          .withArguments("join", invitationUrl))
+          .thenApply { it.joinToString("\n") }
+          .whenComplete { _, _ -> if (dir.list()?.isEmpty() == true) dir.delete() }
+      }
 
   fun log(netName: String, level: Int? = null): Process =
     Executor.run(newCommand(netName)
