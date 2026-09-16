@@ -2262,6 +2262,74 @@ Defects identified during the source audit, to fix as their milestone is reached
   reason in each header and `testing/transports/README.md` updated to build
   `dev` / `dev-test` / `dev-noquic`. The accidental run was not wasted: it is
   the pre-fix arm of the live before/after now recorded against stream W above.
+- ~~🔴 **`tinc disconnect` killed the re-dial it had just started, so the carrier
+  of a running node could not be changed.**~~ **Found 2026-09-16 (owner),
+  resolved 2026-09-16 (stream AA).**
+  **Reproduction** (two node-image containers on one docker network, `a`
+  founding with `PORT=655`, `b` joined by invitation, both on the released
+  v0.1.1 build and on a locally built one):
+
+      docker exec b tincstack-cli set PreferredTransports obfs
+      docker exec b tincstack-cli reload
+      docker exec b tincstack-cli disconnect node_a
+
+  b logged, all inside one second, at `-d5`:
+
+      INFO  Carrier candidates for node_a: obfs,plain (… last activated plain)
+      INFO  Dialling node_a (10.77.3.2 port 655) via obfuscated single-flow UDP
+      INFO  Connected to node_a (10.77.3.2 port 655)
+      DEBUG Sending ID to node_a: 0 node_b 17.7
+      NOTICE Closing connection with node_a      <-- no error line, at any level
+      INFO  Carrier obfs failed for node_a, falling back to plain
+
+  and settled on `transport plain`; `sf`, `https` and `quic` behaved the same.
+  The control — `docker restart b`, the *same* configuration read at startup —
+  came up on `transport obfs` at once.
+  **Root cause** (not the reload path, which was measured innocent: with the
+  same config already reloaded, closing the link from the *other* node's side
+  put b straight onto obfs). `control.c` `REQ_DISCONNECT` walked
+  `connection_list` while `terminate_connection()` was appending to it:
+  terminating an outgoing connection re-dials on the spot
+  (`do_outgoing_connection()`), `connection_add()` puts the replacement at the
+  tail of the very list the loop is walking, `list_each` reaches it, the name
+  matches a second time — and the fresh dial is terminated before its ID line
+  is answered. Never activated, so `transport_next_candidate()` read it as a
+  carrier failure and fell back. It bit only when the address cache could
+  serve an address immediately (`get_recent_address()`, i.e. after a
+  confirmed UDP path); otherwise the re-dial was deferred 5 s to
+  `retry_outgoing()`, outside the loop, and the switch appeared to work —
+  which is why this looked like a reload defect.
+  **Fix** (`core/tincd/src/control.c`): snapshot the matching connections,
+  then terminate the snapshot, skipping any that an earlier termination
+  already freed. Plus two hardening changes: `terminate_connection()`
+  (`net.c`) now logs *"Dial to X (…) via <carrier> abandoned before the
+  connection was activated"* at DEBUG_CONNECTIONS, so "Carrier X failed" is
+  never unexplained, and `disconnect` names itself
+  (*"Disconnecting X (…) on operator request"*); and
+  `transport_read_config()` (`transport.c`) now runs the `init` hook of a
+  carrier that a reload has just added to `Transports` (they used to run once,
+  at startup, for the startup accept mask only — a latent gap found while
+  checking the suspects, dropping the carrier from the accept mask with an
+  error if its init fails rather than taking the daemon down).
+  **Measurements** (`tincstack/core:aa`, containers `wscs-*`):
+  `testing/transports/carrier-switch-test.sh` — new, in `SHELL_SCRIPTS`,
+  shellcheck-clean — restarts b on `plain`, waits for `udp_confirmed` (the
+  precondition that makes the re-dial immediate, without which the bug cannot
+  bite and the test would pass vacuously), then does `set` + `reload` +
+  `disconnect`: **PASS** for `plain→obfs`, `plain→sf`, `plain→https`,
+  `plain→quic` and `obfs→plain`, each activated on the requested carrier with
+  a 0 %-loss tunnel ping, `disconnect` logging its reason 5×. The same script
+  on a core built from `master` (988b8bd, `tincstack/core:aa-master`):
+  **FAIL** — `plain→obfs`, `plain→sf`, `plain→https` each `got 'plain'` and
+  `1x 'Carrier <c> failed'`, and `disconnect` logged nothing. The new
+  diagnostic shown in a live failing case (UDP to a DROP'd with iptables):
+  `Dial to node_a (…) via obfs abandoned before the connection was activated`
+  → `Carrier obfs failed … (1/3) but worked before, retrying it`.
+  Regressions re-run against the same image, all PASS:
+  `platforms/linux/docker/reload-test.sh`, `two-nodes.sh`,
+  `testing/smoke/run.sh`, `testing/transports/obfs-test.sh`,
+  `testing/transports/quic-carrier-test.sh` (with `tincstack/core:aa-noquic`),
+  `make lint`.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`

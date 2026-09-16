@@ -42,6 +42,21 @@ static bool control_ok(connection_t *c, int type) {
 	return control_return(c, type, 0);
 }
 
+/* Is this connection still on connection_list? connection_del() frees the
+   connection_t, so a pointer taken before a terminate_connection() may be
+   dangling; membership is the only safe test. connection_list is short (one
+   entry per peer plus the control connections), and `disconnect' is an
+   operator command, so the linear scan costs nothing that matters. */
+static bool connection_is_live(const connection_t *c) {
+	for list_each(connection_t, other, &connection_list) {
+		if(other == c) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool control_h(connection_t *c, const char *request) {
 	int type;
 
@@ -109,14 +124,46 @@ bool control_h(connection_t *c, const char *request) {
 			return control_return(c, REQ_DISCONNECT, -1);
 		}
 
+		/* Snapshot first, terminate second. terminate_connection() re-dials
+		   an outgoing connection there and then, and connection_add() appends
+		   that replacement to connection_list -- the very list this loop
+		   walks. Walking the live list therefore reached the fresh dial,
+		   matched its name a second time and killed it without a word; the
+		   carrier selector read that silent close as "this carrier failed"
+		   and fell back to the next candidate. That is why
+		   `tinc set PreferredTransports obfs; tinc reload; tinc disconnect
+		   <peer>' never left a running node on the new carrier -- the
+		   re-dial on the new carrier was killed by the same `disconnect'
+		   that asked for it (PLAN.md Known Issues, stream AA). A connection
+		   created while we work is by definition not one the operator asked
+		   to drop, so only the snapshot is terminated. */
+		list_t victims = {
+			.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+		};
+
 		for list_each(connection_t, other, &connection_list) {
 			if(strcmp(other->name, name)) {
 				continue;
 			}
 
+			list_insert_tail(&victims, other);
+		}
+
+		for list_each(connection_t, other, &victims) {
+			/* An earlier terminate_connection() in this same loop may have
+			   freed this one (a carrier close hook can drop a sibling
+			   connection to the same node). */
+			if(!connection_is_live(other)) {
+				logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Not disconnecting %s: it was already closed while this request was being served", name);
+				continue;
+			}
+
+			logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Disconnecting %s (%s) on operator request", other->name, other->hostname);
 			terminate_connection(other, other->edge);
 			found = true;
 		}
+
+		list_empty_list(&victims);
 
 		return control_return(c, REQ_DISCONNECT, found ? 0 : -2);
 	}
