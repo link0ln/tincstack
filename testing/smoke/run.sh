@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
 # Two-node docker compose smoke test (used by `make check`).
 # Generates keys + explicit tinc.yaml files for node1/node2 at run time (under
-# ./run/, git-ignored), brings both up with the core image in YAML mode and
+# ./run*/, git-ignored), brings both up with the core image in YAML mode and
 # asserts a ping across the tunnel in both directions. Exit 0 = pass.
+#
+# Usage: [LAB=prefix] [SUBNET=172.31.77] testing/smoke/run.sh
+#   LAB (default wsf) names the compose project and its network (<LAB>-smoke)
+#   and the run directory (./run for the default LAB, ./run-<LAB> otherwise);
+#   a non-default LAB also gets its own /24 (see ../transports/lab-env.sh).
+#   Two `make smoke` runs with different LABs can therefore share a host.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export CORE_IMAGE="${CORE_IMAGE:-tincstack/core:${WSF_TAG:-ws-f}}"
-NET=smoke
-RUN="$HERE/run"
+NET=smoke                           # the tinc network name inside the nodes
+DEFAULT_LAB=wsf; DEFAULT_SUBNET=172.31.77
+# shellcheck source=testing/transports/lab-env.sh
+. "$HERE/../transports/lab-env.sh"
+# compose.yml reads these three (with the historical values as its defaults, so
+# a bare `docker compose -f compose.yml down` still targets the default lab).
+export SMOKE_PROJECT="$LAB-smoke"
+export SMOKE_SUBNET="$SUBNET"
+if [ "$LAB" = "$DEFAULT_LAB" ]; then SMOKE_RUN=run; else SMOKE_RUN="run-$LAB"; fi
+export SMOKE_RUN
+RUN="$HERE/$SMOKE_RUN"
 compose() { docker compose -f "$HERE/compose.yml" "$@"; }
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
@@ -50,8 +65,8 @@ gen() {
     } > "$d/tinc.yaml"
     rm -rf "$tmp"
 }
-gen node1 172.31.77.11 10.79.0.1
-gen node2 172.31.77.12 10.79.0.2 "ConnectTo: [node1]"
+gen node1 "$SUBNET.11" 10.79.0.1
+gen node2 "$SUBNET.12" 10.79.0.2 "ConnectTo: [node1]"
 for n in node1 node2; do
     { echo "    hosts:"
       for m in node1 node2; do echo "      $m: |"; sed 's/^/        /' "$RUN/host-$m.txt"; done

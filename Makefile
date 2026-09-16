@@ -20,6 +20,10 @@
 # nat-quick, dpi-baseline), with TAG=ci and the core build cached in GHA.
 TAG ?= ws-f
 export WSF_TAG := $(TAG)
+# LAB names the smoke lab: the compose project and its network ($(LAB)-smoke),
+# its /24 and testing/smoke/run*. Two `make smoke LAB=...` runs with different
+# LABs can share a host; the default keeps the historical `wsf-smoke` names.
+LAB ?= wsf
 RUN ?= $(shell date +%Y-%m-%d)-$(shell date +%H%M%S)
 export WSF_RUN := $(RUN)
 DATE ?= $(shell date +%Y-%m-%d)
@@ -60,7 +64,7 @@ build-lab: build-core build-baseline
 	testing/nat-sim/lab.sh build
 
 smoke: build-core
-	testing/smoke/run.sh
+	LAB=$(LAB) testing/smoke/run.sh
 
 validate-nat: build-lab
 	testing/nat-sim/lab.sh validate-nat
@@ -83,4 +87,4 @@ lint:
 clean:
 	testing/nat-sim/lab.sh clean
 	-docker compose -f testing/smoke/compose.yml down -v --remove-orphans
-	rm -rf testing/smoke/run
+	rm -rf testing/smoke/run testing/smoke/run-*
