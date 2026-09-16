@@ -1245,13 +1245,20 @@ another network's addresses are dropped by the daemon's nft rules. Details:
     ``Removed script `…/host-up'``, file gone, `tinc-down` still there. The
     smoke test now ships its `tinc-up` as `scripts.tinc-up` and asserts
     `Wrote script`, no `built-in tinc-up`, mode 0700 → PASS on `ws-s`.
-  - 🟡 **Linux MASQUERADE is not endpoint-independent on kernels ≥ 6.7**
+  - ~~🟡 **Linux MASQUERADE is not endpoint-independent on kernels ≥ 6.7**
     (measured: first destination keeps the source port, every later
     destination shares one other port). Any tincstack node behind a current
     Linux router behaves like a symmetric NAT towards the *first* peer it
     talks to; `UDP_INFO` learned via the relay carries the relay-facing port.
     Deployment docs (M6) should say so; the core copes because the peer learns
-    the real port from the first authenticated datagram.
+    the real port from the first authenticated datagram.~~ **Documented
+    2026-09-16 (stream S):** `platforms/linux/docker/README.md` "NAT: a Linux
+    router in front of a node" — the first peer (relay) sees the stable port,
+    every other peer sees a symmetric NAT; what to do: `PORT` +
+    `PUBLIC_ADDRESS` with a port-forward (no mapping involved), keep one
+    public relay as everyone's first peer, or an EIM `SNAT` recipe on a
+    router you control (`testing/nat-sim/natprofile.sh` `fullcone`). The
+    measurement itself stays in `testing/nat-sim/README.md` (profile `masq`).
   - 🟢 `tinc info <peer>` reports "directly with UDP" from local state and
     keeps saying so after the peer restarted or the node slept, until a packet
     fails — a health check must send traffic (the lab pings).
