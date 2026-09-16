@@ -240,7 +240,31 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			return true;
 		}
 
-		if(from->sptps.label) {
+		if(from->sptps.label && from->sptps.initiator) {
+			/* REQ_KEY glare (patch 5): both peers started an SPTPS session as
+			   initiator in the same instant, so each is about to tear its own
+			   session down here and restart as responder. If both do that,
+			   neither side is an initiator, the handshake cannot complete, and
+			   recovery has to wait for the "No key from X after N seconds"
+			   timer — which, because both timers were armed together, fires on
+			   both sides at once and collides again (the seqno-livelock the
+			   M9 NAT lab measured). Break the tie deterministically: both
+			   sides evaluate the same rule on the same two names, so exactly
+			   one of them keeps its initiator session while the other yields.
+			   The node with the lexicographically smaller name wins and
+			   ignores the incoming request (its own KEX is already on the wire
+			   and the peer will answer it as responder). Wire-compatible: an
+			   unpatched peer always tears its own session down here, so at
+			   worst (patched node loses the tie against an unpatched peer)
+			   the behaviour is unchanged from stock and the old timer still
+			   recovers it — never worse. */
+			if(strcmp(myself->name, from->name) < 0) {
+				logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while our SPTPS session is pending; keeping ours (glare tie-break: we win)", from->name);
+				return true;
+			}
+
+			logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while our SPTPS session is pending; yielding as responder (glare tie-break: we lose)", from->name);
+		} else if(from->sptps.label) {
 			logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while we already started a SPTPS session!", from->name);
 		}
 
