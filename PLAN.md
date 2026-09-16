@@ -437,10 +437,6 @@ this order (cheapest / most-contained first). Full wire formats go in
   - *(the stream-F `testing/dpi-proof` harness is not on master yet, so the
     before/after tcpdump comparison is done in obfs-test.sh instead, as the brief
     allows.)*
-- [ ] 🟠 **Certificate automation, shared by HTTPS front and QUIC** (decision 1).
-  Config surface per schema. **Proof:** `testing/dpi-proof` shows the SPTPS
-  fingerprint absent on the wire and a tunnel that comes up from cold; relay path
-  intact.
 - [x] 🟠 **Certificate automation, shared by HTTPS front and QUIC** (decision 1).
   `TlsCert`/`TlsKey` if set; else generate a self-signed cert at first start
   and persist it in the YAML (`keys.tls_cert`/`keys.tls_key`), reused on every
@@ -1261,6 +1257,16 @@ milestone as "Found during Mk" (consolidated into Known Issues at merge).
 | E | M8 | `platforms/android/` | M1 |
 | F | M9 | `testing/nat-sim/`, `testing/dpi-proof/` skeleton | core as built |
 | G | M5 | carriers, cert automation, decoy, obfs CLI | **B merged** |
+| H | M6 consolidation | Linux compose vs schema naming | C merged |
+| Q | M5 QUIC design | `docs/transports.md` §9, ngtcp2 spike | — |
+| G1 / G2 / G3 | M5 | https carrier / obfs tier / QUIC carrier | G design, Q |
+| R | security | adversarial review + fuzz of M1–M4, read-only over M5 (`core/tincd/test/fuzz/`, `docs/security-review-2026-09.md`) | A–E merged |
+| K | M9 finding | REQ_KEY glare tie-break (patch 5, `protocol_key.c`, `net_packet.c`) | F merged |
+| L | review R | R-1, M5-1, M5-7…M5-11, L-1 (`transport.c` front, `decoy.*`, `https.c`, `tls.c`) | R merged |
+| O | review R | M5-2…M5-6, R-10 (`obfs.c`, `transport_sf.c`) | R, G2 merged |
+
+Merged into master, in order: A, B, C, D, E, H, G2, Q, G1, F, R, G2 (test
+hardening), K, L, G3. Running: O.
 
 ## Decisions taken (2026-09-16, owner confirmed)
 
