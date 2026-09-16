@@ -2296,6 +2296,18 @@ Defects identified during the source audit, to fix as their milestone is reached
     invitations from the same founder) must be run against classic
     `tinc.conf` + `hosts/` too before blaming YAML mode. **Dispatched as
     stream AC.**
+    **Corroborated 2026-09-16 on a fourth node**: the router (aarch64, its own
+    cross-built arm64 image, `10.170.0.4`) joined the same founder and
+    reproduced every line of this -- including the punchline. `router` and
+    `laptop` are on the *same LAN* (the router is the workstation's gateway;
+    both appear to ruvds2 as 79.139.184.85), and their tunnel traffic is
+    relayed through a VPS in another country: `router -> laptop` 33.4 ms
+    average where the wire is under a millisecond, `router -> euvds` 61.3 ms,
+    `router -> ruvds2` (its only direct link) 26.7 ms. Each first burst also
+    loses its first two packets while the relay path settles (2 of 5 here,
+    2 of 10 on the three-node stand): nothing is queued while a path is set
+    up. That part is upstream behaviour and is only visible because every
+    leaf pair keeps having to establish one.
 - 🟡 **Defect D — `Transports` is not propagated past one hop.** Same stand,
   same `dump nodes`: ruvds2 lists both leaves as
   `transports plain,sf,obfs,https,quic`, but each leaf lists the *other* leaf
