@@ -56,7 +56,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <intent-filter>
-                <action android:name="org.pacien.tincapp.intent.action.CONNECT" />
+                <!-- the code builds these from the applicationId (intent/Actions.kt); a
+                     hardcoded org.pacien.* name here would never match -->
+                <action android:name="${applicationId}.intent.action.CONNECT" />
                 <data android:scheme="tinc" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
@@ -72,7 +74,7 @@
             android:configChanges="orientation|screenSize"
             android:exported="true">
             <intent-filter>
-                <action android:name="org.pacien.tincapp.intent.action.DISCONNECT" />
+                <action android:name="${applicationId}.intent.action.DISCONNECT" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
