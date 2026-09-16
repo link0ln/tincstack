@@ -1447,6 +1447,11 @@ registry image.
   - `release` — `git archive` of the tag as the Linux artefact, then
     `gh release create` with every artefact and notes that spell out the pull
     commands.
+  - A `meta` job decides the version and whether anything leaves the run, so
+    **"Run workflow" from the Actions tab is a dry run**: everything builds and
+    is tested and the artefacts are attached to the workflow run, but no image
+    is pushed and no release is created. That is how the pipeline gets proven
+    before the first real tag, without publishing one.
 - [x] **`platforms/linux/docker/compose.release.yml`** — the same node service
   with **no build section**, image
   `ghcr.io/link0ln/tincstack/node:${TINCSTACK_VERSION:-latest}`

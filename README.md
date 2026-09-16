@@ -72,6 +72,10 @@ workflow *before* they are pushed, so a published tag is one that ran.
 git tag -a v0.1.0 -m "…" && git push origin v0.1.0
 ```
 
+To prove the pipeline without publishing anything, run the `release` workflow
+manually from the Actions tab: it builds and tests everything and attaches the
+artefacts to the run, but pushes no image and creates no release.
+
 Optional repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`,
 `ANDROID_KEY_PASSWORD` and `ANDROID_STORE_PASSWORD` sign the APK; without them
 the asset is published as `-unsigned`.
