@@ -128,6 +128,13 @@ typedef struct outgoing_t {
 	transport_id_t candidates[TRANSPORT_MAX];
 	int ncandidates;
 	int transport_idx;
+
+	/* The carrier that last activated a link we dialled to this peer
+	   (TRANSPORT_BIT mask, 0 = none yet) and how many times in a row it has
+	   since failed before activation. It is abandoned only after
+	   TRANSPORT_STICKY_FAILURES such failures (docs/transports.md §2). */
+	uint32_t last_ok_mask;
+	int last_ok_failures;
 } outgoing_t;
 
 typedef struct ports_t {
