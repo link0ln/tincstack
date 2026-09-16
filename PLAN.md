@@ -1320,8 +1320,12 @@ milestone as "Found during Mk" (consolidated into Known Issues at merge).
 | L | review R | R-1, M5-1, M5-7…M5-11, L-1 (`transport.c` front, `decoy.*`, `https.c`, `tls.c`) | R merged |
 | O | review R | M5-2…M5-6, R-10 (`obfs.c`, `transport_sf.c`) | R, G2 merged |
 
+| N | review L-2 | carrier retention across link drops (`transport.c` candidates, `net.c`) | L, G3 merged |
+| S | M2/M9 findings | `scripts:` stanza sync, MASQUERADE note, R-13/R-14 | R merged |
+| T | M9 infra | run-scoped lab results, curated evidence, `LAB=` for proofs, CI workflow | F, K merged |
+
 Merged into master, in order: A, B, C, D, E, H, G2, Q, G1, F, R, G2 (test
-hardening), K, L, G3. Running: O.
+hardening), K, L, G3, S, T, N, O. No stream running.
 
 ## Decisions taken (2026-09-16, owner confirmed)
 
@@ -1383,11 +1387,12 @@ Defects identified during the source audit, to fix as their milestone is reached
   **Resolved 2026-09-16** by decision 3: founding node materialises `655`,
   invitees `0` (verified: empty file → listens on 655; `ConnectTo` present →
   ephemeral).
-- 🟠 **`tinc invite` phones home to `tinc-vpn.org/host.cgi`** to discover the
-  external address when no `Address` is configured (upstream behaviour). For a
-  circumvention product this is a network fingerprint and, on a filtered
-  network, a connect stall. Found in M1. Fix in M2/M6: make discovery opt-in
-  and have the Linux entrypoint set `Address` explicitly.
+- ~~🟠 **`tinc invite` phones home to `tinc-vpn.org/host.cgi`** to discover the
+  external address when no `Address` is configured (upstream behaviour).~~
+  **Resolved 2026-09-16:** discovery is opt-in (`AddressDiscovery = yes`,
+  `invitation.c get_my_hostname`, M2) and the Linux entrypoint writes
+  `Address` from `PUBLIC_ADDRESS` (M6). Without both, `tinc invite` uses the
+  local-address hint below and warns.
 - 🟡 **Local-address fallback for invitations is only a hint.** M1 added a
   last-resort fallback (default-route source address) so a zero-config node can
   invite without a TTY; behind NAT it yields a private address. It prints a
@@ -1409,12 +1414,15 @@ Defects identified during the source audit, to fix as their milestone is reached
   `HAVE_WINDOWS`, local `mem_has()`); `core/Dockerfile.build-win` builds
   `tincd.exe`/`tinc.exe` again (PE32+, DLLs: ADVAPI32, IPHLPAPI, KERNEL32,
   msvcrt, USER32, WS2_32); Linux `tls-front-test.sh` PASS after the change.
-- 🟠 **tinc-manager save is non-atomic** over the only copy of the private keys
-  (truncate-in-place). Fix in M7.
-- 🟠 **tinc-manager daemon log grows unbounded** (rotation only at start; 13 MB
-  observed). Fix in M7.
-- 🟠 **tincapp CMake points at a missing path** → last APK was vanilla tinc, not a
-  fork. Fix in M8 (blocker for M8).
+- ~~🟠 **tinc-manager save is non-atomic** over the only copy of the private keys
+  (truncate-in-place).~~ **Resolved in M7** (`yaml_config.atomic_write_text`,
+  merge against the daemon's concurrent writes; tests listed in M7).
+- ~~🟠 **tinc-manager daemon log grows unbounded** (rotation only at start; 13 MB
+  observed).~~ **Resolved in M7** (`runtime.LogSink`, 2 MB × 2 backups while
+  running; tests listed in M7).
+- ~~🟠 **tincapp CMake points at a missing path** → last APK was vanilla tinc, not a
+  fork.~~ **Resolved in M8:** CMake dropped, `platforms/android/native/build-core.sh`
+  does an NDK meson cross-build of `core/tincd` per ABI (proof in M8).
 - 🟡 **YAML write-back re-emits the whole file**, dropping comments/formatting;
   editors must not rely on comment round-tripping. Documented in schema.
 - 🟡 **sendmmsg relay batching measured worse** by its author. Keep default-off or
