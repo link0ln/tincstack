@@ -138,8 +138,10 @@ jobs:
       - name: Assert the artefacts are PE32+ binaries
         run: |
           docker run --rm -v "$PWD/dist/windows:/w:ro" debian:12-slim \
-            sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends file >/dev/null \
-                   && file /w/tincd.exe /w/tinc.exe | tee /dev/stderr | grep -qc "PE32+ executable" '
+            sh -c 'apt-get update >/dev/null \
+                   && apt-get install -y --no-install-recommends file >/dev/null \
+                   && file /w/tincd.exe /w/tinc.exe | tee /dev/stderr \
+                      | grep -c "PE32+ executable" | grep -qx 2'
 
       - name: Package
         run: |

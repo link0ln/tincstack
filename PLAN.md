@@ -1471,8 +1471,17 @@ registry image.
   `Sec-WebSocket-Key` handshake nonces, upstream's public ED25519 test vector)
   instead of silencing the rule, so a genuinely new secret still fails. Current
   state: `no leaks found` over 105 commits.
-- [ ] **Not yet proven: an actual tag has not been pushed.** Every step above is
-  static verification. The first `v*` tag is the real test, and the two most
+- [x] **Two of the four jobs' steps were run by hand on the dev host**, so the
+  first tag is not their first execution: the node image built with
+  `--build-arg CORE_IMAGE=…` and a container started from it reached ` Ready`,
+  answered `tincstack-cli pid` and had materialised a `Name`, all from an empty
+  volume; the mingw cross-build produced both exes and `file` reported
+  `PE32+ executable (console) x86-64` for each (the workflow asserts the count
+  is 2, not merely ≥ 1). The `images` job's smoke step is the same
+  `testing/smoke/run.sh` that runs green here every day.
+- [ ] **Not yet proven: an actual tag has not been pushed.** The `android` job
+  is the one with no local equivalent — this host has no Android SDK and is not
+  getting one. Everything below is static verification. The first `v*` tag is the real test, and the two most
   likely failures are named here so they are not a surprise: the Android job
   depends on `android-actions/setup-android` providing
   `ndk;26.1.10909125`, and `ghcr.io` package creation needs the repository's
