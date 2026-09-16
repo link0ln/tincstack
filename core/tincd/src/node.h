@@ -119,6 +119,7 @@ typedef struct node_t {
 
 	uint32_t transports;                    /* carriers this node accepts (TRANSPORT_BIT mask); 0 = unknown, treated as plain */
 	char *tls_fingerprint;                  /* pinned SHA-256 of its TLS cert (hex), or NULL if unknown */
+	time_t last_req_pubkey;                 /* Last time a bare REQ_PUBKEY was relayed towards this node (rate limit) */
 } node_t;
 
 extern struct node_t *myself;

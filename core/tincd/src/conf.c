@@ -360,7 +360,20 @@ bool read_config_file(splay_tree_t *config_tree, const char *fname, bool verbose
 	fp = config_fopen(fname, "r");
 
 	if(!fp) {
-		logger(verbose ? DEBUG_ALWAYS : DEBUG_CONNECTIONS, LOG_ERR, "Cannot open config file %s: %s", fname, strerror(errno));
+		/* Only read_host_config() passes verbose = false, and it does so
+		   exactly where an absent host record is a normal state: a node we
+		   know from the meta graph but were never handed a record for (see
+		   defect C). Logging that at LOG_ERR put a line in the operator's
+		   journal at the default -d1 for every such probe -- several per dial
+		   attempt, forever, while the pair stayed relayed. The verbose callers
+		   (fsck, `tinc export`, the explicit key reads) are unchanged and
+		   still report loudly. */
+		if(verbose) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Cannot open config file %s: %s", fname, strerror(errno));
+		} else {
+			logger(DEBUG_PROTOCOL, LOG_DEBUG, "Cannot open config file %s: %s", fname, strerror(errno));
+		}
+
 		return false;
 	}
 
