@@ -118,6 +118,15 @@ struct obfs_link_t {
 	   most one offer per second per link by last_selfheal. */
 	bool need_selfheal;        /* set on the send path, consumed by the timer */
 	time_t last_selfheal;      /* last time we re-issued a self-heal offer */
+
+	/* Cached UDP-payload budget toward this peer (see obfs_link_budget). The
+	   budget is consulted for every frame, so the kernel query behind it is
+	   cached for OBFS_PATH_TTL seconds; clearing have_budget means "ask again
+	   now". */
+	size_t path_budget;
+	time_t path_time;
+	bool have_budget;          /* path_budget/path_time hold a real answer */
+	time_t last_toobig;        /* rate limit for the "does not fit" log line */
 };
 
 static list_t obfs_links = {
@@ -317,10 +326,141 @@ void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr) {
 	l->active = true;
 
 	if(addr) {
+		if(!l->have_addr || sockaddrcmp(addr, &l->addr)) {
+			l->have_budget = false;   /* new peer address: the cached budget is stale */
+		}
+
 		l->addr = *addr;
 		sockaddrunmap(&l->addr);
 		l->have_addr = true;
 	}
+}
+
+/* ---- path budget ---------------------------------------------------------
+
+   How many bytes of UDP payload the path toward a peer can carry. tinc sets
+   IP_MTU_DISCOVER on its sockets, so anything larger comes back as EMSGSIZE
+   rather than being fragmented; every obfs size decision is made against this
+   number instead of against a compile-time constant.
+
+   The number comes from the kernel's route MTU toward that exact peer, read
+   from a throwaway connected socket the same way choose_initial_maxmtu() does
+   in net_packet.c. That is deliberately the same source tinc's own PMTU
+   discovery starts from, and it also picks up a path MTU the kernel learned
+   from an ICMP "fragmentation needed" -- so a path that shrinks under us is
+   followed within one OBFS_PATH_TTL, without obfs running a probe machine of
+   its own. When the kernel will not say (no IP_MTU on this platform, or the
+   query fails) we assume OBFS_SAFE_MTU, the largest value that is safe on any
+   path; junk then gets smaller, but it is never dropped. */
+
+static size_t obfs_ip_overhead(const sockaddr_t *sa) {
+	return (sa->sa.sa_family == AF_INET6 ? 40 : 20) + 8; /* IP header + UDP header */
+}
+
+static size_t obfs_query_budget(const sockaddr_t *sa) {
+	size_t ovh = obfs_ip_overhead(sa);
+	size_t fallback = OBFS_SAFE_MTU - ovh;
+
+#if defined(IP_MTU) || defined(IPV6_MTU)
+	int fd = socket(sa->sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
+
+	if(fd < 0) {
+		return fallback;
+	}
+
+	size_t budget = fallback;
+
+	if(!connect(fd, &sa->sa, SALEN(sa->sa))) {
+		int mtu = 0;
+		socklen_t len = sizeof(mtu);
+		int ok;
+
+		if(sa->sa.sa_family == AF_INET6) {
+#ifdef IPV6_MTU
+			ok = getsockopt(fd, IPPROTO_IPV6, IPV6_MTU, (void *)&mtu, &len);
+#else
+			ok = -1;
+#endif
+		} else {
+#ifdef IP_MTU
+			ok = getsockopt(fd, IPPROTO_IP, IP_MTU, (void *)&mtu, &len);
+#else
+			ok = -1;
+#endif
+		}
+
+		/* A kernel that reports something absurd (or smaller than the smallest
+		   frame we could ever emit) is ignored rather than trusted. */
+		if(!ok && mtu > (int)(ovh + OBFS_MIN_FRAME)) {
+			budget = (size_t)mtu - ovh;
+		}
+	}
+
+	closesocket(fd);
+	return budget;
+#else
+	return fallback;
+#endif
+}
+
+/* The link's budget, cached for OBFS_PATH_TTL seconds. */
+static size_t obfs_link_budget(obfs_link_t *l) {
+	if(!l->have_addr) {
+		return OBFS_SAFE_MTU - 48;   /* unknown peer family: assume the IPv6 shape */
+	}
+
+	if(l->have_budget && now.tv_sec >= l->path_time && now.tv_sec - l->path_time < OBFS_PATH_TTL) {
+		return l->path_budget;
+	}
+
+	l->path_budget = obfs_query_budget(&l->addr);
+	l->path_time = now.tv_sec;
+	l->have_budget = true;
+	return l->path_budget;
+}
+
+/* Fixed part of the seal for the shaping phase `init' selects: the optional
+   magic prefix, the nonce+clen header and the Poly1305 tag. */
+static size_t obfs_base_overhead(bool init) {
+	uint32_t magic = init ? obfs_init_magic : obfs_transport_magic;
+	return (magic ? OBFS_MAGIC_LEN : 0) + OBFS_HDR_LEN + OBFS_TAG_LEN;
+}
+
+/* Configured tail junk for that phase, clamped to the sane range. */
+static size_t obfs_header_junk(bool init) {
+	int junk = init ? obfs_init_header_junk : obfs_transport_header_junk;
+
+	if(junk < 0) {
+		return 0;
+	}
+
+	return junk > OBFS_MAX_JUNK ? OBFS_MAX_JUNK : (size_t)junk;
+}
+
+size_t obfs_max_inner(obfs_link_t *l, bool init) {
+	if(!l) {
+		return 0;
+	}
+
+	size_t budget = obfs_link_budget(l);
+	size_t fixed = obfs_base_overhead(init);
+	size_t junk = obfs_header_junk(init);
+
+	if(fixed >= budget) {
+		return 0;
+	}
+
+	size_t room = budget - fixed;
+
+	/* Junk is the obfuscation, so it is reserved BEFORE the payload: the meta
+	   stream is chunked, and giving up a few payload bytes only costs one more
+	   segment, whereas giving up junk costs traffic analysis resistance. Junk
+	   yields only once the payload would fall below OBFS_INNER_FLOOR. */
+	if(junk > room || room - junk < OBFS_INNER_FLOOR) {
+		junk = room > OBFS_INNER_FLOOR ? room - OBFS_INNER_FLOOR : 0;
+	}
+
+	return room - junk;
 }
 
 /* ---- session key handshake ----------------------------------------------- */
@@ -512,22 +652,31 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 		obfs_arm_selfheal();
 	}
 
-	int header_junk = init ? obfs_init_header_junk : obfs_transport_header_junk;
+	size_t header_junk = obfs_header_junk(init);
 	uint32_t magic = init ? obfs_init_magic : obfs_transport_magic;
-
-	if(header_junk < 0) {
-		header_junk = 0;
-	}
-
-	if(header_junk > OBFS_MAX_JUNK) {
-		header_junk = OBFS_MAX_JUNK;
-	}
 
 	size_t mlen = magic ? OBFS_MAGIC_LEN : 0;
 	size_t clen = inlen + OBFS_TAG_LEN;
 
-	if(clen > 0xffff || mlen + OBFS_HDR_LEN + clen + (size_t)header_junk > outcap) {
+	if(clen > 0xffff || mlen + OBFS_HDR_LEN + clen + header_junk > outcap) {
 		return 0;
+	}
+
+	/* Tail junk must fit the PATH, not just the buffer. A datagram over the
+	   path MTU is refused by the kernel with EMSGSIZE (tinc sets DF), and the
+	   junk options were clamped only against the constant OBFS_MAX_JUNK, so a
+	   configured ObfsInitHeaderJunkSize could make every handshake frame
+	   unsendable and hang the dial until the SYN retries ran out. Shrink the
+	   junk to what is left of the budget rather than dropping the datagram:
+	   callers that can chunk (the single-flow carrier, via obfs_max_inner)
+	   have already reserved room for the full junk, so this only bites the
+	   SPTPS data path, where the overshoot is reported instead (see
+	   obfs_wrap_send) and tinc's PMTU discovery lowers the packet size. */
+	size_t base = mlen + OBFS_HDR_LEN + clen;
+	size_t budget = obfs_link_budget(l);
+
+	if(base + header_junk > budget) {
+		header_junk = base < budget ? budget - base : 0;
 	}
 
 	uint64_t counter = ks->ctr_tx++;
@@ -556,10 +705,10 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 	}
 
 	if(header_junk) {
-		randomize(out + mlen + OBFS_HDR_LEN + clen, (size_t)header_junk);
+		randomize(out + mlen + OBFS_HDR_LEN + clen, header_junk);
 	}
 
-	return mlen + OBFS_HDR_LEN + clen + (size_t)header_junk;
+	return mlen + OBFS_HDR_LEN + clen + header_junk;
 }
 
 /* Try to unseal one datagram with keyset `ks' assuming a `mlen'-byte magic
@@ -673,9 +822,30 @@ static bool obfs_replay_ok(obfs_replay_t *w, uint64_t seq) {
 
 /* ---- sending ------------------------------------------------------------- */
 
-bool obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to) {
+/* A datagram we decided not to emit because it would not fit the path. This is
+   the normal working end of PMTU discovery on an obfs link -- the caller lowers
+   the packet size and the next one fits -- so it is logged at DEBUG_TRAFFIC,
+   exactly like the plain path's EMSGSIZE, and rate-limited to one line per
+   second per link. The size and the budget are both in it, because "Message too
+   long" on its own never said how much smaller the datagram had to get. */
+static void obfs_log_toobig(obfs_link_t *l, size_t size, size_t budget) {
+	if(l->last_toobig == now.tv_sec) {
+		return;
+	}
+
+	l->last_toobig = now.tv_sec;
+	logger(DEBUG_TRAFFIC, LOG_INFO,
+	       "obfs datagram of %zu bytes would not fit the path to %s (%s) (usable UDP payload %zu bytes); reducing the packet size",
+	       size, l->node ? l->node->name : "?", l->node ? l->node->hostname : "?", budget);
+}
+
+obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
+	if(excess) {
+		*excess = 0;
+	}
+
 	if(!to) {
-		return false;
+		return OBFS_SEND_PLAIN;
 	}
 
 	obfs_link_t *l = NULL;
@@ -688,7 +858,27 @@ bool obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t l
 	}
 
 	if(!l) {
-		return false; /* not an obfs link: caller sends the datagram unchanged */
+		return OBFS_SEND_PLAIN; /* not an obfs link: caller sends the datagram unchanged */
+	}
+
+	/* The SPTPS data path cannot chunk: tinc sized this datagram to what it
+	   believes the path carries, which knows nothing about the seal. Check the
+	   sealed size against the path budget BEFORE the kernel does, and report
+	   the exact overshoot so the caller can lower the packet size by precisely
+	   that much in one step (reduce_mtu in net_packet.c). The seal is counted
+	   with its configured steady-state junk on it: junk is part of what the
+	   path has to carry, so it is the tunnel MTU that yields, not the junk. */
+	size_t budget = obfs_link_budget(l);
+	size_t need = obfs_base_overhead(false) + len + obfs_header_junk(false);
+
+	if(need > budget) {
+		obfs_log_toobig(l, need, budget);
+
+		if(excess) {
+			*excess = need - budget;
+		}
+
+		return OBFS_SEND_TOOBIG;
 	}
 
 	uint8_t frame[OBFS_MAX_OVERHEAD + MAXSIZE + OBFS_MAX_JUNK];
@@ -696,14 +886,39 @@ bool obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t l
 
 	if(!flen) {
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Could not obfs-wrap a %zu-byte datagram to %s", len, to->name);
-		return true; /* it is an obfs link; dropping the datagram beats leaking it in the clear */
+		return OBFS_SEND_OK; /* it is an obfs link; dropping the datagram beats leaking it in the clear */
 	}
 
 	if(sendto(listen_socket[sock].udp.fd, (void *)frame, flen, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
+		if(sockmsgsize(sockerrno)) {
+			/* The kernel refused a datagram our own budget said would fit: the
+			   path shrank under the cached value, or it would not tell us the
+			   route MTU and the assumption was too generous. Unlike the check
+			   above, this is NOT the normal course of events, so it is loud and
+			   carries the size that failed. Re-ask for the budget now and report
+			   the overshoot against the fresh answer, so the next datagram is
+			   sized correctly instead of failing the same way. */
+			l->have_budget = false;
+			budget = obfs_link_budget(l);
+
+			if(excess) {
+				*excess = flen > budget ? flen - budget : 1;
+			}
+
+			if(l->last_toobig != now.tv_sec) {
+				l->last_toobig = now.tv_sec;
+				logger(DEBUG_ALWAYS, LOG_WARNING,
+				       "The path to %s (%s) refused a %zu-byte obfs datagram: %s; usable UDP payload is now %zu bytes",
+				       to->name, to->hostname, flen, sockstrerror(sockerrno), budget);
+			}
+
+			return OBFS_SEND_TOOBIG;
+		}
+
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Error sending obfs datagram to %s (%s): %s", to->name, to->hostname, sockstrerror(sockerrno));
 	}
 
-	return true;
+	return OBFS_SEND_OK;
 }
 
 void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
@@ -718,6 +933,26 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 		hi = OBFS_MAX_JUNK;
 	}
 
+	/* Junk datagrams go on the wire as they are, so they are bounded by the
+	   path too -- ObfsJunkPacketMaxSize up to OBFS_MAX_JUNK (1400) plus IP/UDP
+	   is 1428 bytes, which does not fit a 1400-byte path. The whole burst goes
+	   to one address, so the budget is queried once, not per datagram. Junk is
+	   made to fit, never skipped: the obfuscation is the point of it. */
+	int budget = (int)(obfs_query_budget(addr));
+
+	if(hi > budget) {
+		hi = budget;
+	}
+
+	if(lo > hi) {
+		lo = hi;
+	}
+
+	if(hi < 1) {
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Path to the peer carries no usable UDP payload; obfs junk skipped");
+		return;
+	}
+
 	uint8_t junk[OBFS_MAX_JUNK];
 
 	for(int i = 0; i < obfs_junk_count; i++) {
@@ -727,6 +962,10 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 		randomize(junk, (size_t)size);
 
 		if(sendto(listen_socket[sock].udp.fd, (void *)junk, (size_t)size, 0, &addr->sa, SALEN(addr->sa)) < 0 && !sockwouldblock(sockerrno)) {
+			/* Never silent: the old code broke out of the loop without a word,
+			   so a junk burst that the path refused looked exactly like a burst
+			   that was sent. */
+			logger(DEBUG_CONNECTIONS, LOG_WARNING, "Error sending a %d-byte obfs junk datagram: %s", size, sockstrerror(sockerrno));
 			break;
 		}
 	}

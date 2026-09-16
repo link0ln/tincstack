@@ -659,6 +659,78 @@ A frame is in the *handshake phase* until its single-flow session is
 established (the peer has acknowledged); after that it uses the transport-phase
 knobs.
 
+### obfs and the path MTU (stream AB)
+
+tinc sets `IP_MTU_DISCOVER` on its UDP sockets, so nothing is fragmented: a
+datagram larger than the path MTU comes back as `EMSGSIZE` ("Message too long")
+and is simply not sent. Everything obfs adds — the seal and the junk — therefore
+has to be counted against the path, not against a compile-time constant.
+
+**The arithmetic.** With IPv4 the usable UDP payload is `pathMTU − 20 − 8`. On
+top of the inner frame obfs puts
+
+| part | bytes |
+|---|---|
+| magic prefix (`Obfs*MagicHeader`, optional) | 0 or 4 |
+| nonce + `clen` (`OBFS_HDR_LEN`) | 10 |
+| Poly1305 tag | 16 |
+| tail junk (`Obfs*HeaderJunkSize`) | 0 … `OBFS_MAX_JUNK` (1400) |
+
+so the fixed seal costs 26 bytes (30 with a magic header). The two things it
+wraps are a single-flow frame (`SF_HDR_LEN` 24 + up to `SF_MAX_PAYLOAD` 1200)
+and an SPTPS data datagram (8 relay ids + the tinc packet + 21 bytes of SPTPS
+overhead). The second one is the trap: `choose_initial_maxmtu()` sizes a tinc
+packet as `pathMTU − IP − UDP − SPTPS − relay ids`, i.e. so that the datagram is
+*exactly* the path MTU — it knows nothing about a carrier. Adding the seal put
+every full-size data datagram 26 bytes over the path **on every path, 1500-byte
+docker bridges included**, and a configured `ObfsInitHeaderJunkSize` could put
+every handshake frame up to 1400 bytes over it.
+
+**What it does now.**
+
+- Every size is measured against a **per-link path budget**: the kernel's route
+  MTU toward that peer (`getsockopt(IP_MTU)` / `IPV6_MTU` on a throwaway
+  connected socket — the same source `choose_initial_maxmtu()` uses, so it also
+  reflects a PMTU the kernel learned from an ICMP "fragmentation needed") minus
+  the IP and UDP headers. It is cached for 10 s per link, because it is
+  consulted per frame, and re-queried immediately when the peer address moves or
+  the kernel refuses a datagram anyway. When the kernel will not answer (a
+  platform with no `IP_MTU`), obfs assumes 1280 bytes, the IPv6 minimum link
+  MTU — the largest value that is safe on any path.
+- **Junk is made to fit, never dropped.** It is the obfuscation, so it is
+  reserved *before* the payload: the single-flow carrier asks `obfs_max_inner()`
+  how much room is left after the seal and the configured junk and chunks the
+  meta stream against that, so shaping costs one extra segment rather than a
+  datagram the kernel refuses. Junk yields only if the payload would fall below
+  `OBFS_INNER_FLOOR` (256 bytes). Standalone junk datagrams
+  (`ObfsJunkPacketMaxSize`) are clamped to the budget the same way.
+- **The data path cannot chunk**, so instead it reports. `obfs_wrap_send()`
+  returns `OBFS_SEND_TOOBIG` with the exact number of bytes that did not fit and
+  `send_sptps_data()` feeds that to `reduce_mtu()` — the same contract the quic
+  carrier already had, except that obfs knows the overshoot, so PMTU discovery
+  converges **in one probe** instead of losing every top-end probe silently.
+- **`EMSGSIZE` is never silent.** A kernel refusal on the data path logs the
+  size that failed and the re-queried budget at `DEBUG_ALWAYS` and re-enters the
+  same `reduce_mtu()` path. A single-flow frame the path refuses fails the
+  session immediately (`sf_send_frame`) instead of letting three retransmissions
+  of identical bytes time out, so the carrier fails over to the next entry in
+  `PreferredTransports` at once rather than after ~3.5 s of apparent hang.
+
+Measured: on a 1400-byte docker network with `ObfsInitHeaderJunkSize: 1400`, the
+released core logged four `Error sending single-flow frame: Message too long`
+lines and then `Carrier obfs failed for nodeb, falling back to plain`; with the
+fix the same lab comes up on obfs, the largest datagram on the wire is 1372
+bytes (exactly the budget) and tinc fixes its MTU to 1273 after one probe. On a
+1500-byte network the fixed MTU is 1413 — below the 1443 a plain link reaches,
+which is the seal being accounted for. The proof is
+`testing/transports/obfs-mtu-test.sh`.
+
+Limits: the budget is only as good as the kernel's route MTU. A middlebox that
+silently drops oversized datagrams without sending ICMP is invisible to it, and
+tinc's own PMTU probing (which now converges) is what covers that case for the
+data path; the meta path relies on single-flow frames being at most 1254 bytes
+sealed, which fits any path of 1282 bytes or more.
+
 ### Cold-start classification (defect 3)
 
 obfs frames look random, so `transport_classify_udp` cannot spot them and

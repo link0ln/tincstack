@@ -79,6 +79,25 @@ typedef struct obfs_link_t obfs_link_t;
 #define OBFS_MAX_OVERHEAD (OBFS_MAGIC_LEN + OBFS_HDR_LEN + OBFS_TAG_LEN)
 #define OBFS_MAX_JUNK  1400
 
+/* ---- path budget ---------------------------------------------------------
+
+   tinc sets IP_MTU_DISCOVER (DF) on its UDP sockets, so a datagram larger than
+   the path MTU is not fragmented: the kernel refuses it with EMSGSIZE. obfs
+   adds OBFS_MAX_OVERHEAD plus up to OBFS_MAX_JUNK bytes of tail padding on TOP
+   of a frame tinc already sized to the path, so every shaping option could push
+   a datagram over the path MTU. Sizes are therefore computed against a per-link
+   budget -- the UDP payload the path toward that peer can carry -- and never
+   against a constant. See docs/transports.md, "obfs and the path MTU".
+
+   OBFS_SAFE_MTU is what we assume when the kernel cannot tell us the route MTU
+   (no IP_MTU/IPV6_MTU, or the query fails): the IPv6 minimum link MTU, the
+   largest value that is safe everywhere. OBFS_INNER_FLOOR is the smallest inner
+   payload we will squeeze a link down to before we start cutting junk instead:
+   below it the meta stream would be chunked into uselessly small segments. */
+#define OBFS_SAFE_MTU     1280
+#define OBFS_PATH_TTL     10   /* seconds a cached per-link path budget is kept */
+#define OBFS_INNER_FLOOR  256
+
 /* Length of the per-link seed exchanged over the meta channel for the session
    key, and of the base64 that carries it on the wire. */
 #define OBFS_SEED_LEN 32
@@ -143,11 +162,28 @@ void obfs_session_start(connection_t *c);
    ready, else the bootstrap key. */
 size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init);
 
+/* Largest inner payload this link can seal without the sealed datagram
+   exceeding the path MTU, with the configured tail junk still on it. The
+   single-flow carrier chunks the meta stream against this, so shaping never
+   costs a datagram: the stream simply takes one more segment. `init' selects
+   handshake shaping (init magic + ObfsInitHeaderJunkSize) over steady-state. */
+size_t obfs_max_inner(obfs_link_t *l, bool init);
+
 /* SPTPS data path: if `to' is an active obfs link, seal `buf' and send it on
-   listen_socket[sock], returning true. Returns false when `to' is not an obfs
-   link, so the caller sends the datagram unchanged (byte-identical to plain
-   tinc when obfs is not in use). */
-bool obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to);
+   listen_socket[sock]. See obfs_send_t; on OBFS_SEND_TOOBIG *excess holds how
+   many bytes over the path budget the sealed datagram would have been, so the
+   caller can hand the exact overshoot to tinc's PMTU machinery. */
+typedef enum obfs_send_t {
+	/* `to' is not an obfs link: the caller sends the datagram unchanged, so the
+	   wire is byte-identical to plain tinc when obfs is not in use. */
+	OBFS_SEND_PLAIN = 0,
+	/* Sealed and handed to the socket. */
+	OBFS_SEND_OK,
+	/* Does not fit the path; the caller treats it exactly like EMSGSIZE. */
+	OBFS_SEND_TOOBIG,
+} obfs_send_t;
+
+obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
 
 /* ---- inbound ------------------------------------------------------------- */
 
