@@ -1,6 +1,18 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-16 (M9 closed by stream F; M10 publishing/release pipeline added, untested until the first tag; sendmmsg batching dropped; REQ_KEY glare fixed by stream K)
+**Last Updated:** 2026-09-16 (M7 and M8 closed by streams X and Y; M10 publishing/release pipeline added, untested until the first tag; sendmmsg batching dropped)
+
+**Regression state of `master` after merging streams X and Y** — every proof below
+was run on a fresh build of this tree (`tincstack/core:nosendmmsg`, the tag name
+is just the build that dropped the sendmmsg path) on 2026-09-16, each exit 0:
+`classify` (37 checks, 0 failures), `singleflow` ("relay path intact"),
+`tls-front`, `https-carrier`, `quic-carrier` (with a `QUIC=disabled` second
+image), `obfs` ("relay intact"), `matrix` (needs `-Dtransport_test=true`),
+`smoke`, `two-nodes`, `yaml-scripts`, `reload-test`, the fuzz gate (6 harnesses
++ `yamlconf_props`, all ok), `make lint`, `make secrets` ("no leaks found"),
+`actionlint`, the Windows cross-build and `tincmgr.exe` end to end.
+`obfs-rekey-test` is deliberately **not** in that list: stream W is changing
+`obfs.c`, so it is re-run after that merge, not before.
 
 A self-hosted mesh VPN distribution on a hardened tinc 1.1 core, with opt-in
 circumvention transports and per-platform delivery (Linux/Windows/Android).
