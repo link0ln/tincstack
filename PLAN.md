@@ -1841,28 +1841,46 @@ Defects identified during the source audit, to fix as their milestone is reached
   in `make lint`). Note for the record: the documented rotation had **no test**
   before this — stream O's proofs covered the key's secrecy, nonces, replay and
   cold scan, but never that the key actually changes.
-- 🟠 **The obfs link can fall back to the mesh-wide bootstrap key *after* the
+- ~~🟠 **The obfs link can fall back to the mesh-wide bootstrap key *after* the
   per-link session key was established, and stay there for up to one 30 s
-  self-heal tick.** Found 2026-09-16 in the coordination pass, on master with
-  streams O, U and P merged, while the host was loaded (three labs running):
-  `obfs-test.sh` PART 4 reported `obfs session key established` on **both**
-  ends (its convergence poll passed, so this is not the test racing the
-  handshake) and the steady-state capture was still **174 of 174 datagrams
-  decryptable** with the public-key bootstrap key — i.e. every mesh member
-  could read the traffic, which is exactly what M5-2 was about. The same test
-  on an idle host: 0 of 176. Stream O saw one instance of this (172/172) and
-  attributed it to the superseded-connection race it fixed in `obfs_close()`;
-  the reproduction above shows a residual path — most likely a link reset while
-  `node->connection` is momentarily NULL (`superseded` is then false, so the
-  reset runs), with recovery left to the `obfs_periodic` self-heal tick.
-  Impact: a window of up to 30 s per connection replacement in which the
-  obfuscation is only as strong as the mesh-wide key. Reproduce: run
-  `testing/transports/obfs-test.sh` while two other labs are running, or force
-  a connection replacement (stream P's acceptor-side rule makes that routine).
-  Fix direction: re-issue the seed exchange the moment an active link is found
-  without a session key (on the send path, rate-limited) instead of waiting for
-  the tick, and make the reset condition depend on the surviving connection
-  rather than on `node->connection` being set at that instant.
+  self-heal tick.**~~ **Resolved 2026-09-16 (stream W).** Found in the
+  coordination pass, on master with streams O, U and P merged, while the host
+  was loaded (three labs running): `obfs-test.sh` PART 4 reported `obfs session
+  key established` on **both** ends yet the steady capture was **174 of 174
+  datagrams decryptable** with the public-key bootstrap key (idle host: 0 of
+  176). Root cause: `obfs_close()` decided whether to reset the shared per-node
+  link from `node->connection`, but `terminate_connection()` (`net.c`) clears
+  `node->connection` **before** it calls the carrier close hook — so when the
+  owner is being closed `node->connection` is NULL, `superseded` is false, and
+  the reset wiped the session a replacement connection had just negotiated (or
+  was about to), leaving the link on the bootstrap key until the 30 s tick.
+  **Fix (inside `obfs.c` only):** (a) the reset condition now scans the live
+  `connection_list` for any *other* connection to the node (`superseded` is true
+  whenever one survives), so a superseded/late close cannot wipe the survivor's
+  session; (b) the send path self-heals — sealing under the bootstrap key on an
+  active, authenticated link arms a 1 s one-shot timer (`OBFS_SELFHEAL_DELAY`,
+  rate-limited one offer/s/link) that re-issues the `OBFS_KEY` exchange, so any
+  link that did revert is back on a session key in ≈1 s, not up to 30 s (the
+  30 s tick is kept as a backstop). Considered and **rejected** refusing to
+  *send* under the bootstrap key once a session existed: it would black-hole the
+  link during renegotiation to protect obfuscation only (SPTPS still encrypts
+  the payload; the bootstrap leak is classification + transport-header
+  forgeability, an availability-vs-unlinkability trade where availability wins).
+  **Proof — deterministic before/after:** `core/tincd/test/fuzz/fuzz_obfs.c`
+  self-test `selftest_close_preserves_session` reproduces the exact
+  `terminate_connection()` ordering (owner closed with `node->connection` NULL
+  while a sibling is on the list); it **aborts on the pre-fix `obfs_close()`
+  condition** and **passes with the fix** (`run.sh check`, EXIT 1 → 0).
+  Integration guard: `obfs-test.sh` PART 8 forces ≥10 connection replacements
+  (both nodes `ConnectTo` each other) and asserts every replacement re-
+  establishes a session key on both ends and that steady traffic is 0-of-N
+  bootstrap-decryptable — measured **0 / 1198 steady frames over 10
+  replacements, worst session-key window 0 s** (idle) and clean under
+  concurrent-lab load. **Honest caveat:** the original *stuck-for-30 s* live
+  symptom was a rare scheduler-interleaving race that could **not** be
+  reproduced on demand here (27 establishments across 3 concurrent labs under
+  load ≈31: 0 hits), so the closure rests on the deterministic unit before/after
+  and the code fix, not on a re-observed 174→0 live capture.
 - ~~🟢 **`testing/smoke/run.sh` silently tested whatever `tincstack/core:ws-f`
   happened to be.**~~ **Resolved 2026-09-16 (coordination pass):** it took
   `CORE_IMAGE`/`WSF_TAG` while every other proof takes `TINCSTACK_TAG`, so an

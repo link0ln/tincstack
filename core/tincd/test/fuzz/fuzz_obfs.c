@@ -37,6 +37,8 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "protocol.h"
+#include "utils.h"
 #include "xalloc.h"
 
 #define TINC_TRANSPORT_DAEMON
@@ -192,6 +194,80 @@ static void selftest_reflection(obfs_link_t *l) {
 	}
 }
 
+/* (M5-2 residual) Closing a SUPERSEDED sibling connection must not wipe the
+   session key the surviving connection holds. Reproduces the exact
+   terminate_connection() ordering: node->connection is cleared BEFORE the
+   carrier close hook runs, so at obfs_close() time node->connection is NULL
+   while a replacement connection is already on the connection_list. obfs_close
+   must decide "another connection survives" from that list, not from
+   node->connection -- otherwise it drops the link back to the mesh-wide
+   bootstrap key. On the pre-fix code (node->connection check) this aborts. */
+static void selftest_close_preserves_session(void) {
+	/* Owner connection over the obfs carrier, dialled so it owns an sf session
+	   whose ->obfs points at the shared link (obfs_close finds it that way). */
+	connection_t *c1 = new_connection();
+	c1->name = xstrdup("peer");
+	c1->hostname = xstrdup("peer");
+	c1->address = peers[0];
+	c1->protocol_minor = 0;    /* legacy meta path: no SPTPS state to set up */
+
+	if(!obfs_dial(c1)) {       /* creates the sf session and adds c1 to the list */
+		fprintf(stderr, "SELFTEST: obfs_dial failed\n");
+		abort();
+	}
+
+	c1->node = peer;
+	peer->connection = c1;
+	c1->allow_request = ALL;
+	c1->transport = transport_get(TRANSPORT_OBFS);
+
+	/* Drive the OBFS_KEY seed exchange to a promoted session key: our offer,
+	   then the peer's offer (flag 0) and the peer's ack (flag 1). */
+	obfs_session_start(c1);
+
+	uint8_t seed[OBFS_SEED_LEN];
+	memset(seed, 0x33, sizeof(seed));
+	char b64[OBFS_SEED_LEN * 2];
+	b64encode_tinc(seed, b64, OBFS_SEED_LEN);
+
+	char req[128];
+	snprintf(req, sizeof(req), "%d 0 %s", OBFS_KEY, b64);
+	obfs_key_h(c1, req);
+	snprintf(req, sizeof(req), "%d 1 %s", OBFS_KEY, b64);
+	obfs_key_h(c1, req);
+
+	if(!obfs_link_has_session(peer)) {
+		fprintf(stderr, "SELFTEST: could not establish an obfs session key for the test\n");
+		abort();
+	}
+
+	/* A second, surviving connection to the same node (the winner of a
+	   simultaneous dial): on the connection_list, but its node->connection
+	   link is not yet what obfs_close would see. */
+	connection_t *c2 = new_connection();
+	c2->name = xstrdup("peer");
+	c2->hostname = xstrdup("peer");
+	c2->node = peer;
+	connection_add(c2);
+
+	/* terminate_connection() clears node->connection when closing the owner,
+	   BEFORE the carrier close hook. Reproduce that, then close c1. */
+	peer->connection = NULL;
+	obfs_close(c1);
+
+	if(!obfs_link_has_session(peer)) {
+		fprintf(stderr, "SELFTEST: obfs_close wiped the session a surviving connection still held (M5-2 residual)\n");
+		abort();
+	}
+
+	/* Tidy up and leave the shared link exactly as freshly created, so the
+	   fuzzed body below starts from the same state as before this self-test. */
+	connection_del(c1);   /* frees c1 (list .delete = free_connection) */
+	__wrap_terminate_connection(c2, false);
+	peer->connection = NULL;
+	obfs_link_reset_for_test(peer);
+}
+
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
 	(void)argc;
 	(void)argv;
@@ -233,6 +309,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 	selftest_nonce_unique(l);
 	selftest_magic_prefix(l);
 	selftest_reflection(l);
+	selftest_close_preserves_session();
 	return 0;
 }
 

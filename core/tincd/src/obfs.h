@@ -117,6 +117,15 @@ obfs_link_t *obfs_link_for_node(node_t *n);
    Called only after a datagram has verified and passed the replay window. */
 void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr);
 
+/* True when the node's obfs link currently seals outbound traffic with a
+   per-link session key rather than the mesh-wide bootstrap key (review R
+   M5-2). Introspection for tests and diagnostics. */
+bool obfs_link_has_session(node_t *n);
+
+/* Restore a node's link to its freshly-created state (bootstrap key only).
+   Test-only helper (see fuzz_obfs.c). */
+void obfs_link_reset_for_test(node_t *n);
+
 /* ---- session key handshake (over the authenticated meta channel) --------- */
 
 /* After a connection over an obfs link activates, kick off the OBFS_KEY seed
