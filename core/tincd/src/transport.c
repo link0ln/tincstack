@@ -259,6 +259,10 @@ bool transport_read_config(void) {
 
 /* ---- init / exit --------------------------------------------------------- */
 
+/* R-1: parked (unclassified, waiting for more bytes) front connections are
+   re-armed from this one timer; see transport_front_dispatch(). */
+static timeout_t front_poll_timer;
+
 bool transport_init(void) {
 	/* The plain-HTTP decoy path needs the decoy config even when the https
 	   carrier's init (which also reads it) is not run. Idempotent. */
@@ -275,6 +279,8 @@ bool transport_init(void) {
 }
 
 void transport_exit(void) {
+	timeout_del(&front_poll_timer);
+
 	for(int i = 0; i < TRANSPORT_MAX; i++) {
 		if(transports[i].exit) {
 			transports[i].exit();
@@ -413,6 +419,71 @@ bool transport_local_address(connection_t *c, sockaddr_t *sa) {
 
 /* ---- inbound TCP front --------------------------------------------------- */
 
+/* Security review R-1. The front peeks (MSG_PEEK) so that the bytes stay in
+   the socket for the carrier that claims them (https_accept hands the socket
+   to SSL_accept, which must see the ClientHello itself). When the classifier
+   wants more bytes than have arrived, the pending bytes keep the socket
+   readable and the level-triggered select() would call us again on every
+   loop turn: one client sending a single `G', `0' or 0x16 0x03 pinned the
+   daemon at 100 % CPU until pingtimeout. So an undecided connection is
+   *parked*: its read interest is dropped and one global timer re-arms every
+   parked connection FRONT_POLL_MS later (one peek per tick per parked client,
+   never a spin). A connection that is still undecided FRONT_DEADLINE seconds
+   after it was accepted is closed and tarpitted, instead of living until
+   pingtimeout. A client that sends nothing at all is not parked (select never
+   fires for it) and is reaped by the authentication timeout as before. */
+#define FRONT_POLL_MS 200
+#define FRONT_DEADLINE 2
+
+static bool front_expired(connection_t *c) {
+	return c->last_ping_time + FRONT_DEADLINE <= now.tv_sec;
+}
+
+static void front_close_undecided(connection_t *c) {
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Front: %s sent no recognisable preamble within %d s; closing", c->hostname, FRONT_DEADLINE);
+	c->status.tarpit = true;
+	terminate_connection(c, false);
+}
+
+static void front_poll(void *data) {
+	(void)data;
+	bool parked = false;
+
+	for list_each(connection_t, c, &connection_list) {
+		if(!c->status.front_pending || c->io.flags) {
+			continue;
+		}
+
+		if(front_expired(c)) {
+			front_close_undecided(c);
+			continue;
+		}
+
+		/* Re-arm: the next loop turn peeks again; if the client still has not
+		   sent enough, the dispatcher parks it again until the next tick. */
+		io_set(&c->io, IO_READ);
+		parked = true;
+	}
+
+	if(parked) {
+		timeout_set(&front_poll_timer, &(struct timeval) {
+			0, FRONT_POLL_MS * 1000
+		});
+	}
+}
+
+static void front_park(connection_t *c) {
+	io_set(&c->io, 0);
+
+	struct timeval tv = { 0, FRONT_POLL_MS * 1000 };
+
+	/* timeout_execute() deletes the timer (cb = NULL) after a tick that did
+	   not re-arm it, so cb != NULL means a tick is already scheduled. */
+	if(!front_poll_timer.cb) {
+		timeout_add(&front_poll_timer, front_poll, NULL, &tv);
+	}
+}
+
 bool transport_front_dispatch(connection_t *c) {
 	uint8_t peek[TRANSPORT_TCP_PEEK];
 	ssize_t len = recv(c->socket, peek, sizeof(peek), MSG_PEEK);
@@ -437,8 +508,16 @@ bool transport_front_dispatch(connection_t *c) {
 
 	switch(class) {
 	case TCP_CLASS_NEED_MORE:
-		/* Wait for more bytes; the authentication timeout in
-		   timeout_handler() closes the connection if they never come. */
+		/* Wait for more bytes without spinning on the ones already there
+		   (R-1): park the connection; front_poll() re-arms it or closes it
+		   once FRONT_DEADLINE has passed. */
+		if(front_expired(c)) {
+			front_close_undecided(c);
+			return false;
+		}
+
+		logger(DEBUG_META, LOG_DEBUG, "Front: %zd undecided byte(s) from %s; parking for %d ms", len, c->hostname, FRONT_POLL_MS);
+		front_park(c);
 		return false;
 
 	case TCP_CLASS_TINC:

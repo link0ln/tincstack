@@ -3,8 +3,10 @@
                a tinc-key authenticator and a default-on decoy.
 
     A dial opens a TLS client connection to the peer's front port with a
-    plausible SNI, pins the peer's certificate by SHA-256 fingerprint
-    (accept-on-first-use), and proves it is a tinc peer with an Ed25519
+    plausible SNI, checks the peer's certificate against a pinned SHA-256
+    fingerprint if the host record has one (a fingerprint is only ever
+    *learned* after SPTPS has authenticated the peer over that very TLS
+    session -- review M5-7), and proves it is a tinc peer with an Ed25519
     authenticator bound to the TLS session (RFC 5705 exporter) -- carried in an
     ordinary-looking WebSocket upgrade request. The server verifies the
     authenticator against its host DB; on success it answers 101 Switching
@@ -65,7 +67,12 @@
 #define HTTPS_NONCE_LEN 16
 #define HTTPS_SIG_MAX 64                /* Ed25519 signature length */
 #define HTTPS_TS_SKEW 90               /* seconds of clock skew tolerated */
-#define HTTPS_AUTH_VERSION 1
+/* Authenticator version 2 (review M5-11): the signed message carries a fixed
+   domain-separation label. Both ends must agree; a v1 authenticator is a
+   decoy-served failure like any other. */
+#define HTTPS_AUTH_VERSION 2
+#define HTTPS_AUTH_LABEL "tincstack-https-auth-v2"
+#define HTTPS_AUTH_LABEL_LEN (sizeof(HTTPS_AUTH_LABEL))  /* including the NUL */
 #define HTTPS_MAX_HEAD 16384           /* cap on the HTTP request/response head */
 #define WS_MAGIC "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -75,6 +82,7 @@ typedef enum https_state_t {
 	HS_CLIENT_WRITE_REQ,
 	HS_CLIENT_READ_RESP,
 	HS_SERVER_READ_REQ,
+	HS_SERVER_FETCH_DECOY,  /* waiting for the async upstream decoy fetch */
 	HS_SERVER_WRITE,        /* writing the 101 response, then established */
 	HS_SERVER_WRITE_DECOY,  /* writing the decoy, then close */
 	HS_ESTABLISHED,
@@ -96,8 +104,11 @@ typedef struct https_session_t {
 	size_t rlen, rcap;
 
 	uint8_t server_fp[TLS_FP_LEN]; /* client: the verified server cert fingerprint */
+	char server_fp_hex[TLS_FP_HEX_LEN];
+	bool pin_pending;       /* client: no pin yet; learn it once SPTPS authenticates (M5-7) */
 
 	bool established_after_write; /* server: become established once wbuf drains */
+	decoy_fetch_t *fetch;   /* server: outstanding upstream decoy fetch (M5-1) */
 } https_session_t;
 
 /* A tiny replay cache: (nonce -> expiry). The exporter binding already stops
@@ -136,6 +147,39 @@ static bool replay_seen(const uint8_t *nonce) {
 
 static void https_io(void *data, int flags);
 
+/* A session whose SSL_write failed is not torn down from inside https_send():
+   send_meta() runs from terminate_connection()'s own DEL_EDGE broadcast (the
+   dying connection is still in the list), so terminating there recursed
+   until the stack overflowed -- found by stream L: a peer that closed its
+   https link cleanly (close_notify, e.g. `tinc reload`) crashed this side
+   with SIGSEGV. Dying sessions are reaped from this static timer instead,
+   the pattern transport_sf.c uses. */
+static timeout_t https_reaper;
+
+static void https_reap(void *data) {
+	(void) data;
+
+	for list_each(connection_t, c, &connection_list) {
+		if(c->transport && c->transport->id == TRANSPORT_HTTPS && c->transport_data) {
+			https_session_t *s = c->transport_data;
+
+			if(s->state == HS_DYING) {
+				terminate_connection(c, c->edge);
+			}
+		}
+	}
+}
+
+static void https_schedule_reap(void) {
+	struct timeval tv = {0, 0};
+
+	if(https_reaper.cb) {
+		timeout_set(&https_reaper, &tv);
+	} else {
+		timeout_add(&https_reaper, https_reap, NULL, &tv);
+	}
+}
+
 /* ---- lifecycle ----------------------------------------------------------- */
 
 bool https_init(void) {
@@ -149,6 +193,7 @@ bool https_init(void) {
 }
 
 void https_exit(void) {
+	timeout_del(&https_reaper);
 	decoy_exit();
 	tls_exit();
 }
@@ -172,6 +217,7 @@ void https_close(connection_t *c) {
 		SSL_free(s->ssl);
 	}
 
+	decoy_fetch_cancel(s->fetch);
 	free(s->sni);
 	free(s->wbuf);
 	free(s->rbuf);
@@ -274,18 +320,26 @@ static int read_head(https_session_t *s) {
 
 /* ---- authenticator ------------------------------------------------------- */
 
-/* message = server_fp(32) || exporter(32) || nonce(16) || ts_be(8) */
+/* message = label || server_fp(32) || exporter(32) || nonce(16) || ts_be(8)
+   The label (with its NUL) separates this signature domain from SPTPS and
+   from any future format signed with the same node key (M5-11). */
 static void auth_message(uint8_t *msg, const uint8_t *server_fp, const uint8_t *exporter, const uint8_t *nonce, uint64_t ts) {
-	memcpy(msg, server_fp, TLS_FP_LEN);
-	memcpy(msg + TLS_FP_LEN, exporter, HTTPS_EXPORTER_LEN);
-	memcpy(msg + TLS_FP_LEN + HTTPS_EXPORTER_LEN, nonce, HTTPS_NONCE_LEN);
+	size_t o = 0;
+	memcpy(msg + o, HTTPS_AUTH_LABEL, HTTPS_AUTH_LABEL_LEN);
+	o += HTTPS_AUTH_LABEL_LEN;
+	memcpy(msg + o, server_fp, TLS_FP_LEN);
+	o += TLS_FP_LEN;
+	memcpy(msg + o, exporter, HTTPS_EXPORTER_LEN);
+	o += HTTPS_EXPORTER_LEN;
+	memcpy(msg + o, nonce, HTTPS_NONCE_LEN);
+	o += HTTPS_NONCE_LEN;
 
 	for(int i = 0; i < 8; i++) {
-		msg[TLS_FP_LEN + HTTPS_EXPORTER_LEN + HTTPS_NONCE_LEN + i] = (uint8_t)(ts >> (8 * (7 - i)));
+		msg[o + (size_t) i] = (uint8_t)(ts >> (8 * (7 - i)));
 	}
 }
 
-#define AUTH_MSG_LEN (TLS_FP_LEN + HTTPS_EXPORTER_LEN + HTTPS_NONCE_LEN + 8)
+#define AUTH_MSG_LEN (HTTPS_AUTH_LABEL_LEN + TLS_FP_LEN + HTTPS_EXPORTER_LEN + HTTPS_NONCE_LEN + 8)
 
 static bool exporter_value(SSL *ssl, uint8_t *out) {
 	return SSL_export_keying_material(ssl, out, HTTPS_EXPORTER_LEN,
@@ -314,6 +368,7 @@ static bool verify_server_cert(https_session_t *s) {
 	/* Remember it: the authenticator is signed over the *server's* cert
 	   fingerprint, which the server checks against its own (tls_own_fp). */
 	memcpy(s->server_fp, fp, TLS_FP_LEN);
+	memcpy(s->server_fp_hex, fp_hex, sizeof(s->server_fp_hex));
 
 	/* Pinned fingerprint from the peer's host record. */
 	splay_tree_t *tree = create_configuration();
@@ -337,12 +392,36 @@ static bool verify_server_cert(https_session_t *s) {
 		return true;
 	}
 
-	free(pinned);
+	if(pinned) {
+		/* Malformed pin: neither trust it nor overwrite it (M5-7 note). */
+		logger(DEBUG_ALWAYS, LOG_WARNING, "https: TlsFingerprint of %s is malformed; ignoring it and not pinning", s->c->name);
+		free(pinned);
+		return true;
+	}
 
-	/* Accept on first use, then pin. */
-	logger(DEBUG_ALWAYS, LOG_NOTICE, "https: no pinned TlsFingerprint for %s; accepting %s on first use and pinning it", s->c->name, fp_hex);
-	append_config_file(s->c->name, "TlsFingerprint", fp_hex);
+	/* No pin yet. The certificate proves nothing by itself, so it is NOT
+	   persisted here (an on-path attacker at first contact would otherwise
+	   pin its own certificate forever, M5-7). The dial proceeds; the pin is
+	   written by https_learn_pin() only once the SPTPS handshake inside this
+	   TLS session has authenticated the peer -- the exporter in the
+	   authenticator binds that session to this certificate. */
+	logger(DEBUG_ALWAYS, LOG_NOTICE, "https: no pinned TlsFingerprint for %s; will pin %s once SPTPS authenticates the peer", s->c->name, fp_hex);
+	s->pin_pending = true;
 	return true;
+}
+
+/* Called after every inbound meta byte batch on the client side: once the
+   connection is activated (c->edge set by ack_h after the SPTPS handshake
+   proved the peer's Ed25519 identity), the certificate this session was
+   dialled through is trustworthy and is pinned. */
+static void https_learn_pin(https_session_t *s) {
+	if(!s->pin_pending || s->is_server || !s->c->edge) {
+		return;
+	}
+
+	s->pin_pending = false;
+	logger(DEBUG_ALWAYS, LOG_NOTICE, "https: SPTPS authenticated %s over TLS; pinning TlsFingerprint %s", s->c->name, s->server_fp_hex);
+	append_config_file(s->c->name, "TlsFingerprint", s->server_fp_hex);
 }
 
 static bool build_client_request(https_session_t *s) {
@@ -510,46 +589,60 @@ static bool verify_client_auth(https_session_t *s, char **out_name) {
 	const uint8_t *sig = payload + o;
 	size_t siglen = plen - o;
 
-	/* Freshness. */
-	int64_t skew = (int64_t) now.tv_sec - (int64_t) ts;
-
-	if(skew < -HTTPS_TS_SKEW || skew > HTTPS_TS_SKEW) {
-		logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: stale authenticator from %s (skew %lld s)", s->c->hostname, (long long) skew);
-		return false;
-	}
-
-	/* The peer's Ed25519 public key from our host DB. */
+	/* From here on the work done must not depend on whether the claimed name
+	   exists (M5-9, a timing oracle for node-name enumeration): an unknown
+	   name still parses a host record (our own) and still runs a full
+	   Ed25519 verification (against our own public key, whose result is
+	   discarded), and the freshness check is folded in at the end instead
+	   of returning early. */
 	splay_tree_t *tree = NULL;
 	ecdsa_t *pubkey = read_ecdsa_public_key(&tree, name);
+	bool known = pubkey != NULL;
 
-	if(!pubkey) {
+	if(!known) {
 		if(tree) {
 			exit_configuration(tree);
+			tree = NULL;
 		}
 
-		return false;
+		pubkey = read_ecdsa_public_key(&tree, myself->name);
 	}
 
 	uint8_t exporter[HTTPS_EXPORTER_LEN];
+	bool have_exporter = exporter_value(s->ssl, exporter);
 
-	if(!exporter_value(s->ssl, exporter)) {
-		ecdsa_free(pubkey);
-		exit_configuration(tree);
-		return false;
+	if(!have_exporter) {
+		memset(exporter, 0, sizeof(exporter));
 	}
 
 	uint8_t msg[AUTH_MSG_LEN];
 	auth_message(msg, tls_own_fp, exporter, nonce, ts);
 
-	bool ok = (siglen == ecdsa_size(pubkey)) && ecdsa_verify(pubkey, msg, sizeof(msg), sig);
-	ecdsa_free(pubkey);
+	bool ok = pubkey && (siglen == ecdsa_size(pubkey)) && ecdsa_verify(pubkey, msg, sizeof(msg), sig);
+
+	if(pubkey) {
+		ecdsa_free(pubkey);
+	}
 
 	if(tree) {
 		exit_configuration(tree);
 	}
 
+	/* Freshness. */
+	int64_t skew = (int64_t) now.tv_sec - (int64_t) ts;
+	bool fresh = skew >= -HTTPS_TS_SKEW && skew <= HTTPS_TS_SKEW;
+
+	ok = ok & known & have_exporter & fresh;
+
 	if(!ok) {
-		logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: authenticator signature check failed for claimed %s", name);
+		if(!known) {
+			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: authenticator from %s names an unknown node", s->c->hostname);
+		} else if(!fresh) {
+			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: stale authenticator from %s (skew %lld s)", s->c->hostname, (long long) skew);
+		} else {
+			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: authenticator signature check failed for claimed %s", name);
+		}
+
 		return false;
 	}
 
@@ -638,7 +731,11 @@ bool https_send(connection_t *c) {
 			return true;
 		}
 
-		terminate_connection(c, c->edge);
+		/* Never terminate from inside a send (see https_reap). */
+		logger(DEBUG_CONNECTIONS, LOG_NOTICE, "https: write to %s (%s) failed; closing", c->name, c->hostname);
+		s->state = HS_DYING;
+		set_io(s, 0);
+		https_schedule_reap();
 		return false;
 	}
 
@@ -660,6 +757,7 @@ static void established_read(https_session_t *s) {
 				return;
 			}
 
+			https_learn_pin(s);
 			continue;
 		}
 
@@ -717,15 +815,7 @@ static void drive_tls_handshake(https_session_t *s) {
 	}
 }
 
-static void serve_decoy(https_session_t *s) {
-	size_t resplen = 0;
-	char *resp = decoy_respond(s->rbuf ? s->rbuf : "", s->rlen, &resplen);
-
-	if(!resp) {
-		fail(s);
-		return;
-	}
-
+static void write_decoy(https_session_t *s, char *resp, size_t resplen) {
 	set_wbuf(s, resp, resplen);
 	free(resp);
 	s->state = HS_SERVER_WRITE_DECOY;
@@ -738,6 +828,30 @@ static void serve_decoy(https_session_t *s) {
 	} else if(f < 0) {
 		fail(s);
 	}
+}
+
+static void decoy_fetched(void *data, char *resp, size_t resplen) {
+	https_session_t *s = data;
+	s->fetch = NULL;
+	write_decoy(s, resp, resplen);
+}
+
+static void serve_decoy(https_session_t *s) {
+	const char *req = s->rbuf ? s->rbuf : "";
+
+	/* With HttpsDecoyUpstream set the fetch is asynchronous (M5-1): the loop
+	   keeps running; nothing happens on this socket until the callback. */
+	s->state = HS_SERVER_FETCH_DECOY;
+	set_io(s, 0);
+	s->fetch = decoy_fetch_start(req, s->rlen, decoy_fetched, s);
+
+	if(s->fetch) {
+		return;
+	}
+
+	size_t resplen = 0;
+	char *resp = decoy_respond_static(req, s->rlen, &resplen);
+	write_decoy(s, resp, resplen);
 }
 
 static void server_handle_request(https_session_t *s) {
@@ -908,6 +1022,9 @@ static void https_io(void *data, int flags) {
 
 		return;
 	}
+
+	case HS_SERVER_FETCH_DECOY:
+		return; /* io interest is off; the fetch callback resumes us */
 
 	case HS_SERVER_WRITE_DECOY: {
 		int f = flush_wbuf(s);
