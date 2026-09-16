@@ -122,6 +122,11 @@ void tarpit(int fd) {
 void terminate_connection(connection_t *c, bool report) {
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Closing connection with %s (%s)", c->name, c->hostname);
 
+	/* Remember whether this connection was ever activated (had an edge)
+	   BEFORE the edge is torn down below: the carrier fallback decision
+	   further down depends on it. */
+	bool activated = c->edge != NULL;
+
 	if(c->node) {
 		if(c->node->connection == c) {
 			c->node->connection = NULL;
@@ -157,7 +162,6 @@ void terminate_connection(connection_t *c, bool report) {
 	}
 
 	outgoing_t *outgoing = c->outgoing;
-	bool activated = c->edge != NULL;
 
 	/* Release any carrier-private state (e.g. the single-flow session) and,
 	   if this was a single-flow link, send a CLOSE before the socket goes. */
