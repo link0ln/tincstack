@@ -1871,6 +1871,36 @@ Defects identified during the source audit, to fix as their milestone is reached
 - ~~🟠 **tincapp CMake points at a missing path** → last APK was vanilla tinc, not a
   fork.~~ **Resolved in M8:** CMake dropped, `platforms/android/native/build-core.sh`
   does an NDK meson cross-build of `core/tincd` per ABI (proof in M8).
+- 🟠 **`tls.c` needs OpenSSL 3.0, so the documented Android `openssl` build does
+  not compile.** Found by stream Y, verified in the consolidated tree:
+  `core/tincd/src/tls.c:165` calls `EVP_EC_gen("P-256")` and `tls.c:327`
+  `SSL_CTX_set_options(ctx, SSL_OP_NO_RENEGOTIATION)`. Neither exists in the
+  LibreSSL 3.7.3 that `platforms/android/native/build-core.sh` cross-builds, so
+  `-PtincCrypto=openssl` fails with *3 errors generated* / `BUILD FAILED`.
+  LibreSSL 4.1.0 adds `SSL_OP_NO_RENEGOTIATION` but still not `EVP_EC_gen`, so
+  bumping the dependency is not the fix. Second half of the same gap:
+  `build-core.sh` builds and installs only **libcrypto**, and its generated
+  `openssl.pc` requires only libcrypto, so a `tls.c` that did compile would not
+  link. **Impact:** the Android APK can only be built `--crypto nolegacy`
+  (SPTPS/Ed25519, no legacy RSA protocol), which is what stream Y's proof used;
+  a device that needs the legacy protocol has no working build. Fix belongs to
+  the core: an OpenSSL-1.1/LibreSSL fallback in `tls.c` plus a libssl build in
+  `build-core.sh`. Details and measurements under M8 "Found during M8".
+- 🟠 **The core cannot write keys where `tmpfile(3)` has nowhere to go.**
+  `zeroconf.c` → `capture_pem()` → `yamlconf_content_fp()` → `tmpfile()`
+  (`yamlconf.c:593`). bionic's `tmpfile()` uses `$TMPDIR` and otherwise
+  `/data/local/tmp`, which an Android app UID cannot write, so `tinc join`
+  failed with *Could not serialise Ed25519 private key* / *Invitation
+  cancelled* while the inviter logged the invitation as sent. Measured by
+  stream Y: the same command with `TMPDIR=<app cache>` succeeds. Worked around
+  app-side (`Executor.run` sets `TMPDIR`), but the core should fall back to its
+  own config or run directory instead of depending on an environment variable —
+  the same trap waits on any sandboxed or read-only-/tmp deployment.
+- 🟢 **`tincmgr.exe` is not bit-reproducible.** PyInstaller stamps timestamps
+  into the PE and its archive, so two identical runs give the same size and
+  different SHA-256 (stream X measured 57 665 248 B with two distinct digests;
+  a third run here produced 57 665 247 B). A published digest pins one
+  artefact, never the recipe — do not present it as a reproducibility claim.
 - 🟠 **A node cannot refuse cleartext tinc on its listening port.** Found in the
   consolidation pass while writing up stream P's carrier ranking; no fix
   attempted, because the answer is a design decision, not a patch.
