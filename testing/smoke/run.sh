@@ -11,7 +11,12 @@
 #   Two `make smoke` runs with different LABs can therefore share a host.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export CORE_IMAGE="${CORE_IMAGE:-tincstack/core:${WSF_TAG:-ws-f}}"
+# Image: CORE_IMAGE wins, then TINCSTACK_TAG (what every other proof in this
+# repo takes), then WSF_TAG (what `make` exports), then the current dev build.
+# Running this against a stale image used to pass silently on the tunnel and
+# fail only on a feature the old binary predates, which reads like a
+# regression; there is a version assertion below for the same reason.
+export CORE_IMAGE="${CORE_IMAGE:-tincstack/core:${TINCSTACK_TAG:-${WSF_TAG:-dev}}}"
 NET=smoke                           # the tinc network name inside the nodes
 DEFAULT_LAB=wsf; DEFAULT_SUBNET=172.31.77
 # shellcheck source=testing/transports/lab-env.sh
@@ -73,6 +78,12 @@ for n in node1 node2; do
     } >> "$RUN/$n/tinc.yaml"
 done
 rm -f "$RUN"/host-*.txt
+
+# Fail loudly on an image that predates the features asserted below.
+if ! docker image inspect "$CORE_IMAGE" >/dev/null 2>&1; then
+    log "smoke: FAIL ($CORE_IMAGE does not exist; build it or set CORE_IMAGE/TINCSTACK_TAG)"
+    exit 1
+fi
 
 compose up -d >/dev/null 2>&1 || { compose logs; exit 1; }
 ok=0

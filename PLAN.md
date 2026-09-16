@@ -1517,6 +1517,16 @@ Defects identified during the source audit, to fix as their milestone is reached
   without a session key (on the send path, rate-limited) instead of waiting for
   the tick, and make the reset condition depend on the surviving connection
   rather than on `node->connection` being set at that instant.
+- ~~🟢 **`testing/smoke/run.sh` silently tested whatever `tincstack/core:ws-f`
+  happened to be.**~~ **Resolved 2026-09-16 (coordination pass):** it took
+  `CORE_IMAGE`/`WSF_TAG` while every other proof takes `TINCSTACK_TAG`, so an
+  invocation in the house style ran the stale stream-F image and failed on
+  `scripts.tinc-up` — a feature that image predates — which reads exactly like
+  a regression in the merged core (it cost one false alarm during the P/U
+  merge). It now accepts `TINCSTACK_TAG`, defaults to `dev` instead of a
+  stream tag, and fails loudly when the image does not exist. Proof:
+  `LAB=dbg3 TINCSTACK_TAG=dev testing/smoke/run.sh` → `smoke: PASS … tincstack/core:dev`,
+  exit 0.
 - 🟡 **Local-address fallback for invitations is only a hint.** M1 added a
   last-resort fallback (default-route source address) so a zero-config node can
   invite without a TTY; behind NAT it yields a private address. It prints a
