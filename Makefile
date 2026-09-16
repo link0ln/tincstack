@@ -38,6 +38,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/nat-sim/natprofile.sh testing/dpi-proof/run.sh testing/dpi-proof/capture.sh \
                  testing/smoke/run.sh platforms/linux/docker/two-nodes.sh \
                  platforms/linux/docker/yaml-scripts.sh \
+                 platforms/linux/docker/obfs-rekey-test.sh \
                  testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
                  testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
                  testing/transports/obfs-test.sh testing/transports/matrix-test.sh \

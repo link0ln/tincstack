@@ -1482,6 +1482,19 @@ Defects identified during the source audit, to fix as their milestone is reached
   `invitation.c get_my_hostname`, M2) and the Linux entrypoint writes
   `Address` from `PUBLIC_ADDRESS` (M6). Without both, `tinc invite` uses the
   local-address hint below and warns.
+- ~~🟠 **The obfs session key did not rotate unless both peers happened to
+  rekey together.**~~ **Found and resolved 2026-09-16 (coordination pass,
+  verifying stream O's merged work):** `obfs_key_h()` cleared `ack_sent` only in
+  the initiator, so a peer that had acknowledged the previous round never
+  answered a fresh offer; the effective rotation period was the *larger* of the
+  two nodes' `KeyExpire`. Measured (compose lab, obfs carrier, 80 s of 1 Hz
+  ping, `obfs session key established` per side): `KeyExpire` 10 s / 3600 s →
+  **1, 1** before, **5, 5** after; 10 s / 10 s → **5, 5** before, **12, 12**
+  after; 0 % packet loss in every run. Fix: an offer (flag 0) re-arms the
+  answer. Regression test: `platforms/linux/docker/obfs-rekey-test.sh` (new,
+  in `make lint`). Note for the record: the documented rotation had **no test**
+  before this — stream O's proofs covered the key's secrecy, nonces, replay and
+  cold scan, but never that the key actually changes.
 - 🟡 **Local-address fallback for invitations is only a hint.** M1 added a
   last-resort fallback (default-route source address) so a zero-config node can
   invite without a TTY; behind NAT it yields a private address. It prints a

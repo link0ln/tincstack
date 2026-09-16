@@ -407,6 +407,18 @@ The session key is re-derived periodically (aligned with `KeyExpire`, the SPTPS
 rekey period): a node re-runs the seed exchange, keeps sending on the current
 session key until the new one is acknowledged, then switches. This bounds the
 per-key nonce space and gives forward secrecy on the obfuscation layer.
+Rotation costs no traffic, because the sender only switches once the peer has
+acknowledged the new keyset.
+
+An **offer** (`OBFS_KEY` flag 0) always re-arms the answer, even from a node
+that already acknowledged the previous round, so one node can rotate the key on
+its own schedule: each side's `KeyExpire` is its own. (Until this was fixed the
+responder stayed silent after its first acknowledgement, so rotation only
+happened when both timers fired together and the effective period was the
+*larger* of the two `KeyExpire` values — measured with a 10 s and a 3600 s node:
+one session key in 80 s, eight offers ignored.) Proof:
+`platforms/linux/docker/obfs-rekey-test.sh` — symmetric and one-sided rotation,
+both over 80 s of 1 Hz traffic with 0 % packet loss.
 
 The link state is **per node**, shared by every connection to that node. When
 two nodes dial each other, tinc keeps one connection and closes the other; the
