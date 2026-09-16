@@ -160,6 +160,8 @@ static void usage(bool status) {
 		        "  set VARIABLE VALUE         Set VARIABLE to VALUE\n"
 		        "  add VARIABLE VALUE         Add VARIABLE with the given VALUE\n"
 		        "  del VARIABLE [VALUE]       Remove VARIABLE [only ones with watching VALUE]\n"
+		        "    VARIABLE is Option, node.Option, or (YAML mode) scripts.NAME --\n"
+		        "    a script body, set from a file: set scripts.tinc-up @<file>\n"
 		        "  start [tincd options]      Start tincd.\n"
 		        "  stop                       Stop tincd.\n"
 		        "  restart [tincd options]    Restart tincd.\n"
@@ -1805,6 +1807,186 @@ static bool read_actual_port(void) {
 	}
 }
 
+/* ---- `tinc get|set|del scripts.<name>` -----------------------------------
+
+   The `scripts:` stanza of a YAML config (docs/config-schema.md "Scripts")
+   holds whole script bodies, not "Key = value" lines, so it cannot go through
+   the line-oriented read-modify-write below; it is handled here, with the same
+   lock / re-read / save / notify-the-daemon sequence, so an edit lands even
+   while the daemon is writing learned keys into the same file, and the running
+   daemon materialises it on the reload (zeroconf_sync_scripts()).
+
+   A script body is multi-line, so `set` takes its text from a FILE:
+
+       tinc -c tinc.yaml set scripts.tinc-up @/path/to/tinc-up
+
+   and an inline value is refused. The two rejected alternatives:
+     * an inline argument cannot work -- cmd_config() concatenates argv with
+       single spaces into one 4096-byte buffer and then splits it on [ \t=],
+       so a script would be both mangled and silently truncated, and a
+       truncated script still runs as root;
+     * stdin is already `tinc`'s own command stream (the shell/batch mode of
+       cmd_shell(), `tinc < commands`), so a command that ate stdin for a
+       value could not be used there.
+   `@-` is deliberately not accepted, for the same reason. */
+
+#define MAX_SCRIPT_SIZE (1024 * 1024)
+
+/* A script key must name a plain file in the runtime directory, the same rule
+   zeroconf_sync_scripts() applies when it materialises the stanza. */
+static bool script_name_ok(const char *name) {
+	return *name && name[0] != '.' && !strpbrk(name, "/\\");
+}
+
+/* Whole file as a NUL-terminated string, or NULL with a message on stderr. */
+static char *read_script_file(const char *path) {
+	FILE *f = fopen(path, "rb");
+
+	if(!f) {
+		fprintf(stderr, "Could not open %s: %s\n", path, strerror(errno));
+		return NULL;
+	}
+
+	size_t cap = 4096, n = 0;
+	char *buf = xmalloc(cap);
+
+	while(true) {
+		n += fread(buf + n, 1, cap - n, f);
+
+		if(n < cap) {
+			break;          /* short read: end of file, or an error */
+		}
+
+		cap *= 2;
+		buf = xrealloc(buf, cap);
+	}
+
+	if(ferror(f)) {
+		fprintf(stderr, "Error reading %s: %s\n", path, strerror(errno));
+		free(buf);
+		fclose(f);
+		return NULL;
+	}
+
+	fclose(f);
+
+	if(n > MAX_SCRIPT_SIZE) {
+		fprintf(stderr, "%s is larger than the %d byte limit for a script.\n", path, MAX_SCRIPT_SIZE);
+		free(buf);
+		return NULL;
+	}
+
+	if(memchr(buf, 0, n)) {
+		fprintf(stderr, "%s contains a NUL byte; a script must be text.\n", path);
+		free(buf);
+		return NULL;
+	}
+
+	buf = xrealloc(buf, n + 1);
+	buf[n] = 0;
+	return buf;
+}
+
+typedef enum { SCRIPT_GET, SCRIPT_SET, SCRIPT_DEL } script_action_t;
+
+static int cmd_config_script(script_action_t action, const char *name, const char *value) {
+	if(!yamlconf_path) {
+		fprintf(stderr, "scripts.%s only exists in YAML mode (tinc -c <file>.yaml);"
+		        " in a confbase tree a script is a file in %s.\n", name, confbase);
+		return 1;
+	}
+
+	if(!script_name_ok(name)) {
+		fprintf(stderr, "Invalid script name `%s': it must be a plain file name"
+		        " (no `/', no `\\', no leading dot).\n", name);
+		return 1;
+	}
+
+	if(action == SCRIPT_GET) {
+		if(!yamlconf_global) {
+			fprintf(stderr, "Could not read YAML config %s\n", yamlconf_path);
+			return 1;
+		}
+
+		char *text = yamlconf_script_text(yamlconf_global, netname, name);
+
+		if(!text) {
+			fprintf(stderr, "No scripts.%s in %s [%s]\n", name, yamlconf_path, netname);
+			return 1;
+		}
+
+		printf("%s\n", text);
+		free(text);
+		return 0;
+	}
+
+	char *text = NULL;
+
+	if(action == SCRIPT_SET) {
+		if(*value != '@') {
+			fprintf(stderr, "A script body is multi-line, so it is read from a file:"
+			        " tinc set scripts.%s @<file>\n", name);
+			return 1;
+		}
+
+		if(!(text = read_script_file(value + 1))) {
+			return 1;
+		}
+	} else if(*value) {
+		fprintf(stderr, "del scripts.%s does not take a value.\n", name);
+		return 1;
+	}
+
+	/* Same read-modify-write discipline as the options/hosts path below: take
+	   the writers' lock and re-read under it, so nothing the daemon stored
+	   since we started is lost. */
+	if(!yamlconf_lock(yamlconf_path)) {
+		fprintf(stderr, "Could not lock %s: %s\n", yamlconf_path, strerror(errno));
+		free(text);
+		return 1;
+	}
+
+	if(!access(yamlconf_path, F_OK) && !yamlconf_reload_global()) {
+		fprintf(stderr, "Could not re-read YAML config %s\n", yamlconf_path);
+		yamlconf_unlock();
+		free(text);
+		return 1;
+	}
+
+	if(!yamlconf_global) {
+		fprintf(stderr, "Could not read YAML config %s\n", yamlconf_path);
+		yamlconf_unlock();
+		free(text);
+		return 1;
+	}
+
+	if(action == SCRIPT_DEL) {
+		if(!yamlconf_script_del(yamlconf_global, netname, name)) {
+			yamlconf_unlock();
+			fprintf(stderr, "No scripts.%s in %s [%s]\n", name, yamlconf_path, netname);
+			return 1;
+		}
+	} else {
+		yamlconf_script_set_text(yamlconf_global, netname, name, text);
+	}
+
+	free(text);
+	bool saved = yamlconf_save(yamlconf_global, yamlconf_path);
+	yamlconf_unlock();
+
+	if(!saved) {
+		fprintf(stderr, "Error writing %s: %s\n", yamlconf_path, strerror(errno));
+		return 1;
+	}
+
+	// Silently try notifying a running tincd of changes.
+	if(connect_tincd(false)) {
+		sendline(fd, "%d %d", CONTROL, REQ_RELOAD);
+	}
+
+	return 0;
+}
+
 static int cmd_config(int argc, char *argv[]) {
 	if(argc < 2) {
 		fprintf(stderr, "Invalid number of arguments.\n");
@@ -1869,6 +2051,14 @@ static int cmd_config(int argc, char *argv[]) {
 	if(!*variable) {
 		fprintf(stderr, "No variable given.\n");
 		return 1;
+	}
+
+	/* `scripts.<name>' is not a host record but the YAML `scripts:' stanza:
+	   a whole script body, taken from a file. See cmd_config_script(). */
+	if(node && !strcasecmp(node, "scripts")) {
+		return cmd_config_script(action == DEL ? SCRIPT_DEL
+		                         : (action == GET && !*value) ? SCRIPT_GET : SCRIPT_SET,
+		                         variable, value);
 	}
 
 	if((action == SET || action == ADD) && !*value) {

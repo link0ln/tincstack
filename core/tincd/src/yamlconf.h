@@ -135,6 +135,15 @@ bool yamlconf_host_del(yamlconf_t *yc, const char *net, const char *name);
 const char **yamlconf_script_names(yamlconf_t *yc, const char *net);
 char *yamlconf_script_text(yamlconf_t *yc, const char *net, const char *name);
 
+/* Replace the text of networks.<net>.scripts.<name>, creating the entry if
+   needed. Trailing newlines are stripped: the emitter writes the text as a
+   literal block and the parser chomps it, so a stored trailing newline would
+   not round-trip. This is what `tinc set scripts.<name> @file` uses. */
+void yamlconf_script_set_text(yamlconf_t *yc, const char *net, const char *name, const char *text);
+
+/* Remove networks.<net>.scripts.<name>. Returns true if it existed. */
+bool yamlconf_script_del(yamlconf_t *yc, const char *net, const char *name);
+
 /* Re-read yamlconf_path from disk into yamlconf_global. On a parse error the
    previous document is kept and false is returned. No-op (true) outside YAML
    mode. The daemon calls this on every (re)load of its configuration. */
