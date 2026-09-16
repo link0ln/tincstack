@@ -242,38 +242,117 @@ Source: `core/tincd/src/obfs.c` (framing, keys, junk, inbound keyed check),
 (`obfs_wrap_send` on the SPTPS data path, `handle_incoming_vpn_packet_decap`
 for re-injection).
 
+> **Frame version.** The layout and key schedule below are obfs **v2**
+> (`tincstack-obfs-v2`), which replaces the v1 seal that review R found to be
+> forgeable mesh-wide, nonce-reusing and replayable (findings M5-2…M5-6). v2 is
+> not wire-compatible with v1, but the two only ever meet *inside one mesh*
+> (obfs needs no upstream compat): a v1 node's frames simply fail a v2 node's
+> keyed check and are dropped as junk, and vice-versa, so neither crashes the
+> other — the obfs handshake never completes across the version boundary and
+> the link falls back to `plain`. Upgrade all nodes of a mesh together.
+
 ### Frame
 
 Every obfs datagram — a sealed single-flow meta frame or a sealed SPTPS data
 datagram — is:
 
     offset size field
-    0      8    nonce      random; the ChaCha20-Poly1305 IV, also on the wire
-    8      2    clen       length of the ciphertext that follows (network order)
-    10     clen ciphertext ChaCha20-Poly1305(inner)  = inner_len + 16-byte tag
-    10+clen P   tail junk  P random bytes (handshake/steady header-junk knob)
+    0      M    magic      optional plaintext prefix (M = 4 if a magic header is
+                           configured for this phase, else 0)
+    M      8    nonce      the whitened per-direction counter; the ChaCha20-
+                           Poly1305 IV is the un-whitened counter
+    M+8    2    clen       length of the ciphertext that follows (network order)
+    M+10   clen ciphertext ChaCha20-Poly1305(inner)  = inner_len + 16-byte tag
+    M+10+clen P tail junk  P random bytes (handshake/steady header-junk knob)
 
 `inner` is the exact datagram that would have been sent in the clear: the
 single-flow frame (which itself begins with the SF magic) or the SPTPS relay/
 direct datagram (`dst-id|src-id|record`). Nothing of tinc's structure is on the
-wire — the nonce and ciphertext are indistinguishable from random, and the SF
-magic and the SPTPS record are inside the sealed region.
+wire — with no magic configured the leading bytes are the whitened counter and
+the rest is ciphertext, both indistinguishable from random; the SF magic and
+the SPTPS record are inside the sealed region.
 
-### Discriminator derivation (defect 1: authenticated, not a cleartext flag)
+### Key schedule (findings M5-2, M5-5): bootstrap key → per-link session key
 
-The per-link key is
+The seal uses **direction-separated** ChaCha20-Poly1305 keys, in two tiers.
 
-    key(64B) = SHA-512( "tincstack-obfs-v1\0" || lo || "|" || hi )
+**Bootstrap tier (cold start only).** A base secret is derived from the two
+nodes' public keys, sorted so both ends agree:
 
-where `lo`/`hi` are the two nodes' base64 Ed25519 public keys sorted so both
-ends compute the same key. It is used as the ChaCha20-Poly1305 key. The
-**Poly1305 tag is the junk/real discriminator**: a real frame verifies, junk
-(random bytes) and forgeries do not. An on-path censor without the node public
-keys can neither forge a "real" frame nor tell junk from real. The key is
-available before any handshake (the public keys are already in the host
-records), which is what makes cold-start classification possible. The seal
-provides classification and anti-forgery, not confidentiality — SPTPS inside
-provides that — so a random 64-bit nonce is sufficient.
+    base(64B) = SHA-512( "tincstack-obfs-v2\0" || lo_pubkey || "|" || hi_pubkey )
+
+From it, per-direction keys and nonce-whitening masks:
+
+    key_dir  = SHA-512( "tincstack-obfs-key\0" || dir || base )      (dir ∈ {l2h, h2l})
+    mask_dir = SHA-512( "tincstack-obfs-iv\0"  || dir || base )[:8]
+
+The `lo` node sends with the `l2h` key and receives with `h2l`; the `hi` node
+does the reverse. Because every mesh member holds every public key, this key is
+**not a per-link secret** — so it is used only for the first datagrams of a
+link, until a session key exists. It is what makes cold-start classification
+possible (the receiver can derive it before any handshake). The Poly1305 tag is
+the junk/real discriminator: junk and forgeries fail it.
+
+**Session tier (steady state).** Once the connection is up and its SPTPS meta
+channel is authenticated, the two nodes exchange a fresh 32-byte seed each over
+that channel — a new `OBFS_KEY` request (SPTPS is untouched; the seed rides the
+already-authenticated, already-encrypted meta stream):
+
+    OBFS_KEY <flag> <base64(seed)>      flag 0 = offer, flag 1 = ack
+
+On receiving the peer's seed a node derives the session base and, when it
+receives the peer's *ack* (proof the peer holds our seed and computed the same
+key), switches its sender to the session keys:
+
+    sbase(64B) = SHA-512( "tincstack-obfs-sess-v2\0" || lo_seed || hi_seed )
+    skey_dir   = SHA-512( "tincstack-obfs-skey\0" || dir || sbase )
+    smask_dir  = SHA-512( "tincstack-obfs-siv\0"  || dir || sbase )[:8]
+
+The receiver always tries the session key first, then the bootstrap key (two
+Poly1305 trials on the fast path), so the sender's switch never causes a
+black-out. Only the two endpoints know the seeds, so a third mesh member — even
+one holding every public key or a leaked `tinc.yaml` — cannot classify or forge
+steady traffic (finding M5-2).
+
+Direction separation also fixes reflection (finding M5-5): a datagram captured
+in one direction is sealed with, say, the `l2h` key, and the receiver of a
+reflection checks it with its own receive key (`l2h` for the other node), so a
+reflected `CLOSE`/`RESET` never verifies.
+
+The session key is re-derived periodically (aligned with `KeyExpire`, the SPTPS
+rekey period): a node re-runs the seed exchange, keeps sending on the current
+session key until the new one is acknowledged, then switches. This bounds the
+per-key nonce space and gives forward secrecy on the obfuscation layer.
+
+The link state is **per node**, shared by every connection to that node. When
+two nodes dial each other, tinc keeps one connection and closes the other; the
+obfs close hook only resets the shared link when the closing connection is the
+node's current owner, so a superseded connection closing late cannot wipe the
+session the surviving connection already negotiated. As a backstop, the rekey
+tick also re-issues the seed exchange for any active link that is still on the
+bootstrap key while its owning connection is authenticated, so a lost exchange
+leaves a link on the mesh-wide key for at most one tick (30 s), never
+indefinitely. (Both were found by `obfs-test.sh` PART 4 under host load.)
+
+### Nonce and replay window (findings M5-3, M5-4)
+
+The ChaCha20-Poly1305 nonce is a **strict per-direction 64-bit counter**, so it
+never repeats under a given key — no keystream reuse, no Poly1305 forgery. On
+the wire the counter is whitened (`counter XOR mask_dir`) so it does not read as
+a plaintext sequence number; the receiver recovers it by XORing the same mask.
+The counter starts at a random 48-bit value per keyset, so a node that restarts
+mid-link picks counters above the peer's current replay window (no black-out)
+and the leading wire bytes never look like a low counter. A configured **magic
+header is a separate plaintext prefix and consumes no nonce entropy** — the v1
+defect where the magic overwrote nonce bytes and left only 32 random bits is
+gone.
+
+Each direction keeps a **sliding replay window** (64 counters) over the
+recovered counter. A datagram that fails the window (a replay, or one too old to
+prove fresh) is dropped. Crucially, the remembered peer UDP address is moved
+**only after** a datagram both verifies (Poly1305) and is fresh (replay
+window), so a replayed sealed datagram from any source address can no longer
+re-point the link before SF/SPTPS checks run (finding M5-4).
 
 ### Junk schedule (defect 2: around the handshake, never per data packet)
 
@@ -290,9 +369,13 @@ Steady-state data never emits junk (the prototype's 3× amplification is gone).
   bytes appended after the ciphertext of handshake-phase / steady-state frames,
   to change the size distribution. The receiver ignores them (`clen` delimits
   the ciphertext).
-- `ObfsInitMagicHeader` / `ObfsTransportMagicHeader` (H1/H2): if set, the first
-  four bytes of the nonce are forced to this value, so the leading bytes of the
-  frame can be made to mimic another protocol. Default: fully random nonce.
+- `ObfsInitMagicHeader` / `ObfsTransportMagicHeader` (H1/H2): if set, a 4-byte
+  **plaintext prefix** is prepended to the frame, so the leading bytes can be
+  made to mimic another protocol. Unlike v1, this prefix is separate from the
+  nonce and costs no nonce entropy (finding M5-3). The receiver tries the
+  no-prefix and 4-byte-prefix offsets when unsealing, so both ends only need to
+  agree that a magic is in use (the values propagate through invitations).
+  Default: no prefix.
 
 A frame is in the *handshake phase* until its single-flow session is
 established (the peer has acknowledged); after that it uses the transport-phase
@@ -304,14 +387,23 @@ obfs frames look random, so `transport_classify_udp` cannot spot them and
 returns `SPTPS`. `transport_udp_dispatch` then runs `obfs_udp_try`, **after** the
 SF and QUIC pattern tests:
 
-1. **Fast path** — an active link whose remembered source address matches: one
-   Poly1305 verification. On failure it falls through to SPTPS (so a still-plain
-   datagram during the brief setup window, or junk, is handled correctly).
+1. **Fast path** — an active link whose remembered source address matches: at
+   most two Poly1305 verifications (session key then bootstrap key). On failure
+   it falls through to SPTPS (so a still-plain datagram during the brief setup
+   window, or junk, is handled correctly).
 2. **Cold path** — an unknown, not-yet-confirmed source, obfs accepted: a
-   rate-limited scan (≤ 25/s, like `try_harder`) over the node keys. The first
-   key that verifies identifies the peer and the link is activated.
+   **per-peer round-robin scan** over the node keys. A persistent cursor
+   resumes where the previous datagram left off, so no peer is starved and, in a
+   mesh larger than the per-second floor, the last node is still reached within
+   a bounded number of ticks (finding M5-6). The budget **scales with the peer
+   count** (floor 25/s, capped at 512/s) so a junk flood cannot exhaust it and
+   the > 25th node is still classified. The first key that verifies identifies
+   the peer.
 
-On success the inner datagram is unsealed and re-injected: an SF frame goes to
+On a verified frame the **replay window** is checked before anything else moves:
+a replay (or a too-old counter) is dropped and the link's remembered address is
+**not** touched (finding M5-4). A fresh frame activates the link (its address is
+adopted) and the inner datagram is unsealed and re-injected: an SF frame goes to
 `sf_udp_receive_obfs` (its replies are sealed with the same key), anything else
 to `handle_incoming_vpn_packet_decap` (the SPTPS data path). Re-injection
 bypasses the dispatcher, so the inner bytes are never scanned as obfs again and

@@ -53,6 +53,7 @@ typedef enum request_t {
 	REQ_PUBKEY, ANS_PUBKEY,
 	SPTPS_PACKET,
 	UDP_INFO, MTU_INFO,
+	OBFS_KEY,                                       /* obfs per-link session-key seed exchange (M5) */
 	LAST                                            /* Guardian for the highest request number */
 } request_t;
 
@@ -148,5 +149,6 @@ extern request_handler_t sptps_tcppacket_h;
 extern request_handler_t control_h;
 extern request_handler_t udp_info_h;
 extern request_handler_t mtu_info_h;
+extern request_handler_t obfs_key_h;
 
 #endif

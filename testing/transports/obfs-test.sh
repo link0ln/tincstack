@@ -1,5 +1,6 @@
 #!/bin/sh
-# obfs-test.sh -- prove the obfuscated-UDP carrier (M5, stream G2).
+# obfs-test.sh -- prove the obfuscated-UDP carrier (M5, stream G2; hardened by
+# stream O for security review R findings M5-2..M5-6).
 #
 # PART 1  two nodes, dialer prefers obfs:
 #   * the tunnel comes up FROM COLD and ping works both ways;
@@ -19,6 +20,16 @@
 #     (no double-prefix corruption).
 # PART 3  defaults (obfs compiled but NOT selected, ObfsJunkPacketCount 0):
 #   * the tunnel works and the wire is plain SPTPS -- no obfs seal, no SF magic.
+# PART 4-6 (review R):
+#   * (a, M5-2) a third party holding both nodes' PUBLIC keys derives the old
+#     public-key bootstrap key (obfs_probe.py) and can read only the cold-start
+#     frames, NOT the steady traffic, which uses the per-link session key;
+#   * (b, M5-4) replaying a captured datagram from a different address does not
+#     repoint the link (A<->B keeps pinging);
+#   * (c, M5-5) reflecting a datagram back to its sender does not close it.
+# PART 7 (e, M5-6): with 35 extra peers in the node tree the cold scan is not
+#   starved and the last peer's link still comes up.
+# (d, M5-3 nonce uniqueness) is a unit self-test in core/tincd/test/fuzz/fuzz_obfs.c.
 #
 # No fixed sleeps: every phase polls for readiness (both daemons logged
 # "activated" and a ping succeeds) with a 60 s deadline, like
@@ -31,18 +42,19 @@
 # Usage: testing/transports/obfs-test.sh [image]
 set -e
 
-IMG=${1:-tincstack/core:ws-g2}
+IMG=${1:-tincstack/core:ws-o}
 TCPDUMP_IMG=nicolaka/netshoot
-NET=wsg2obfs
-BASE=/tmp/wsg2-obfs
-PFX=wsg2o
+NET=wsoobfs
+BASE=/tmp/wso-obfs
+PFX=wso
+PCAPDIR=/tmp/wso-obfs-pcap
 WAIT=120   # deadline ceiling for every readiness poll; the happy path exits as
            # soon as the link is clean (observed 17-81 s for the relayed obfs KEX
            # under load), so a larger ceiling only adds tolerance, never latency.
 
-A_IP=10.37.9.10
-R_IP=10.37.9.11
-B_IP=10.37.9.12
+A_IP=10.37.90.10
+R_IP=10.37.90.11
+B_IP=10.37.90.12
 A_VPN=10.182.0.1
 R_VPN=10.182.0.2
 B_VPN=10.182.0.3
@@ -54,12 +66,12 @@ JCOUNT=8
 
 fail=0
 cleanup() {
-	docker rm -f ${PFX}-a ${PFX}-r ${PFX}-b ${PFX}-cap >/dev/null 2>&1 || true
+	docker rm -f ${PFX}-a ${PFX}-r ${PFX}-b ${PFX}-cap ${PFX}-atk >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup
 docker network rm "$NET" >/dev/null 2>&1 || true
-docker network create --subnet 10.37.9.0/24 "$NET" >/dev/null
+docker network create --subnet 10.37.90.0/24 "$NET" >/dev/null
 
 rm -rf "$BASE"-a "$BASE"-r "$BASE"-b
 mkdir -p "$BASE"-a "$BASE"-r "$BASE"-b
@@ -216,8 +228,54 @@ junk_events() { n=0; for l in "$@"; do n=$(( n + $(logs "$l" | grep -c 'obfs jun
 
 reset_lab() {
 	cleanup
-	docker network create --subnet 10.37.9.0/24 "$NET" >/dev/null 2>&1 || true
+	docker network create --subnet 10.37.90.0/24 "$NET" >/dev/null 2>&1 || true
 	rm -rf "$BASE"-a "$BASE"-r "$BASE"-b; mkdir -p "$BASE"-a "$BASE"-r "$BASE"-b
+}
+
+# --- pcap capture (for the third-party probe and replay/reflection) ---------
+# Writes a real pcap into a host-mounted dir so obfs_probe.py can parse the UDP
+# payloads (log-hex parsing cannot separate the payload from the IP/UDP header).
+cap_pcap_start() { # letter file
+	rm -f "$PCAPDIR/$2"
+	mkdir -p "$PCAPDIR"
+	docker rm -f ${PFX}-cap >/dev/null 2>&1 || true
+	docker run -d --name ${PFX}-cap --net container:${PFX}-$1 -v "$PCAPDIR":/cap --cap-add NET_RAW "$TCPDUMP_IMG" \
+		tcpdump -n -U -w "/cap/$2" -i eth0 'udp port 655' >/dev/null 2>&1
+	# poll until the pcap header is on disk (24 bytes), deadline WAIT, then a
+	# short settle so libpcap's BPF filter is actually attached before the
+	# caller generates traffic (a sub-second handshake was otherwise missed).
+	d=$(( $(date +%s) + WAIT ))
+	while :; do
+		[ -s "$PCAPDIR/$2" ] && [ "$(wc -c <"$PCAPDIR/$2" 2>/dev/null)" -ge 24 ] && break
+		[ "$(date +%s)" -ge "$d" ] && break
+		sleep 1
+	done
+	sleep 2
+}
+cap_pcap_stop() { docker stop ${PFX}-cap >/dev/null 2>&1 || true; docker rm -f ${PFX}-cap >/dev/null 2>&1 || true; }
+
+# node's OWN Ed25519 public key, read from its host block in its own yaml.
+ownpubkey() { # letter name
+	awk -v n="$2" '
+		$0 ~ "^      " n ": \\|" {inblk=1; next}
+		inblk && /^      [A-Za-z0-9_]+: \|/ {inblk=0}
+		inblk && /Ed25519PublicKey/ {print $3; exit}
+	' "$BASE-$1/tinc.yaml"
+}
+
+# send a raw UDP payload (hex) to a node's port from a DISTINCT source address,
+# impersonating an off-path attacker. Uses a throwaway netshoot container.
+raw_send() { # atk_ip dst_ip hexpayload repeat
+	docker rm -f ${PFX}-atk >/dev/null 2>&1 || true
+	docker run --rm --name ${PFX}-atk --network "$NET" --ip "$1" "$TCPDUMP_IMG" \
+		python3 -c "
+import socket,sys
+data=bytes.fromhex('$3')
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+for _ in range($4):
+    s.sendto(data,('$2',655))
+print('sent',$4,'x',len(data),'bytes')
+" 2>&1 || true
 }
 
 ########################## PART 1: obfs two nodes ###########################
@@ -335,9 +393,134 @@ echo "default: $(loss "$def_ping") ; SF magic=$def_magic ; UDP datagrams=$udpn ;
 [ "$udpn" -gt 0 ] || { echo "MISS: no UDP data on the wire with defaults"; fail=1; }
 [ "$def_junk" = 0 ] || { echo "MISS: junk emitted with obfs not selected"; fail=1; }
 
+########## PART 4-6: session key, replay, reflection (review R M5-2/4/5) ######
+# One A<->B obfs lab drives all three: a third party with both public keys
+# cannot read steady traffic (M5-2), a replayed datagram does not repoint the
+# link (M5-4), and a reflected datagram does not tear the session down (M5-5).
+echo "===== PART 4-6: session key / replay / reflection ====="
+reset_lab
+SEC_OPTS="      ObfsJunkPacketCount: 4
+      PreferredTransports: [obfs, plain]"
+gen "$BASE-b" nodeb "$SEC_OPTS"
+gen "$BASE-a" nodea "$SEC_OPTS
+      ConnectTo: [nodeb]"
+materialise b a
+crossinject a b
+PKA=$(ownpubkey a nodea); PKB=$(ownpubkey b nodeb)
+echo "  A pubkey ${PKA:-<none>} ; B pubkey ${PKB:-<none>}"
+
+start b "$B_IP" "$BASE-b"
+cap_pcap_start b cold.pcap        # capture from cold: catches the bootstrap frames
+start a "$A_IP" "$BASE-a"
+wait_link a "$A_VPN" b "$B_VPN" || fail=1
+
+# wait for the per-link session key to be established on BOTH ends
+d=$(( $(date +%s) + WAIT ))
+while :; do
+	if logs a | grep -q 'obfs session key established' && logs b | grep -q 'obfs session key established'; then sess_ok=1; break; fi
+	if [ "$(date +%s)" -ge "$d" ]; then sess_ok=0; break; fi
+	sleep 1
+done
+cap_pcap_stop
+[ "${sess_ok:-0}" = 1 ] || { echo "MISS: obfs session key never established on both ends"; fail=1; }
+
+# Warm and settle the link so any initial cold re-dial is over before the
+# steady capture, otherwise a transient re-handshake sprays bootstrap frames.
+wait_clean a "$B_VPN" >/dev/null 2>&1 || true
+wait_clean b "$A_VPN" >/dev/null 2>&1 || true
+
+# steady-state capture, well after the session key switch, both directions.
+cap_pcap_start b steady.pcap
+docker exec ${PFX}-a ping -c30 -i0.2 -W2 "$B_VPN" >/dev/null 2>&1 || true
+docker exec ${PFX}-b ping -c30 -i0.2 -W2 "$A_VPN" >/dev/null 2>&1 || true
+cap_pcap_stop
+
+# ---- (a) M5-2: third party with both public keys cannot decrypt steady traffic
+# Positive control (deterministic): the probe derives the public-key bootstrap
+# key and unseals a frame it sealed under it. This proves the derivation is
+# correct WITHOUT depending on capturing a bootstrap-keyed datagram -- the
+# OBFS_KEY seed exchange runs over the reliable TCP meta channel and usually
+# completes before any UDP data flows, so there may be zero bootstrap-keyed
+# DATA frames on the wire to capture. The cold capture is kept as informational
+# only.
+sc=$(python3 "$(dirname "$0")/obfs_probe.py" selftest "$PKA" "$PKB" 2>/dev/null)
+dec_cold=$(python3 "$(dirname "$0")/obfs_probe.py" decrypt "$PCAPDIR/cold.pcap" "$PKA" "$PKB" 2>/dev/null)
+dec_steady=$(python3 "$(dirname "$0")/obfs_probe.py" decrypt "$PCAPDIR/steady.pcap" "$PKA" "$PKB" 2>/dev/null)
+echo "  probe positive control (seal+unseal with public-key bootstrap key): $sc"
+echo "  probe on wire (bootstrap key from public keys): cold [$dec_cold] (info) ; steady [$dec_steady]"
+n_steady=$(echo "$dec_steady" | sed -n 's/.*decryptable=\([0-9]*\).*/\1/p')
+t_steady=$(echo "$dec_steady" | sed -n 's/.*total=\([0-9]*\).*/\1/p')
+[ "$sc" = "selftest=ok" ] || { echo "MISS: probe positive control failed -- bootstrap derivation wrong, steady result meaningless"; fail=1; }
+[ "${t_steady:-0}" -gt 0 ] || { echo "MISS: captured 0 steady obfs frames -- nothing to test M5-2 against"; fail=1; }
+[ "${n_steady:-1}" = 0 ] || { echo "MISS: a third party decrypted steady obfs traffic (M5-2 not fixed)"; fail=1; }
+
+# a real A->B steady datagram to replay/reflect
+PAYLOAD=$(python3 "$(dirname "$0")/obfs_probe.py" dump "$PCAPDIR/steady.pcap" "$B_IP" 1 2>/dev/null | head -1)
+echo "  captured A->B datagram: $(printf '%s' "$PAYLOAD" | cut -c1-24)... (${#PAYLOAD} hex chars)"
+
+# ---- (b) M5-4: replay from a DIFFERENT address must not repoint the link
+if [ -n "$PAYLOAD" ]; then
+	raw_send 10.37.90.50 "$B_IP" "$PAYLOAD" 20 >/dev/null 2>&1
+	# if the replay had repointed B's link to the attacker, A<->B would stall
+	if rep=$(wait_clean a "$B_VPN"); then
+		echo "  (b) after replay flood from 10.37.90.50: A<->B $(loss "$rep") -- link not repointed"
+	else
+		echo "MISS: A<->B did not recover after a replay flood (link may have been repointed, M5-4)"; fail=1
+	fi
+else
+	echo "MISS: could not capture an A->B datagram to replay"; fail=1
+fi
+
+# ---- (c) M5-5: a reflected datagram must not close the session
+if [ -n "$PAYLOAD" ]; then
+	closes_before=$(logs a | grep -c 'session closed\|session reset' || true)
+	raw_send 10.37.90.51 "$A_IP" "$PAYLOAD" 20 >/dev/null 2>&1   # reflect A's own tx frame back to A
+	closes_after=$(logs a | grep -c 'session closed\|session reset' || true)
+	if refl=$(wait_clean a "$B_VPN"); then
+		echo "  (c) after reflecting A's frame to A: A<->B $(loss "$refl") ; teardown log lines ${closes_before}->${closes_after}"
+	else
+		echo "MISS: A<->B did not survive a reflected datagram (M5-5)"; fail=1
+	fi
+	[ "$closes_before" = "$closes_after" ] || { echo "MISS: a reflected datagram triggered a session close/reset (M5-5)"; fail=1; }
+fi
+
+########## PART 7: cold-scan fairness with > 30 peers (review R M5-6) #########
+echo "===== PART 7: cold-scan classifies the last peer among > 30 ====="
+reset_lab
+SCAN_OPTS="      ObfsJunkPacketCount: 2
+      PreferredTransports: [obfs, plain]"
+gen "$BASE-b" nodeb "$SCAN_OPTS"
+gen "$BASE-a" nodea "$SCAN_OPTS
+      ConnectTo: [nodeb]"
+materialise b a
+crossinject a b
+# stuff B's node tree with 35 dummy peers, so a cold obfs datagram from A must
+# survive a scan far larger than the old global 25/s budget.
+python3 - "$BASE-b/tinc.yaml" <<'PYEOF'
+import sys, os, base64
+path = sys.argv[1]
+s = open(path).read()
+block = ""
+for i in range(1, 36):
+    key = base64.b64encode(os.urandom(32)).decode().rstrip("=")
+    block += "      dummy%02d: |\n        Ed25519PublicKey = %s\n        Subnet = 10.181.%d.1/32\n" % (i, key, i)
+s = s.replace("    hosts:\n", "    hosts:\n" + block, 1)
+open(path, "w").write(s)
+print("added 35 dummy peers to B")
+PYEOF
+start b "$B_IP" "$BASE-b"; start a "$A_IP" "$BASE-a"
+if wait_link a "$A_VPN" b "$B_VPN"; then
+	echo "  A<->B obfs tunnel came up with 35 extra peers in B's node tree (cold scan not starved)"
+	if s7=$(wait_clean a "$B_VPN"); then echo "  (e) $(loss "$s7") with > 30 peers configured"; else echo "MISS: tunnel unstable with >30 peers"; fail=1; fi
+else
+	echo "MISS: cold obfs link did not come up with > 30 peers (M5-6 scan starved)"; fail=1
+fi
+
 echo "==========================================================="
 if [ "$fail" = 0 ]; then
-	echo "PASS: obfs cold-start works, fingerprint gone, junk per-handshake, relay intact, defaults plain"
+	echo "PASS: obfs cold-start works, fingerprint gone, junk per-handshake, relay intact, defaults plain;"
+	echo "      session key blinds a third party (M5-2), replay does not repoint (M5-4),"
+	echo "      reflection does not close (M5-5), cold scan survives > 30 peers (M5-6)"
 	exit 0
 else
 	echo "FAIL"

@@ -52,6 +52,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "obfs.h"
 
 /* If nonzero, use null ciphers and skip all key exchanges. */
 bool bypass_security = false;
@@ -1198,6 +1199,10 @@ bool ack_h(connection_t *c, const char *request) {
 	} else {
 		send_add_edge(everyone, c->edge);
 	}
+
+	/* If this connection runs on the obfs carrier, start the per-link session
+	   key exchange now that the authenticated meta channel is up (M5-2). */
+	obfs_session_start(c);
 
 	/* Run MST and SSSP algorithms */
 
