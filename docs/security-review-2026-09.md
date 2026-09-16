@@ -67,7 +67,7 @@ user who can race the daemon on the config file; (F) a relay node.
 
 Status legend: **fixed** (on this branch, with proof), **open** (owner named).
 
-### 🔴 R-1 — front dispatcher spins at 100 % CPU on one pending byte (open, owner: stream B/G, `transport.c`/`net_socket.c`)
+### 🔴 R-1 — front dispatcher spins at 100 % CPU on one pending byte (fixed, stream L, `transport.c`)
 
 `transport_front_dispatch()` (`core/tincd/src/transport.c:390-416`) peeks with
 `MSG_PEEK` and returns `false` on `TCP_CLASS_NEED_MORE` without consuming
@@ -85,6 +85,20 @@ Fix: on `NEED_MORE`, either consume the peeked bytes into `c->inbuf` and
 classify on the buffered prefix, or `io_set(&c->io, 0)` and re-arm with a
 short timer; plus reject a connection that stays in the front state for more
 than ~2 s instead of `pingtimeout`.
+
+**Resolution (stream L, 2026-09-16).** The second option: the peeked bytes
+must stay in the socket (`https_accept` hands the socket to `SSL_accept`,
+which needs the ClientHello itself), so an undecided connection is parked
+(`io_set(&c->io, 0)`), one global 200 ms timer (`front_poll`) re-arms every
+parked connection for another peek, and a connection still undecided 2 s
+after accept is closed and tarpitted (`FRONT_DEADLINE`). Proof
+(`testing/transports/tls-front-test.sh`, R-1 case, image `ws-l` vs the
+pre-fix `ws-l-before` build of the same tree): one pending `G` held for 6 s
+cost the daemon **443 CPU ticks before** (100 % until the client gave up;
+never closed, the tarpit keeps the fd) and **0 ticks after**, closed by the
+front at 2 s (`sent no recognisable preamble within 2 s`). `fuzz_classify`
+gained the property that a full 8-byte peek always decides, so parking is
+bounded by bytes as well as by time.
 
 ### 🟠 R-2 — invitation propagation wildcards bypassed the `VAR_SAFE` filter (fixed)
 
@@ -249,7 +263,7 @@ first.
 
 Lines refer to master at `ade1876` (obfs) and `1dd187e` (https).
 
-### 🔴 M5-1 — decoy upstream proxy blocks the event loop; a probe every 3 s freezes the node (G1, `decoy.c:277-360`, `https.c:720-741`)
+### 🔴 M5-1 — decoy upstream proxy blocks the event loop; a probe every 3 s freezes the node (fixed, stream L, `decoy.c`, `https.c`)
 
 `proxy_upstream()` runs synchronously inside `https_io()`: `str2addrinfo()`
 (blocking DNS, unbounded), `connect()`, `send()` and a `recv()` loop with a
@@ -262,6 +276,23 @@ fetch asynchronous (non-blocking connect + `io_add`, or a helper thread with
 a pipe), cache the upstream response per path for minutes, and never let a
 decoy fetch exceed a small total budget. Until then document
 `HttpsDecoyUpstream` as unsafe on a node that carries traffic.
+
+**Resolution (stream L).** `decoy.c` is now event-driven: `decoy_fetch_start()`
+does a non-blocking connect on the loop (`io_add`), sends the rewritten head
+on write readiness, reads on read readiness into a 1 MiB-capped buffer, and a
+per-fetch `timeout_t` enforces a 3 s total deadline (delivered through a
+static reaper timer, never freeing a fetch inside its own timer callback).
+The upstream address is resolved once in `decoy_read_config()` (config
+(re)load), never on the probe path. `https.c` waits in a new
+`HS_SERVER_FETCH_DECOY` state with io interest off and resumes from the
+callback; `https_close` cancels an outstanding fetch. Proof: with the
+upstream black-holed (an unassigned address on the lab subnet),
+`tls-front-test.sh` M5-1 case: a second TLS probe's handshake, started 0.5 s
+after the first, took **2.52 s before** (queued behind the blocking
+`connect()`) and **2.8 ms after**; `https-carrier-test.sh` M5-1 case: three
+probes against B's black-holed upstream while A pings B through the tunnel:
+**0 % loss, max RTT 0.285 ms** (12 pings at 0.5 s); the run on the pre-fix
+build could not even measure it — A crashed, see L-1.
 
 ### 🟠 M5-2 — obfs key is derived from public keys: the discriminator is a mesh-wide shared secret (G2, `obfs.c:87-116`)
 
@@ -334,7 +365,7 @@ Fix: budget per source address, try `lookup_node_udp(addr)` and nodes with a
 matching known `Address` first, rotate the start index, and skip junk-sized
 datagrams that cannot hold a frame (`len < OBFS_MIN_FRAME + SF_HDR_LEN`).
 
-### 🟠 M5-7 — https pins the server certificate before anything is proven (G1, `https.c:342-345`)
+### 🟠 M5-7 — https pins the server certificate before anything is proven (fixed, stream L, `https.c`)
 
 `verify_server_cert()` writes `TlsFingerprint` into the peer's host record on
 first use, before the 101 and before the SPTPS handshake inside the session.
@@ -347,7 +378,21 @@ TLS session succeeded (`c->status.active`), and never write a pin on a
 session that failed. Also: an invalid existing pin is treated as absent and
 a second `TlsFingerprint` line is appended on every dial.
 
-### 🟠 M5-8 — plain-HTTP decoy busy-loops on a non-reading client (G1, `decoy.c:380-395`)
+**Resolution (stream L).** `verify_server_cert()` no longer writes anything:
+with no pin it records the fingerprint in the session (`pin_pending`) and
+`https_learn_pin()`, called after every inbound meta batch, appends the
+`TlsFingerprint` only once `c->edge` is set (the ACK after the SPTPS
+handshake — there is no `status.active` bit in this tree). A malformed pin
+is ignored and never re-appended. Proof (`https-carrier-test.sh`, M5-7
+cases): A's first dial through a socat TLS bump with its own P-256 cert
+(fingerprint printed) leaves **no** `TlsFingerprint` for B and https fails
+without a 101; a legitimate first dial then pins **exactly B's** fingerprint,
+once, logged as `SPTPS authenticated nodeb over TLS; pinning`. On the
+pre-fix build the first dial wrote a pin before any proof (the lab also
+found that tinc dials the address cache before the host record's `Address`,
+so a MITM proof must clear `cache/<node>`; the test does).
+
+### 🟠 M5-8 — plain-HTTP decoy busy-loops on a non-reading client (fixed, stream L, `decoy.c`)
 
 `send_all()` retries on `EAGAIN` without waiting: a prober that sends a
 request and never reads holds the event loop at 100 % CPU until the socket
@@ -356,7 +401,16 @@ buffer drains — for as long as the response exceeds the send buffer (a
 built-in page is small enough to fit). Fix: hand the response to the normal
 `io_add`/`IO_WRITE` path with a deadline, as `https.c` does for TLS.
 
-### 🟡 M5-9 — name-existence timing oracle in the authenticator (G1, `https.c:462-563`)
+**Resolution (stream L).** `decoy_serve_plain()` is a small state machine on
+the connection (read head → fetch → write), registered as a pseudo-carrier so
+its state is released through `transport_connection_close()`; writes happen
+on `IO_WRITE` readiness and the connection stays subject to the
+authentication timeout (`pingtimeout`). Proof (`tls-front-test.sh`, M5-8
+case): an 8 MB `HttpsDecoyRoot` file requested by a client that never reads
+cost **800 CPU ticks over 8 s before** (100 %, connection never dropped) and
+**2 ticks after**, dropped by `Timeout from … during authentication`.
+
+### 🟡 M5-9 — name-existence timing oracle in the authenticator (fixed in shape, stream L, `https.c`)
 
 Work done before serving the decoy depends on the claimed name: unknown
 name → host-record lookup fails fast; known name → file parse +
@@ -366,7 +420,18 @@ decoy bytes themselves are identical for wrong key, replay and plain probe
 any key work — so the oracle is timing only. Fix: constant-work path (verify
 against a dummy key when the name is unknown; cache host public keys).
 
-### 🟡 M5-10 — failed tinc authenticators are forwarded to the decoy upstream in the clear (G1, `decoy.c:243-275`)
+**Resolution (stream L).** For an unknown name the server still parses a
+host record (its own) and still runs a full Ed25519 verification against its
+own public key (result discarded); the freshness check no longer returns
+early but is folded into the final AND. Measured time-to-first-byte of the
+decoy over TLS for `nodea` (known) vs `nodex` (unknown), 400 samples each,
+interleaved, from a container in the node's netns: **before 107 / 108 µs
+median (p10 89/89), after 100 / 102 µs (p10 89/89)**. The oracle was below
+this lab's noise floor even before the fix (the extra verify is a few tens
+of µs against ~100 µs of TLS/loop overhead), so the proof is structural, not
+a measured delta.
+
+### 🟡 M5-10 — failed tinc authenticators are forwarded to the decoy upstream in the clear (fixed, stream L, `decoy.c`)
 
 `rewrite_host()` forwards the prober's request head — including the
 `Cookie: sid=` of a legitimate peer whose authenticator failed (clock skew
@@ -375,7 +440,17 @@ path to it learn "this port is a tinc node, peer name X". Fix: strip
 `Cookie`, `Upgrade`, `Sec-WebSocket-*` before forwarding, or serve the static
 page for any request that carried a `sid`.
 
-### 🟢 M5-11 — misc (G1/G2)
+**Resolution (stream L).** The first option, deliberately: serving the static
+page only to requests with a `sid` cookie would itself be a distinguisher (a
+prober adding `Cookie: sid=x` would see the server treat that cookie
+specially). `rewrite_request()` now forwards the request line plus its own
+`Host:` and `Connection: close`, and drops `Host`, `Connection`, `Cookie`,
+`Upgrade`, `Sec-WebSocket-*` and `Authorization` from the client's head.
+Proof (`tls-front-test.sh`, M5-10 case, upstream replaced by a head-logging
+server): a request with `Cookie: sid=LEAKMARK-AUTHENTICATOR` and the upgrade
+headers — **before** the upstream logged all five lines, **after** none.
+
+### 🟢 M5-11 — misc (G1/G2; the first two fixed by stream L)
 
 - `tls.c:514-517` classic mode: `fopen(keypath, "w")` then `chmod(0600)` —
   the key file exists with umask permissions for a moment; use
@@ -389,6 +464,45 @@ page for any request that carried a `sid`.
 - `decoy.c:87-120` `request_path()`: no URL decoding, so `%2e%2e` is a literal
   file name; `..` and `\` are rejected — no traversal.
 - `obfs.c:476-482` `get_magic()`: negative config values wrap; cosmetic.
+
+**Resolution (stream L).** `tls.c`: the classic-mode key file is created with
+`open(O_WRONLY|O_CREAT|O_EXCL, 0600)` (stale file unlinked first), no
+chmod-after-fopen window. `https.c`: the signed message is now
+`"tincstack-https-auth-v2\0" || fp || exporter || nonce || ts` and the
+authenticator `ver` byte is 2; a v1 authenticator is refused like any other
+(docs/transports.md §8.3). Proof: `https-carrier-test.sh` on `ws-l` (both
+ends v2) tunnels; its forged authenticator (a v1-shaped payload) gets the
+decoy.
+
+### 🔴 L-1 — clean close of an https link crashed the other side (found and fixed by stream L, `https.c` `https_send`)
+
+Found while proving M5-1: reloading B (`tinc reload`, which in YAML mode
+closes every link) killed A with SIGSEGV (exit 139) on master **and** on the
+pre-fix stream-L build. Cause: on the peer's close_notify `established_read()`
+calls `terminate_connection(c, c->edge)`, whose DEL_EDGE broadcast still
+includes the dying connection; `send_meta` → `transport_meta_flush` →
+`https_send` → `SSL_write` fails on the shut-down session →
+`terminate_connection()` again → unbounded recursion (3 040 nested
+`Closing connection with nodeb` lines in the log) → stack overflow. Plain TCP
+never hits this because `send_meta` only buffers. Fix: `https_send` never
+terminates; it marks the session `HS_DYING`, drops io interest and schedules a
+zero-delay reaper (`https_reap`, the `transport_sf.c` pattern) that terminates
+outside the send path. Proof: `https-carrier-test.sh` M5-1 case reloads B
+under an https link and checks both nodes are still running; before the fix
+the case could not even run (A was dead).
+
+### 🟡 L-2 — an activated https link reconnected over `plain` after the peer's reload (open, for the negotiation owner)
+
+Observed in the same lab: after B's `tinc reload` closed the activated https
+link, A's `dump connections` showed `transport plain` for the reconnect.
+`terminate_connection()` keeps the carrier for an activated link and only
+advances the candidate for one that never activated, so either the re-dial
+via https failed against a B that was still reloading (and the fallback
+then legitimately ended at `plain`) or the candidate was advanced anyway.
+Impact: a party that can reset an https link once may downgrade it to
+plain tinc-shaped TCP + UDP (the capture in the test shows the UDP flow and
+the cleartext ID line after that point). Not investigated further here;
+outgoing selection belongs to the negotiation owner.
 
 ---
 
@@ -447,6 +561,12 @@ idempotence, refuse-to-emit).
   ping both ways, inviter learned the invitee: PASS.
 - `sh core/tincd/test/fuzz/run.sh check` — props ok, five harnesses replay
   their corpora without a crash.
+- Stream L (2026-09-16): `TINCSTACK_TAG=ws-l testing/transports/tls-front-test.sh`
+  and `https-carrier-test.sh` carry the R-1/M5-1/M5-7/M5-8/M5-10 regression
+  cases with before/after numbers; `core/tincd/test/fuzz/Makefile` is now
+  committed (it was git-ignored by `core/tincd/.gitignore`'s `Makefile` rule,
+  so `run.sh build` did not work from a clean checkout; force-added) and
+  `props` runs under `setarch -R` like the harnesses.
 
 ## 7. Residual risks (not fixed, by decision)
 

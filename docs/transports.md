@@ -96,9 +96,20 @@ line is unchanged, so the handshake is wire-compatible with upstream tinc.
 
 One TCP listen port and one UDP port serve every carrier. On a new inbound
 connection the front peeks the first bytes (`MSG_PEEK`, up to
-`TRANSPORT_TCP_PEEK` = 8) and routes by them. A client that sends nothing holds
-only a peeked, unclassified slot and is reaped by the normal authentication
-timeout (`net.c timeout_handler`), so it cannot occupy a slot forever.
+`TRANSPORT_TCP_PEEK` = 8) and routes by them. The bytes stay in the socket so
+the carrier that claims them reads them itself (`SSL_accept` needs the
+ClientHello). A client that sends nothing holds only a peeked, unclassified
+slot and is reaped by the normal authentication timeout (`net.c
+timeout_handler`), so it cannot occupy a slot forever.
+
+An *undecided* connection (bytes present but fewer than the classifier needs,
+e.g. a lone `G`) is **parked** (review R-1): its read interest is dropped, one
+global 200 ms timer re-arms every parked connection for another peek, and a
+connection still undecided 2 s after accept is closed and tarpitted. Before
+this the level-triggered `select()` re-ran the front on every loop turn and one
+pending byte pinned the daemon at 100 % CPU until `pingtimeout`. With 8 bytes
+the classifier always decides (a `fuzz_classify` property), so parking is
+bounded by bytes as well as by time.
 
 ### TCP decision table (`transport_classify_tcp`)
 
@@ -462,8 +473,15 @@ TLS client handshake with a plausible SNI (`HttpsSni`, else the peer's `Address`
 if it is a hostname, else `localhost`). PKI verification is off
 (`SSL_VERIFY_NONE`); instead the peer's certificate is pinned by SHA-256
 fingerprint: if the peer's host record has a `TlsFingerprint`, it must match, or
-the dial fails; if none is pinned, the fingerprint is accepted on first use and
-written to the host record (logged). ALPN offers `http/1.1`.
+the dial fails. If none is pinned, the dial proceeds **without writing anything**
+(review M5-7): the certificate alone proves nothing, and a pin written on first
+contact would let an on-path attacker pin its own certificate forever. The
+fingerprint of the session is remembered in the dialer's session state and is
+written to the host record only once the SPTPS handshake inside that TLS session
+activated the link (`c->edge` set by the ACK), i.e. once the peer proved its
+Ed25519 identity over the very session the certificate belongs to (the exporter
+in the authenticator, §8.3, binds the two). A malformed existing pin is ignored
+and never overwritten (logged). ALPN offers `http/1.1`.
 
 ### 8.3 Authenticator
 
@@ -473,9 +491,14 @@ value. The payload is:
 
     ver(1) || namelen(1) || node-name || nonce(16) || timestamp_be(8) || Ed25519-sig
 
-where the signature is over
+where the signature (authenticator **version 2**, review M5-11) is over
 
-    server-cert-fp(32) || TLS-exporter(32) || nonce(16) || timestamp_be(8)
+    "tincstack-https-auth-v2\0" || server-cert-fp(32) || TLS-exporter(32) || nonce(16) || timestamp_be(8)
+
+The fixed NUL-terminated label separates this signature domain from SPTPS and
+from any future message signed with the same node key. The `ver` byte is `2`;
+a `ver` of `1` (the label-less pre-review format) is refused like any other
+failed authenticator, so both ends of an `https` link must run this format.
 
 - **server-cert-fp** is the SHA-256 of the certificate the server just presented
   (the client uses the fingerprint it verified; the server uses its own
@@ -490,7 +513,12 @@ where the signature is over
 
 The server also checks the node name is known and is not itself, the timestamp is
 within ±90 s, and the nonce has not been seen recently (a small replay cache;
-belt-and-suspenders on top of the exporter binding).
+belt-and-suspenders on top of the exporter binding). The failure path has a
+constant shape (review M5-9): an unknown name still parses a host record (the
+node's own) and still runs a full Ed25519 verification (against the own public
+key; the result is discarded), and the freshness check is folded into the final
+AND rather than returning early, so a prober cannot enumerate node names by
+timing.
 
 ### 8.4 Success and the meta+data flow
 
@@ -516,9 +544,26 @@ replayed nonce — the server serves the decoy (`decoy.c`) and closes, identical
 to any other prober. That identical treatment *is* the active-probing resistance:
 a prober cannot tell a tinc node from a plain web server. The decoy is a static
 page (built-in default, or files under `HttpsDecoyRoot`) or a transparent proxy to
-`HttpsDecoyUpstream` (Host rewritten). The same decoy content is served over
-plain HTTP to a cleartext prober (`decoy_serve_plain`). No response path emits a
+`HttpsDecoyUpstream`. The same decoy content is served over plain HTTP to a
+cleartext prober (`decoy_serve_plain`). No response path emits a
 tinc-identifying string.
+
+Everything on the decoy path is driven by the event loop (review M5-1, M5-8,
+M5-10):
+
+- the upstream fetch is a non-blocking connect/send/recv on the loop with a
+  3 s total deadline and a 1 MiB cap (`decoy_fetch_start`); the upstream address
+  is resolved once when the config is (re)loaded, never per probe; on any
+  failure or timeout the static page is served instead, so the port never breaks
+  character and a black-holed upstream costs the loop nothing;
+- the request forwarded to the upstream has `Host:` rewritten,
+  `Connection: close` forced, and `Cookie`, `Upgrade`, `Sec-WebSocket-*` and
+  `Authorization` stripped, so a failed tinc authenticator (e.g. a clock-skewed
+  peer) never reaches the upstream in the clear;
+- the plain-HTTP path reads the request head and writes the response on
+  readiness, never busy-waiting on a client that does not read; an exchange that
+  does not finish is reaped by the authentication timeout like any other
+  unauthenticated connection.
 
 The client side also falls back: if the dial cannot pin the cert or the server
 answers anything other than `101`, `https_dial`'s connection dies before it
