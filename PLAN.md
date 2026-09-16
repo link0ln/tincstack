@@ -1081,9 +1081,16 @@ another network's addresses are dropped by the daemon's nft rules. Details:
   - 🟢 **Lab evidence is committed in full** (`testing/**/results/`, ~20 MB of
     per-node tincd logs, 700+ files for one run; `make check` writes a new
     `results/<today>/` tree on every run). Impact: repository bloat grows
-    with every recorded run. Consolidation: keep `summary.md`, `result.json`
+    with every recorded run, and `make check` in a checkout overwrites the
+    committed evidence of the same day (stream K hit this: 63 modified
+    files after one run). Consolidation: keep `summary.md`, `result.json`
     and the laptop/glare logs that the proof lines cite, gitignore the rest
-    (or move full logs to a release artifact).
+    (or move full logs to a release artifact), and have `make check` write
+    to a run-scoped directory.
+  - 🟢 `testing/transports/singleflow-test.sh` uses fixed container/network
+    names (`wsbsf-*`) and removes the `wsbsf` network on start: two
+    concurrent runs kill each other (stream K). Parametrise the prefix like
+    `two-nodes.sh` (`LAB=`).
   - ~~🟠 **REQ_KEY glare has no tie-break (upstream 1.1pre18 and core).**~~
     **Resolved 2026-09-16 (stream K, core patch 5 — `core/tincd/PATCHES.md`
     §5, `docs/source-inventory.md`).** Upstream 1.1 HEAD (`211e3dfa`) has the
