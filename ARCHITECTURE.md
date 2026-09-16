@@ -283,8 +283,10 @@ target (Linux x86-64, Windows mingw-w64, Android NDK ×4 ABIs).
 
 Recorded so the plan stays honest:
 
-- **sendmmsg relay batching** — measured *worse* by its author; kept behind a
-  default-off flag or dropped, not a feature.
+- **sendmmsg relay batching** — measured *worse* by its author; **removed from
+  the tree 2026-09-16** (`core/tincd/PATCHES.md` §4). It had been gated on
+  `HAVE_SENDMMSG`, i.e. on in every Linux build, which is not what
+  "default-off" means.
 - **Multi-hop / onion routing** — present only as dead code in the vless
   prototype; not adopted.
 - **HTTP/3 conformance for the QUIC carrier** — the goal is a working QUIC

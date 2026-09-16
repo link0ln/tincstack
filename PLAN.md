@@ -914,10 +914,19 @@ QT_QPA_PLATFORM=offscreen python -m pytest -q tests` → `38 passed`.
   ("generate keys first") and `＋ Add network` seeded `Port: 0` for a founding
   node — both contradict M1 zero-config / decision 3. Fixed: a new network is
   an empty stanza and the daemon materialises everything on first Start.
-- 🟡 **`tinc invite` phone-home re-confirmed** from the Windows backend path
+- ~~🟡 **`tinc invite` phone-home re-confirmed** from the Windows backend path
   (`Trying to discover externally visible hostname...` in the CLI proof; then
-  the M1 local-address fallback). Same defect as in Known Issues; the GUI
-  surfaces the warning in the Invite dialog's stderr panel. Fix stays in M2/M6.
+  the M1 local-address fallback).~~ **Resolved 2026-09-16 by M2 + M6, verified
+  in the consolidation pass.** The lookup is opt-in
+  (`invitation.c get_my_hostname` reads `AddressDiscovery`, registered
+  `VAR_SERVER` in `tincctl.c`; unset means no HTTP at all), and an operator who
+  knows the address no longer relies on any fallback: the Linux entrypoint
+  writes `hosts.<Name>.Address` from `PUBLIC_ADDRESS` (`entrypoint.sh`, v4 /
+  `[v6]:port` / `host:port` forms) and `tinc invite` reads it. What remains is
+  deliberate and documented, not a defect: with neither `PUBLIC_ADDRESS` nor
+  `AddressDiscovery` the invitation carries the default-route source address
+  and prints `Warning: using local address …`. The GUI still shows that warning
+  in the Invite dialog's stderr panel, which is the intended surface.
 - 🟢 **Core cross-build warnings**: `src/tincctl.c:2931-2932` `cmd_verify`
   `-Wuse-after-free` (pointer used after `xrealloc`) — upstream code, builds
   fine with mingw-w64 GCC 12; not touched by stream D (core is not in D's area).
@@ -1599,8 +1608,18 @@ Defects identified during the source audit, to fix as their milestone is reached
   does an NDK meson cross-build of `core/tincd` per ABI (proof in M8).
 - 🟡 **YAML write-back re-emits the whole file**, dropping comments/formatting;
   editors must not rely on comment round-tripping. Documented in schema.
-- 🟡 **sendmmsg relay batching measured worse** by its author. Keep default-off or
-  drop; do not present as a feature (Architecture §10).
+- ~~🟡 **sendmmsg relay batching measured worse** by its author. Keep default-off or
+  drop; do not present as a feature (Architecture §10).~~ **Resolved 2026-09-16
+  (this session): dropped.** The "default-off" was fiction — the batching was
+  gated on `HAVE_SENDMMSG`, which meson finds on every Linux host, so it was
+  built and live in every image. Its own measurement is 0.041 vs 0.0376
+  ticks/pkt, i.e. ~9 % *worse* at ~2000 pps, because `recvmmsg()` returns 1–2
+  packets per call at that rate and the in-batch `memcpy` is pure cost. Keeping
+  it would mean a second code path with 64 × `MAXSIZE` of static state in the
+  relay hot path plus a second build configuration to test. Removed:
+  `tx_batch_*`, the `send_sptps_data()` hook, the two receive-loop brackets and
+  the `sendmmsg` meson probe (`core/tincd/PATCHES.md` §4 keeps the negative
+  result and the `16eb7bc` reference).
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`

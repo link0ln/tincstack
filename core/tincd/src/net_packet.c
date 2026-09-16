@@ -980,125 +980,6 @@ end:
 #endif
 }
 
-#ifdef HAVE_SENDMMSG
-/* ---- Batched UDP relay transmission ----------------------------------
-   The relay hot path (handle_incoming_vpn_data) can forward thousands of
-   SPTPS packets per second. Each used to be sent with an individual sendto(),
-   making the relay syscall-bound (measured ~96% of CPU was system time,
-   dominated by sendto). We batch the forwards collected during one
-   recvmmsg() burst and flush them with a single sendmmsg() per socket.
-
-   Wire format is unchanged: every datagram is byte-identical to what sendto()
-   would have produced, so remote peers cannot tell the difference. Batching
-   is only active while tx_batching is set (begin/flush bracket the recvmmsg
-   loop); every other caller of send_sptps_data() keeps sending immediately.
-   On any sendmmsg() short-write or error the remainder is sent via the
-   unchanged single-sendto() path, preserving EMSGSIZE -> reduce_mtu()
-   feedback and error logging. Buffers are static, relying on the same
-   single-threaded non-reentrant event loop assumption recvmmsg() already
-   makes, so there is nothing to allocate and nothing to leak. */
-#define TX_BATCH_MAX 64
-typedef struct tx_batch_entry {
-	uint8_t buf[MAXSIZE];
-	size_t len;
-	sockaddr_t sa;
-	size_t sock;
-	node_t *relay;
-	size_t origlen;
-} tx_batch_entry_t;
-
-static tx_batch_entry_t tx_batch[TX_BATCH_MAX];
-static int tx_batch_count = 0;
-static bool tx_batching = false;
-
-/* Send one datagram immediately, with the exact same error handling
-   (EMSGSIZE -> reduce_mtu) as the inline path in send_sptps_data(). */
-static void tx_send_one(size_t sock, const void *buf, size_t len, const sockaddr_t *sa, node_t *relay, size_t origlen) {
-	if(sendto(listen_socket[sock].udp.fd, buf, len, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
-		if(sockmsgsize(sockerrno)) {
-			reduce_mtu(relay, (int)origlen - 1);
-		} else {
-			logger(DEBUG_TRAFFIC, LOG_WARNING, "Error sending UDP SPTPS packet to %s (%s): %s", relay->name, relay->hostname, sockstrerror(sockerrno));
-		}
-	}
-}
-
-/* Flush the accumulated batch. Consecutive entries sharing the same socket
-   are sent with one sendmmsg(); anything sendmmsg() did not send (short
-   write, or <0 meaning none) is retried via tx_send_one(). */
-static void tx_batch_send(void) {
-	static struct mmsghdr msgs[TX_BATCH_MAX];
-	static struct iovec iov[TX_BATCH_MAX];
-
-	int i = 0;
-
-	while(i < tx_batch_count) {
-		size_t sock = tx_batch[i].sock;
-		int n = 0;
-		int j = i;
-
-		while(j < tx_batch_count && tx_batch[j].sock == sock && n < TX_BATCH_MAX) {
-			memset(&msgs[n], 0, sizeof(msgs[n]));
-			iov[n].iov_base = tx_batch[j].buf;
-			iov[n].iov_len = tx_batch[j].len;
-			msgs[n].msg_hdr.msg_name = &tx_batch[j].sa;
-			msgs[n].msg_hdr.msg_namelen = SALEN(tx_batch[j].sa.sa);
-			msgs[n].msg_hdr.msg_iov = &iov[n];
-			msgs[n].msg_hdr.msg_iovlen = 1;
-			n++;
-			j++;
-		}
-
-		int sent = sendmmsg(listen_socket[sock].udp.fd, msgs, n, 0);
-		int done = sent > 0 ? sent : 0;
-
-		for(int k = done; k < n; k++) {
-			tx_batch_entry_t *e = &tx_batch[i + k];
-			tx_send_one(e->sock, e->buf, e->len, &e->sa, e->relay, e->origlen);
-		}
-
-		i = j;
-	}
-
-	tx_batch_count = 0;
-}
-
-static void tx_batch_begin(void) {
-	tx_batch_count = 0;
-	tx_batching = true;
-}
-
-static void tx_batch_flush(void) {
-	if(tx_batch_count) {
-		tx_batch_send();
-	}
-
-	tx_batching = false;
-}
-
-/* Queue a datagram for batched transmission; flushes first if the batch is
-   full. Oversized buffers (should not happen for relay-sized packets) are
-   sent directly as a safety net. */
-static void tx_batch_enqueue(size_t sock, const void *buf, size_t len, const sockaddr_t *sa, node_t *relay, size_t origlen) {
-	if(len > MAXSIZE) {
-		tx_send_one(sock, buf, len, sa, relay, origlen);
-		return;
-	}
-
-	if(tx_batch_count >= TX_BATCH_MAX) {
-		tx_batch_send();
-	}
-
-	tx_batch_entry_t *e = &tx_batch[tx_batch_count++];
-	memcpy(e->buf, buf, len);
-	e->len = len;
-	e->sa = *sa;
-	e->sock = sock;
-	e->relay = relay;
-	e->origlen = origlen;
-}
-#endif // HAVE_SENDMMSG
-
 bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_t len) {
 	size_t origlen = len - SPTPS_DATAGRAM_OVERHEAD;
 	node_t *relay = (to->via != myself && (type == PKT_PROBE || origlen <= to->via->minmtu)) ? to->via : to->nexthop;
@@ -1200,18 +1081,6 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	if(obfs_wrap_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay)) {
 		return true;
 	}
-
-#ifdef HAVE_SENDMMSG
-
-	/* While the relay receive loop is batching, queue this datagram instead of
-	   sending it immediately; it will be flushed with sendmmsg() at the end of
-	   the loop. The wire bytes are exactly what sendto() would have sent. */
-	if(tx_batching) {
-		tx_batch_enqueue(sock, buf, buf_ptr - buf, sa, relay, origlen);
-		return true;
-	}
-
-#endif
 
 	if(sendto(listen_socket[sock].udp.fd, buf, buf_ptr - buf, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
 		if(sockmsgsize(sockerrno)) {
@@ -2112,10 +1981,6 @@ void handle_incoming_vpn_data(void *data, int flags) {
 		return;
 	}
 
-#ifdef HAVE_SENDMMSG
-	tx_batch_begin();
-#endif
-
 	for(int i = 0; i < num; i++) {
 		pkt[i].len = msg[i].msg_len;
 
@@ -2125,10 +1990,6 @@ void handle_incoming_vpn_data(void *data, int flags) {
 
 		handle_incoming_vpn_packet(ls, &pkt[i], &addr[i]);
 	}
-
-#ifdef HAVE_SENDMMSG
-	tx_batch_flush();
-#endif
 
 #else
 	vpn_packet_t pkt;
@@ -2148,15 +2009,8 @@ void handle_incoming_vpn_data(void *data, int flags) {
 
 	pkt.len = len;
 
-#ifdef HAVE_SENDMMSG
-	tx_batch_begin();
-#endif
-
 	handle_incoming_vpn_packet(ls, &pkt, &addr);
 
-#ifdef HAVE_SENDMMSG
-	tx_batch_flush();
-#endif
 #endif
 }
 

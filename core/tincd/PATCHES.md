@@ -76,25 +76,35 @@ Gating: changes the inbound UDP port, so only enable on nodes that don't rely on
 a stable inbound port (NAT'd nodes reaching peers via `ConnectTo`); off by
 default. Pairs naturally with `Port = 0` on the same nodes.
 
-## 4. net: batch relay UDP forwards with sendmmsg() (`16eb7bc`) — EXPERIMENTAL, not effective in our case
+## 4. net: batch relay UDP forwards with sendmmsg() (`16eb7bc`) — REJECTED, removed from the tree
 
 **Hypothesis.** A relay forwarding ~2000 pps was ~96% syscall-bound (profiled
 `stime` ≫ `utime`), dominated by one `sendto()` per forwarded packet. Batching
 forwards from a `recvmmsg()` burst into one `sendmmsg()` per socket should cut
 syscalls.
 
-**Implementation.** `tx_batch_*` helpers in `net_packet.c` queue UDP
-relay-passthrough forwards during the receive loop and flush them with
-`sendmmsg()`; on short-write/error the remainder falls back to the unchanged
+**Implementation (was).** `tx_batch_*` helpers in `net_packet.c` queued UDP
+relay-passthrough forwards during the receive loop and flushed them with
+`sendmmsg()`; on short-write/error the remainder fell back to the unchanged
 single-`sendto()` path (preserving `EMSGSIZE → reduce_mtu` PMTU feedback).
 Static buffers, no allocation. Gated on `HAVE_SENDMMSG`; wire-identical.
 
 **Result.** Measured on the production relay under equal controlled load:
 `sendmmsg` gave **no improvement** (slightly worse: 0.041 vs 0.0376 ticks/pkt).
 Cause: at the observed packet rate `recvmmsg` returns only 1–2 packets per call,
-so there is nothing to batch, and the extra in-batch `memcpy` adds a little
-overhead. The patch is kept for reference and would only help at much higher,
-bursty packet rates. **Not recommended to deploy as-is.**
+so there was nothing to batch, and the extra in-batch `memcpy` added a little
+overhead. It would only help at much higher, bursty packet rates.
+
+**Decision 2026-09-16: removed.** `HAVE_SENDMMSG` is true on every Linux host,
+so the "default-off" this patch was supposed to have never existed — the
+batching was built and active in every image we ship, contradicting both this
+file and ARCHITECTURE.md §10. Carrying a second, slower code path with 64 ×
+`MAXSIZE` of static state through the relay hot path, and a second build
+configuration to test it in, buys nothing at the packet rates we measured. The
+`tx_batch_*` block, its `send_sptps_data()` hook, the two receive-loop brackets
+and the `sendmmsg` meson probe are gone; `git show 16eb7bc` still has the code
+if a future measurement ever justifies it. The negative result above is the
+point of this section.
 
 ## 5. SPTPS: REQ_KEY glare tie-break + jittered restart cooldown (tincstack, stream K)
 
@@ -171,5 +181,6 @@ Windows (mingw-w64 cross-build, for the laptop):
   "direct UDP dies after sleep / never punches through CGNAT" problem.
 - On nodes that act as a LAN listen hub, do **not** combine with `Port = 0`
   without checking that LAN neighbours can still find them.
-- Patch **4** (sendmmsg): leave disabled / unbuilt unless relay packet rates are
-  very high and bursty (it did not help at ~2000 pps).
+- Patch **4** (sendmmsg): **not in the tree.** It did not help at ~2000 pps and
+  was removed rather than left silently enabled; resurrect from `16eb7bc` only
+  with a measurement that shows a win.

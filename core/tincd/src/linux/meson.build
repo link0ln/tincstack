@@ -4,7 +4,6 @@ check_headers += [
 ]
 
 check_functions += 'recvmmsg'
-check_functions += 'sendmmsg'
 
 src_tincd += files(
   'device.c',
