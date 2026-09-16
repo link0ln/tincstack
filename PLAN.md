@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-16 (M9 closed by stream F; Port classification fixed in the consolidation pass)
+**Last Updated:** 2026-09-16 (M9 closed by stream F; Port classification fixed in the consolidation pass; REQ_KEY glare fixed by stream K)
 
 A self-hosted mesh VPN distribution on a hardened tinc 1.1 core, with opt-in
 circumvention transports and per-platform delivery (Linux/Windows/Android).
@@ -1084,7 +1084,40 @@ another network's addresses are dropped by the daemon's nft rules. Details:
     with every recorded run. Consolidation: keep `summary.md`, `result.json`
     and the laptop/glare logs that the proof lines cite, gitignore the rest
     (or move full logs to a release artifact).
-  - 🟠 **REQ_KEY glare has no tie-break (upstream 1.1pre18 and core).** When
+  - ~~🟠 **REQ_KEY glare has no tie-break (upstream 1.1pre18 and core).**~~
+    **Resolved 2026-09-16 (stream K, core patch 5 — `core/tincd/PATCHES.md`
+    §5, `docs/source-inventory.md`).** Upstream 1.1 HEAD (`211e3dfa`) has the
+    same unconditional tear-down in the `REQ_KEY` handler and no fix in its
+    history, so the tie-break is ours: in `req_key_ext_h` a node whose own
+    SPTPS session with that peer is *pending as initiator* keeps it and ignores
+    the peer's `REQ_KEY` when its `Name` is lexicographically smaller, and
+    yields as responder otherwise (both sides evaluate the same rule, so exactly
+    one initiator survives — two initiators can never finish, the SIG record
+    carries the initiator flag); the 30 s "No key after N seconds" cooldown in
+    `try_sptps` is jittered ±20 % (24–36 s). Wire-compatible: no new message.
+    **Measured** (`lab.sh glare`, full-cone × full-cone, both sides ping at
+    once; `--rtt 50` makes the collision near-certain; evidence
+    `testing/nat-sim/results/2026-09-16/glare-fix/summary.md` + cited logs):
+    *before* (core at fef10b9, rtt 50, 3 runs) 90 s **FAIL** / 32 s / 31 s
+    to the first key, 4 / 1 / 1 SPTPS restarts, 6 / 2 / 2 `Invalid packet
+    seqno`; baseline 23 / 46 / 35 s, 3 / 7 / 5 restarts (rtt 1 ms: core 32 s
+    with 1 restart when the pings collided, 1 s when they did not).
+    *After*, core × core, 6 runs (rtt 50 ×3, rtt 1 ×3): **1 s in 6/6, 0
+    restarts, 0 seqno errors**, the tie-break logged on both sides in 5/6
+    runs (the 6th did not collide). *Mixed pairs* (rtt 50, 3 runs each):
+    core × baseline (patched node has the smaller name, wins) 1 s / 0
+    restarts ×3; baseline × core (patched node yields exactly as stock) 13 /
+    12 / 13 s with 1 restart each — the residual both-responder case is
+    recovered by the stock 10 s timer and is never worse than
+    baseline × baseline (23–46 s). Fully fixed only when both ends carry the
+    patch. Regression on the same image (`ws-k`): `make check` exit 0 (smoke
+    PASS, validate-nat 6/6, quick matrix 5/5 PASS, dpi baseline six
+    fingerprints), `lab.sh laptop --image both` core PASS 6/8/6/4 s and
+    baseline FAIL at mapping-dropped exactly as recorded above (0 seqno / 0
+    glare lines in both), `singleflow-test.sh` PASS, `two-nodes.sh` PASS.
+    Lab: `natlab glare --image-b core|baseline` runs nodeb on the other
+    binary; the "glare lines" column now also counts the tie-break message.
+    Original finding (stream F): When
     both nodes start sending to each other in the same instant, both send
     `REQ_KEY`; each side stops its own SPTPS session and becomes a responder,
     so each `ANS_KEY` hits a fresh responder expecting seqno 1 →

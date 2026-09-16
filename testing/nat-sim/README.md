@@ -187,6 +187,18 @@ succeeds by jitter. The core's 30 s cooldown (PATCHES.md §1, 10 s upstream)
 makes every round three times longer. The `glare` scenario measures the time
 to the first successful key exchange for both binaries.
 
+**Fixed in the core on 2026-09-16 (PATCHES.md §5):** the lexicographically
+smaller `Name` keeps its pending initiator session and ignores the peer's
+`REQ_KEY`, the other side yields as responder, and the restart cooldown is
+jittered ±20 %. The "glare lines" column counts both the stock "already
+started" message and the core's "glare tie-break" message, so a 1 s key with
+glare lines > 0 means the glare happened *and* was resolved; 0 glare lines
+means the two pings did not actually collide in that run (it is a race —
+`--rtt 50` makes the collision near-certain). `--image-b core|baseline` runs
+nodeb on the other binary for the mixed pairs (`--image core --image-b
+baseline` = patched initiator against a stock responder). Evidence:
+`results/2026-09-16/glare-fix/`.
+
 ## Files
 
 - `lab.sh` — host wrapper (build the lab image, run one command in it).

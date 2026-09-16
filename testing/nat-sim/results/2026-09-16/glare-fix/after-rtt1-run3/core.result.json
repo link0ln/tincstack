@@ -1,0 +1,1 @@
+{"image": "core", "verdict": "PASS", "t_key": 1, "seqno_lines": 0, "reqkey_lines": 0, "sptps_restarts": 0, "note": "glare lines recounted from the logs with the patch-5 pattern (the run predates the lab counter update)"}

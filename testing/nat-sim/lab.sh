@@ -9,7 +9,7 @@
 #   lab.sh scenario A_TYPE B_TYPE      one pair, exit 0 = PASS
 #   lab.sh matrix [--quick]            all pairs (core and baseline)
 #   lab.sh laptop                      the CGNAT / sleep-resume regression
-#   lab.sh glare                       simultaneous REQ_KEY (both sides start)
+#   lab.sh glare [--image-b IMG]       simultaneous REQ_KEY (both sides start; --image-b: mixed pair)
 #   lab.sh shell                       interactive shell in the lab container
 #   lab.sh clean                       remove leftover wsf-* containers
 #

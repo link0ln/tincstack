@@ -9,8 +9,10 @@
 #   natlab scenario A_TYPE B_TYPE [opts]
 #   natlab matrix [--quick] [opts]
 #   natlab laptop [opts]
+#   natlab glare [opts]            (--image-b IMG: nodeb runs the other binary)
 #
-# opts: --image core|baseline|both  --out DIR  --rtt MS  --wait S  --recover S
+# opts: --image core|baseline|both  --image-b core|baseline  --out DIR  --rtt MS
+#       --wait S  --recover S
 #       --pause S  --cgnat-udp-timeout S  --cgnat-udp-stream-timeout S
 set -euo pipefail
 
@@ -29,7 +31,7 @@ VPN_RELAY=10.77.0.1; VPN_A=10.77.0.2; VPN_B=10.77.0.3; VPN_L=10.77.0.4
 TINC_PORT=655
 MAP_A=40655; MAP_B=41655            # static external ports of the cone profiles
 
-IMAGE_SEL=""; OUT=/lab/results; RTT=0; WAIT=90; RECOVER=60; PAUSE=70; QUICK=0
+IMAGE_SEL=""; IMAGE_B=""; OUT=/lab/results; RTT=0; WAIT=90; RECOVER=60; PAUSE=70; QUICK=0
 CGNAT_UDP_TO=10; CGNAT_UDP_STO=30
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -39,6 +41,7 @@ parse_opts() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --image) IMAGE_SEL="$2"; shift 2 ;;
+            --image-b) IMAGE_B="$2"; shift 2 ;;
             --out) OUT="$2"; shift 2 ;;
             --rtt) RTT="$2"; shift 2 ;;
             --wait) WAIT="$2"; shift 2 ;;
@@ -146,17 +149,20 @@ share_hosts() {
     done
 }
 CUR_IMG=core
+# Per-node image override (mixed pairs): NODE_IMG_<name>=core|baseline wins
+# over CUR_IMG for that node only; used by `glare --image-b`.
+node_img() { local v="NODE_IMG_$1"; echo "${!v:-$CUR_IMG}"; }
 tinc_start() { # NAME  -> starts tincd in netns NAME, pid in $RUN/NAME.pid
     local name="$1"
     # exec so that $! is the `ip netns exec` process, which execs tincd itself:
     # SIGSTOP/SIGCONT and kill -0 must hit the daemon, not a wrapper subshell.
-    ( exec ip netns exec "$name" "$(tincd_bin "$CUR_IMG")" -D -d5 -c "$NODES/$name" --pidfile "$RUN/$name.pid" \
+    ( exec ip netns exec "$name" "$(tincd_bin "$(node_img "$name")")" -D -d5 -c "$NODES/$name" --pidfile "$RUN/$name.pid" \
         >> "$LOGS/$name.log" 2>&1 ) &
     echo $! > "$RUN/$name.ospid"
 }
 tinc_pid() { cat "$RUN/$1.ospid"; }
 tinc_stop() { local p; p="$(tinc_pid "$1")"; kill -TERM "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true; }
-tincctl() { "$(tinc_bin "$CUR_IMG")" -c "$NODES/$1" --pidfile "$RUN/$1.pid" "${@:2}"; }
+tincctl() { "$(tinc_bin "$(node_img "$1")")" -c "$NODES/$1" --pidfile "$RUN/$1.pid" "${@:2}"; }
 reach() { tincctl "$1" info "$2" 2>/dev/null | awk -F': *' '/^Reachability:/{print $2}'; }
 
 # wait_direct NODE PEER MAXS -> prints seconds taken, exit 1 on timeout
@@ -488,9 +494,12 @@ laptop() {
 # exchange succeeds and counts the "Invalid packet seqno" / "REQ_KEY ... while
 # we already started" rounds. Informative for the core-vs-baseline delta of the
 # 30 s cooldown; the verdict is PASS when a key is established within --wait.
-glare_run() { # IMAGE OUTDIR
-    local img="$1" d="$2"
+glare_run() { # IMAGE OUTDIR   (nodeb runs $IMAGE_B when set: mixed pair)
+    local img="$1" d="$2" label="$1"
     CUR_IMG="$img"; mkdir -p "$d"
+    # shellcheck disable=SC2034  # read through indirect expansion in node_img
+    NODE_IMG_nodeb="${IMAGE_B:-$img}"
+    [ -z "$IMAGE_B" ] || label="$img x $IMAGE_B"
     teardown; internet_up
     write_node relay "$VPN_RELAY"
     write_node nodea "$VPN_A" "ConnectTo = relay" "UDPDiscoveryBurst = 5"
@@ -515,12 +524,14 @@ glare_run() { # IMAGE OUTDIR
     local seqno reqkey restarts
     save_state "$d" relay nodea nodeb
     seqno="$(cat "$d"/nodea.log "$d"/nodeb.log | grep -c "Invalid packet seqno" || true)"
-    reqkey="$(cat "$d"/nodea.log "$d"/nodeb.log | grep -c "while we already started a SPTPS session" || true)"
+    # glare lines: the stock "already started" message and the core's tie-break message (patch 5)
+    reqkey="$(cat "$d"/nodea.log "$d"/nodeb.log | grep -c "while we already started a SPTPS session\|glare tie-break" || true)"
     restarts="$(cat "$d"/nodea.log "$d"/nodeb.log | grep -c "restarting SPTPS" || true)"
     local verdict=FAIL; [ "$ok" -eq 1 ] && verdict=PASS
     printf '{"image":"%s","verdict":"%s","t_key":%s,"seqno_lines":%s,"reqkey_lines":%s,"sptps_restarts":%s}\n' \
-        "$img" "$verdict" "$t" "$seqno" "$reqkey" "$restarts" > "$d/result.json"
-    log "glare [$img]: $verdict key after ${t}s, seqno-errors=$seqno glare-lines=$reqkey sptps-restarts=$restarts"
+        "$label" "$verdict" "$t" "$seqno" "$reqkey" "$restarts" > "$d/result.json"
+    unset NODE_IMG_nodeb
+    log "glare [$label]: $verdict key after ${t}s, seqno-errors=$seqno glare-lines=$reqkey sptps-restarts=$restarts"
     teardown
     [ "$ok" -eq 1 ]
 }
@@ -528,15 +539,16 @@ glare() {
     parse_opts "$@"
     local imgs fail=0 i d="$OUT/glare"
     case "${IMAGE_SEL:-both}" in both) imgs="core baseline" ;; *) imgs="$IMAGE_SEL" ;; esac
+    local sub=""; [ -z "$IMAGE_B" ] || sub="-x-$IMAGE_B"
     mkdir -p "$d"
-    for i in $imgs; do glare_run "$i" "$d/$i" || fail=1; done
+    for i in $imgs; do glare_run "$i" "$d/$i$sub" || fail=1; done
     {
         echo "## REQ_KEY glare (both sides initiate at once; full-cone x full-cone)"
         echo
         echo "| image | key established after | \`Invalid packet seqno\` | glare lines | SPTPS restarts | verdict |"
         echo "|---|---|---|---|---|---|"
         for i in $imgs; do
-            python3 - "$d/$i/result.json" <<'PY'
+            python3 - "$d/$i$sub/result.json" <<'PY'
 import json,sys
 r=json.load(open(sys.argv[1]))
 print(f"| {r['image']} | {r['t_key']}s | {r['seqno_lines']} | {r['reqkey_lines']} | {r['sptps_restarts']} | {r['verdict']} |")
