@@ -1,0 +1,5 @@
+# Build context for Dockerfile.build-exe: only the entrypoint script is copied
+# into the image. The app source, the core binaries and the artefacts arrive as
+# a bind mount at run time, so keep them out of the context entirely.
+*
+!pyinstaller-in-wine.sh

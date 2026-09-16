@@ -1,0 +1,93 @@
+# Build tincmgr.exe (PyInstaller onefile) from Linux, inside Docker, by running
+# a *Windows* CPython under Wine. Nothing is installed on the host.
+#
+#   platforms/windows/build-exe.sh
+#   # = docker build -f platforms/windows/Dockerfile.build-exe \
+#   #       -t tincstack/win-exe:dev platforms/windows/
+#   #   docker run --rm -v "$PWD/platforms/windows:/work" tincstack/win-exe:dev
+#   # -> platforms/windows/dist/tincmgr.exe   (gitignored, never enters git)
+#
+# The image carries: WineHQ stable with a 64-bit prefix (the 32-bit runtime is
+# needed only by the python.org installer bootstrapper, which is a PE32 binary),
+# the official python.org Windows installer run with /quiet under Xvfb, and the
+# app's Windows wheels. PyInstaller then runs as a Windows process and takes the
+# win_amd64 bootloader out of its own wheel — no cross-compiler is involved, and
+# nothing here cross-builds: this is a native Windows build on an emulated ABI.
+#
+# Everything is pinned: the Wine package version, the Python version plus its
+# installer SHA-256, and every wheel including the transitive ones.
+#
+# Limits (build-windows.md §2b): the Wine route cannot exercise Wintun, the
+# UAC/elevation path, Windows service control, the tray/shell integration or
+# code signing. It proves the bundle builds, that it is a PE32+ GUI binary, and
+# that it starts far enough to build the Qt main window, read a tinc.yaml and
+# find the bundled tincd.exe.
+FROM debian:12-slim
+
+ARG WINE_PKG_VERSION=11.0.0.0~bookworm-1
+ARG PYTHON_VERSION=3.12.7
+ARG PYTHON_INSTALLER_SHA256=1206721601a62c925d4e4a0dcfc371e88f2ddbe8c0c07962ebb2be9b5bde4570
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Wine needs its i386 runtime: the python.org amd64 installer ships a 32-bit
+# bootstrapper even though the payload it lays down is 64-bit.
+RUN dpkg --add-architecture i386 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+         ca-certificates curl gnupg xvfb xauth unzip file binutils procps \
+    && mkdir -pm755 /etc/apt/keyrings \
+    && curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
+         -o /etc/apt/keyrings/winehq-archive.key \
+    && curl -fsSL https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
+         -o /etc/apt/sources.list.d/winehq-bookworm.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends "winehq-stable=${WINE_PKG_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV WINEPREFIX=/wine \
+    WINEARCH=win64 \
+    WINEDEBUG=-all \
+    WINPY="C:\\Python312\\python.exe"
+
+# 64-bit prefix. `wineserver -w` after every wine command, so the registry is
+# flushed to disk before the layer is committed.
+RUN wineboot --init && wineserver -w
+
+# Official python.org installer, checksum-verified, installed headless.
+RUN curl -fsSL -o /tmp/python-installer.exe \
+      "https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-amd64.exe" \
+    && echo "${PYTHON_INSTALLER_SHA256}  /tmp/python-installer.exe" | sha256sum -c - \
+    && xvfb-run -a wine /tmp/python-installer.exe /quiet InstallAllUsers=1 \
+         PrependPath=1 Include_test=0 Include_doc=0 Include_tcltk=0 \
+         TargetDir="C:\\Python312" \
+    && wineserver -w \
+    && rm -f /tmp/python-installer.exe \
+    && wine "${WINPY}" -V && wineserver -w
+
+# App dependencies for Windows + PyInstaller. Transitive versions are pinned
+# too, so the image content is reproducible from this file alone.
+RUN wine "${WINPY}" -m pip install --no-warn-script-location \
+        --disable-pip-version-check --only-binary=:all: \
+        PySide6-Essentials==6.7.3 \
+        shiboken6==6.7.3 \
+        pyqtgraph==0.13.7 \
+        numpy==1.26.4 \
+        PyYAML==6.0.2 \
+        pyinstaller==6.11.1 \
+        pyinstaller-hooks-contrib==2026.7 \
+        altgraph==0.17.5 \
+        pefile==2023.2.7 \
+        pywin32-ctypes==0.2.3 \
+        packaging==26.3 \
+        setuptools==84.0.0 \
+    && wineserver -w \
+    && wine "${WINPY}" -c "from PySide6 import QtCore; print('PySide6', QtCore.__version__)" \
+    && wineserver -w
+
+COPY pyinstaller-in-wine.sh /usr/local/bin/build-exe
+RUN chmod +x /usr/local/bin/build-exe
+
+# /work is platforms/windows/ from the repo, bind-mounted at run time.
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/build-exe"]
