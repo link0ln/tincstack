@@ -3,10 +3,10 @@
 **Last Updated:** 2026-09-16 (stream W merged and verified live; the
 `pipefail` + `grep -q` defect that made seven proofs report the opposite of
 what they measured is fixed; the transport proofs no longer silently test a
-stale stream image. Stream Z, on branch `stream-z` and **not yet merged**:
-`AllowPlainMeta` — a node can finally refuse cleartext tinc on its listening
-port; default `yes`, so nothing changes until an operator asks for it. See the
-struck Known Issues entry.)
+stale stream image. Stream Z **merged**: `AllowPlainMeta` — a node can finally
+refuse cleartext tinc on its listening port; default `yes`, so nothing changes
+until an operator asks for it. See the struck Known Issues entry. The first
+release tag, `v0.1.0`, is cut from this tree.)
 
 **Regression state of `master`**, all 2026-09-16, each exit 0. On
 `tincstack/core:w` (the merged tree: streams X, Y and W): `obfs-test` **three
@@ -21,6 +21,14 @@ harnesses, all ok — which also executes `selftest_close_preserves_session`) an
 a 900 s campaign over all six harnesses: no crash, no new artifact. `make lint`
 (shellcheck, 24 scripts), `make secrets` ("no leaks found"), `actionlint`, and
 GitHub Actions `check` green on the pushed head `5f68245`.
+Re-verified on `tincstack/core:zz` (the tree with stream Z merged), in the
+coordination pass, not by the stream: the new `plain-refuse-test` **PASS**
+(cleartext probe answered by default; with `AllowPlainMeta: no` the probe gets
+nothing while an obfs link to the same node still carries traffic, `tinc dump
+nodes` still works, and `tinc join` fails — the documented cost; `tinc set
+AllowPlainMeta yes` + `tinc reload` restores both without a restart),
+`smoke` PASS, `two-nodes` PASS, `classify` 37 checks 0 failures.
+
 On `tincstack/core:nosendmmsg` (the same tree before W, which differs only in
 `obfs.c`, so these are unaffected by the merge and were not re-run):
 `classify` (37 checks, 0 failures), `singleflow` ("relay path intact"),

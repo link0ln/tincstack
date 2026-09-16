@@ -89,6 +89,12 @@ jobs:
       # them.
       - name: Build core
         uses: docker/build-push-action@v6
+        # Without this the action uploads a `<owner>~<repo>~XXXX.dockerbuild`
+        # record as a workflow artifact. The release job downloads every
+        # artifact of the run, so that blob would both be attached to the
+        # release and be one more thing whose download can fail.
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: core
           file: core/Dockerfile.build
@@ -363,8 +369,18 @@ jobs:
             -o "tincstack-${{ needs.meta.outputs.version }}-source.tar.gz" \
             "${{ needs.meta.outputs.version }}"
 
+      # By name, not "everything in the run": the v0.1.0 run died here with
+      # "Unable to download artifact(s) ... after 5 retries" while pulling the
+      # whole set, and a blanket download also attaches anything else a step
+      # happens to upload to the release.
       - uses: actions/download-artifact@v4
         with:
+          name: windows
+          path: assets
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: android
           path: assets
 
       - name: Create the release
@@ -416,9 +432,17 @@ jobs:
           build constraint, not a choice — see Known Issues in \`PLAN.md\`.
           EOF
           mapfile -t built < <(find assets -type f)
+          if [ ${#built[@]} -eq 0 ]; then
+            echo "::error title=no assets::download-artifact produced nothing under assets/"
+            exit 1
+          fi
           gh release create "$VERSION" \
             --repo "$REPO" \
             --title "tincstack $VERSION" \
             --notes-file notes.md \
             "tincstack-$VERSION-source.tar.gz" \
-            "${built[@]}"
+            "${built[@]}" 2>&1 | tee gh.log || {
+              msg=$(tail -n 20 gh.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+              echo "::error title=gh release create failed::$msg"
+              exit 1
+            }
