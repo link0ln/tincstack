@@ -1637,17 +1637,27 @@ registry image.
   `Sec-WebSocket-Key` handshake nonces, upstream's public ED25519 test vector)
   instead of silencing the rule, so a genuinely new secret still fails. Current
   state: `no leaks found` over 105 commits.
-- [x] **Two of the four jobs' steps were run by hand on the dev host**, so the
-  first tag is not their first execution: the node image built with
-  `--build-arg CORE_IMAGE=…` and a container started from it reached ` Ready`,
-  answered `tincstack-cli pid` and had materialised a `Name`, all from an empty
-  volume; the mingw cross-build produced both exes and `file` reported
-  `PE32+ executable (console) x86-64` for each (the workflow asserts the count
-  is 2, not merely ≥ 1). The `images` job's smoke step is the same
-  `testing/smoke/run.sh` that runs green here every day.
-- [ ] **Not yet proven: an actual tag has not been pushed.** The `android` job
-  is the one with no local equivalent — this host has no Android SDK and is not
-  getting one. Everything below is static verification. The first `v*` tag is the real test, and the two most
+- [x] **Three of the four jobs were run step by step on the dev host**, which is
+  how both android failures and the Windows exec-bit failure above were found —
+  the first tag is not their first execution:
+  - `images`: core built and `tincd --version` answered; the node image built
+    with `--build-arg CORE_IMAGE=…` and a container from it reached ` Ready`,
+    answered `tincstack-cli pid` and had materialised a `Name` from an empty
+    volume; `testing/smoke/run.sh` passes here on every build.
+  - `windows`: `build-core-win.sh` → both exes, `build-exe.sh` → `tincmgr.exe`
+    57 665 247 B, `PE32+ executable (GUI) x86-64`, Wine smoke `SELFTEST OK`;
+    `file` reports `PE32+` for all three binaries (the workflow asserts the
+    count is exactly 3). Only the `wintun.dll` download is untested here —
+    wintun.net is unreachable from this host — but the check it feeds
+    (`osslsigncode verify` → `O=WireGuard LLC`) was exercised against the copy
+    the repo group already had.
+  - `android`: `assembleRelease` in the repository's own build container with
+    the host SDK mounted → `BUILD SUCCESSFUL`, a 4.5 MB APK with all four ABIs.
+- [ ] **Not yet proven: an actual tag has not been pushed.** What no local run
+  can cover is the `release` job itself — `git archive` of a tag, artefact
+  download and `gh release create` — plus the ghcr push and the wintun.net
+  fetch. Use "Run workflow" (the dry run) first: it exercises everything except
+  the push and the release. The first `v*` tag is the real test, and the two most
   likely failures are named here so they are not a surprise: the Android job
   depends on `android-actions/setup-android` providing
   `ndk;26.1.10909125`, and `ghcr.io` package creation needs the repository's
