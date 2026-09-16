@@ -213,7 +213,7 @@ note "after B's reload A reconnected: $(docker exec ${PFX}-a tinc -c /etc/tincst
 for n in a b; do
 	[ "$(docker inspect -f '{{.State.Running}}' ${PFX}-$n 2>/dev/null)" = true ] || { miss "node $n is not running before the M5-1 probes"; docker logs --tail 5 ${PFX}-$n 2>&1 | sed 's/^/    /'; }
 done
-(for i in 1 2 3; do docker run --rm --net container:${PFX}-b "$TOOLS" curl -sk --max-time 10 -o /dev/null https://127.0.0.1:655/ >/dev/null 2>&1; done) &
+(for _ in 1 2 3; do docker run --rm --net container:${PFX}-b "$TOOLS" curl -sk --max-time 10 -o /dev/null https://127.0.0.1:655/ >/dev/null 2>&1; done) &
 sleep 0.3
 pp=$(docker exec ${PFX}-a ping -c 12 -i 0.5 -W 3 "$B_VPN" 2>&1 | tail -2)
 wait
