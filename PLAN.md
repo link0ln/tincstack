@@ -1661,6 +1661,28 @@ registry image.
   `openssl`, because it documents the intended configuration and
   `platforms/android/readme.md` already warns that it is broken; flipping it
   would hide the defect instead of fixing it.
+- [x] **The `android` job would have failed a second time, in R8.** The
+  `release` build type has `minifyEnabled true`, and the release variant had
+  never been built by anyone — stream Y proved the join with `assembleDebug`.
+  `minifyReleaseWithR8` died on *Missing class java.beans.BeanInfo …
+  (referenced from org.yaml.snakeyaml.introspector.PropertyUtils)* and four
+  more: SnakeYAML's introspector references `java.beans`, which Android does
+  not have. Fixed in `app/proguard-rules.pro` with `-dontwarn java.beans.**`
+  and a whole-package keep for SnakeYAML, matching how commons/logback/slf4j
+  are already kept (it resolves node types reflectively). **Proof** on this
+  host, in the repository's own build container with the host SDK mounted:
+  `./gradlew --no-daemon -PtincCrypto=nolegacy assembleRelease` →
+  `BUILD SUCCESSFUL in 4m 30s`, exit 0,
+  `app/build/outputs/apk/release/app-release-unsigned.apk` 4 558 685 B carrying
+  `libtincd.so` + `libtinc.so` for all four ABIs (arm64-v8a, armeabi-v7a, x86,
+  x86_64).
+- [ ] 🟡 **CI does not build the Android app at all.** Both of the android job's
+  failures above were found by running it by hand, not by `check.yml`, which
+  builds only the core image and the Linux labs. An `assembleRelease` +
+  `testDebugUnitTest` job would have caught both on the commit that introduced
+  them, at roughly ten runner-minutes per push. Not added, because the owner
+  asked for less building per commit, not more; raising it so the trade-off is
+  a decision rather than an oversight.
 - [ ] **One manual step after the first tag:** a package Actions creates in
   `ghcr.io` is **private even when the repository is public**, so nobody else
   can `docker pull` it until the owner flips both packages to Public once
