@@ -2262,6 +2262,51 @@ Defects identified during the source audit, to fix as their milestone is reached
   reason in each header and `testing/transports/README.md` updated to build
   `dev` / `dev-test` / `dev-noquic`. The accidental run was not wasted: it is
   the pre-fix arm of the live before/after now recorded against stream W above.
+- 🟠 **Defect C — two invitees of the same node never peer directly; every
+  leaf-to-leaf packet is relayed through the inviter, forever.** Found
+  2026-09-16 on the real three-host stand (ruvds2 = founder,
+  `laptop` = NATed workstation, `euvds` = public VPS, all `ghcr.io/…/node:v0.1.1`,
+  each joined with an invitation issued by ruvds2). Both leaves learn each
+  other over the meta graph and both try a direct meta connection within
+  4 s of the second join; both fail, and both stop trying:
+  - acceptor side: `Cannot open config file /etc/tincstack/tincstack/hosts/laptop:
+    No such file or directory` → `Peer 79.139.184.85 port 1202 had unknown
+    identity (laptop)` → connection closed. The YAML has no section for a node
+    this daemon has never authenticated, and `config_fopen()` (conf.c:302)
+    serves host text only from the YAML document, so the ID exchange dies
+    before the pubkey can be learned.
+  - dialer side: `Timeout from euvds … during authentication`, then
+    `Every carrier failed for euvds, restarting from plain`.
+  - a few seconds later REQ_PUBKEY/ANS_PUBKEY does its job and
+    `append_config_file()` writes `laptop: Ed25519PublicKey = …` into
+    `tinc.yaml` — but that learned line carries **no `Address`**, so every
+    subsequent retry is `Could not set up a meta connection to <peer>`, the
+    AutoConnect backoff runs out (5 → 10 → 15 → 20 → 25 → 30 s) and the pair
+    is left relayed. Measured after 10 min: `dump nodes` on both leaves shows
+    `nexthop ruvds2 … distance 2 … transports plain`, `laptop → euvds`
+    10 packets 20 % loss 45.7 ms avg (the two lost are the first two, while
+    the relay path settles), `euvds → laptop` 0 % loss 46.1 ms avg, while
+    each leaf → ruvds2 is 4.4 ms / 40.2 ms respectively. Impact: the hub
+    carries all traffic of every pair it invited, is a single point of failure
+    for them, and NAT traversal between leaves — the reason to run this and
+    not WireGuard — never happens. It is worst in exactly the configuration
+    the one-line onboarding story pushes people into (invite everyone from one
+    node). Not yet proven to be a tincstack regression rather than upstream
+    1.1 behaviour in YAML dress; the lab repro (three containers, two
+    invitations from the same founder) must be run against classic
+    `tinc.conf` + `hosts/` too before blaming YAML mode. **Dispatched as
+    stream AC.**
+- 🟡 **Defect D — `Transports` is not propagated past one hop.** Same stand,
+  same `dump nodes`: ruvds2 lists both leaves as
+  `transports plain,sf,obfs,https,quic`, but each leaf lists the *other* leaf
+  as `transports plain` — the accept mask is learned from the ACK of a direct
+  meta connection (`ack_h()`, protocol_auth.c:1152) and from the node's own
+  YAML section, and nothing carries it over the graph. Consequence: even when
+  defect C is fixed, the first direct leaf-to-leaf dial can only offer `plain`,
+  so two censored leaves would negotiate cleartext tinc between themselves
+  while both are configured for obfs/https/quic. Impact is bounded (the link
+  still comes up, and `AllowPlainMeta = no` turns it into a hard failure
+  instead of a silent downgrade), which is why it is 🟡 and not 🟠.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`
