@@ -355,7 +355,9 @@ bool zeroconf_materialise(void) {
 	/* The compiled-in default accept list. Kept in sync with
 	   transport_compiled_mask() in transport_table.c; hardcoded here because
 	   zeroconf.c is in the common library, below the daemon transport code. */
-#ifdef HAVE_OPENSSL
+#if defined(HAVE_OPENSSL) && defined(HAVE_QUIC)
+	static const char *const default_transports = "plain, sf, obfs, https, quic";
+#elif defined(HAVE_OPENSSL)
 	static const char *const default_transports = "plain, sf, obfs, https";
 #else
 	static const char *const default_transports = "plain, sf, obfs";

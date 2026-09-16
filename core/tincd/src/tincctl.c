@@ -1748,6 +1748,10 @@ const var_t variables[] = {
 	{"HttpsSni", VAR_SERVER | VAR_SAFE},
 	{"HttpsDecoyRoot", VAR_SERVER},
 	{"HttpsDecoyUpstream", VAR_SERVER},
+	/* quic carrier (M5, G3) */
+	{"QuicPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
+	{"QuicSni", VAR_SERVER | VAR_SAFE},
+	{"QuicAlpn", VAR_SERVER | VAR_SAFE},
 	{"TunnelServer", VAR_SERVER | VAR_SAFE},
 	{"UDPDiscovery", VAR_SERVER | VAR_SAFE},
 	{"UDPDiscoveryKeepaliveInterval", VAR_SERVER | VAR_SAFE},

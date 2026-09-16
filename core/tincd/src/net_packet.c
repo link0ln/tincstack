@@ -1178,6 +1178,21 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 
 	logger(DEBUG_TRAFFIC, LOG_INFO, "Sending packet from %s (%s) to %s (%s) via %s (%s) (UDP)", from->name, from->hostname, to->name, to->hostname, relay->name, relay->hostname);
 
+	/* quic carrier (any carrier with a send_datagram hook): if the next hop's
+	   meta connection runs on such a carrier, the SPTPS datagram rides that
+	   flow (a QUIC DATAGRAM frame) instead of the plain socket, byte-for-byte
+	   the same record. Per hop, like obfs, so a relay never double-wraps. A
+	   `false' return means it does not fit the carrier's datagram ceiling:
+	   treated exactly like EMSGSIZE so tinc's MTU discovery converges. With
+	   plain/sf/obfs the hook is NULL and this is byte-identical to before. */
+	if(relay->connection && relay->connection->transport && relay->connection->transport->send_datagram) {
+		if(!relay->connection->transport->send_datagram(relay->connection, buf, (size_t)(buf_ptr - buf))) {
+			reduce_mtu(relay, (int)origlen - 1);
+		}
+
+		return true;
+	}
+
 	/* obfs carrier: if the next hop is an obfs link, seal this SPTPS datagram
 	   before it goes on the wire. The relay strips the seal on receive and this
 	   re-applies it per hop, so a relayed record is never double-wrapped. When

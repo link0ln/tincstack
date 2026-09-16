@@ -372,6 +372,28 @@ if dep_lz4.found()
   cdata.set('HAVE_LZ4', 1)
 endif
 
+# QUIC carrier (M5): ngtcp2 with its GnuTLS backend. `auto' enables it when
+# pkg-config finds the libraries; the node certificate it serves comes from
+# tls.c, so it also needs the OpenSSL crypto backend (transport.c guards the
+# rows on both HAVE_QUIC and HAVE_OPENSSL). See docs/transports.md §9.10.
+opt_quic = get_option('quic')
+if not opt_quic.disabled()
+  dep_ngtcp2 = dependency('libngtcp2', version: '>=1.0', required: opt_quic, static: static)
+  dep_ngtcp2_crypto = dependency('libngtcp2_crypto_gnutls', required: opt_quic, static: static)
+  dep_gnutls = dependency('gnutls', version: '>=3.7.3', required: opt_quic, static: static)
+  if dep_ngtcp2.found() and dep_ngtcp2_crypto.found() and dep_gnutls.found()
+    if opt_crypto != 'openssl'
+      if opt_quic.enabled()
+        error('the quic carrier needs the node certificate from the openssl crypto backend (-Dcrypto=openssl)')
+      endif
+    else
+      src_tincd += ['transport_quic.c', 'transport_quic_tls.c']
+      deps_tincd += [dep_ngtcp2, dep_ngtcp2_crypto, dep_gnutls]
+      cdata.set('HAVE_QUIC', 1)
+    endif
+  endif
+endif
+
 dep_vde = dependency('vdeplug', required: opt_vde, static: static)
 dep_dl = cc.find_library('dl', required: opt_vde)
 if dep_vde.found() and dep_dl.found()
