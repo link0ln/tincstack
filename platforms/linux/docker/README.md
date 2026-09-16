@@ -75,7 +75,8 @@ full bring-up.
   removed on start so it cannot shadow the built-in.
 - `tincstack-cli` — `tinc -n $NETNAME -c /etc/tincstack/tinc.yaml "$@"`.
 - `invite.sh`, `join.sh` — the two onboarding commands.
-- `compose.lab.yml` + `two-nodes.sh` — PLAN.md M6 proof (b): two projects on
+- `compose.lab.yml` + `two-nodes.sh` (bash only: `sh two-nodes.sh` exits 2
+  with a message instead of dying on `set -o pipefail`) — PLAN.md M6 proof (b): two projects on
   one docker network, invite on a, join on b, ping across the tunnel, one
   command, cleans up after itself (`KEEP=1` to inspect).
 
