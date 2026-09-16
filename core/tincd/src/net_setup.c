@@ -286,6 +286,15 @@ bool setup_myself_reloadable(void) {
 		scriptextension = xstrdup("");
 	}
 
+	/* YAML mode: scripts.<name> from the (re-read) YAML are on disk before
+	   anything can run them -- on start this precedes device_enable()'s
+	   tinc-up decision, on reload it picks up edited, added and deleted
+	   keys. A failed write is logged but does not stop the daemon: the
+	   previous file, if any, is still in place. */
+	if(zeroconf_sync_scripts() < 0) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Could not sync scripts from `%s' into `%s': %s", yamlconf_path, confbase, strerror(errno));
+	}
+
 	char *proxy = NULL;
 
 	get_config_string(lookup_config(&config_tree, "Proxy"), &proxy);

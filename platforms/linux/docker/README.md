@@ -48,7 +48,7 @@ every start.
 | path (in the container) | content |
 |---|---|
 | `/etc/tincstack/tinc.yaml` | the one config file, daemon-owned, keys inside (mode 0600) |
-| `/etc/tincstack/<NETNAME>/` | runtime side-files: `cache/`, `invitations/` (no `tinc-up`: the daemon addresses the interface itself) |
+| `/etc/tincstack/<NETNAME>/` | runtime side-files: `cache/`, `invitations/`, and any script from the YAML's `scripts:` stanza (no `tinc-up` by default: the daemon addresses the interface itself) |
 | volume `data` | both of the above; project-scoped (`<project>_data`) |
 
 No key material exists outside the volume. The repository ignores `.env` and
@@ -78,6 +78,57 @@ full bring-up.
 - `compose.lab.yml` + `two-nodes.sh` — PLAN.md M6 proof (b): two projects on
   one docker network, invite on a, join on b, ping across the tunnel, one
   command, cleans up after itself (`KEEP=1` to inspect).
+- `yaml-scripts.sh` — same lab, proof of the `scripts:` stanza: a
+  `scripts.host-up` added to b's `tinc.yaml` + `tincstack-cli reload` is
+  written to the runtime dir (0700) and runs when a comes back; deleting the
+  key + reload removes the file; a hand-made side file is left alone.
+
+## Hook scripts
+
+Put them in the YAML, not in the volume: `networks.<NETNAME>.scripts.<name>`
+(`docs/config-schema.md` "Scripts"). The daemon writes each entry to
+`/etc/tincstack/<NETNAME>/<name>` on start and on every reload and removes it
+when the key is deleted, so `docker compose exec node tincstack-cli reload`
+after editing the file is enough. A `scripts.tinc-up` replaces the built-in
+interface addressing; anything else (`host-up`, `subnet-up`, …) runs next to
+it. The image is Debian slim with `sh`, `bash`, `awk`, `sed` and `ip` — no
+`curl`, no `python` — so a hook that needs more should signal a sidecar
+(a file in the volume, a socket) rather than do the work itself.
+
+## NAT: a Linux router in front of a node
+
+Measured in the M9 lab (`testing/nat-sim/README.md`, profile `masq`): stock
+`MASQUERADE` on **Linux ≥ 6.7** is no longer endpoint-independent. The first
+destination a node talks to keeps its source port; every later destination is
+mapped through *another* port (one shared port, sometimes several). To the
+**first** peer a node contacts — its `ConnectTo`, i.e. the founding node or
+relay — the node therefore looks like an ordinary cone NAT; to every other
+peer it looks **symmetric**: the port that peer learned through the relay
+(`UDP_INFO`) is the relay-facing one and does not match what the NAT presents
+to it. The core copes — a peer learns the real port from the first
+authenticated datagram (`UDPDiscoveryBurst`) and traffic falls back to the
+relay until it does — but direct UDP between two such nodes takes a discovery
+round and may stay relayed on a strict remote NAT.
+
+What you can do, in order of effect:
+
+1. **Give the node a stable, reachable port**: set `PORT` (→ `options.Port`)
+   and forward that UDP+TCP port on the router to the node, and set
+   `PUBLIC_ADDRESS` so its host record carries `Address`/`Port`. Peers then
+   dial it directly and no NAT mapping is involved at all. This is the normal
+   setup for anything that stays on: a home server, a VPS, an office box.
+2. **Keep one public relay** (`Port = 655`, published, `PUBLIC_ADDRESS` set)
+   that every node `ConnectTo`s: that relay is each node's *first* peer, so
+   the port it sees is the one the NAT keeps stable; laptops and phones
+   behind such routers reach everything through it while direct paths are
+   discovered.
+3. On a router you control, an endpoint-independent NAT is `SNAT
+   --to-source <ip>:<fixed port range>` per inside host rather than
+   `MASQUERADE`; see `testing/nat-sim/natprofile.sh` (`fullcone`) for the
+   netfilter recipe. This is not something the container can do for you.
+
+Nothing in the image needs changing for any of these; they are deployment
+choices.
 
 ## Requirements
 

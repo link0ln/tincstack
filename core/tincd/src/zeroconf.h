@@ -33,11 +33,16 @@ bool zeroconf_pool_parse(const char *pool, uint32_t *network, int *prefix);
    Returns false if the pool is not a valid IPv4 prefix of 8..30 bits. */
 bool zeroconf_pool_first_host(const char *pool, char *out, size_t outlen);
 
-/* Write every networks.<netname>.scripts.<name> to <confbase>/<name>
-   (mode 0700), so the daemon runs the scripts embedded in the YAML. Scripts
-   are rewritten on every start: the YAML is the source of truth. Returns
-   the number of scripts written, -1 on error. No-op outside YAML mode. */
-int zeroconf_materialise_scripts(void);
+/* Make <confbase>/<name> match networks.<netname>.scripts.<name> for every
+   script in the YAML: each is written atomically (temp file in the same
+   directory, 0700, rename) so execute_script() (script.c) runs it unchanged;
+   a script this process wrote earlier whose key was deleted is removed; a
+   side file dropped in by hand and not described by the YAML is left alone
+   and reported once. The daemon calls this from setup_myself_reloadable(),
+   i.e. on start and on every reload, before the tinc-up decision. Returns
+   the number of files written or removed, -1 on a write error. No-op
+   outside YAML mode. */
+int zeroconf_sync_scripts(void);
 
 /* Pick a default pool for a brand-new network: 10.<random 1..254>.0.0/24. */
 void zeroconf_default_pool(char *out, size_t outlen);
