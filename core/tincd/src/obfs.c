@@ -386,6 +386,17 @@ bool obfs_key_h(connection_t *c, const char *request) {
 	memcpy(l->peer_seed, seed, sizeof(seed));
 	l->have_peer_seed = true;
 
+	/* An offer (flag 0) opens a NEW negotiation, so this round's ack is still
+	   owed even though we acked the previous one. Without this reset a peer
+	   whose KeyExpire is shorter than ours can never rekey: its offers are
+	   silently unanswered until our own timer happens to fire, i.e. the
+	   effective rekey period is the LARGER of the two KeyExpire values.
+	   Measured before this line (A KeyExpire 10, B 3600, 80 s of traffic):
+	   1 session key on each side, 8 offers ignored. */
+	if(flag == 0) {
+		l->ack_sent = false;
+	}
+
 	if(!obfs_build_session(l)) {
 		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Could not derive obfs session key for %s", c->name);
 		return true;
