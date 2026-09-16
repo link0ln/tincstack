@@ -894,13 +894,63 @@ what that leaves open.
   refuses to build without them) + `build-windows.md` with the exact
   commands (core in Docker on Linux, exe on a Windows host). `README.md`
   (platform + root paragraph) rewritten for the adopted layout.
-- [ ] 🟡 **Build the actual `tincmgr.exe`** — not runnable here (PyInstaller
-  cannot produce a Windows onefile from Linux; needs the Windows box from
-  `build-windows.md` §2). Same for `tests/selftest_runtime.py` on real Wintun.
+- [x] 🟡 **Build the actual `tincmgr.exe`** — **built on Linux, in Docker,
+  2026-09-16** (stream X). The old note ("PyInstaller cannot produce a Windows
+  onefile from Linux") was only true of running PyInstaller *natively* on Linux:
+  `platforms/windows/Dockerfile.build-exe` runs the official python.org Windows
+  CPython 3.12.7 under `winehq-stable=11.0.0.0~bookworm-1`, so PyInstaller
+  executes as a Windows process and takes its own `win_amd64` bootloader — not
+  a cross-build. Everything pinned (installer SHA-256 checked; wheels incl.
+  transitive: PySide6-Essentials/shiboken6 6.7.3, pyqtgraph 0.13.7, numpy
+  1.26.4, PyYAML 6.0.2, pyinstaller 6.11.1, hooks-contrib 2026.7, pefile
+  2023.2.7, pywin32-ctypes 0.2.3, altgraph 0.17.5, packaging 26.3, setuptools
+  84.0.0). The i386 Wine runtime is required — `python-3.12.7-amd64.exe` is a
+  PE32 bootstrapper. **One command** (after `build-core-win.sh` + `wintun.dll`):
+  `platforms/windows/build-exe.sh` (= `docker build -f
+  platforms/windows/Dockerfile.build-exe -t tincstack/win-exe:dev
+  platforms/windows/`; `docker run --rm -e SMOKE=1 -v
+  "$PWD/platforms/windows:/work" tincstack/win-exe:dev`), rc 0 from a cold
+  cache in ~4 min image + ~40 s build. **Artefact** (gitignored,
+  `platforms/windows/dist/`): `tincmgr.exe`, **57 665 248 B**, SHA-256
+  `4c3725d98592a92b67d1cca2fcd2ca72c8b17e53276cb32de74fe1b7175a53e6` — the size
+  is stable across runs but PyInstaller is **not** bit-reproducible (a second
+  run of the same command gave `31a440c8024586b9a34119be64e889413e124996d0ef01d3168cecd61f6c0c1b`
+  at the identical size), so that digest pins one artefact, not the recipe;
+  `file` →
+  `PE32+ executable (GUI) x86-64, for MS Windows, 6 sections`; `objdump -p`
+  imports only `USER32 COMCTL32 KERNEL32 ADVAPI32 GDI32`. **Starts under
+  Wine + Xvfb** (`TINCMGR_SELFTEST_MS`, the app's own headless probe — the exe
+  is `console=False`/`uac_admin` so it has no `--help` to print): `SELFTEST OK /
+  frozen=True / admin=True / config=Z:\tmp\smoke\tinc.yaml / networks=[] /
+  load_error='' / tincd=…\_MEI2802\tincd.exe / tincd_exists=True`, rc 0 — i.e.
+  the onefile unpacks, Qt builds the main window, the YAML is created and the
+  bundled core is found. **Real two-file deploy, not a stub:** the unpacked
+  `_MEI*` holds `tincd.exe` `ba2ccf73…d527`, `tinc.exe` `fc148d23…0680` (both
+  byte-identical to `core/Dockerfile.build-win`'s output) and `wintun.dll`
+  0.14.1 `e5da8447…afce`; run from there, `wine tincd.exe --version` → `tinc
+  version 1.1pre18 (built Sep 16 2026 10:12:02, protocol 17.7) Features:
+  libgcrypt legacy_protocol` and `wine tinc.exe --version` → the same version.
+  Bonus: the suite also passes with the *Windows* interpreter under Wine —
+  `wine python.exe -m pytest -q tests` → `36 passed, 2 skipped` (the two skips
+  are the tests' own POSIX guards: POSIX-shell fake binaries, POSIX file modes).
+  **Limits (Wine is not Windows, `build-windows.md` §2b):** no Wintun driver /
+  adapter / MTU clamp, so `tests/selftest_runtime.py` is still the manual
+  on-Windows check; `uac_admin` untested (Wine reports elevated
+  unconditionally); Scheduled-Task autostart, tray/shell integration,
+  SmartScreen and code signing untested; Wine's Qt platform plugin is not the
+  Windows one, so nothing here is a rendering check. Also measured:
+  `www.wintun.net` stalls at 12 288 B from this lab (5/5 tries killed by a 90 s
+  `timeout`, rc 124; HEAD returns 200 with the full 750 540 B length), so the
+  bundled `wintun.dll` came from the repo group's existing copy, verified by
+  its version resource (`WireGuard LLC`, `0.14.1`, 427 552 B) rather than by a
+  fresh download.
 - **Acceptance:** two-file deploy (`tincmgr.exe` + `tinc.yaml`) manages
   networks, invites peers, and selects transports — **met at the code/test
   level** (38 headless tests, 30 backend + 8 offscreen GUI, all passing in
-  `python:3.12-slim` + PySide6 6.7.3); the on-Windows run is the open box above.
+  `python:3.12-slim` + PySide6 6.7.3, rc 0; 36+2-skipped with the Windows
+  interpreter under Wine) **and the `tincmgr.exe` half of the deploy now
+  exists and starts** (box above). What is still unrun is on-Windows
+  behaviour: the Wintun adapter, UAC, autostart and an interactive session.
 
 **Test/proof commands (all Docker, nothing on the host):**
 `docker build -f core/Dockerfile.build-win -t tincstack/core-win:dev core/`;

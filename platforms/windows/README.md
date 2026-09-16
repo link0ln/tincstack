@@ -59,8 +59,11 @@ daemon runs**.
 ## Build
 
 See [`build-windows.md`](build-windows.md): the core cross-builds on Linux in
-Docker (`build-core-win.sh`); the onefile `tincmgr.exe` builds on a Windows host
-with PyInstaller (`tincmgr.spec`).
+Docker (`build-core-win.sh`); the onefile `tincmgr.exe` builds either on a
+Windows host with PyInstaller (`tincmgr.spec`) or, from Linux, in Docker with a
+Windows CPython under Wine (`build-exe.sh` / `Dockerfile.build-exe`) — same
+spec, same PyInstaller, but nothing that needs a real Windows kernel (Wintun,
+UAC, autostart, SmartScreen) is exercised that way.
 
 ## Headless CLI (Linux servers, containers, tests)
 
@@ -107,6 +110,9 @@ gui/
 resources/               tincd.exe, tinc.exe, wintun.dll (gitignored; from the cross-build)
 tincmgr.spec             PyInstaller onefile spec
 build-core-win.sh        core cross-build → resources/
+build-exe.sh             tincmgr.exe from Linux via Docker + Wine → dist/
+Dockerfile.build-exe     that image (Wine + Windows CPython + PyInstaller)
+pyinstaller-in-wine.sh   its entrypoint (build + Wine smoke test)
 build-windows.md         the exact build commands
 tools/import_from_disk.py   migrate a classic tinc tree into one tinc.yaml
 tests/                   pytest suite + manual Windows selftest
