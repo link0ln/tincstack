@@ -1664,15 +1664,44 @@ registry image.
     the repo group already had.
   - `android`: `assembleRelease` in the repository's own build container with
     the host SDK mounted → `BUILD SUCCESSFUL`, a 4.5 MB APK with all four ABIs.
-- [ ] **Not yet proven: an actual tag has not been pushed.** What no local run
-  can cover is the `release` job itself — `git archive` of a tag, artefact
-  download and `gh release create` — plus the ghcr push and the wintun.net
-  fetch. Use "Run workflow" (the dry run) first: it exercises everything except
-  the push and the release. The first `v*` tag is the real test, and the two most
-  likely failures are named here so they are not a surprise: the Android job
-  depends on `android-actions/setup-android` providing
-  `ndk;26.1.10909125`, and `ghcr.io` package creation needs the repository's
-  Actions to have package write permission.
+- [x] **A tag has now been pushed: `v0.1.0`, 2026-09-16 — and two of the four
+  jobs failed on the first attempt.** Recorded in full because the point of the
+  exercise was to find exactly this, and because neither failure could be seen
+  in the logs (the Actions log API answers 403 "Must have admin rights" to the
+  token available here; only *annotations* are readable, which is why every
+  fragile step now re-emits its tail as an `::error::` annotation).
+  - 🔴 **`images` died in "Build node":** `buildx failed ... failed to resolve
+    source metadata for docker.io/tincstack/core:rel: pull access denied`.
+    `docker/build-push-action` runs buildx in its own container, so
+    `FROM ${CORE_IMAGE}` was resolved against Docker Hub, not against the core
+    image the previous step had just `load`ed into the runner's daemon. The
+    local proofs never caught it because a developer's `docker build` *is* the
+    daemon builder. **Fixed:** the node image is built with plain `docker
+    build --build-arg CORE_IMAGE=tincstack/core:rel` (the core build stays on
+    buildx for the gha cache; it pulls only public bases). Verified on this
+    host with `CORE_IMAGE=tincstack/core:w`: image built, container started
+    from an empty volume, log `QUIC carrier ready … Interface tincstack
+    configured with 10.225.0.1/24 (built-in tinc-up) … Ready`,
+    `tincstack-cli get Name` answered.
+  - 🟠 **`android` died inside `android-actions/setup-android@v3` itself**, in
+    the action, before any of our steps. **Fixed by removing the action:** the
+    ubuntu runner image already ships the Android SDK and its cmdline-tools,
+    and the build itself runs in this repository's own container with that SDK
+    mounted, so the job now locates `sdkmanager` under `$ANDROID_SDK_ROOT`,
+    accepts licences, installs the three packages, and prints which binary it
+    used — with an `::error::` annotation naming the SDK contents if it cannot
+    find one. Untestable from here; the next tag is the test.
+  - 🟡 **The workflow carried the `pipefail` + `grep -q` trap too** (GitHub runs
+    every `run:` under `bash -eo pipefail`): `docker logs relnode | grep -q
+    ' Ready$'` as an assertion would have failed the job *because* the node was
+    ready, once the log grew. Fixed the same way as the scripts.
+  - ✅ **What the tag did prove**, in the parts that ran: `meta` (version and
+    publish gating), and in `windows` the two steps no local run could cover —
+    the wintun.net download and the Authenticode gate on it (`O=WireGuard LLC`,
+    `Signature verification: ok`) both passed on the runner.
+  - Nothing was published: `release` needs all three build jobs, so no image
+    reached ghcr.io and no GitHub release was created. The tag is re-pointed at
+    the fix rather than burned, since no artefact ever carried it.
 - [x] **The `android` job would have failed on its first run.** `assembleRelease`
   with no flags takes `app/build.gradle`'s default `-PtincCrypto=openssl`,
   which does not compile (see the `tls.c` entry in Known Issues). The job now

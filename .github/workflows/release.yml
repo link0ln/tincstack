@@ -98,20 +98,34 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Core sanity
-        run: docker run --rm tincstack/core:rel tincd --version | tee /dev/stderr | grep -qi tinc
+        run: docker run --rm tincstack/core:rel tincd --version | tee /dev/stderr | grep -ci tinc >/dev/null
 
+      # NOT docker/build-push-action: buildx runs in its own container and
+      # resolves FROM ${CORE_IMAGE} against the registry, so it tried to pull
+      # `tincstack/core:rel` from Docker Hub and the v0.1.0 run died with
+      # "pull access denied ... insufficient_scope". The node image is a thin
+      # layer on top of the core we just LOADED into the local daemon, so build
+      # it with the daemon's own builder, which can see that image. (The core
+      # build above stays on buildx for the gha cache; it pulls only public
+      # bases.)
       - name: Build node
-        uses: docker/build-push-action@v6
-        with:
-          context: platforms/linux/docker
-          load: true
-          tags: tincstack/node:rel
-          build-args: CORE_IMAGE=tincstack/core:rel
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: |
+          set -eo pipefail
+          docker build --build-arg CORE_IMAGE=tincstack/core:rel \
+            -t tincstack/node:rel platforms/linux/docker 2>&1 | tee node-build.log || {
+              msg=$(tail -n 40 node-build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+              echo "::error title=node image build failed::$msg"
+              exit 1
+            }
 
       - name: Smoke test the image that is about to be published
-        run: CORE_IMAGE=tincstack/core:rel testing/smoke/run.sh
+        run: |
+          set -eo pipefail
+          CORE_IMAGE=tincstack/core:rel testing/smoke/run.sh 2>&1 | tee smoke.log || {
+            msg=$(tail -n 40 smoke.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=release smoke failed::$msg"
+            exit 1
+          }
 
       # The node image adds the zero-config entrypoint on top of the core, so
       # it gets its own check: an empty volume must become a configured,
@@ -122,11 +136,15 @@ jobs:
           docker run -d --name relnode --cap-add NET_ADMIN \
             --device /dev/net/tun -e PORT=655 tincstack/node:rel
           for _ in $(seq 1 60); do
-            docker logs relnode 2>&1 | grep -q ' Ready$' && break
+            # grep -c, not grep -q: GitHub runs every `run:` under
+            # `bash -eo pipefail`, and grep -q leaves on the first match, so
+            # `docker logs` dies of SIGPIPE and the pipeline reports failure
+            # BECAUSE the line was found (see PLAN.md Known Issues).
+            docker logs relnode 2>&1 | grep -c ' Ready$' >/dev/null && break
             sleep 1
           done
           docker logs relnode
-          docker logs relnode 2>&1 | grep -q ' Ready$'
+          docker logs relnode 2>&1 | grep -c ' Ready$' >/dev/null
           docker exec relnode tincstack-cli pid
           docker exec relnode tincstack-cli get Name
           docker rm -f relnode
@@ -231,10 +249,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: android-actions/setup-android@v3
-
+      # No android-actions/setup-android: it is the step that failed on the
+      # v0.1.0 tag, and it is not needed -- the ubuntu runner image ships the
+      # Android SDK and its cmdline-tools already, and the build itself runs in
+      # this repository's own container with that SDK mounted. Locate
+      # sdkmanager rather than assume a path, and say which one is used.
       - name: SDK packages the build needs
-        run: sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
+        run: |
+          set -eo pipefail
+          sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}
+          mgr=$(find "$sdk/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n1)
+          if [ -z "$mgr" ]; then
+            echo "::error title=no sdkmanager::looked under $sdk/cmdline-tools; SDK contents: $(find "$sdk" -maxdepth 1 2>&1 | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "sdkmanager: $mgr"
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          yes | "$mgr" --licenses >/dev/null 2>&1 || true
+          "$mgr" --install "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" 2>&1 | tee sdk.log || {
+            msg=$(tail -n 30 sdk.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=sdkmanager install failed::$msg"
+            exit 1
+          }
 
       # keystore.properties is read by platforms/android/app/build.gradle; it is
       # written here from secrets and never committed. Without the secrets the
@@ -272,13 +309,19 @@ jobs:
       - name: Build the app in the repository's own build container
         run: |
           docker build -t tincstack/android-build -f platforms/android/docker/Dockerfile.build platforms/android/docker
+          set -eo pipefail
           docker run --rm \
             -v "$PWD":/src \
             -v "$ANDROID_SDK_ROOT":/opt/android-sdk \
             -v /tmp/gradle:/root/.gradle \
             -w /src/platforms/android \
             -e ANDROID_HOME=/opt/android-sdk -e ANDROID_SDK_ROOT=/opt/android-sdk \
-            tincstack/android-build ./gradlew --no-daemon -PtincCrypto=nolegacy assembleRelease
+            tincstack/android-build ./gradlew --no-daemon -PtincCrypto=nolegacy assembleRelease \
+            2>&1 | tee gradle.log || {
+              msg=$(tail -n 40 gradle.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+              echo "::error title=assembleRelease failed::$msg"
+              exit 1
+            }
 
       - name: Collect the APK
         run: |
