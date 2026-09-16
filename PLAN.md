@@ -1371,6 +1371,20 @@ Defects identified during the source audit, to fix as their milestone is reached
 - 🟢 **YAML emitter adds a blank line after every literal block** (pre-existing
   cosmetic quirk of `emit_scalar_value`). Parses fine; round-trip is stable.
 
+- 🟠 **`tinc reload` in YAML mode bounces every meta connection** (observed by
+  stream S, 2026-09-16, in the scripts lab): each reload logs `Host config file
+  of <peer> has been changed` and closes the link — the stock mtime check in
+  `net.c` sees YAML host text as "new" every time. Any `tinc set` followed by a
+  reload therefore briefly drops all links (and, before stream N's fix, may
+  downgrade the carrier). Fix: compare host-record content (hash), not mtime,
+  in YAML mode. Owner: core (conf/net).
+- ~~🟠 **Windows cross-build broken by `decoy.c`**~~ **Resolved 2026-09-16
+  (consolidation):** stream L's event-driven decoy included `<sys/socket.h>`
+  directly, used `fcntl(O_NONBLOCK)` unguarded and `memmem()` (not in mingw);
+  found by stream S. Fixed (system.h, `ioctlsocket(FIONBIO)` under
+  `HAVE_WINDOWS`, local `mem_has()`); `core/Dockerfile.build-win` builds
+  `tincd.exe`/`tinc.exe` again (PE32+, DLLs: ADVAPI32, IPHLPAPI, KERNEL32,
+  msvcrt, USER32, WS2_32); Linux `tls-front-test.sh` PASS after the change.
 - 🟠 **tinc-manager save is non-atomic** over the only copy of the private keys
   (truncate-in-place). Fix in M7.
 - 🟠 **tinc-manager daemon log grows unbounded** (rotation only at start; 13 MB

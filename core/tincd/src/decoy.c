@@ -26,8 +26,6 @@
 
 #include "system.h"
 
-#include <sys/socket.h>
-
 #include "conf.h"
 #include "connection.h"
 #include "event.h"
@@ -41,6 +39,24 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+
+/* memmem() is not in mingw's libc; the one caller only looks for the end of
+   an HTTP head, so a small portable scan is enough. */
+static bool mem_has(const void *hay, size_t haylen, const char *needle, size_t nlen) {
+	const unsigned char *h = hay;
+
+	if(nlen > haylen) {
+		return false;
+	}
+
+	for(size_t i = 0; i + nlen <= haylen; i++) {
+		if(!memcmp(h + i, needle, nlen)) {
+			return true;
+		}
+	}
+
+	return false;
+}
 
 static char *decoy_root;
 static char *decoy_upstream;        /* "host:port" as configured */
@@ -543,6 +559,11 @@ decoy_fetch_t *decoy_fetch_start(const char *request, size_t reqlen, decoy_cb_t 
 		int fl = fcntl(fd, F_GETFL);
 		fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 	}
+#elif defined(HAVE_WINDOWS)
+	{
+		unsigned long arg = 1;
+		ioctlsocket(fd, FIONBIO, &arg);
+	}
 #endif
 
 	if(connect(fd, &decoy_upstream_sa.sa, SALEN(decoy_upstream_sa.sa)) && !sockinprogress(sockerrno)) {
@@ -690,7 +711,7 @@ static void plain_read(plain_decoy_t *p) {
 			p->rlen += (size_t) n;
 			p->req[p->rlen] = 0;
 
-			if(p->rlen >= 4 && memmem(p->req, p->rlen, "\r\n\r\n", 4)) {
+			if(p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) {
 				break;
 			}
 
