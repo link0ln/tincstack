@@ -164,6 +164,7 @@ extern uint32_t transport_accept_mask;             /* Transports (effective) */
 extern transport_id_t transport_pref[TRANSPORT_MAX]; /* PreferredTransports (effective) */
 extern int transport_pref_count;
 extern bool single_flow;                           /* SingleFlow option */
+extern bool allow_plain_meta;                      /* AllowPlainMeta option (default yes) */
 
 const transport_t *transport_get(transport_id_t id);
 

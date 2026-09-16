@@ -14,7 +14,7 @@ months-old core's behaviour as today's.
 ## Running two proofs at once (`LAB=`, `SUBNET=`)
 
 Every docker-based proof here (`singleflow`, `tls-front`, `https-carrier`,
-`quic-carrier`, `obfs`, `matrix`) sources `lab-env.sh` and takes `LAB=<prefix>`
+`quic-carrier`, `obfs`, `matrix`, `plain-refuse`) sources `lab-env.sh` and takes `LAB=<prefix>`
 like `platforms/linux/docker/two-nodes.sh`: the prefix goes into every
 container and network name and the `/tmp/<LAB>*` data directory, and a
 non-default `LAB` also moves the lab `/24` to a `LAB`-derived third octet
@@ -23,7 +23,7 @@ derive the same one; when a docker network that is not this lab's own already
 holds it, `lab-env.sh` takes the lowest free octet instead and prints which.
 That check reads the network list rather than taking a lock, so two labs
 started in the same second can still collide -- stagger them or pass `SUBNET=`. The defaults are the historical names
-(`wsbsf-*`, `wsl-*`, `wslh-*`, `wsg3q-*`, `wso-*`, `wsbmtx-*`), so the commands
+(`wsbsf-*`, `wsl-*`, `wslh-*`, `wsg3q-*`, `wso-*`, `wsbmtx-*`, `wspr-*`), so the commands
 below still work unchanged, and the scripts still remove *their own* leftovers
 on start — only those. Two concurrent runs:
 
@@ -109,3 +109,28 @@ rejected` on B, dialler falls back; (f) relay A-R-B with A-R on quic and R-B on
 plain, A<->B severed.
 
 Expect: `PASS: quic carrier negotiates, survives NAT rebind, falls back, rejects bad auth, relays`.
+
+## plain-refuse-test.sh — `AllowPlainMeta` (refusing cleartext meta)
+
+The proof for PLAN.md's Known Issue "a node cannot refuse cleartext tinc on its
+listening port" and its fix, the `AllowPlainMeta` option
+(`docs/transports.md` §2.1). Two nodes plus a raw TCP prober on a third
+address, which opens an unwrapped tinc meta connection and sends the ID line
+`0 nodea 17.7`.
+
+    sh testing/transports/plain-refuse-test.sh [image]
+
+(a) default, no `AllowPlainMeta` line: the plain link comes up, the accept list
+contains `plain`, and the prober gets `0 nodeb 17.7` back — the fingerprint the
+Known Issue described. (b) `AllowPlainMeta: no` on nodeb: the accept list loses
+`plain`, the prober gets **nothing** (the socket is tarpitted, as for an
+unrecognised preamble), nodeb logs *Front: refusing cleartext tinc meta
+connection from … `plain' is not in this node's Transports accept list*, an
+obfs link to the same node still passes traffic 0 %-loss, nodea's view of
+nodeb's accept list (from the ACK) has no `plain`, and `tinc dump nodes` on the
+refusing node still works, and **`tinc join` against it fails** — the
+documented cost, asserted so it cannot change silently. (c) `tinc set
+AllowPlainMeta yes` + `tinc reload`: the prober is answered again and the same
+`tinc join` succeeds, with no restart.
+
+Expect: `PASS: AllowPlainMeta refuses inbound cleartext tinc, keeps obfs, the CLI and reload`.

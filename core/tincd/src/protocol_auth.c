@@ -1138,7 +1138,15 @@ bool ack_h(connection_t *c, const char *request) {
 		char bad[TRANSPORT_LIST_MAX];
 
 		if(transport_parse_list(histransports, &mask, NULL, NULL, bad) && mask) {
-			n->transports = mask | TRANSPORT_MASK_PLAIN;
+			/* The ACK list is authoritative: it is what the peer's running
+			   daemon actually accepts right now, which its (possibly stale)
+			   host record need not match. `plain' used to be OR-ed back in
+			   here unconditionally, which is the dialler-side mirror of the
+			   listener bug AllowPlainMeta fixes: a peer that refuses plain
+			   would still have been dialled on plain, for a refusal. A peer
+			   that does accept plain says so in this very list, so nothing
+			   changes for it. */
+			n->transports = mask;
 		}
 	} else if(!n->transports) {
 		transport_node_read_config(n, c->config_tree);

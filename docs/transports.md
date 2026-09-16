@@ -49,19 +49,108 @@ Two deliberately separate lists (decision 2, 2026-09-16):
      the mesh and through invitations like `Subnet`); and
   2. as a **trailing token on the ACK** of the authentication handshake, so a
      peer learns it even without a host record.
-  `plain` is always forced into the accept list (the control connection and any
-  upstream peer need it).
+  `plain` is in the accept list by default, and `Transports` alone cannot take
+  it out: a list that omits it gets a warning and `plain` back. Removing it is
+  a separate, deliberate switch — `AllowPlainMeta` below.
 
 - **`PreferredTransports` — the dial preference**, in order. **Default:
   `[plain]`.** The first carrier on this list that is also in the peer's accept
   list is dialled. This is the "tick QUIC in the GUI" knob: only the dialling
   side changes, because the peer already accepts the carrier.
 
+- **`AllowPlainMeta` — may the listener take an inbound *cleartext* tinc meta
+  connection at all.** **Default: `yes`**, which is what tinc has always done.
+  `no` removes `plain` from the effective accept mask, which is then both
+  advertised to peers (host record and ACK) and enforced by the TCP front.
+  What it does and does not buy you is §2.1.
+
 `SingleFlow = yes` (default **no**) is sugar for putting `sf` at the head of
 `PreferredTransports`. The default is `no` because single-flow trades tinc's
 separate, independently-recovering TCP meta channel for one UDP flow; it is opt-in
 until it has field mileage, and the plain TCP path stays as the fallback when UDP
 is blocked (see §4).
+
+### 2.1 `AllowPlainMeta = no`: refusing cleartext on the listening port
+
+**What it is for.** Every carrier wraps SPTPS, and SPTPS is never bypassed, so
+a plain meta connection is *already* authenticated and encrypted. Refusing it
+buys nothing for secrecy and everything for **classification**. Until this
+option existed, a node configured `Transports: [obfs]` because it sits behind a
+DPI box still answered an unadorned tinc handshake on its port: one TCP
+connection carrying the ID line `0 <any member name> 17.7` got the node's own
+ID line back, so the node stayed fingerprintable as tinc by a **probe**, not a
+man-in-the-middle. That is the thing this project exists to prevent, so
+"circumvention is opt-in" (guardrail 5) must not mean "cleartext is mandatory".
+
+**What it does.** `AllowPlainMeta: no` takes `plain` out of the effective
+accept mask. Two consequences, in two different places:
+
+1. The mask is what the node **advertises** (host record and the trailing ACK
+   token), so peers stop putting `plain` on their candidate list for it.
+2. The **TCP front** (`transport_front_dispatch`, `TCP_CLASS_TINC`) consults
+   the mask exactly like the `TCP_CLASS_TLS` branch next to it, and refuses:
+
+       WARNING Front: refusing cleartext tinc meta connection from 10.37.155.50 port 60508: `plain' is not in this node's Transports accept list (AllowPlainMeta = no)
+
+   The socket is **tarpitted**, exactly like an unrecognised preamble, so the
+   refusal is not itself a distinguisher: a prober gets an open, silent socket
+   and no bytes, not an RST and not a banner.
+
+**What it does NOT buy you.**
+
+- It is not confidentiality. SPTPS protected the payload before and after.
+- It is not invisibility of the *port*. Something still listens; what changed
+  is that it no longer identifies itself as tinc to anyone who asks in tinc.
+- It does not touch the **UDP data path**. `plain`'s bit gates meta
+  classification only; SPTPS datagrams are still received (they have to be —
+  `obfs`, `sf` and `quic` all still use the plain SPTPS data path or the plain
+  UDP socket underneath).
+
+**What it costs — read this before turning it on.**
+
+- **`tinc join` against this node stops working.** The invitee's `tinc join`
+  opens a raw TCP connection and sends `0 ?<key> ...` (`invitation.c`); that is
+  a cleartext tinc ID line and it is refused like any other. Measured:
+
+      Timed out waiting for the server to reply.
+      Cannot read greeting from peer
+      Could not connect to inviter. Please make sure the URL you entered is valid.
+
+  Invite from a node that still allows plain, or turn the option off for the
+  duration of the join (`tinc set AllowPlainMeta yes ; tinc reload`, then back
+  — both directions are proven live in `plain-refuse-test.sh`).
+  This is the real trade-off of the option and it is why the default is `yes`.
+- **Upstream (unmodified) tinc peers cannot connect to it at all**, and neither
+  can any tincstack peer whose `PreferredTransports` is the default `[plain]`:
+  a peer must opt into a wrapped carrier of its own to reach this node. The
+  carrier candidate list deliberately still falls back to `[plain]` when the
+  operator's preference list and the peer's accept list have nothing in common
+  — the dialler is never silently upgraded into a covert carrier it did not
+  ask for.
+- The node **still dials `plain` outbound** if it prefers to. `AllowPlainMeta`
+  is a listener policy, not a dial policy; use `PreferredTransports` for that.
+- Your own **host record** is not rewritten. `zeroconf.c` wrote
+  `Transports = plain, sf, obfs, ...` into it when the node was created, and
+  `tinc dump nodes` keeps printing that for `MYSELF`. Peers that have only the
+  host record (never connected yet) will therefore still try `plain` once and
+  be refused; they learn the real list from the ACK on any carrier that works.
+  Set `Transports` on the node to match if you care about the first attempt.
+
+**The local CLI is unaffected**, deliberately. On POSIX the control connection
+arrives on the UNIX socket and never reaches the TCP front at all. On Windows
+there is no UNIX socket and `tinc` reaches its own daemon by connecting to this
+very port with `0 ^<cookie> ...` — a tinc ID line — so the front exempts
+**loopback** from the refusal. An attacker who can already connect from
+127.0.0.1 does not need to fingerprint the port, and locking the operator out
+of their own node would buy nothing.
+
+`AllowPlainMeta` is re-read by `setup_myself_reloadable()` like `Transports`
+and `SingleFlow`, so `tinc set AllowPlainMeta no ; tinc reload` takes effect on
+a running daemon (proof: `testing/transports/plain-refuse-test.sh` PART 3).
+
+It is **not** `VAR_SAFE` and **not** in `PROPAGATED_OPTIONS`: an inviter must
+not be able to switch a per-node listener policy on the invitee's machine
+(`invitation.c`, security review R).
 
 ### Selection algorithm (outbound), per connection
 
@@ -102,10 +191,11 @@ consecutive dials (5 s + 10 s + 15 s of backoff, so ~30 s of sustained
 blocking of that carrier towards that peer), and it is reverted at the next
 reconnect anyway. This is a nuisance bound, not a guarantee: an on-path party
 that can block the covert carrier for long enough still gets `plain`, because
-`plain` is the deliberate last resort of the list; the only way to forbid it is
-to leave it out of `PreferredTransports` **and** off the peer's accept list,
-which the design does not allow today (`plain` is forced into every accept
-list).
+`plain` is the deliberate last resort of the list. To forbid it outright, leave
+it out of `PreferredTransports` **and** off the peer's accept list — which
+since `AllowPlainMeta` (§2.1) the peer *can* express: a node that sets
+`AllowPlainMeta: no` advertises an accept mask without `plain`, and the
+dialler's candidate list then never contains it.
 
 One side's choice is enough; nothing has to be configured on both ends. A peer
 that advertises no list at all (upstream tinc) is treated as `plain`-only.
@@ -697,7 +787,8 @@ dies before it activates advances to the next candidate automatically (§2).
 
 | option | default | meaning |
 |---|---|---|
-| `Transports` | all compiled (`plain, sf, obfs, https, quic` on the Docker build) | accept list; advertised; `plain` always included |
+| `Transports` | all compiled (`plain, sf, obfs, https, quic` on the Docker build) | accept list; advertised; `plain` is put back if this list omits it (use `AllowPlainMeta`) |
+| `AllowPlainMeta` | `yes` | `no` = refuse inbound cleartext tinc meta connections; drops `plain` from the accept mask (§2.1; breaks `tinc join` against this node) |
 | `PreferredTransports` | `plain` | dial order; always ends at `plain` |
 | `SingleFlow` | `no` | `yes` = dial `sf` first (TCP kept as fallback) |
 | `HttpsSni` | peer `Address` name, else `localhost` | SNI the https dial presents |

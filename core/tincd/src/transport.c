@@ -35,6 +35,7 @@ uint32_t transport_accept_mask;
 transport_id_t transport_pref[TRANSPORT_MAX];
 int transport_pref_count;
 bool single_flow;
+bool allow_plain_meta = true;
 
 #ifdef HAVE_TRANSPORT_TEST
 /* The stub carrier exists to prove that fallback happens: it is selectable
@@ -162,6 +163,15 @@ bool transport_read_config(void) {
 	single_flow = false;
 	get_config_bool(lookup_config(&config_tree, "SingleFlow"), &single_flow);
 
+	/* AllowPlainMeta: may an inbound *cleartext* tinc meta connection be
+	   taken on the listening port? Default yes -- that is what every tinc
+	   before this option did, and what an upstream peer or `tinc join'
+	   needs. `no' takes `plain' out of the accept mask, which is both
+	   advertised to peers and enforced by the front (see
+	   transport_front_dispatch, TCP_CLASS_TINC). */
+	allow_plain_meta = true;
+	get_config_bool(lookup_config(&config_tree, "AllowPlainMeta"), &allow_plain_meta);
+
 	/* Transports: accept list. Default: everything compiled in. */
 
 	char *list = config_join(&config_tree, "Transports");
@@ -179,12 +189,25 @@ bool transport_read_config(void) {
 			mask &= compiled;
 		}
 
-		if(!(mask & TRANSPORT_MASK_PLAIN)) {
-			logger(DEBUG_ALWAYS, LOG_WARNING, "Transports omits `plain'; it is always accepted (upstream peers and the control connection need it)");
-			mask |= TRANSPORT_MASK_PLAIN;
-		}
-
 		free(list);
+	}
+
+	/* Cleartext meta connections. Historically `plain' was forced back into
+	   the accept mask whatever `Transports' said, so a node could not refuse
+	   an unwrapped tinc handshake on its own port and stayed fingerprintable
+	   as tinc by a single probe. Refusing is now a deliberate act
+	   (`AllowPlainMeta = no'); with the default `yes' this block reproduces
+	   the old behaviour, warning included. */
+	if(!allow_plain_meta) {
+		mask &= ~TRANSPORT_MASK_PLAIN;
+		logger(DEBUG_ALWAYS, LOG_WARNING, "AllowPlainMeta = no: cleartext tinc meta connections are refused on the listening port (upstream-tinc peers, peers dialling `plain' and `tinc join' against this node will not get in)");
+
+		if(!mask) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "...and Transports lists no other carrier, so this node now answers nothing at all on its listening port");
+		}
+	} else if(!(mask & TRANSPORT_MASK_PLAIN)) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "Transports omits `plain'; it is always accepted (upstream peers and the control connection need it)");
+		mask |= TRANSPORT_MASK_PLAIN;
 	}
 
 	transport_accept_mask = mask;
@@ -342,7 +365,12 @@ void transport_node_read_config(node_t *n, splay_tree_t *config_tree) {
 	char bad[TRANSPORT_LIST_MAX];
 
 	if(transport_parse_list(list, &mask, NULL, NULL, bad) && mask) {
-		n->transports = mask | TRANSPORT_MASK_PLAIN;
+		/* Taken as written, `plain' included or not: a host record saying
+		   `Transports = obfs, https' is the operator stating that this peer
+		   does not answer cleartext (it runs AllowPlainMeta = no), and
+		   OR-ing plain back in would only produce dials it refuses. A peer
+		   that does accept plain lists it, here and in its ACK. */
+		n->transports = mask;
 	} else {
 		logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring Transports of %s: unknown carrier `%s'", n->name, bad);
 	}
@@ -617,6 +645,26 @@ bool transport_front_dispatch(connection_t *c) {
 		return false;
 
 	case TCP_CLASS_TINC:
+
+		/* Symmetric with the TLS branch below: a carrier is only taken when
+		   it is in the accept mask. `plain' is in that mask unless the
+		   operator set AllowPlainMeta = no.
+
+		   Loopback is exempt on purpose. This is not a carrier decision: on
+		   Windows there is no UNIX control socket, so the tinc CLI reaches
+		   its own daemon by opening a TCP connection to this very port and
+		   sending `0 ^<cookie> ...' -- a tinc ID line, classified TCP_CLASS_TINC.
+		   Refusing that would lock the operator out of their own node while
+		   buying nothing: an attacker who can already connect from 127.0.0.1
+		   does not need to fingerprint the port. (POSIX control connections
+		   arrive on the UNIX socket and never reach this function.) */
+		if(!(transport_accept_mask & TRANSPORT_MASK_PLAIN) && !is_local_connection(&c->address)) {
+			logger(DEBUG_CONNECTIONS, LOG_WARNING, "Front: refusing cleartext tinc meta connection from %s: `plain' is not in this node's Transports accept list (AllowPlainMeta = no)", c->hostname);
+			c->status.tarpit = true;
+			terminate_connection(c, false);
+			return false;
+		}
+
 		c->status.front_pending = false;
 		c->transport = &transports[TRANSPORT_PLAIN];
 		logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Front: tinc connection from %s", c->hostname);

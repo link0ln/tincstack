@@ -63,6 +63,29 @@ networks:
       PreferredTransports: [plain]   # DIAL preference, in order; the first one
                                # present in the peer's accept list is used
                                # (ARCHITECTURE.md §4). Default: [plain].
+      AllowPlainMeta: yes      # may the LISTENER take an inbound CLEARTEXT tinc
+                               # meta connection? Default yes (what tinc has
+                               # always done). `no' drops `plain' from the
+                               # effective accept mask, so the front refuses an
+                               # unwrapped tinc ID line (and tarpits it, like an
+                               # unrecognised preamble) instead of answering with
+                               # its own ID line. Use it when the node must not
+                               # be fingerprintable as tinc by a probe.
+                               # Costs, before you set it (docs/transports.md
+                               # §2.1): `tinc join' AGAINST this node stops
+                               # working (join sends "0 ?<key>" in cleartext);
+                               # upstream tinc peers and peers whose
+                               # PreferredTransports is the default [plain]
+                               # cannot reach it at all. It does NOT change
+                               # secrecy -- SPTPS protected the payload either
+                               # way -- and it does not affect the UDP data path,
+                               # outbound dialling, or the local tinc CLI (the
+                               # control connection is a UNIX socket; on Windows
+                               # it is a loopback TCP connection, and loopback is
+                               # exempt from the refusal).
+                               # Server-scoped, re-read on `tinc reload'.
+                               # Deliberately NOT carried by invitations: it is a
+                               # per-node listener policy, not a network-wide one.
 
       # obfuscated-UDP tier (point 6, cheap tier; redesigned mechanism).
       # Active only when `obfs' is selected (PreferredTransports: [obfs, plain]);
@@ -303,7 +326,7 @@ carries, beyond upstream tinc's `Name`/`NetName`/`ConnectTo`:
   both ends must agree on and that cannot make the invitee read, serve or
   execute anything qualify. `HttpsDecoyRoot`, `HttpsDecoyUpstream`,
   `TlsCert`/`TlsKey` and per-node settings (`Port`, `ConnectTo`,
-  `PreferredTransports`, …) are deliberately not propagated;
+  `PreferredTransports`, `AllowPlainMeta`, …) are deliberately not propagated;
 - the invitee's address from the pool: `Subnet = a.b.c.d/32` (its host record)
   and `Ifconfig = a.b.c.d/<pool prefix>` (its interface address);
 - the inviter's own host record, with a `Port` line guaranteed (the inviter's

@@ -149,6 +149,61 @@ stock does, both end up responders as before, and the (now jittered) timer
 recovers — never worse than stock. Fully fixed only when both ends carry the
 patch.
 
+## 6. Front: let a node refuse cleartext tinc meta connections — `AllowPlainMeta` (tincstack, stream Z)
+
+**Problem.** PLAN.md Known Issues, "a node cannot refuse cleartext tinc on its
+listening port". An operator who sets `Transports: [obfs]` because the node
+sits behind a DPI box still answered an unadorned tinc handshake on its port,
+so the node stayed fingerprintable as tinc by a probe — no man-in-the-middle
+needed. Measured before the fix (`testing/transports/plain-refuse-test.sh`
+PART 1): a raw TCP connection from a third address sending `0 nodea 17.7` got
+`0 nodeb 17.7` back. Three places forced `plain`:
+
+1. `transport.c transport_read_config()` OR-ed `plain` back into the accept
+   mask whatever `Transports` said, with only a warning;
+2. `transport.c transport_front_dispatch()`, `TCP_CLASS_TINC`: set
+   `c->transport = &transports[TRANSPORT_PLAIN]` and returned `true` **without
+   consulting `transport_accept_mask` at all**, unlike the `TCP_CLASS_TLS`
+   branch right below it. A bug on its own terms, whatever (1) does;
+3. the dialler-side mirror: `protocol_auth.c ack_h()` recorded a peer's
+   advertised accept list as `mask | TRANSPORT_MASK_PLAIN`, and
+   `transport.c transport_node_read_config()` did the same for a host record —
+   so even a peer that refused `plain` would still be dialled on `plain`.
+
+**Fix.** New server option **`AllowPlainMeta`** (boolean, **default `yes`**, so
+every existing network behaves exactly as before, warning text included).
+`no` drops `plain` from the effective accept mask, which is advertised *and*
+enforced: the `TCP_CLASS_TINC` branch now checks the mask like the TLS branch,
+logs the reason and tarpits the socket (indistinguishable from an unrecognised
+preamble — the refusal must not itself be a signal). (3) now takes the peer's
+advertised list as written; a peer that accepts `plain` says so in that very
+list, so nothing changes for it.
+
+**Loopback is exempt** from the refusal, by design. On POSIX the control
+connection is a UNIX socket and never reaches the front; on Windows there is no
+UNIX socket and `tinc` reaches its own daemon by connecting to this very port
+with `0 ^<cookie> ...` — a tinc ID line. Refusing that would lock the operator
+out of their own node and buy nothing.
+
+**Cost.** `tinc join` against a node with `AllowPlainMeta: no` does not work:
+`invitation.c` opens a raw TCP socket and sends `0 ?<key> ...` in cleartext, by
+design (the invitee has no key material yet). Upstream tinc peers, and peers
+whose `PreferredTransports` is the default `[plain]`, cannot reach it either.
+That is the trade-off and it is why the default is `yes`. See
+`docs/transports.md` §2.1.
+
+**Wire compatibility.** No new message and no changed encoding; SPTPS
+untouched. With the default `yes` the bytes on the wire are unchanged. With
+`no`, the node simply refuses a connection it used to accept, and advertises
+one fewer carrier in the ACK token an old peer already tolerates.
+
+**Proof.** `testing/transports/plain-refuse-test.sh` (PART 1 before, PART 2
+after + obfs still up + CLI still works + `tinc join` refused, PART 3
+`tinc set` + `tinc reload` → probe answered and `tinc join` succeeds again).
+No regression on the defaults: `two-nodes.sh`, `testing/smoke/run.sh`,
+`obfs-test.sh`, `https-carrier-test.sh` and `classify-test.sh` all pass on
+`tincstack/core:z`.
+
 ---
 
 ## Building
@@ -174,6 +229,7 @@ Windows (mingw-w64 cross-build, for the laptop):
 |---|---|---|---|
 | `UDPDiscoveryBurst` | 5 | NAT'd endpoints | probes sent per round while not `udp_confirmed` |
 | `UDPRebindOnWake` | no | NAT'd endpoints (not public relays) | rebind UDP to a fresh port on resume-from-sleep |
+| `AllowPlainMeta` | yes | nodes that must not be fingerprintable as tinc | `no` = refuse inbound cleartext tinc meta connections (breaks `tinc join` against that node) |
 
 ## Recommended deployment
 
