@@ -12,7 +12,11 @@ Every docker-based proof here (`singleflow`, `tls-front`, `https-carrier`,
 like `platforms/linux/docker/two-nodes.sh`: the prefix goes into every
 container and network name and the `/tmp/<LAB>*` data directory, and a
 non-default `LAB` also moves the lab `/24` to a `LAB`-derived third octet
-(`SUBNET=10.31.42` overrides it). The defaults are the historical names
+(`SUBNET=10.31.42` overrides it). Only 200 octets exist, so two prefixes can
+derive the same one; when a docker network that is not this lab's own already
+holds it, `lab-env.sh` takes the lowest free octet instead and prints which.
+That check reads the network list rather than taking a lock, so two labs
+started in the same second can still collide -- stagger them or pass `SUBNET=`. The defaults are the historical names
 (`wsbsf-*`, `wsl-*`, `wslh-*`, `wsg3q-*`, `wso-*`, `wsbmtx-*`), so the commands
 below still work unchanged, and the scripts still remove *their own* leftovers
 on start — only those. Two concurrent runs:

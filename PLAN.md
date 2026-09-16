@@ -1208,6 +1208,25 @@ another network's addresses are dropped by the daemon's nft rules. Details:
     defaults plain; … (M5-2/4/5/6)`, no `MISS` line, and after the pair no
     `wsu*obfs` network is left behind; `singleflow-test.sh` `LAB=wsu1`/`wsu2`
     concurrently, both exit 0.
+    **Collision retry added 2026-09-16 (this session).** The derived octet has
+    only 200 values, so two non-default `LAB`s can hash to the same `/24`
+    (`wsu1` and `wso` both give `.157`) and the second run died on docker's
+    `Pool overlaps with other one on this address space`. `lab-env.sh` now
+    reads the docker network list and, when the first candidate is held by a
+    network that is not this lab's own, takes the lowest free octet in
+    `20..219` and says so on stderr; an explicit `SUBNET=` still wins, an
+    unreachable docker daemon falls back to the old unconditional choice, and
+    a leftover `<LAB>*` network from a killed run does not push the lab off its
+    documented `/24` (a name whose prefix is ours but continues with a digit,
+    `wso` vs `wso1obfs`, is a different lab and does count). It reads the list,
+    it is not a lock: two labs started in the same second can still both pick
+    the same `/24`. **Proof** on `tincstack/core:dev`: `LAB=wsu1` and `LAB=wso`
+    `testing/smoke/run.sh` overlapping — the first took `172.31.157.0/24`, the
+    second logged `172.31.157.0/24 is held by another lab, taking
+    172.31.20.0/24`, **both `smoke: PASS`, both exit 0**. Unit checks against
+    real docker networks: default `wso` keeps `10.37.90` under its own leftover
+    `wsoobfs`; `wsu2` shifts off a foreign `wsu23x`; `wsu2` keeps `.20` under
+    its own `wsu2front`; `SUBNET=` overrides all of it.
   - ~~🟠 **REQ_KEY glare has no tie-break (upstream 1.1pre18 and core).**~~
     **Resolved 2026-09-16 (stream K, core patch 5 — `core/tincd/PATCHES.md`
     §5, `docs/source-inventory.md`).** Upstream 1.1 HEAD (`211e3dfa`) has the
