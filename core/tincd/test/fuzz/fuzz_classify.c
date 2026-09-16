@@ -6,8 +6,11 @@
     front peeks 1..8 bytes), the whole input through transport_classify_udp()
     under every accept mask, and the input as a string through
     transport_parse_list(). Properties: no crash; a TCP verdict never flips
-    back to NEED_MORE once more bytes are seen; SF is only ever claimed with
-    the full magic present.
+    back to NEED_MORE once more bytes are seen; with TRANSPORT_TCP_PEEK bytes
+    the classifier always decides (so the front's R-1 parking of an undecided
+    connection is bounded by bytes as well as by time: a client that has sent
+    8 bytes is never parked); SF is only ever claimed with the full magic
+    present.
 
     This program is free software; see the GPL v2+ (same as the rest of tinc).
 */
@@ -23,6 +26,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
 		if(prev != TCP_CLASS_NEED_MORE && c != prev) {
 			abort(); /* a decided verdict changed with more bytes */
+		}
+
+		if(n >= TRANSPORT_TCP_PEEK && c == TCP_CLASS_NEED_MORE) {
+			abort(); /* a full peek must always decide (R-1 parking bound) */
 		}
 
 		prev = c;

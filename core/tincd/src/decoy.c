@@ -6,10 +6,12 @@
     site (HttpsDecoyUpstream), so scanning the port looks exactly like probing
     an ordinary website. Nothing here emits a tinc-identifying string.
 
-    The upstream proxy fetches synchronously with a short timeout. A decoy
-    connection is low-volume (one prober) and is torn down immediately after,
-    so a bounded blocking fetch is an acceptable trade for not carrying a full
-    async splice; documented in docs/transports.md.
+    Everything here is driven by the daemon's event loop (event.c): the
+    upstream fetch is a non-blocking connect/send/recv with a total deadline
+    and a size cap (security review M5-1), and the plain-HTTP path reads and
+    writes on readiness with no busy-wait (M5-8). The upstream address is
+    resolved once when the config is read, never per probe. Request headers
+    that carry a tinc authenticator are never forwarded (M5-10).
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -28,6 +30,8 @@
 
 #include "conf.h"
 #include "connection.h"
+#include "event.h"
+#include "list.h"
 #include "logger.h"
 #include "net.h"
 #include "netutl.h"
@@ -35,8 +39,23 @@
 #include "utils.h"
 #include "xalloc.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 static char *decoy_root;
-static char *decoy_upstream;   /* "host:port" */
+static char *decoy_upstream;        /* "host:port" as configured */
+static char *decoy_upstream_host;   /* host part, for the forwarded Host: header */
+static sockaddr_t decoy_upstream_sa; /* resolved once in decoy_read_config() */
+static bool decoy_upstream_ready;
+
+/* Bounds of one upstream fetch (M5-1): total wall-clock budget from connect
+   to last byte, and the largest response we relay. */
+#define DECOY_FETCH_DEADLINE_MS 3000
+#define DECOY_FETCH_MAX (1024 * 1024)
+#define DECOY_REQ_MAX 8192
+
+/* For log lines from a fetch that may outlive a config reload. */
+#define UPSTREAM_NAME (decoy_upstream ? decoy_upstream : "(unset)")
 
 /* A generic, brandless landing page. It names no product and no node; it is
    the sort of placeholder countless idle web servers present. */
@@ -54,11 +73,53 @@ static const char default_page[] =
         "</body>\n"
         "</html>\n";
 
-void decoy_read_config(void) {
+static void decoy_reap_finished(void);
+static void decoy_cancel_all(void);
+static timeout_t decoy_reaper;
+
+static void decoy_free_config(void) {
 	free(decoy_root);
 	free(decoy_upstream);
+	free(decoy_upstream_host);
 	decoy_root = NULL;
 	decoy_upstream = NULL;
+	decoy_upstream_host = NULL;
+	decoy_upstream_ready = false;
+}
+
+/* Resolve HttpsDecoyUpstream once, here, at (re)load time. A blocking DNS
+   lookup is acceptable while reading the config; it must never happen on the
+   probe path (M5-1). */
+static void resolve_upstream(void) {
+	char host[256];
+	strncpy(host, decoy_upstream, sizeof(host) - 1);
+	host[sizeof(host) - 1] = 0;
+	char *colon = strrchr(host, ':');
+	const char *port = "80";
+
+	if(colon) {
+		*colon = 0;
+		port = colon + 1;
+	}
+
+	struct addrinfo *ai = str2addrinfo(host, port, SOCK_STREAM);
+
+	if(!ai) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "Decoy upstream %s does not resolve; serving the static page instead", decoy_upstream);
+		return;
+	}
+
+	if(ai->ai_addrlen <= sizeof(decoy_upstream_sa)) {
+		memcpy(&decoy_upstream_sa, ai->ai_addr, ai->ai_addrlen);
+		decoy_upstream_host = xstrdup(host);
+		decoy_upstream_ready = true;
+	}
+
+	freeaddrinfo(ai);
+}
+
+void decoy_read_config(void) {
+	decoy_free_config();
 	get_config_string(lookup_config(&config_tree, "HttpsDecoyRoot"), &decoy_root);
 	get_config_string(lookup_config(&config_tree, "HttpsDecoyUpstream"), &decoy_upstream);
 
@@ -71,13 +132,16 @@ void decoy_read_config(void) {
 		free(decoy_root);
 		decoy_root = NULL;
 	}
+
+	if(decoy_upstream) {
+		resolve_upstream();
+	}
 }
 
 void decoy_exit(void) {
-	free(decoy_root);
-	free(decoy_upstream);
-	decoy_root = NULL;
-	decoy_upstream = NULL;
+	decoy_cancel_all();
+	decoy_free_config();
+	timeout_del(&decoy_reaper);
 }
 
 /* ---- static content ------------------------------------------------------ */
@@ -238,25 +302,45 @@ static char *build_static(const char *request, size_t *resplen) {
 	return resp;
 }
 
-/* ---- upstream proxy ------------------------------------------------------ */
+char *decoy_respond_static(const char *request, size_t reqlen, size_t *resplen) {
+	(void) reqlen;
+	return build_static(request, resplen);
+}
 
-/* Rewrite the Host: header of the request head to the upstream authority, so
-   the upstream serves its own site. Returns a newly-allocated request. */
-static char *rewrite_host(const char *request, size_t reqlen, const char *host) {
-	/* Find the Host: line (case-insensitive) and replace its value. */
+/* ---- upstream proxy (event-driven) --------------------------------------- */
+
+/* Rewrite the request head for the upstream: Host: becomes the upstream
+   authority, Connection: becomes close (so the upstream ends the response
+   with EOF), and every header that can carry the tinc authenticator or
+   betray the WebSocket upgrade shape is dropped (M5-10): Cookie, Upgrade,
+   Sec-WebSocket-*. What the upstream sees is an ordinary request. */
+static bool header_is(const char *line, size_t linelen, const char *name) {
+	size_t n = strlen(name);
+	return linelen >= n && !strncasecmp(line, name, n);
+}
+
+static char *rewrite_request(const char *request, size_t reqlen, const char *host) {
 	const char *line = request;
 	const char *hdr_end = request + reqlen;
-	char *out = xmalloc(reqlen + strlen(host) + 32);
+	char *out = xmalloc(reqlen + strlen(host) + 64);
 	size_t olen = 0;
-	bool replaced = false;
+	bool first = true;
 
 	while(line < hdr_end) {
 		const char *eol = memchr(line, '\n', (size_t)(hdr_end - line));
 		size_t linelen = eol ? (size_t)(eol - line + 1) : (size_t)(hdr_end - line);
 
-		if(linelen >= 5 && !strncasecmp(line, "Host:", 5)) {
-			olen += (size_t) snprintf(out + olen, strlen(host) + 12, "Host: %s\r\n", host);
-			replaced = true;
+		if(first) {
+			memcpy(out + olen, line, linelen);
+			olen += linelen;
+			first = false;
+			/* Our own headers right after the request line; duplicates from
+			   the client are dropped below. */
+			olen += (size_t) sprintf(out + olen, "Host: %s\r\nConnection: close\r\n", host);
+		} else if(header_is(line, linelen, "Host:") || header_is(line, linelen, "Connection:") ||
+		          header_is(line, linelen, "Cookie:") || header_is(line, linelen, "Upgrade:") ||
+		          header_is(line, linelen, "Sec-WebSocket-") || header_is(line, linelen, "Authorization:")) {
+			/* dropped */
 		} else {
 			memcpy(out + olen, line, linelen);
 			olen += linelen;
@@ -269,164 +353,402 @@ static char *rewrite_host(const char *request, size_t reqlen, const char *host) 
 		line = eol + 1;
 	}
 
-	(void) replaced;
 	out[olen] = 0;
 	return out;
 }
 
-static char *proxy_upstream(const char *request, size_t reqlen, size_t *resplen) {
-	char host[256];
-	char *colon;
-	strncpy(host, decoy_upstream, sizeof(host) - 1);
-	host[sizeof(host) - 1] = 0;
-	colon = strrchr(host, ':');
-	const char *port = "80";
+struct decoy_fetch_t {
+	int fd;
+	io_t io;
+	timeout_t deadline;
+	bool connected;
+	bool done;              /* finished; waiting for the reaper to deliver */
 
-	if(colon) {
-		*colon = 0;
-		port = colon + 1;
+	char *req;              /* rewritten request to send */
+	size_t reqlen, reqoff;
+	char *orig;             /* original head, for the static fallback's path */
+	size_t origlen;
+
+	char *resp;
+	size_t rlen, rcap;
+
+	decoy_cb_t cb;
+	void *data;
+	list_node_t *node;
+};
+
+static list_t fetches;
+
+static void fetch_release(decoy_fetch_t *f) {
+	io_del(&f->io);
+	timeout_del(&f->deadline);
+
+	if(f->fd >= 0) {
+		closesocket(f->fd);
+		f->fd = -1;
 	}
 
-	struct addrinfo *ai = str2addrinfo(host, port, SOCK_STREAM);
+	free(f->req);
+	free(f->orig);
+	free(f->resp);
 
-	if(!ai) {
-		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Decoy upstream %s did not resolve", decoy_upstream);
-		return NULL;
+	if(f->node) {
+		list_delete_node(&fetches, f->node);
 	}
 
-	int fd = socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
+	free(f);
+}
 
-	if(fd < 0) {
-		freeaddrinfo(ai);
-		return NULL;
-	}
+/* Hand the result to the owner and free the handle. `f->resp` is consumed. */
+static void fetch_deliver(decoy_fetch_t *f) {
+	char *resp = f->resp;
+	size_t len = f->rlen;
+	f->resp = NULL;
 
-	struct timeval tv = { 3, 0 };
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (void *) &tv, sizeof(tv));
-	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (void *) &tv, sizeof(tv));
-
-	if(connect(fd, ai->ai_addr, ai->ai_addrlen)) {
-		closesocket(fd);
-		freeaddrinfo(ai);
-		return NULL;
-	}
-
-	freeaddrinfo(ai);
-
-	char *req = rewrite_host(request, reqlen, host);
-	size_t sent = 0, tolen = strlen(req);
-
-	while(sent < tolen) {
-		ssize_t n = send(fd, req + sent, tolen - sent, 0);
-
-		if(n <= 0) {
-			break;
-		}
-
-		sent += (size_t) n;
-	}
-
-	free(req);
-
-	size_t cap = 65536, len = 0;
-	char *resp = xmalloc(cap);
-
-	for(;;) {
-		if(len == cap) {
-			if(cap >= 4 * 1024 * 1024) {
-				break;
-			}
-
-			cap *= 2;
-			resp = xrealloc(resp, cap);
-		}
-
-		ssize_t n = recv(fd, resp + len, cap - len, 0);
-
-		if(n <= 0) {
-			break;
-		}
-
-		len += (size_t) n;
-	}
-
-	closesocket(fd);
-
-	if(!len) {
+	if(!resp || !len) {
 		free(resp);
-		return NULL;
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Decoy upstream %s gave no response; serving the static page", UPSTREAM_NAME);
+		resp = build_static(f->orig, &len);
 	}
 
-	*resplen = len;
-	return resp;
+	decoy_cb_t cb = f->cb;
+	void *data = f->data;
+	fetch_release(f);
+	cb(data, resp, len);
 }
 
-char *decoy_respond(const char *request, size_t reqlen, size_t *resplen) {
-	if(decoy_upstream) {
-		char *r = proxy_upstream(request, reqlen, resplen);
+/* A fetch whose deadline fired must not free itself inside its own timer
+   callback (timeout_execute() touches the timeout after the callback), so
+   it is marked done and delivered from this separate, static timer -- the
+   same pattern transport_sf.c uses for its sessions. */
+static void decoy_reap_finished(void) {
+	for list_each(decoy_fetch_t, f, &fetches) {
+		if(f->done) {
+			fetch_deliver(f);
+		}
+	}
+}
 
-		if(r) {
-			return r;
+static void reaper_cb(void *data) {
+	(void) data;
+	decoy_reap_finished();
+}
+
+static void fetch_finish_later(decoy_fetch_t *f) {
+	f->done = true;
+	io_del(&f->io);
+
+	struct timeval tv = { 0, 0 };
+
+	if(decoy_reaper.cb) {
+		timeout_set(&decoy_reaper, &tv);
+	} else {
+		timeout_add(&decoy_reaper, reaper_cb, NULL, &tv);
+	}
+}
+
+static void fetch_deadline(void *data) {
+	decoy_fetch_t *f = data;
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Decoy upstream %s: %s after %d ms; %s", UPSTREAM_NAME,
+	       f->connected ? "no end of response" : "connect timed out", DECOY_FETCH_DEADLINE_MS,
+	       f->rlen ? "relaying what arrived" : "serving the static page");
+	fetch_finish_later(f);
+}
+
+static void fetch_io(void *data, int flags) {
+	decoy_fetch_t *f = data;
+
+	if(f->done) {
+		return;
+	}
+
+	if(!f->connected) {
+		int err = 0;
+		socklen_t len = sizeof(err);
+
+		if(getsockopt(f->fd, SOL_SOCKET, SO_ERROR, (void *) &err, &len) || err) {
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "Decoy upstream %s: connect failed: %s", UPSTREAM_NAME, sockstrerror(err));
+			fetch_deliver(f);
+			return;
 		}
 
-		/* Upstream unreachable: fall back to static so the port never breaks
-		   character. */
+		f->connected = true;
 	}
 
-	return build_static(request, resplen);
-}
+	if(flags & IO_WRITE) {
+		while(f->reqoff < f->reqlen) {
+			ssize_t n = send(f->fd, f->req + f->reqoff, f->reqlen - f->reqoff, 0);
 
-/* ---- plain-HTTP path ----------------------------------------------------- */
-
-static void send_all(int fd, const char *buf, size_t len) {
-	size_t off = 0;
-
-	while(off < len) {
-		ssize_t n = send(fd, buf + off, len - off, 0);
-
-		if(n <= 0) {
-			if(n < 0 && sockwouldblock(sockerrno)) {
+			if(n > 0) {
+				f->reqoff += (size_t) n;
 				continue;
 			}
 
-			break;
+			if(n < 0 && sockwouldblock(sockerrno)) {
+				return; /* stay on IO_WRITE */
+			}
+
+			fetch_deliver(f);
+			return;
 		}
 
-		off += (size_t) n;
+		io_set(&f->io, IO_READ);
+		return;
+	}
+
+	for(;;) {
+		if(f->rlen == f->rcap) {
+			if(f->rcap >= DECOY_FETCH_MAX) {
+				fetch_deliver(f);
+				return;
+			}
+
+			f->rcap = f->rcap ? f->rcap * 2 : 16384;
+			f->resp = xrealloc(f->resp, f->rcap);
+		}
+
+		ssize_t n = recv(f->fd, f->resp + f->rlen, f->rcap - f->rlen, 0);
+
+		if(n > 0) {
+			f->rlen += (size_t) n;
+			continue;
+		}
+
+		if(n < 0 && sockwouldblock(sockerrno)) {
+			return;
+		}
+
+		/* EOF (Connection: close) or error: deliver what we have. */
+		fetch_deliver(f);
+		return;
 	}
 }
 
-void decoy_serve_plain(connection_t *c) {
-	/* Read the request head (bounded), then answer and close. The socket is
-	   non-blocking; a prober that dribbles bytes is bounded by the auth
-	   timeout, but here we do one bounded read pass. */
-	char req[8192];
-	size_t rlen = 0;
-
-	for(int spin = 0; spin < 64 && rlen < sizeof(req) - 1; spin++) {
-		ssize_t n = recv(c->socket, req + rlen, sizeof(req) - 1 - rlen, 0);
-
-		if(n > 0) {
-			rlen += (size_t) n;
-
-			if(rlen >= 4 && memmem(req, rlen, "\r\n\r\n", 4)) {
-				break;
-			}
-		} else {
-			break;
-		}
+decoy_fetch_t *decoy_fetch_start(const char *request, size_t reqlen, decoy_cb_t cb, void *data) {
+	if(!decoy_upstream_ready) {
+		return NULL;
 	}
 
-	req[rlen] = 0;
+	int fd = socket(decoy_upstream_sa.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
 
-	size_t resplen = 0;
-	char *resp = decoy_respond(req, rlen, &resplen);
+	if(fd < 0) {
+		return NULL;
+	}
 
-	if(resp) {
-		send_all(c->socket, resp, resplen);
-		free(resp);
+#ifdef FD_CLOEXEC
+	fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+#ifdef O_NONBLOCK
+	{
+		int fl = fcntl(fd, F_GETFL);
+		fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+	}
+#endif
+
+	if(connect(fd, &decoy_upstream_sa.sa, SALEN(decoy_upstream_sa.sa)) && !sockinprogress(sockerrno)) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Decoy upstream %s: connect failed: %s", decoy_upstream, sockstrerror(sockerrno));
+		closesocket(fd);
+		return NULL;
+	}
+
+	decoy_fetch_t *f = xzalloc(sizeof(*f));
+	f->fd = fd;
+	f->cb = cb;
+	f->data = data;
+	f->orig = xmalloc(reqlen + 1);
+	memcpy(f->orig, request, reqlen);
+	f->orig[reqlen] = 0;
+	f->origlen = reqlen;
+	f->req = rewrite_request(request, reqlen, decoy_upstream_host);
+	f->reqlen = strlen(f->req);
+	f->node = list_insert_tail(&fetches, f);
+
+	io_add(&f->io, fetch_io, f, fd, IO_WRITE);
+	timeout_add(&f->deadline, fetch_deadline, f, &(struct timeval) {
+		DECOY_FETCH_DEADLINE_MS / 1000, (DECOY_FETCH_DEADLINE_MS % 1000) * 1000
+	});
+	return f;
+}
+
+void decoy_fetch_cancel(decoy_fetch_t *f) {
+	if(f) {
+		fetch_release(f);
+	}
+}
+
+/* Shutdown: drop every outstanding fetch without calling back (the owning
+   connections are being torn down as well). */
+static void decoy_cancel_all(void) {
+	while(fetches.head) {
+		fetch_release(fetches.head->data);
+	}
+}
+
+/* ---- plain-HTTP path (event-driven) -------------------------------------- */
+
+typedef enum plain_state_t {
+	PS_READ_REQ,
+	PS_FETCHING,
+	PS_WRITE,
+} plain_state_t;
+
+typedef struct plain_decoy_t {
+	connection_t *c;
+	plain_state_t state;
+	char req[DECOY_REQ_MAX];
+	size_t rlen;
+	decoy_fetch_t *fetch;
+	char *resp;
+	size_t wlen, woff;
+} plain_decoy_t;
+
+static void plain_close(connection_t *c) {
+	plain_decoy_t *p = c->transport_data;
+
+	if(!p) {
+		return;
+	}
+
+	decoy_fetch_cancel(p->fetch);
+	free(p->resp);
+	free(p);
+	c->transport_data = NULL;
+}
+
+/* A pseudo-carrier so the connection's private state is released through the
+   normal transport_connection_close() path when it is terminated. */
+static const transport_t decoy_plain_transport = {
+	.id = TRANSPORT_PLAIN,
+	.name = "decoy",
+	.close = plain_close,
+};
+
+static void plain_write(plain_decoy_t *p) {
+	connection_t *c = p->c;
+
+	while(p->woff < p->wlen) {
+		ssize_t n = send(c->socket, p->resp + p->woff, p->wlen - p->woff, 0);
+
+		if(n > 0) {
+			p->woff += (size_t) n;
+			continue;
+		}
+
+		if(n < 0 && sockwouldblock(sockerrno)) {
+			/* The client is not reading: wait for write readiness (M5-8);
+			   pingtimeout reaps it if it never does. */
+			io_set(&c->io, IO_WRITE);
+			return;
+		}
+
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Decoy: plain-HTTP probe from %s went away mid-response", c->hostname);
+		terminate_connection(c, false);
+		return;
 	}
 
 	logger(DEBUG_CONNECTIONS, LOG_INFO, "Served the decoy to a plain-HTTP probe from %s", c->hostname);
 	terminate_connection(c, false);
+}
+
+static void plain_start_write(plain_decoy_t *p, char *resp, size_t len) {
+	p->resp = resp;
+	p->wlen = len;
+	p->woff = 0;
+	p->state = PS_WRITE;
+	plain_write(p);
+}
+
+static void plain_fetched(void *data, char *resp, size_t len) {
+	plain_decoy_t *p = data;
+	p->fetch = NULL;
+	plain_start_write(p, resp, len);
+}
+
+static void plain_respond(plain_decoy_t *p) {
+	p->state = PS_FETCHING;
+	io_set(&p->c->io, 0); /* nothing to do on the client socket meanwhile */
+	p->fetch = decoy_fetch_start(p->req, p->rlen, plain_fetched, p);
+
+	if(!p->fetch) {
+		size_t len = 0;
+		char *resp = build_static(p->req, &len);
+		plain_start_write(p, resp, len);
+	}
+}
+
+static void plain_read(plain_decoy_t *p) {
+	connection_t *c = p->c;
+
+	for(;;) {
+		if(p->rlen >= sizeof(p->req) - 1) {
+			break; /* head too long: answer what we have */
+		}
+
+		ssize_t n = recv(c->socket, p->req + p->rlen, sizeof(p->req) - 1 - p->rlen, 0);
+
+		if(n > 0) {
+			p->rlen += (size_t) n;
+			p->req[p->rlen] = 0;
+
+			if(p->rlen >= 4 && memmem(p->req, p->rlen, "\r\n\r\n", 4)) {
+				break;
+			}
+
+			continue;
+		}
+
+		if(n < 0 && sockwouldblock(sockerrno)) {
+			return; /* wait for the rest of the head */
+		}
+
+		if(n == 0 && p->rlen) {
+			break; /* client shut its side after a headless request */
+		}
+
+		terminate_connection(c, false);
+		return;
+	}
+
+	p->req[p->rlen] = 0;
+	plain_respond(p);
+}
+
+static void plain_io(void *data, int flags) {
+	connection_t *c = data;
+	plain_decoy_t *p = c->transport_data;
+
+	if(!p) {
+		return;
+	}
+
+	switch(p->state) {
+	case PS_READ_REQ:
+		plain_read(p);
+		return;
+
+	case PS_WRITE:
+		if(flags & IO_WRITE) {
+			plain_write(p);
+		}
+
+		return;
+
+	case PS_FETCHING:
+	default:
+		return;
+	}
+}
+
+void decoy_serve_plain(connection_t *c) {
+	plain_decoy_t *p = xzalloc(sizeof(*p));
+	p->c = c;
+	p->state = PS_READ_REQ;
+	c->transport = &decoy_plain_transport;
+	c->transport_data = p;
+
+	io_del(&c->io);
+	io_add(&c->io, plain_io, c, c->socket, IO_READ);
+
+	/* The peeked bytes are already in the socket: read them now. */
+	plain_read(p);
 }

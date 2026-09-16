@@ -511,12 +511,18 @@ static bool load_or_generate(char **cert_pem, char **key_pem, const char **sourc
 		fclose(cf);
 	}
 
-	FILE *kf = fopen(keypath, "w");
+	/* The key file is created with mode 0600 from the start (M5-11): no
+	   window in which it exists with umask permissions. A stale file is
+	   replaced rather than truncated in place. */
+	unlink(keypath);
+	int kfd = open(keypath, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	FILE *kf = kfd >= 0 ? fdopen(kfd, "w") : NULL;
 
 	if(kf) {
-		chmod(keypath, 0600);
 		fprintf(kf, "%s\n", *key_pem);
 		fclose(kf);
+	} else if(kfd >= 0) {
+		close(kfd);
 	}
 
 	logger(DEBUG_ALWAYS, LOG_NOTICE, "Generated a self-signed TLS certificate into `%s'", confbase);

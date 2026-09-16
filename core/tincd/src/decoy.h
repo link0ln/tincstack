@@ -34,18 +34,36 @@
 void decoy_read_config(void);
 void decoy_exit(void);
 
-/* Build the decoy response for a client whose full request head (up to and
-   including the blank line) is `request` (`reqlen` bytes). Returns a
-   newly-allocated response (headers + body), its length in *resplen, or NULL
-   on allocation failure. When HttpsDecoyUpstream is set, the request is
-   proxied there (Host rewritten) and the upstream's response is returned;
-   otherwise a static page (from HttpsDecoyRoot, or the built-in default) is
-   returned. */
-char *decoy_respond(const char *request, size_t reqlen, size_t *resplen);
+/* Build the *static* decoy response for a client whose request head (up to
+   and including the blank line) is `request` (`reqlen` bytes): a file under
+   HttpsDecoyRoot, or the built-in page. Returns a newly-allocated response
+   (headers + body) and its length in *resplen. Never touches the network. */
+char *decoy_respond_static(const char *request, size_t reqlen, size_t *resplen);
 
-/* Plain-HTTP path: read the request from a bare TCP socket, answer with the
-   decoy, and close. Used by the front dispatcher for a cleartext prober. The
-   already-peeked bytes are still in the socket. */
+/* Upstream proxy (HttpsDecoyUpstream), event-driven (review M5-1): the fetch
+   runs on the daemon's event loop with a non-blocking connect, a total
+   deadline and a size cap, so a slow, black-holed or malicious upstream never
+   stalls the loop. The upstream address is resolved once, in
+   decoy_read_config(). Headers that carry the tinc authenticator (Cookie,
+   Upgrade, Sec-WebSocket-*) are stripped before forwarding (review M5-10).
+
+   decoy_fetch_start() returns NULL when no upstream is configured or usable:
+   the caller then serves decoy_respond_static() itself. Otherwise `cb` is
+   called exactly once, later (never from inside decoy_fetch_start), with a
+   newly-allocated response the caller owns -- the upstream's, or the static
+   page if the upstream failed -- after which the handle is gone. A caller
+   that goes away first must decoy_fetch_cancel() its handle. */
+typedef struct decoy_fetch_t decoy_fetch_t;
+typedef void (*decoy_cb_t)(void *data, char *resp, size_t resplen);
+decoy_fetch_t *decoy_fetch_start(const char *request, size_t reqlen, decoy_cb_t cb, void *data);
+void decoy_fetch_cancel(decoy_fetch_t *f);
+
+/* Plain-HTTP path: take over a bare TCP connection the front classified as
+   HTTP, read the request head, answer with the decoy and close -- all driven
+   by the event loop (review M5-8: never a busy-wait on a client that does not
+   read). The already-peeked bytes are still in the socket. The connection is
+   reaped by the authentication timeout (pingtimeout) if the exchange does not
+   finish, like any other unauthenticated connection. */
 struct connection_t;
 void decoy_serve_plain(struct connection_t *c);
 
