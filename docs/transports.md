@@ -29,7 +29,7 @@ front dispatch), `transport_table.c` (names + classifier, no daemon deps),
 | `TRANSPORT_HTTPS` | `https` | M5 | TLS front, meta+data in one TLS flow | reserved |
 | `TRANSPORT_OBFS`  | `obfs`  | M5 | obfuscated single UDP flow | reserved |
 | `TRANSPORT_HTTPS` | `https` | OpenSSL builds | TLS front, meta+data in one TLS flow | done (M5, G1) |
-| `TRANSPORT_QUIC`  | `quic`  | M5 | QUIC datagrams + one stream | reserved |
+| `TRANSPORT_QUIC`  | `quic`  | OpenSSL builds with ngtcp2 + GnuTLS (`-Dquic`, default in `Dockerfile.build`) | QUIC v1: meta on one bidi stream, SPTPS data in DATAGRAM frames | done (M5, G3) |
 | `TRANSPORT_TEST`  | `test`  | `-Dtransport_test=true` only | — (dial always fails) | test aid |
 
 The ids are stable bit positions: a carrier's advertisement and the accept mask
@@ -131,7 +131,8 @@ data path.
 | test | class | routed to |
 |---|---|---|
 | `len ≥ 24` and bytes `0..5` == the SF magic `9f 74 73 66 6c 77` | `SF` (if accepted) | `sf_udp_receive` |
-| `len ≥ 5`, `(b0 & 0xC0) == 0xC0` and `b1..b4` a known QUIC version | `QUIC` (if accepted) | quic carrier (M5) |
+| `len ≥ 5`, `(b0 & 0xC0) == 0xC0` and `b1..b4` == `00 00 00 01` (QUIC v1 only) | `QUIC` (if accepted) | `quic_udp_try`: consumed only as a live session or a well-formed ≥ 1200-byte Initial, else falls through |
+| `len ≥ 9`, `(b0 & 0xC0) == 0x40` and `b1..b8` == a connection id this node issued (keyed lookup, matcher set by `quic_init`) | `QUIC` (if accepted) | `quic_udp_try` (1-RTT short header) |
 | none of the above, obfs accepted, keyed check passes | `OBFS` | `obfs_udp_try` → decap → SF/SPTPS (M5) |
 | otherwise | `SPTPS` | unchanged tinc UDP path (`handle_incoming_vpn_packet`) |
 
@@ -141,17 +142,35 @@ Why these are unambiguous:
   node name, so a genuine data packet collides with the magic with probability
   2⁻⁴⁸. The magic's first byte `0x9f` also has the QUIC fixed bit clear, is not a
   TLS content type, and is not printable ASCII.
-- **QUIC** long headers set the high two bits (`form|fixed`). A relayed SPTPS
-  datagram whose destination id happens to start `0xC0..0xFF` *and* whose next
-  four bytes form a known QUIC version word is a 2⁻³⁴-per-node coincidence; and
-  QUIC is only ever claimed when the `quic` carrier is in the accept mask, so a
-  node that does not run QUIC never mis-routes a data packet. Documented residual.
+- **QUIC long headers** set the high two bits (`form|fixed`). A relayed SPTPS
+  datagram whose destination id happens to start `0xC0..0xFF` (2⁻²) *and* whose
+  next four bytes are exactly the v1 version word `00 00 00 01` (2⁻³²) is a
+  2⁻³⁴-per-node coincidence. Review R-10 caught that the earlier "known
+  version" set (v2, drafts, grease, VN: ~2¹⁷ words) made it about 2⁻¹⁷; the
+  rule now matches v1 only, which is all the carrier speaks. Even on a hit the
+  packet is only consumed if ngtcp2 accepts it as a ≥ 1200-byte Initial or its
+  DCID belongs to a live session; otherwise `quic_udp_try` returns `false` and
+  the dispatcher continues to obfs/SPTPS (§9.6). QUIC is only ever claimed when
+  the `quic` carrier is in the accept mask, so a node that does not run QUIC
+  never mis-routes a data packet.
+- **QUIC short headers** (every 1-RTT packet) carry no version word, so they
+  are a keyed lookup: first byte `0x40..0x7F` (2⁻²) and the next 8 bytes equal
+  a connection id this node issued for a live session (2⁻⁶⁴). The matcher is a
+  function pointer `transport_table.c` calls only when set (`quic_init`); a
+  build without the carrier, or a node with `quic` not accepted, never runs it.
+  A peer's stateless reset looks like a short header with an unknown CID and
+  falls through to SPTPS, where it fails authentication and is dropped.
+- **obfs magic headers**: obfs frames are random, so they hit either QUIC rule
+  with the same 2⁻³⁴ / 2⁻⁶⁴ odds and are then handed back by `quic_udp_try`
+  (§9.5). The only way to force a collision is to set `ObfsInitMagicHeader` /
+  `ObfsTransportMagicHeader` to a QUIC-shaped value on a node that accepts
+  `quic`; do not.
 - **obfs** frames carry no magic — they are sealed and look uniformly random, so
   they cannot be told apart by pattern. They are therefore *not* matched by
   `transport_classify_udp` (which returns `SPTPS`); instead `transport_udp_dispatch`
   runs the obfs carrier's keyed check **after** the SF and QUIC pattern tests, so
-  those unambiguous patterns win first and there is no range collision. The keyed
-  check is a single Poly1305 verification for an established peer (looked up by
+  those unambiguous patterns (and `quic_udp_try`'s confirmation) win first and
+  there is no range collision. The keyed check is a single Poly1305 verification for an established peer (looked up by
   source address) and a rate-limited node-key scan for a cold session. A plain
   SPTPS datagram fails every obfs key (2⁻¹²⁸) and falls through untouched, so a
   node with obfs in its accept list but no obfs peer behaves exactly like plain
@@ -417,17 +436,20 @@ dies before it activates advances to the next candidate automatically (§2).
 
 | option | default | meaning |
 |---|---|---|
-| `Transports` | all compiled (`plain, sf, obfs`) | accept list; advertised; `plain` always included |
-| `Transports` | all compiled (`plain, sf, https`) | accept list; advertised; `plain` always included |
+| `Transports` | all compiled (`plain, sf, obfs, https, quic` on the Docker build) | accept list; advertised; `plain` always included |
 | `PreferredTransports` | `plain` | dial order; always ends at `plain` |
 | `SingleFlow` | `no` | `yes` = dial `sf` first (TCP kept as fallback) |
 | `HttpsSni` | peer `Address` name, else `localhost` | SNI the https dial presents |
 | `TlsCert` / `TlsKey` | generated self-signed | PEM files; else `keys.tls_cert/tls_key` |
 | `HttpsDecoyRoot` | built-in page | static files served to probers |
 | `HttpsDecoyUpstream` | (unset) | `host:port` to proxy probers to instead |
+| `QuicPort` | the tinc `Port` | extra UDP listener for the quic carrier (also a host-record key: the port to dial); default = no extra socket |
+| `QuicSni` | `HttpsSni`, else peer `Address` if a name | SNI the quic dial presents |
+| `QuicAlpn` | `h3` | ALPN offered/required by the quic carrier |
 
-With all defaults, a node dials `plain` and accepts `plain,sf,obfs`: identical on the
-wire to upstream tinc, and interoperable with an unmodified upstream peer.
+With all defaults, a node dials `plain` and accepts everything compiled: identical
+on the wire to upstream tinc, and interoperable with an unmodified upstream peer.
+`quic` is only used when a dialler lists it in `PreferredTransports`.
 
 ---
 
@@ -534,16 +556,16 @@ is inside TLS; `101 Switching Protocols` was chosen for the success case because
 WebSocket-over-HTTPS is ubiquitous and needs no polling. There is no separate
 UDP flow to correlate.
 
-## 9. QUIC carrier (design, stream Q)
+## 9. The `quic` carrier (M5, G3)
 
-Status: **design + de-risking only.** Stream Q (2026-09-16) picked the library,
-made its build reproducible (`core/Dockerfile.build-quic`) and proved every
-primitive the carrier needs in a standalone spike (`testing/quic-spike/`). The
-carrier itself (`transport_quic.c`) is stream G3's work and is gated on G1's
-certificate automation. This section is written so G3 can implement from it
-without re-deriving anything.
+Status: **implemented** (`core/tincd/src/transport_quic.c`,
+`transport_quic_tls.c`; stream G3, 2026-09-16) on the library and the
+primitives stream Q de-risked (`testing/quic-spike/`, decision table in §9.1).
+The carrier is compiled whenever meson finds ngtcp2 + GnuTLS (`-Dquic=auto`,
+the default) on an OpenSSL build; `core/Dockerfile.build` ships it. Proof
+script: `testing/transports/quic-carrier-test.sh`.
 
-### 9.1 Library decision
+### 9.1 Library decision (stream Q)
 
 | | msquic 2.6.1 | **ngtcp2 1.25.0** (chosen) | quiche |
 |---|---|---|---|
@@ -563,293 +585,249 @@ dispatches datagrams (`transport_udp_dispatch` -> `udp_receive`). The
 reference `tinc-quic` used msquic and had to give it its own socket and
 threads; that is where its dead stream muxing came from.
 
-Measured (`core/Dockerfile.build-quic`, no cache): build stage 60 s total, of
-which ngtcp2 configure+make+install 16 s; +16 MB on the build stage (466 vs
-449 MB), **+5.4 MB on the runtime image** (100.3 vs 94.9 MB: libgnutls30 and
-its dependencies, libngtcp2 + libngtcp2_crypto_gnutls).
+The spike (`testing/quic-spike/run.sh`, three runs `ALL PASS`) proved the
+primitives the carrier is built on: handshake with a PEM cert + SHA-256 pin,
+pin mismatch => TLS alert 42, datagrams and one bidi stream both ways, NAT
+rebind => `PATH_VALIDATION success`, explicit migration, clean close; first
+packet on the wire `c3 00 00 00 01 08 ...` (1200 bytes). Two findings carried
+into the carrier: `active_connection_id_limit` must be > 2 (8 is used) or the
+second migration in a session fails, and the §3 classifier needed a keyed
+short-header rule (§9.5).
 
-### 9.2 Spike results (testing/quic-spike, three consecutive runs, all PASS)
+### 9.2 Where the carrier sits
 
-| primitive | observed |
-|---|---|
-| handshake | QUIC v1, TLS 1.3, server cert + key loaded from PEM (EC P-256, self-signed, generated at run time), client verifies by **SHA-256 fingerprint pin only**: `PIN ok sha256=...`, `HANDSHAKE ok alpn=h3 sni=cdn.example.net tls=TLS1.3 cipher=AES-128-GCM group=X25519` |
-| pin mismatch | wrong pin -> client aborts with TLS alert 42 (bad_certificate), server never completes the handshake, both exit |
-| datagrams | 5/5 both ways per round, three rounds |
-| stream | one client-opened bidirectional stream (id 0), bytes both ways |
-| NAT rebind | client's source port changes, client only calls `ngtcp2_conn_set_local_addr`; server logs `PATH_VALIDATION success remote=127.0.0.1:<new port>` and stream + datagrams continue |
-| active migration | `ngtcp2_conn_initiate_immediate_migration` to a third port with a fresh connection id; both sides validate; traffic continues |
-| close | `CONNECTION_CLOSE`, both processes exit 0 |
-| wire | first packet: `c3 00 00 00 01 08 ...` (1200 bytes); 71 packets in the session: 3 long-header, 68 short-header |
-
-Two findings that must carry into the carrier: `active_connection_id_limit`
-must be raised from the default 2 (the spike uses 8) or the second migration in
-a session kills the connection with `ERR_CONNECTION_ID_LIMIT`; and (see 7.6)
-**the current UDP classifier only recognises long headers**, i.e. the
-handshake; every 1-RTT packet after it is a short header that the table in §3
-would route to the SPTPS path.
-
-### 9.3 Where the carrier sits
-
-- Registry row: `[TRANSPORT_QUIC] = { .id, .name = "quic", .caps =
-  TRANSPORT_CAP_SINGLE_FLOW, .init, .exit, .dial, .send, .close,
-  .local_address, .udp_receive, .send_datagram }`. Meta *and* data ride the
-  one QUIC connection; there is no tinc-shaped TCP connection and no separate
-  plain SPTPS UDP flow between the two nodes. `accept` (TCP) stays NULL.
-- Socket: **tinc's existing UDP listen sockets** (`listen_socket[i].udp.fd`),
-  picked by address family like `sf_pick_socket()`. No extra socket, no extra
-  port: the front classifier (§3) hands QUIC datagrams to `udp_receive`. The
-  `QuicPort` key in `docs/config-schema.md` is *reserved* for an additional
-  QUIC-only UDP listener (443/UDP for HTTP/3 plausibility); it is not part of
-  the first implementation.
+- Registry row (`transport.c`, under `HAVE_QUIC && HAVE_OPENSSL`):
+  `{ .name = "quic", .caps = TRANSPORT_CAP_SINGLE_FLOW, .init, .exit, .dial,
+  .send, .close, .local_address, .udp_receive, .send_datagram }`. Meta *and*
+  data ride the one QUIC connection: no tinc-shaped TCP connection, no plain
+  SPTPS UDP flow between the two nodes. `accept` (TCP) is NULL.
+- Socket: **tinc's existing UDP listen sockets**, picked by address family
+  like `sf_pick_socket()`; the front classifier (§3) hands QUIC datagrams to
+  the carrier. With `QuicPort` set to something other than the tinc port, the
+  carrier additionally binds one UDP socket per address family on that port
+  (private `listen_socket_t` entries fed to the same `handle_incoming_vpn_data`
+  path, so `listen_socket[]` indices stay valid) and dials from it. Default:
+  `QuicPort` = the tinc port, no extra socket.
 - Loop: tinc's `event.c`. Reads arrive through `handle_incoming_vpn_data` ->
-  `transport_udp_dispatch`. Writes are `sendto()` on the listen socket to the
-  path ngtcp2 returns. Timers: one `timeout_t` per session, re-armed after
-  every flush from `ngtcp2_conn_get_expiry()`; its callback runs
-  `ngtcp2_conn_handle_expiry()` then flushes. (`spike_run_until` in
-  `testing/quic-spike/common.c` is this loop in 40 lines.)
+  `transport_udp_dispatch` -> `quic_udp_try()`. Writes are `sendto()` on the
+  session's socket to the path ngtcp2 returns. One `timeout_t` per session,
+  re-armed after every flush from `ngtcp2_conn_get_expiry()`; its callback
+  runs `ngtcp2_conn_handle_expiry()` and flushes.
 - Per-session state (`quic_session_t`, `c->transport_data`): `ngtcp2_conn *`,
-  `gnutls_session_t`, `ngtcp2_crypto_conn_ref`, listen-socket index, the
-  peer `sockaddr_t`, the meta stream id, the meta TX ring (bytes must stay
-  valid until `acked_stream_data_offset` says so), a small datagram TX queue,
-  the timer, and the list of connection ids we issued (for the lookup in 7.6).
-  `c->socket = -1` as in SF.
+  the GnuTLS session (`quic_tls_t`), socket fd + family index, the peer
+  `sockaddr_t`, the meta stream id, the meta TX ring with absolute offsets
+  (bytes stay valid until `acked_stream_data_offset`), a 64-entry datagram TX
+  queue, the timer, the list of connection ids this node issued (for the keyed
+  lookup), and the recorded `ngtcp2_ccerr`. `c->socket = -1` as in SF.
+- Re-entrancy rules the code enforces: nothing is written to ngtcp2 from
+  inside one of its callbacks (a `reading` flag defers the flush), a session
+  is never freed inside a callback (a `dead` flag + reaper timer, like
+  `sf_reap`), and `receive_meta_bytes()` may terminate the connection, after
+  which the callback returns without touching the session.
 
-### 9.4 Hook mapping
+### 9.3 Hook mapping (as implemented)
 
-| hook | ngtcp2 / GnuTLS |
+| hook | what it does |
 |---|---|
-| `init()` | `gnutls_global_init()`; build the server credentials once from the node's own `keys.tls_cert` / `keys.tls_key` (PEM text in the YAML, G1) with `gnutls_certificate_set_x509_key_mem(cred, &cert, &key, GNUTLS_X509_FMT_PEM)`; draw a 32-byte static secret for stateless-reset tokens; init the CID -> session hash. Re-run on `tinc reload` so a replaced certificate is served without restart. |
-| `exit()` | close every session (`close` below), free credentials, `gnutls_global_deinit()`. |
-| `dial(c)` | Peer's `TlsFingerprint` from its host record: **absent => return `false`** (falls to the next carrier, §2). Pick the listen socket by family; `gnutls_init(GNUTLS_CLIENT...)`, `ngtcp2_crypto_gnutls_configure_client_session`, priority `NORMAL:-VERS-ALL:+VERS-TLS1.3:...:%DISABLE_TLS13_COMPAT_MODE`, `gnutls_certificate_set_verify_function(cred, verify_pin)`, ALPN and SNI (7.8); random DCID (8) + SCID (8); `ngtcp2_conn_client_new(path = {listen socket addr, c->address}, NGTCP2_PROTO_VER_V1, callbacks, settings, params)`; `ngtcp2_conn_set_tls_native_handle`; `c->status.connecting = false; connection_add(c)`; flush (sends the Initial). Return `true`. **Do not** call `finish_connecting()` here: it runs from the `handshake_completed` callback (7.5) after the authenticator bytes are queued, so the tinc `ID` line is the second thing on the stream. |
-| `udp_receive(ls, buf, len, addr)` | `ngtcp2_pkt_decode_version_cid(&vc, buf, len, 8)`; look the DCID up; known session => `ngtcp2_conn_read_pkt(conn, path = {ls->sa, *addr}, pi, buf, len, now)` then flush; **the path's remote is the datagram's real source, always** (that is the whole NAT-rebind mechanism). Unknown DCID and `ngtcp2_accept(&hd, buf, len) == 0` => `quic_accept()` (7.5), rate-limited by `max_connection_burst` like `sf_accept()`. Unknown DCID otherwise => drop (a stateless reset reply is optional; not needed between our own daemons). Errors from `read_pkt`: `NGTCP2_ERR_DRAINING` / `CLOSING` / `DROP_CONN` => `terminate_connection(c, false)`; `NGTCP2_ERR_CRYPTO` => log the TLS alert and terminate; anything else => send `CONNECTION_CLOSE` with `ngtcp2_ccerr_set_liberr` and terminate. |
-| `send(c)` | Move `c->outbuf` into the session's meta TX ring, clear it, flush. The flush loop is the spike's `spike_flush()`: queued datagrams first with `ngtcp2_conn_writev_datagram` (pop on `accepted`), then `ngtcp2_conn_writev_stream(stream_id, remaining ring bytes)`, `sendto()` every non-empty packet to `ps.path.remote`, stop at `nwrite == 0`, then `ngtcp2_conn_update_pkt_tx_time` and re-arm the timer. `NGTCP2_ERR_STREAM_DATA_BLOCKED` => mark blocked until `extend_max_stream_data`. Return `true`. |
-| `send_datagram(c, buf, len)` (new hook, see 7.5) | queue + flush; `false` if `len > ngtcp2_conn_get_max_tx_udp_payload_size() - 35` (the caller then treats it like `EMSGSIZE` -> `reduce_mtu`). |
-| `close(c)` | `ngtcp2_conn_write_connection_close` (app error 0, or the recorded `ngtcp2_ccerr`) -> `sendto`; `timeout_del`; drop the session's CIDs from the hash; `ngtcp2_conn_del`, `gnutls_deinit`; free. |
-| `local_address(c, sa)` | `getsockname(listen_socket[s->sock].udp.fd)`, as SF. |
+| `init()` | `tls_init()` then the node certificate PEM from `tls_current_pem()` (the single node cert, `keys.tls_cert/tls_key`, G1) -> `gnutls_certificate_set_x509_key_mem`; 32-byte static secret for stateless-reset tokens; registers the CID matcher with `transport_set_quic_cid_matcher()`; binds the `QuicPort` sockets when configured. Logs `QUIC carrier ready (ngtcp2 1.25.0, GnuTLS)`. `quic_read_config()` on `tinc reload` rebuilds the credential when the certificate fingerprint changed. |
+| `exit()` | close every session, free the credential, `gnutls_global_deinit()`. |
+| `dial(c)` | pin = the peer's `TlsFingerprint` host-record key (absent => accept-on-first-use, §9.7); port = the peer's host-record `QuicPort`, else own `QuicPort`, else the port as dialled; socket by family; GnuTLS client session with ALPN `QuicAlpn` (default `h3`) and SNI from §9.8; random DCID(8) + SCID(8); `ngtcp2_conn_client_new(..., NGTCP2_PROTO_VER_V1, ...)`; `connection_add(c)`; flush (the Initial goes out). `finish_connecting()` is *not* called here. Logs `Dialling <peer> via quic`. |
+| `udp_receive` / `quic_udp_try(ls, buf, len, addr)` | `ngtcp2_pkt_decode_version_cid`; DCID in the session table => `ngtcp2_conn_read_pkt(path = {socket addr, datagram source}, ...)` then flush -- the remote of the path is always the datagram's real source, which is the whole NAT-rebind mechanism. Unknown DCID: only a packet `ngtcp2_accept()` takes as a well-formed v1 Initial (>= 1200 bytes) opens a session (`quic_accept`, burst-limited by `max_connection_burst`, `new_connection()` named `<unknown>`, `allow_request = ID`); anything else **returns `false` and falls through** to the obfs keyed check and SPTPS. `read_pkt` errors: `DRAINING/CLOSING/DROP_CONN` => silent teardown; `NGTCP2_ERR_CRYPTO` => `CONNECTION_CLOSE` with the TLS alert; other => `CONNECTION_CLOSE` with `ngtcp2_ccerr_set_liberr`. Every teardown ends in `terminate_connection()`. |
+| `send(c)` | append `c->outbuf` to the TX ring, flush: queued datagrams first (`ngtcp2_conn_writev_datagram`), then `ngtcp2_conn_writev_stream` on the meta stream; `sendto` each packet; `NGTCP2_ERR_STREAM_DATA_BLOCKED` marks the stream blocked until `extend_max_stream_data`; then `ngtcp2_conn_update_pkt_tx_time` + re-arm the timer. `EMSGSIZE` from the socket is ignored (ngtcp2's PMTUD probes). |
+| `send_datagram(c, buf, len)` | queue + flush; returns `false` when `len > 1400` or `len > ngtcp2_conn_get_max_tx_udp_payload_size() - 35`, which `send_sptps_data()` treats like `EMSGSIZE` (-> `reduce_mtu`); when the 64-entry queue is full the datagram is dropped (SPTPS tolerates loss). |
+| `close(c)` | best-effort `ngtcp2_conn_write_connection_close` (the recorded `ccerr`, else app error 0) + `sendto`; drop the CIDs; `ngtcp2_conn_del`, `gnutls_deinit`; free. |
+| `local_address(c, sa)` | `getsockname()` on the session's socket. |
 
-ngtcp2 callbacks (the table `spike_callbacks()` builds is the complete list):
-the `ngtcp2_crypto_*_cb` set for crypto, `rand` and `get_new_connection_id2`
-from `gnutls_rnd`, `remove_connection_id` (maintain the CID hash),
-`handshake_completed`, `recv_stream_data`, `acked_stream_data_offset`,
-`stream_open`, `recv_datagram`, `path_validation`, `extend_max_stream_data`.
-`ack_datagram` / `lost_datagram` are not needed: SPTPS handles loss.
-
-Settings / transport parameters (from the spike): `initial_max_streams_bidi =
-1` (we use one), `initial_max_streams_uni = 0`, `initial_max_data = 1 MiB`,
+Settings / transport parameters: `initial_max_streams_bidi = 1`,
+`initial_max_streams_uni = 0`, `initial_max_data = 1 MiB`,
 `initial_max_stream_data_bidi_{local,remote} = 256 KiB`,
-`max_datagram_frame_size = 65535`, **`active_connection_id_limit = 8`**,
-`max_idle_timeout = 3 x PingTimeout`, `settings.handshake_timeout =
-PingTimeout` (so the library gives up in step with tinc's reaper, §2 step 3).
+`max_datagram_frame_size = 65535`, `active_connection_id_limit = 8`,
+`max_idle_timeout = 3 x PingTimeout`, `handshake_timeout = PingTimeout` (so
+the library gives up in step with tinc's reaper, §2 step 3).
 
-### 9.5 Framing SPTPS records
+### 9.4 Framing: authenticator, meta stream, SPTPS datagrams
 
-**Meta path** (ordered bytes: tinc requests, then SPTPS stream records) rides
-**one bidirectional stream**, opened by the dialler in `handshake_completed`
-(`ngtcp2_conn_open_bidi_stream` -> id 0). The acceptor adopts the first stream
-it sees in `stream_open`/`recv_stream_data` and shuts any other
-(`ngtcp2_conn_shutdown_stream`, app error 1): there is deliberately no muxing.
-Inbound bytes go to `receive_meta_bytes(c, data, len)` from
-`recv_stream_data`, then the credit is returned with
-`ngtcp2_conn_extend_max_stream_offset` + `ngtcp2_conn_extend_max_offset`
-**after** the call; `c` may have been terminated inside it, exactly the caveat
-`sf_deliver()` documents.
+**Stream 0** (one bidirectional stream, opened by the dialler in
+`handshake_completed`; the acceptor adopts the first stream it sees and shuts
+any other with app error 1) carries, in this order:
 
-The first bytes on the stream, before the tinc `ID` line:
+1. the **§8.3 authenticator**, byte for byte the `https` one, built by the
+   shared `authn_build()` (`authn.c`): `ver(1) || namelen(1) || name ||
+   nonce(16) || ts_be(8) || Ed25519 sig(64)` over `server-cert-fp(32) ||
+   TLS-exporter(32) || nonce || ts`, exporter label
+   `EXPORTER-tincstack-https-v1` via `gnutls_prf_rfc5705`. The acceptor
+   (`recv_stream_data`) buffers exactly `authn_expected_len()` bytes and
+   calls `authn_verify()` against its own certificate fingerprint and
+   exporter -- same replay cache, same +/-90 s skew as `https`. Not a single
+   byte reaches `receive_meta_bytes()` before it passes; on failure the
+   session is closed with a generic transport error (`quic: authenticator
+   from <host> rejected`) and the dialler falls back (§9.9). Success sets
+   `c->name` and logs `quic: authenticated peer <name>`.
+2. the tinc `ID` line and everything after it: `finish_connecting(c)` runs
+   from `handshake_completed` right after the authenticator is queued, so
+   `send_id()` -> `send` hook -> the same stream. The unchanged Ed25519 SPTPS
+   handshake inside the stream then proves the name (SPTPS is untouched).
 
-```
-    +----------------------------------------------------------------+
-    | PLACEHOLDER (G1): the in-session peer authenticator that G1     |
-    | defines for the `https` carrier: the same bytes, same           |
-    | derivation from the tinc node keys, same verification. The QUIC |
-    | carrier sends them as the first bytes of stream 0; the acceptor |
-    | verifies them before it lets a single byte reach                |
-    | receive_meta_bytes(). Final format: the https section of this   |
-    | document once G1 lands. Until then the carrier sends nothing    |
-    | here.                                                           |
-    +----------------------------------------------------------------+
-```
+Inbound stream bytes go to `receive_meta_bytes(c, data, len)`; the
+flow-control credit is returned afterwards with
+`ngtcp2_conn_extend_max_stream_offset` + `ngtcp2_conn_extend_max_offset`.
 
-Dialler order in `handshake_completed`: open stream -> queue authenticator ->
-`finish_connecting(c)` (which calls `send_id()` -> `send` hook -> same stream).
-Acceptor: verify authenticator -> `c->allow_request = ID` and continue as SF's
-`sf_accept()` does (`new_connection()`, name `<unknown>`, `connection_add`).
+**Data path**: the SPTPS *datagram* records ride **DATAGRAM frames**, one tinc
+UDP packet per frame, byte for byte what `send_sptps_data()` would have put on
+the wire (`dst-id | src-id | record`, or the direct/legacy forms), so a relay
+never sees a difference. `send_sptps_data()` calls
+`relay->connection->transport->send_datagram` (before `obfs_wrap_send`) when
+the relay's meta connection has that hook; `false` => `reduce_mtu`, so tinc's
+own MTU probing converges on the datagram ceiling. `recv_datagram` delivers
+with `handle_incoming_vpn_packet_decap(ls, data, len, &session peer)`: the
+classifier is skipped (the bytes came from a carrier) and the unchanged SPTPS
+receive path authenticates, decrypts and forwards relayed packets as today.
+Ceiling: ~1160 bytes at the initial 1200-byte UDP payload, ~1410 after PMTUD
+on Ethernet; `SF_MAX_PAYLOAD` is 1200 for comparison.
 
-**Data path** (the SPTPS *datagram* records) rides **DATAGRAM frames**, one
-tinc UDP packet per frame, byte-for-byte what `send_sptps_data()` would have
-put on the wire (`dst-id | src-id | record`, or the direct/legacy forms), so a
-relay never sees a difference. Hook points:
+### 9.5 Classifier (what G3 changed in §3)
 
-- send: at the end of `send_sptps_data()`, where it has built `buf` and would
-  `choose_udp_address()` + `sendto()`: if `relay->connection &&
-  relay->connection->transport->send_datagram` and the session is up, call
-  it instead. Returning `false` is handled like `EMSGSIZE` (-> `reduce_mtu`),
-  so tinc's own MTU probing converges on the datagram ceiling by itself.
-- receive: `recv_datagram` -> `handle_incoming_vpn_packet(ls, &pkt, &addr)`
-  with the frame payload as `pkt->data` and the session's peer address as
-  `addr` (net_packet.c exposes this as `transport_deliver_udp()`; the
-  classifier path is skipped because the bytes already came from a carrier).
-  The unchanged SPTPS receive path authenticates and decrypts; relayed packets
-  are forwarded as today.
-- `n->status.udp_confirmed` / MTU probes: no special casing. Probes are SPTPS
-  records and go through the same datagram hook; oversize probes fail there.
-- Ceiling: with the initial 1200-byte UDP payload the DATAGRAM payload is about
-  1160 bytes (1 flags + 8 DCID + 1-4 packet number + 3 frame header + 16 AEAD
-  tag); after PMTUD on Ethernet about 1410. Compare `SF_MAX_PAYLOAD` 1200.
+- **Long header, v1 only.** `(b0 & 0xC0) == 0xC0` and version word
+  `00 00 00 01`. Stream Q's draft matched a set of ~2^17 version words (v2,
+  every draft, the greased pattern, VN), which review R-10 correctly priced at
+  about 2^-17 per node against a genuine SPTPS relay datagram; the carrier
+  speaks v1 only, so the match is now exactly one word and the residual is
+  2^-34 per node, as §3 states. On top of that the carrier only *consumes* a
+  long-header packet if `ngtcp2_accept()` takes it as a >= 1200-byte Initial
+  (or its DCID is a live session); a lookalike falls through to obfs/SPTPS.
+- **Short header, keyed.** `(b0 & 0xC0) == 0x40`, `len >= 9`, and bytes
+  `1..8` equal a connection id this node issued for a live session
+  (`transport_set_quic_cid_matcher()`, set by `quic_init`; NULL in a build
+  without the carrier, and never consulted when `quic` is not in the accept
+  mask). Residual 2^-64 per session. Stateless resets from a peer look like
+  short headers with an unknown CID and fall through to SPTPS, where they
+  fail authentication and are dropped.
+- Order: SF magic -> QUIC long header -> QUIC short header (keyed) -> obfs
+  keyed check -> SPTPS. SF (`0x9f`, top bits `10`) and QUIC never overlap.
+- **obfs interaction.** obfs frames are sealed and uniformly random, so a
+  frame whose first byte lands in `0xC0..0xFF` *and* whose next four bytes
+  are `00 00 00 01` (2^-34) or whose first 9 bytes match a live CID (2^-64)
+  would be classified QUIC first; the carrier does not consume it (no session,
+  not an acceptable Initial) and `transport_udp_dispatch` continues to the
+  obfs keyed check, so nothing is lost. The one configuration that can force
+  the collision is `ObfsInitMagicHeader` / `ObfsTransportMagicHeader` set to
+  a QUIC-looking value (`0xC?000000`-ish): do not do that on a node that
+  accepts `quic`; documented, not guarded.
+- Unit test: `testing/transports/classify_test.c` grew from 26 to 37 checks
+  (v2 / draft-29 / grease / VN long headers -> SPTPS, a 1200-byte v1 Initial
+  -> QUIC, short header with a live CID -> QUIC, and no matcher / unknown CID
+  / not accepted / fixed bit clear / truncated -> SPTPS).
 
-### 9.6 Coexistence on the UDP socket: classifier changes G3 must make
+### 9.6 Coexistence rule for `quic_udp_try`
 
-The §3 rule `(b0 & 0xC0) == 0xC0` + known version claims **long-header packets
-only**: Initial, 0-RTT, Handshake, Retry, Version Negotiation. Header
-protection scrambles the low bits of the first byte (the spike saw `c3`, `cb`,
-`c0` for Initials, `c4` for the server's), so only the top two bits and the
-version word may be keyed on, which is what the table does. Recorded from the
-capture, the bytes the classifier keys on for our own Initial:
-
-```
-    offset 0   1  2  3  4   5
-           c3  00 00 00 01  08 ...     b0 & 0xC0 == 0xC0, version = 0x00000001, dcidlen = 8
-```
-
-After the handshake every packet is a **short header**: `(b0 & 0xC0) == 0x40`
-followed directly by the destination connection id. §3 routes those to the
-SPTPS path today, so the carrier cannot work with the table as it stands.
-Required change (the "keyed check" slot the obfs row in §3 already reserves):
-
-| test | class |
-|---|---|
-| `(b0 & 0xC0) == 0x40`, `len >= 1 + 8 + 20`, and bytes `1..8` equal a connection id **this node issued** for a live QUIC session | `QUIC` (keyed; done in `transport_udp_dispatch` by `quic_udp_lookup()` before falling through to SPTPS) |
-
-Residual: an SPTPS datagram whose first byte is `0x40..0x7F` (a quarter of
-node ids) *and* whose next 8 bytes equal one of our live CIDs: 2^-64 per
-session, the same class of argument as the SF magic. Stateless resets from a
-peer look like short headers with an unknown CID and fall through to SPTPS,
-where they fail authentication and are dropped; acceptable. Update the §3
-table in the same commit as the code; `testing/transports/classify_test.c`
-gets the new row (a fake session table is enough since `transport_table.c`
-stays daemon-free: expose the lookup as a function pointer it calls when set).
-
-SF (`0x9f...`) and QUIC never overlap (`0x9f & 0xC0 == 0x80`, neither form);
-obfs remains keyed and is checked after QUIC.
+`transport_udp_dispatch` calls `quic_udp_try()` for `UDP_CLASS_QUIC` and only
+stops there when it returns `true` (packet consumed: live session, or a new
+session was opened). `false` means "not mine after all" and the dispatcher
+proceeds exactly as for `UDP_CLASS_SPTPS`. This is what keeps the
+pattern-based rule safe: the pattern selects, the library confirms.
 
 ### 9.7 Certificate, pinning, identity binding
 
-- The node serves its **own** certificate (G1: `keys.tls_cert` / `tls_key`,
-  self-signed EC P-256 at first start, replaceable). Same object as the HTTPS
-  front's; loaded in `init`, reloaded on `tinc reload`.
-- The dialler pins the peer's `TlsFingerprint` (host record, propagated with
-  the host file and in invitations). `verify_pin` is the spike's: DER of the
-  presented leaf -> `gnutls_fingerprint(GNUTLS_DIG_SHA256)` -> constant-time
-  compare with the pinned hex. **Nothing else is checked**: no CA, no name,
-  no validity period; the pin *is* the identity, and a renewed certificate
-  changes the pin in the host record anyway. The SNI sent is shaping, never
-  validated. Mismatch => TLS alert 42, connection closed, `LOG_ERR` line with
-  both fingerprints (the spike prints exactly that), fallback per 7.9.
-- Identity binding (the gap `tinc-quic` left open): the pin ties the QUIC
-  session to the certificate recorded under the peer's **node name**; the
-  authenticator (7.5, G1) ties the session to the tinc keys of that name before
-  any tinc request is parsed; then the unchanged Ed25519 SPTPS handshake inside
-  the stream proves the name. A certificate alone never authenticates a node.
-- No client certificate: the acceptor learns who the peer is from the
-  authenticator and the SPTPS handshake, not from TLS.
+- The node serves its **own** certificate (`keys.tls_cert` / `tls_key`, G1:
+  self-signed EC P-256 at first start, or `TlsCert`/`TlsKey`). Same object as
+  the HTTPS front's, obtained through `tls_current_pem()`; reloaded on
+  `tinc reload` when its fingerprint changed.
+- The dialler pins the peer's `TlsFingerprint` (host record). `verify_pin`
+  (`transport_quic_tls.c`): DER of the presented leaf -> SHA-256 -> compare
+  with the pinned hex. **Nothing else is checked**: no CA, no name, no
+  validity period; the pin *is* the identity. Mismatch => `LOG_ERR` with both
+  fingerprints, TLS alert (bad_certificate), fallback per §9.9.
+- **Accept-on-first-use**: when the host record has no `TlsFingerprint` the
+  dialler accepts the presented certificate, logs
+  `quic: no pinned TlsFingerprint for <peer>; accepting <fp> on first use and
+  pinning it` and appends `TlsFingerprint = <fp>` to the peer's host record
+  (`append_config_file`), so the second dial is pinned. This is the same
+  trust model as `https` (§8.2) and is bounded by the authenticator + SPTPS
+  handshake that follow: a wrong server can at most be pinned as a peer that
+  then fails to authenticate.
+- Identity binding: the pin ties the QUIC session to the certificate recorded
+  under the peer's node name; the authenticator (§9.4) ties the session to
+  the tinc Ed25519 key of the dialler before any tinc request is parsed; then
+  the unchanged SPTPS handshake inside the stream proves both names. A
+  certificate alone never authenticates a node. No client certificate is
+  used.
 
 ### 9.8 What the wire shows (for later DPI shaping)
 
-`QuicAlpn` (default `h3`) and `QuicSni` (default: the peer's `Address` when it
-is a DNS name, else the configured value, else no SNI) are the only knobs. The
-spike shows both sides can report what was negotiated
-(`gnutls_alpn_get_selected_protocol`, `gnutls_server_name_get`). HTTP/3
-conformance beyond the handshake is out of scope (ARCHITECTURE §10); Initial
-packets are padded to 1200 bytes by the library, as browsers do. Both keys are
-`Quic*`-prefixed so M2/M6's invitation copy and the GUI panel pick them up
-without further changes; add them to `docs/config-schema.md` with the code.
+`QuicAlpn` (default `h3`) and the SNI (`QuicSni`, else `HttpsSni`, else the
+peer's `Address` when it is a DNS name, else no SNI) are the only knobs;
+Initial packets are padded to 1200 bytes by the library, as browsers do.
+Captured by `quic-carrier-test.sh` (a): 288 UDP datagrams on the port, the
+first three long headers (`L L L` = client Initial, server Initial+Handshake,
+client Handshake), then short headers only; 0 datagrams without the QUIC fixed
+bit (an SPTPS datagram would clear it half the time); no TCP connection
+established. HTTP/3 conformance beyond the handshake is out of scope
+(ARCHITECTURE §10).
 
 ### 9.9 Handshake failure and fallback
 
 All of these end in the §2 walk to the next candidate, ending at `plain`,
 because the connection dies before it activates:
 
-| failure | detection | action |
+| failure | detection | action (observed in `quic-carrier-test.sh`) |
 |---|---|---|
-| peer has no `TlsFingerprint` in its host record | `dial` | return `false` immediately (§2 step 2) |
-| no UDP socket of the peer's address family | `dial` | return `false` |
-| QUIC dropped by the network (UDP/443-style filtering, DPI) | no packet ever arrives; ngtcp2 retransmits the Initial with backoff; `handshake_timeout = PingTimeout` expires, or tinc's reaper hits first | `terminate_connection` before activation => next candidate (§2 step 3) |
-| pin mismatch / TLS failure | `NGTCP2_ERR_CRYPTO` from `read_pkt` | `CONNECTION_CLOSE`, log both fingerprints, terminate => next candidate |
-| Version Negotiation packet | `NGTCP2_ERR_VERSION_NEGOTIATION` from `decode_version_cid` | we speak v1 only: treat as failure, terminate |
-| authenticator rejected (acceptor) | 7.5 | close with app error; never deliver bytes to `receive_meta_bytes` |
-| mid-session: idle timeout, path validation failure, peer close | `read_pkt` / `handle_expiry` errors, `path_validation` FAILURE | `terminate_connection` => automatic reconnect re-evaluates preferences from the top (§2 step 4) |
+| peer does not accept `quic` (config `Transports: [plain]`, or a build without the carrier) | negotiation, §2 | `Carrier candidates for <peer>: plain`; QUIC never dialled (c) |
+| no UDP socket of the peer's address family | `dial` | return `false` immediately |
+| QUIC dropped by the network | ngtcp2 retransmits the Initial with backoff; `handshake_timeout = PingTimeout` expires | `Carrier quic failed for <peer>, falling back to plain`, tunnel comes up on plain (c, UDP DROP'd) |
+| pin mismatch / TLS failure | `NGTCP2_ERR_CRYPTO` | `CONNECTION_CLOSE` with the alert, log both fingerprints, next candidate |
+| Version Negotiation packet | `decode_version_cid` | v1 only: not claimed, session times out as above |
+| authenticator rejected (acceptor) | §9.4 | generic close, `quic: authenticator from <host> rejected`; the dialler logs `Carrier quic failed ..., falling back to plain` and dials plain, where the wrong key fails SPTPS too (d) |
+| mid-session: idle timeout, peer close, library error | `read_pkt` / `handle_expiry` errors | `terminate_connection` => reconnect re-evaluates preferences from the top (§2 step 4) |
 
-NAT rebind on wake needs no code on the dialling side: tinc's listen socket
-does not move, the NAT mapping does, the *acceptor* sees a new source address
-in `udp_receive` and ngtcp2 validates it (spike `rebind`). After
-`path_validation` SUCCESS the carrier copies `ngtcp2_conn_get_path()->remote`
-into `c->address` / the node's UDP address so edges and `hostname` follow.
-Active migration (`ngtcp2_conn_initiate_immediate_migration`) is only for a
-*local* socket change (Android Wi-Fi -> LTE), which tinc does not do today;
-the spike proves it works when M8 needs it.
+**NAT rebind** needs no code on the dialling side: tinc's socket does not
+move, the NAT mapping does; the *acceptor* sees a new source address in
+`udp_receive`, ngtcp2 validates the path, and on `path_validation` SUCCESS the
+carrier copies the new remote into the session, `c->address` and
+`c->hostname` (so `dump connections` follows) and logs `quic: path validated
+for <peer>, remote now <addr>`. Observed (b): mapping flipped 40000 -> 40001
+mid-session, ping continues both ways, exactly one `quic: connection from`
+before and after (no re-handshake), the dialler never fell back. Active
+migration (`ngtcp2_conn_initiate_immediate_migration`) is only for a *local*
+socket change (Android Wi-Fi -> LTE), which tinc does not do today.
 
-### 9.10 Build wiring for G3
+### 9.10 Build wiring
 
-`meson_options.txt`:
+`meson_options.txt`: `option('quic', type: 'feature', value: 'auto')`.
+`src/meson.build` looks up `libngtcp2 >= 1.0`, `libngtcp2_crypto_gnutls` and
+`gnutls >= 3.7.3`; when all three are found *and* `crypto=openssl` (the node
+certificate comes from `tls.c`, which is OpenSSL) it adds `transport_quic.c`
++ `transport_quic_tls.c` and defines `HAVE_QUIC`; `-Dquic=enabled` on a
+non-OpenSSL crypto build is an error. `transport_table.c`'s `quic` row is
+`compiled` under `HAVE_QUIC && HAVE_OPENSSL`, so the default accept list and
+the advertised `Transports = plain, sf, obfs, https, quic` line (`zeroconf.c`)
+include `quic` only in builds that have it. `tinc info` / `dump connections`
+show `quic` like any carrier.
 
-```
-option('quic', type: 'feature', value: 'auto',
-       description: 'QUIC carrier (ngtcp2 with the GnuTLS backend)')
-```
-
-`src/meson.build`, next to the other dependencies:
-
-```
-opt_quic = get_option('quic')
-dep_ngtcp2 = dependency('libngtcp2', version: '>=1.0', required: opt_quic, static: static)
-dep_ngtcp2_crypto = dependency('libngtcp2_crypto_gnutls', required: opt_quic, static: static)
-dep_gnutls = dependency('gnutls', version: '>=3.7.3', required: opt_quic, static: static)
-if dep_ngtcp2.found() and dep_ngtcp2_crypto.found() and dep_gnutls.found()
-  src_tincd += 'transport_quic.c'
-  deps_tincd += [dep_ngtcp2, dep_ngtcp2_crypto, dep_gnutls]
-  cc_flags_tincd += '-DHAVE_QUIC'
-endif
-```
-
-`transport_table.c`: the `compiled` flag of the `quic` row becomes
-`#ifdef HAVE_QUIC` (as `HAVE_TRANSPORT_TEST` does), so the default accept
-list and the advertised `Transports` line include `quic` only in builds that
-have it. `transport.c`: fill the row (7.3) under the same guard.
-
-Docker: `core/Dockerfile.build-quic` already provides the three pkg-config
-modules in the build stage and the shared objects + `libgnutls30` in the
-runtime stage; when the option exists, add `-Dquic=enabled` to its meson line
-so a missing dependency fails the build instead of silently producing a
-QUIC-less daemon. The plain `core/Dockerfile.build` keeps building without
-QUIC (`auto` finds nothing there): with all defaults the daemon is unchanged.
+Docker: the ngtcp2 dependency is **folded into `core/Dockerfile.build`**
+(stage `quicdeps`, sha256-pinned tarball, `ARG QUIC=enabled`) and
+`core/Dockerfile.build-quic` was removed. Reason: decision 2 ("one side's
+tick is enough") only holds if every default node image carries the carrier,
+and the compose lab (`platforms/linux/docker`) builds from
+`Dockerfile.build`. Cost: +16 s build, runtime image 100 MB (+5.4 MB). The
+QUIC-less build stays green and is proven with
+`--build-arg QUIC=disabled` (image `ws-g3-noquic`: `tincd` links neither
+ngtcp2 nor GnuTLS, `Transports accept=plain,sf,obfs,https`).
 
 Windows (mingw) and Android (NDK, M8): GnuTLS is the heavy part of this
 choice. ngtcp2's API is backend-independent; only the TLS object setup differs
-(`ngtcp2_crypto_<backend>_configure_*_session` plus the backend's own
-credential calls, ~60 lines, the spike's `spike_tls_init`). Keep that in
-`transport_quic_tls.c` so the wolfSSL or BoringSSL backend can replace GnuTLS
-per platform without touching the carrier.
+(`ngtcp2_crypto_<backend>_configure_*_session` plus the backend's credential
+calls, ~150 lines in `transport_quic_tls.c`), so wolfSSL or BoringSSL can
+replace GnuTLS per platform without touching the carrier.
 
-### 9.11 Open risks for G3
+### 9.11 Known limits
 
-1. **Classifier gap** (7.6): short-header packets. Without the keyed CID
-   lookup the carrier handshakes and then goes deaf. Must land with the
-   carrier and its unit test.
-2. **Authenticator format** is G1's; the carrier has a marked placeholder. If
-   G1's `https` authenticator relies on TLS early data / ClientHello
-   extensions, the QUIC variant is the same bytes on stream 0 instead; agree
-   on that before either side ships.
-3. **Buffers must outlive acknowledgement**: meta TX bytes stay in the ring
-   until `acked_stream_data_offset`; `c->outbuf` cannot be handed to ngtcp2
-   directly.
-4. **`receive_meta_bytes` may terminate the connection** from inside a
-   ngtcp2 callback; the callback must return without touching the session
-   afterwards (SF has the same rule).
-5. **Cross-platform TLS backend** (7.10).
-6. Relay through a QUIC-carried link is designed (7.5) but not measured:
-   the three-node proof in `testing/transports/` must be repeated with the
-   middle hop on `quic`.
-With all defaults, a node dials `plain`, accepts `plain,sf,https`, and answers a
-TLS ClientHello with the decoy: identical on the tinc wire to upstream tinc for a
-plain/sf peer, and a plausible HTTPS server to everyone else.
-
----
+1. `QuicPort` is read at start only (a change needs a restart); `QuicSni` /
+   `QuicAlpn` are read per dial.
+2. The datagram queue is bounded (64) and drops when full; SPTPS handles the
+   loss, but a burst larger than that is not paced.
+3. Replay of the authenticator is proven at the shared-code level (the
+   `https` test forges and replays one); over QUIC a capture cannot be
+   replayed at all because the exporter differs per session, and the same
+   `authn_verify` replay cache is on the path. There is no QUIC-level replay
+   injector in the test suite.
+4. IPv6 is handled by socket family selection but the proof runs IPv4 only.
