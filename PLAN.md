@@ -6,7 +6,7 @@ what they measured is fixed; the transport proofs no longer silently test a
 stale stream image. Stream Z **merged**: `AllowPlainMeta` — a node can finally
 refuse cleartext tinc on its listening port; default `yes`, so nothing changes
 until an operator asks for it. See the struck Known Issues entry. The first
-release tag, `v0.1.0`, is cut from this tree.)
+release tag is cut from this tree.)
 
 **Regression state of `master`**, all 2026-09-16, each exit 0. On
 `tincstack/core:w` (the merged tree: streams X, Y and W): `obfs-test` **three
@@ -27,7 +27,9 @@ coordination pass, not by the stream: the new `plain-refuse-test` **PASS**
 nothing while an obfs link to the same node still carries traffic, `tinc dump
 nodes` still works, and `tinc join` fails — the documented cost; `tinc set
 AllowPlainMeta yes` + `tinc reload` restores both without a restart),
-`smoke` PASS, `two-nodes` PASS, `classify` 37 checks 0 failures.
+`smoke` PASS, `two-nodes` PASS, `classify` 37 checks 0 failures, and
+`https-carrier` PASS (it exercises the `ack_h` change: a peer's advertised
+accept list is now taken as written).
 
 On `tincstack/core:nosendmmsg` (the same tree before W, which differs only in
 `obfs.c`, so these are unaffected by the merge and were not re-run):
