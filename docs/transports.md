@@ -484,14 +484,37 @@ one session key in 80 s, eight offers ignored.) Proof:
 both over 80 s of 1 Hz traffic with 0 % packet loss.
 
 The link state is **per node**, shared by every connection to that node. When
-two nodes dial each other, tinc keeps one connection and closes the other; the
-obfs close hook only resets the shared link when the closing connection is the
-node's current owner, so a superseded connection closing late cannot wipe the
-session the surviving connection already negotiated. As a backstop, the rekey
-tick also re-issues the seed exchange for any active link that is still on the
-bootstrap key while its owning connection is authenticated, so a lost exchange
-leaves a link on the mesh-wide key for at most one tick (30 s), never
-indefinitely. (Both were found by `obfs-test.sh` PART 4 under host load.)
+two nodes dial each other, tinc keeps one connection and closes the other. The
+obfs close hook resets the shared link only when **no other connection to that
+node survives** — decided by scanning the live `connection_list`, not by looking
+at `node->connection`. That distinction matters: `terminate_connection()` clears
+`node->connection` *before* it calls the carrier close hook, so at close time
+`node->connection` is NULL exactly when the owner is being closed — which is also
+the moment a replacement connection may already be on the list about to take the
+node over. Keying the reset off `node->connection` therefore wiped the session
+the surviving connection had just negotiated (or was about to); the list scan
+sees the survivor and keeps the session (review R M5-2, residual). This is
+proven deterministically by the `fuzz_obfs` self-test
+`selftest_close_preserves_session`, which reproduces that exact ordering and
+aborts on the pre-fix condition.
+
+Two backstops bound the window in the cases the reset does fire (a genuine
+owner-only close, or the rare scheduler interleaving where a wiped session is
+not immediately re-negotiated). First, the **send path self-heals**: whenever a
+datagram is about to be sealed under the mesh-wide bootstrap key on an active,
+authenticated link, obfs schedules a one-shot timer (`OBFS_SELFHEAL_DELAY`, 1 s,
+rate-limited to at most one offer per second per link) that re-issues the
+`OBFS_KEY` seed exchange, so a link that lost its session key re-negotiates in
+about a second. Second, as a slower catch-all, the 30 s rekey tick also
+re-issues the exchange for any active link still on the bootstrap key. **Worst
+case:** a link that reverts to the bootstrap key is back on a per-link session
+key within roughly one `OBFS_SELFHEAL_DELAY` plus a meta-channel round trip
+(≈ 1 s), not the previous up-to-30 s; the 30 s tick is now only a backstop of a
+backstop. A *fresh* connection still legitimately uses the bootstrap key for the
+first few frames until its first `OBFS_KEY` exchange completes — that is the
+documented cold-start window, not a revert. (The residual was found by
+`obfs-test.sh` PART 4 under host load; `obfs-test.sh` PART 8 is the churn
+regression, and the deterministic before/after is the `fuzz_obfs` self-test.)
 
 ### Nonce and replay window (findings M5-3, M5-4)
 

@@ -109,6 +109,15 @@ struct obfs_link_t {
 	bool active;               /* an obfs flow to this node is up */
 	sockaddr_t addr;           /* last verified peer UDP address (fast-path match) */
 	bool have_addr;
+
+	/* Fast self-heal: the send path flags a link that is still sealing under
+	   the mesh-wide bootstrap key while it is active and authenticated, so a
+	   session that a connection replacement wiped (or that a lost handshake
+	   never established) is re-negotiated within a second instead of waiting
+	   up to one OBFS_REKEY_TICK (review R M5-2, residual). Rate-limited to at
+	   most one offer per second per link by last_selfheal. */
+	bool need_selfheal;        /* set on the send path, consumed by the timer */
+	time_t last_selfheal;      /* last time we re-issued a self-heal offer */
 };
 
 static list_t obfs_links = {
@@ -117,6 +126,11 @@ static list_t obfs_links = {
 };
 
 static timeout_t obfs_rekey_timer;
+static timeout_t obfs_selfheal_timer;
+
+/* Delay before the send-path self-heal fires. Bounds the worst-case
+   bootstrap-key window to roughly this plus one meta-channel round trip. */
+#define OBFS_SELFHEAL_DELAY 1
 
 /* ---- key derivation ------------------------------------------------------ */
 
@@ -261,6 +275,42 @@ obfs_link_t *obfs_link_for_node(node_t *n) {
 
 	list_insert_tail(&obfs_links, l);
 	return l;
+}
+
+/* True when the node's obfs link is currently sealing outbound traffic with a
+   per-link SESSION key (not the mesh-wide bootstrap key). Introspection for
+   tests and diagnostics: it is what distinguishes a link that reverted to the
+   bootstrap key from one that holds a live session (review R M5-2). */
+bool obfs_link_has_session(node_t *n) {
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(l->node == n) {
+			return l->sess_tx_ready && l->sess.valid;
+		}
+	}
+
+	return false;
+}
+
+/* Restore a node's link to its freshly-created state (inactive, no session, no
+   remembered address; the bootstrap keyset is kept). Test-only: it lets a unit
+   test that established a session leave the shared link as obfs_link_for_node()
+   first returns it, so nothing downstream sees perturbed state. */
+void obfs_link_reset_for_test(node_t *n) {
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(l->node == n) {
+			l->active = false;
+			l->have_addr = false;
+			keyset_free(&l->sess);
+			keyset_free(&l->next);
+			l->sess_tx_ready = false;
+			l->ack_sent = false;
+			l->have_peer_seed = false;
+			l->have_local_seed = false;
+			l->need_selfheal = false;
+			l->last_selfheal = 0;
+			return;
+		}
+	}
 }
 
 void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr) {
@@ -425,6 +475,22 @@ bool obfs_key_h(connection_t *c, const char *request) {
 
 /* ---- framing ------------------------------------------------------------- */
 
+/* Arm the one-shot self-heal timer (idempotent). Called from the send path, so
+   it must not itself send anything -- send_request() re-enters obfs_encode()
+   via the meta flush, which would recurse. It only sets a flag and schedules
+   the timer; the actual OBFS_KEY offer goes out from obfs_selfheal(), which
+   runs in the event loop. */
+static void obfs_selfheal(void *data);
+static void obfs_arm_selfheal(void) {
+	struct timeval tv = { OBFS_SELFHEAL_DELAY, 0 };
+
+	if(obfs_selfheal_timer.cb) {
+		timeout_set(&obfs_selfheal_timer, &tv);
+	} else {
+		timeout_add(&obfs_selfheal_timer, obfs_selfheal, NULL, &tv);
+	}
+}
+
 size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init) {
 	if(!l) {
 		return 0;
@@ -434,6 +500,16 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 
 	if(!ks->tx) {
 		return 0;
+	}
+
+	/* Sealing under the mesh-wide bootstrap key on an active link: schedule a
+	   fast self-heal so a link that lost (or never completed) its session-key
+	   exchange re-negotiates within OBFS_SELFHEAL_DELAY, not one 30 s rekey
+	   tick (review R M5-2, residual). Only a flag + timer here; see the note on
+	   re-entrancy above. */
+	if(ks == &l->boot && l->active && !l->need_selfheal) {
+		l->need_selfheal = true;
+		obfs_arm_selfheal();
 	}
 
 	int header_junk = init ? obfs_init_header_junk : obfs_transport_header_junk;
@@ -840,20 +916,49 @@ bool obfs_dial(connection_t *c) {
 	return sf_dial_obfs(c, l);
 }
 
+/* Does any connection OTHER than `except' still serve `node'? Checked against
+   the live connection_list, not just node->connection: terminate_connection()
+   clears node->connection BEFORE the carrier close hook runs (net.c), so at
+   obfs_close() time node->connection is NULL exactly when the OWNER is being
+   closed -- which is also the moment a replacement connection may already be on
+   the list about to take the node over. Scanning the list sees that survivor;
+   the bare node->connection check did not, and wiped the shared session it was
+   about to reuse or renegotiate (review R M5-2, residual). */
+static bool obfs_node_has_other_connection(node_t *n, connection_t *except) {
+	if(!n) {
+		return false;
+	}
+
+	if(n->connection && n->connection != except) {
+		return true;
+	}
+
+	/* NB: the list_each() iterator is a local named `node', so this parameter
+	   must not be called `node' -- it would be shadowed and the comparison
+	   below would silently never match. */
+	for list_each(connection_t, o, &connection_list) {
+		if(o != except && o->node == n) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 void obfs_close(connection_t *c) {
 	obfs_link_t *l = sf_connection_obfs(c);
 
 	/* The obfs_link is per-node and shared by every connection to that node.
 	   When two nodes dial each other, tinc keeps one connection and closes the
 	   other ("Established a second connection ... closing old connection").
-	   The obfs session key belongs to whichever connection currently owns the
-	   node (c->node->connection); if a superseded/stale connection is the one
-	   being closed, tearing down the shared link here would wipe the live
-	   session that the winning connection already negotiated and silently drop
-	   the link back to the mesh-wide bootstrap key (review R M5-2). So only
-	   reset the link when the closing connection is the node's current owner
-	   (or the node has no owner left). */
-	bool superseded = c->node && c->node->connection && c->node->connection != c;
+	   The obfs session key belongs to the surviving connection; tearing down
+	   the shared link here when another connection to the node survives would
+	   wipe the live session that connection already negotiated (or is about to)
+	   and silently drop the link back to the mesh-wide bootstrap key (review R
+	   M5-2). So only reset the link when NO other connection to the node
+	   remains. If a wipe does happen and the link is still carrying data, the
+	   send-path self-heal (see obfs_encode) renegotiates within a second. */
+	bool superseded = obfs_node_has_other_connection(c->node, c);
 
 	if(l && !superseded) {
 		l->active = false;
@@ -870,6 +975,60 @@ void obfs_close(connection_t *c) {
 	}
 
 	sf_close(c);
+}
+
+/* ---- fast self-heal ------------------------------------------------------ */
+
+/* Runs OBFS_SELFHEAL_DELAY after the send path flagged a link still sealing
+   under the bootstrap key. Re-issues the OBFS_KEY offer for every such link
+   that is active and authenticated, rate-limited to once per second per link,
+   so a session wiped by a connection replacement (or a handshake lost to one)
+   is renegotiated in about a second rather than up to one 30 s rekey tick
+   (review R M5-2, residual). Runs in the event loop, so send_request() here is
+   safe (no obfs_encode re-entrancy). */
+static void obfs_selfheal(void *data) {
+	(void)data;
+
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(!l->need_selfheal) {
+			continue;
+		}
+
+		l->need_selfheal = false;
+
+		/* Already on a session key: nothing to heal. */
+		if(l->sess_tx_ready && l->sess.valid) {
+			continue;
+		}
+
+		if(!l->active || !l->node || !l->node->connection) {
+			continue;
+		}
+
+		connection_t *c = l->node->connection;
+
+		if(c->allow_request != ALL || !c->transport || c->transport->id != TRANSPORT_OBFS) {
+			continue;   /* not authenticated yet: obfs_session_start runs at ack_h */
+		}
+
+		if(now.tv_sec - l->last_selfheal < 1) {
+			l->need_selfheal = true;   /* rate-limited: try again next tick */
+			continue;
+		}
+
+		l->last_selfheal = now.tv_sec;
+		obfs_ensure_local_seed(l);
+		obfs_send_key(l, 0);
+	}
+
+	/* Re-arm only while a link still wants healing, so an idle daemon does not
+	   keep a 1 s timer running. */
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(l->need_selfheal) {
+			obfs_arm_selfheal();
+			break;
+		}
+	}
 }
 
 /* ---- periodic rekey ------------------------------------------------------ */
@@ -972,5 +1131,6 @@ bool obfs_init(void) {
 
 void obfs_exit(void) {
 	timeout_del(&obfs_rekey_timer);
+	timeout_del(&obfs_selfheal_timer);
 	list_empty_list(&obfs_links);
 }

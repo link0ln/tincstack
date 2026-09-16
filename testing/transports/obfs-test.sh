@@ -176,6 +176,10 @@ setvpn() { # letter vpnip  (idempotent; the device may not exist yet right after
 }
 logs() { docker logs "$LAB-$1" 2>&1; }
 activated() { logs "$1" | grep -q ' activated'; }
+cli() { docker exec "$LAB-$1" tinc -c /etc/tincstack/tinc.yaml -n wsg2 "$2" "$3" 2>/dev/null || true; }
+# number of "obfs session key established" lines a node has logged (monotone,
+# so a replacement that re-negotiated shows up as an increase).
+sesscount() { logs "$1" | grep -c 'obfs session key established' || true; }
 
 # wait_link <n1> <n1-vpn> <n2> <n2-vpn>: both daemons logged "activated" AND the
 # tunnel pings clean in BOTH directions (each obfs data path is warmed/confirmed
@@ -530,11 +534,92 @@ else
 	echo "MISS: cold obfs link did not come up with > 30 peers (M5-6 scan starved)"; fail=1
 fi
 
+########## PART 8: connection-replacement churn keeps the session key #########
+# Review R M5-2 residual: a connection replacement (both nodes ConnectTo each
+# other, so a disconnect makes both re-dial and one connection supersedes the
+# other) must NOT drop the link back to the mesh-wide bootstrap key. We force
+# CHURN replacements and, after each, capture steady traffic and assert a third
+# party holding both public keys can read NONE of it, and that a per-link
+# session key was (re)established. The window from a replacement to the new
+# session key is measured from the daemon log timestamps and reported.
+#
+# NB the exact scheduler-interleaving that stranded a link on the bootstrap key
+# for a full 30 s tick was only ever seen under heavy host load; on an idle host
+# both builds keep the session across a replacement. This part is the
+# deterministic REGRESSION guard for the general behaviour (forced replacement
+# never leaves steady traffic bootstrap-readable, and a session key always comes
+# back), not a before/after demonstrator -- that is the fuzz_obfs self-test
+# `selftest_close_preserves_session', which aborts on the pre-fix obfs_close().
+echo "===== PART 8: connection-replacement churn keeps the per-link session key (M5-2) ====="
+reset_lab
+CHURN=${OBFS_CHURN:-10}
+CHURN_OPTS="      ObfsJunkPacketCount: 4
+      PreferredTransports: [obfs, plain]"
+gen "$BASE-a" nodea "$CHURN_OPTS
+      ConnectTo: [nodeb]"
+gen "$BASE-b" nodeb "$CHURN_OPTS
+      ConnectTo: [nodea]"
+materialise a b
+crossinject a b
+PKA8=$(ownpubkey a nodea); PKB8=$(ownpubkey b nodeb)
+start b "$B_IP" "$BASE-b"; start a "$A_IP" "$BASE-a"
+wait_link a "$A_VPN" b "$B_VPN" || fail=1
+# initial session key on both ends
+d=$(( $(date +%s) + WAIT ))
+while :; do
+	[ "$(sesscount a)" -ge 1 ] && [ "$(sesscount b)" -ge 1 ] && break
+	[ "$(date +%s)" -ge "$d" ] && { echo "MISS: no initial obfs session key before churn"; fail=1; break; }
+	sleep 1
+done
+
+churn_dec=0; churn_frames=0; churn_stuck=0; churn_worst=0
+for i in $(seq 1 "$CHURN"); do
+	pre_a=$(sesscount a); pre_b=$(sesscount b)
+	# simultaneous disconnect on both ends -> both re-dial -> replacement
+	cli a disconnect nodeb & cli b disconnect nodea & wait
+	if ! wait_link a "$A_VPN" b "$B_VPN"; then
+		echo "  repl $i: link did not recover within ${WAIT}s"; churn_stuck=$(( churn_stuck + 1 )); fail=1; continue
+	fi
+	# The bootstrap-key window is from the link coming back up (here) until BOTH
+	# ends have (re)established a per-link session key. Poll for both and time
+	# it -- a fresh connection legitimately seals a few frames under the
+	# bootstrap key until its OBFS_KEY exchange completes; the defect was this
+	# never completing (stuck for up to one 30 s tick). No fixed sleeps.
+	t0=$(date +%s); d=$(( t0 + WAIT )); post_a=$pre_a; post_b=$pre_b
+	while :; do
+		post_a=$(sesscount a); post_b=$(sesscount b)
+		[ "$post_a" -gt "$pre_a" ] && [ "$post_b" -gt "$pre_b" ] && break
+		[ "$(date +%s)" -ge "$d" ] && break; sleep 1
+	done
+	win=$(( $(date +%s) - t0 ))
+	if [ "$post_a" -le "$pre_a" ] || [ "$post_b" -le "$pre_b" ]; then
+		echo "  repl $i: session key not re-established on both ends within ${WAIT}s (stuck on bootstrap)"; churn_stuck=$(( churn_stuck + 1 )); fail=1
+	fi
+	[ "$win" -gt "$churn_worst" ] && churn_worst=$win
+	# settle both directions, then steady capture WELL AFTER both session keys
+	# are up: a mesh member with both public keys must read NONE of it.
+	wait_clean a "$B_VPN" >/dev/null 2>&1 || true
+	wait_clean b "$A_VPN" >/dev/null 2>&1 || true
+	cap_pcap_start b "churn$i.pcap"
+	docker exec "$LAB-a" ping -c20 -i0.15 -W2 "$B_VPN" >/dev/null 2>&1 || true
+	docker exec "$LAB-b" ping -c20 -i0.15 -W2 "$A_VPN" >/dev/null 2>&1 || true
+	cap_pcap_stop
+	dec=$(python3 "$(dirname "$0")/obfs_probe.py" decrypt "$PCAPDIR/churn$i.pcap" "$PKA8" "$PKB8" 2>/dev/null)
+	n=$(echo "$dec" | sed -n 's/.*decryptable=\([0-9]*\).*/\1/p'); t=$(echo "$dec" | sed -n 's/.*total=\([0-9]*\).*/\1/p')
+	churn_dec=$(( churn_dec + ${n:-0} )); churn_frames=$(( churn_frames + ${t:-0} ))
+	echo "  repl $i: A sess $pre_a->$post_a B sess $pre_b->$post_b ; session-key window ${win}s ; steady bootstrap-decryptable=${n:-?}/${t:-?}"
+	[ "${n:-0}" = 0 ] || fail=1
+done
+echo "  churn total over $CHURN replacements: steady bootstrap-decryptable=$churn_dec / $churn_frames ; worst session-key window=${churn_worst}s ; stuck=$churn_stuck"
+[ "$churn_dec" = 0 ] || { echo "MISS: steady traffic was bootstrap-key readable after both ends had a session key (M5-2 residual)"; fail=1; }
+[ "$churn_stuck" = 0 ] || { echo "MISS: a replacement left a link stuck on the bootstrap key (M5-2 residual)"; fail=1; }
+
 echo "==========================================================="
 if [ "$fail" = 0 ]; then
 	echo "PASS: obfs cold-start works, fingerprint gone, junk per-handshake, relay intact, defaults plain;"
 	echo "      session key blinds a third party (M5-2), replay does not repoint (M5-4),"
-	echo "      reflection does not close (M5-5), cold scan survives > 30 peers (M5-6)"
+	echo "      reflection does not close (M5-5), cold scan survives > 30 peers (M5-6),"
+	echo "      connection-replacement churn keeps the session key (M5-2 residual)"
 	exit 0
 else
 	echo "FAIL"
