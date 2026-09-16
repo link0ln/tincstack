@@ -164,6 +164,19 @@ void terminate_connection(connection_t *c, bool report) {
 
 	outgoing_t *outgoing = c->outgoing;
 
+	/* A dial that is given up before its connection was ever activated is
+	   what the carrier selector reads as "this carrier does not work", and
+	   it used to happen with nothing in the log but this function's own
+	   "Closing connection with ..." line: an operator saw "Carrier obfs
+	   failed" and had no way to find out what abandoned it. Every such
+	   abandonment is now announced here, whatever the caller's reason was,
+	   so "carrier X failed" is always preceded by the dial it refers to
+	   (PLAN.md Known Issues, stream AA). */
+	if(outgoing && !activated) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Dial to %s (%s) via %s abandoned before the connection was activated",
+		       c->name, c->hostname, c->transport ? c->transport->name : "plain");
+	}
+
 	/* Release any carrier-private state (e.g. the single-flow session) and,
 	   if this was a single-flow link, send a CLOSE before the socket goes. */
 	transport_connection_close(c);

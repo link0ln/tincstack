@@ -32,6 +32,15 @@
 #include "decoy.h"
 
 uint32_t transport_accept_mask;
+
+/* Which carriers have had their `init' hook run, and whether transport_init()
+   has run at all. Both are needed by transport_read_config(), which is called
+   on every reload and must initialise a carrier the operator has just added
+   to `Transports' -- but not before transport_init()'s own pass, which is the
+   one that runs after the keys are in place. */
+static uint32_t transport_init_done;
+static bool transport_initialised;
+
 transport_id_t transport_pref[TRANSPORT_MAX];
 int transport_pref_count;
 bool single_flow;
@@ -210,6 +219,34 @@ bool transport_read_config(void) {
 		mask |= TRANSPORT_MASK_PLAIN;
 	}
 
+	/* Carrier `init' hooks run once, from transport_init(), and only for the
+	   carriers that were in the accept mask at startup. A reload that widens
+	   `Transports' used to leave the carriers it added uninitialised, so
+	   their dial and accept hooks ran against state that was never set up.
+	   Initialise them here instead. At startup this block does nothing:
+	   transport_read_config() runs before the keys exist, so
+	   transport_initialised is still false and transport_init() does the
+	   work at the proper time. A carrier that fails to initialise on a
+	   reload is dropped from the accept mask rather than taking the daemon
+	   down: the running node keeps the carriers it already has. */
+	if(transport_initialised) {
+		for(int i = 0; i < TRANSPORT_MAX; i++) {
+			uint32_t bit = TRANSPORT_BIT(i);
+
+			if(!(mask & bit) || (transport_init_done & bit) || !transports[i].init) {
+				continue;
+			}
+
+			if(transports[i].init()) {
+				transport_init_done |= bit;
+				logger(DEBUG_ALWAYS, LOG_INFO, "Carrier `%s' initialised on reload", transports[i].name);
+			} else {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Carrier `%s' failed to initialise on reload; leaving it out of the accept list", transports[i].name);
+				mask &= ~bit;
+			}
+		}
+	}
+
 	transport_accept_mask = mask;
 
 	/* PreferredTransports: dial order. Default: plain. */
@@ -320,12 +357,19 @@ bool transport_init(void) {
 	decoy_read_config();
 
 	for(int i = 0; i < TRANSPORT_MAX; i++) {
-		if(transports[i].init && (transport_accept_mask & TRANSPORT_BIT(i)) && !transports[i].init()) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Carrier `%s' failed to initialise", transports[i].name);
-			return false;
+		if(transports[i].init && (transport_accept_mask & TRANSPORT_BIT(i))) {
+			if(!transports[i].init()) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Carrier `%s' failed to initialise", transports[i].name);
+				return false;
+			}
+
+			transport_init_done |= TRANSPORT_BIT(i);
 		}
 	}
 
+	/* From here on transport_read_config() (i.e. every reload) initialises a
+	   carrier the operator adds to `Transports'. */
+	transport_initialised = true;
 	return true;
 }
 
@@ -337,6 +381,9 @@ void transport_exit(void) {
 			transports[i].exit();
 		}
 	}
+
+	transport_init_done = 0;
+	transport_initialised = false;
 }
 
 /* ---- per-node accept lists ---------------------------------------------- */

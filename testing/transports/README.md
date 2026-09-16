@@ -134,3 +134,27 @@ AllowPlainMeta yes` + `tinc reload`: the prober is answered again and the same
 `tinc join` succeeds, with no restart.
 
 Expect: `PASS: AllowPlainMeta refuses inbound cleartext tinc, keeps obfs, the CLI and reload`.
+
+## carrier-switch-test.sh — changing the carrier of a *running* node
+
+The proof for PLAN.md's Known Issue "`tinc disconnect` killed the re-dial it
+had just started": `tinc set PreferredTransports <c>` + `tinc reload` +
+`tinc disconnect <peer>` always ended on `transport plain`, while the same
+configuration read at startup came up on `<c>`.
+
+    sh testing/transports/carrier-switch-test.sh [image]
+
+Two nodes (`<LAB>-a` founding, `<LAB>-b` invited). For each carrier the build
+accepts (`obfs`, `sf`, `https`, `quic` — the daemon's own "Transports accept="
+line decides, so a `-noquic` core skips `quic` instead of failing) the invitee
+is restarted on `plain` first, and the case waits for `udp_confirmed` in
+`tinc info` before switching. That wait is not decoration: `terminate_connection()`
+only re-dials inside the `disconnect` when the address cache can hand it an
+address, which is what a confirmed UDP path restores — without it the re-dial
+is deferred 5 s to `retry_outgoing()`, the defect cannot bite, and the test
+would pass on a broken build. Each case then asserts the link is ACTIVATED on
+the new carrier, the tunnel pings 0 %-loss, and no "Carrier `<c>` failed" was
+logged; switching back to `plain` is asserted too, and so is `disconnect`
+saying why it closed a link.
+
+Expect: `PASS: the carrier of a running node can be changed with set + reload + disconnect`.
