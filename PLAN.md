@@ -3,7 +3,10 @@
 **Last Updated:** 2026-09-16 (stream W merged and verified live; the
 `pipefail` + `grep -q` defect that made seven proofs report the opposite of
 what they measured is fixed; the transport proofs no longer silently test a
-stale stream image)
+stale stream image. Stream Z, on branch `stream-z` and **not yet merged**:
+`AllowPlainMeta` — a node can finally refuse cleartext tinc on its listening
+port; default `yes`, so nothing changes until an operator asks for it. See the
+struck Known Issues entry.)
 
 **Regression state of `master`**, all 2026-09-16, each exit 0. On
 `tincstack/core:w` (the merged tree: streams X, Y and W): `obfs-test` **three
@@ -1992,7 +1995,7 @@ Defects identified during the source audit, to fix as their milestone is reached
   different SHA-256 (stream X measured 57 665 248 B with two distinct digests;
   a third run here produced 57 665 247 B). A published digest pins one
   artefact, never the recipe — do not present it as a reproducibility claim.
-- 🟠 **A node cannot refuse cleartext tinc on its listening port.** Found in the
+- ~~🟠 **A node cannot refuse cleartext tinc on its listening port.** Found in the
   consolidation pass while writing up stream P's carrier ranking; no fix
   attempted, because the answer is a design decision, not a patch.
   Two independent places force it:
@@ -2025,7 +2028,77 @@ Defects identified during the source audit, to fix as their milestone is reached
   side effect of an accept list; (c) leave it and document the limit loudly in
   `docs/transports.md`. Whichever is chosen, the `TCP_CLASS_TINC` branch has to
   consult the mask like the TLS branch does — that asymmetry is a bug on its
-  own terms.
+  own terms.~~ **Resolved 2026-09-16 (stream Z): option (b), `AllowPlainMeta`,
+  default `yes`.** Core patch 6 in `core/tincd/PATCHES.md`; option documented in
+  `docs/config-schema.md` and `docs/transports.md` §2.1.
+
+  **What was implemented.** A new server option **`AllowPlainMeta`** (boolean,
+  **default `yes`**, so every existing network behaves exactly as before,
+  warning text included; parsed in `transport_read_config()`, registered in
+  `tincctl.c variables[]` as `VAR_SERVER`, re-read by
+  `setup_myself_reloadable()` like `Transports`/`SingleFlow`). It is
+  deliberately **not** `VAR_SAFE` and **not** in `PROPAGATED_OPTIONS`: a
+  per-node listener policy must not be settable by an inviter. `no` drops
+  `plain` from the effective accept mask. All three forcing sites were fixed,
+  not just the two the entry named:
+  1. `transport_read_config()` no longer forces `plain` unconditionally;
+  2. the `TCP_CLASS_TINC` branch now consults `transport_accept_mask` exactly
+     like `TCP_CLASS_TLS`, logs the reason and **tarpits** the socket, so the
+     refusal is indistinguishable from an unrecognised preamble (no RST, no
+     banner). **Loopback is exempt**: on Windows the tinc CLI reaches its own
+     daemon over TCP to this port with `0 ^<cookie>`, and locking the operator
+     out would buy nothing;
+  3. the dialler-side mirror, found while fixing the above: `ack_h()`
+     (`protocol_auth.c`) stored a peer's advertised list as
+     `mask | TRANSPORT_MASK_PLAIN` and `transport_node_read_config()` did the
+     same for a host record, so a peer that refuses `plain` was still dialled
+     on `plain`. Both now take the list as written.
+
+  **Measured** (2026-09-16, `tincstack/core:z`, new proof
+  `testing/transports/plain-refuse-test.sh`, `make lint` clean):
+  - *before / default*: the plain link comes up, `Transports
+    accept=plain,sf,obfs,https,quic`, and a raw TCP prober on a third address
+    sending `0 nodea 17.7` gets `0 nodeb 17.7` back — the fingerprint this
+    entry described, reproduced;
+  - *after*, nodeb with `AllowPlainMeta: no`: `Transports
+    accept=sf,obfs,https,quic`; the same prober gets **nothing**; nodeb logs
+    `WARNING Front: refusing cleartext tinc meta connection from
+    10.37.155.50 port 60508: `plain' is not in this node's Transports accept
+    list (AllowPlainMeta = no)`; an `obfs` link from nodea to the same node
+    activates and pings **0 % loss (4/4)**; nodea's view of nodeb's accept list
+    is `sf,obfs,https,quic` (no plain); `tinc dump nodes` on the refusing node
+    still works;
+  - *the trade-off, measured on the same lab*: `tinc join` against nodeb while
+    it refuses plain →
+    `Timed out waiting for the server to reply. / Cannot read greeting from
+    peer / Could not connect to inviter.`, with the refusal line in nodeb's
+    log;
+  - *reload*: `tinc set AllowPlainMeta yes` + `tinc reload` puts `plain` back,
+    the prober is answered again **and the same `tinc join` now succeeds**
+    (`Invitation successfully accepted.`), without a restart;
+  - *no regression on the defaults*: `platforms/linux/docker/two-nodes.sh`
+    (`LAB=wsz TINCSTACK_TAG=z`) → `PASS: two-node tunnel up` (so `tinc join`
+    over plain is unaffected by the default); `testing/smoke/run.sh` → `smoke:
+    PASS (cross-node ping both ways, YAML mode, tincstack/core:z)`;
+    `testing/transports/obfs-test.sh tincstack/core:z` → see below.
+
+  **Trade-off the owner needs to see: `tinc join` against a node that sets
+  `AllowPlainMeta: no` does not work.** `invitation.c` opens a raw TCP socket
+  and sends `0 ?<key> ...` in cleartext — it has to, the invitee holds no key
+  material yet — so it is classified `TCP_CLASS_TINC` and refused like any
+  other cleartext meta connection. Same for upstream (unmodified) tinc peers
+  and for any tincstack peer whose `PreferredTransports` is the default
+  `[plain]`: a peer must opt into a wrapped carrier of its own to reach such a
+  node. Invite from a node that still allows plain, or flip the option off for
+  the duration of the join. This is why the default is `yes`, and it is the
+  reason option (b) is a switch and not the new default behaviour.
+
+  **Residual, not fixed:** the node's *own host record* still says
+  `Transports = plain, sf, obfs, ...` (written by `zeroconf.c` at creation), so
+  `tinc dump nodes` prints that for `MYSELF` and a peer that has only the host
+  record tries `plain` once before learning the truth from an ACK. Set
+  `Transports` to match if the first attempt matters. Documented in
+  `docs/transports.md` §2.1.
 - 🟢 **Carrier ranking lets a peer impose more wrapping than you asked for**
   (`transport_outranks_connection`, fixed order `plain < sf < obfs < https <
   quic`). A node whose `PreferredTransports` is `plain` keeps an inbound `quic`
