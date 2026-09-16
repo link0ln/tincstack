@@ -48,7 +48,7 @@ every start.
 | path (in the container) | content |
 |---|---|
 | `/etc/tincstack/tinc.yaml` | the one config file, daemon-owned, keys inside (mode 0600) |
-| `/etc/tincstack/<NETNAME>/` | runtime side-files: `cache/`, `invitations/` (no `tinc-up`: the daemon addresses the interface itself) |
+| `/etc/tincstack/<NETNAME>/` | runtime side-files: `cache/`, `invitations/`, and any script from the YAML's `scripts:` stanza (no `tinc-up` by default: the daemon addresses the interface itself) |
 | volume `data` | both of the above; project-scoped (`<project>_data`) |
 
 No key material exists outside the volume. The repository ignores `.env` and
@@ -78,9 +78,19 @@ full bring-up.
 - `compose.lab.yml` + `two-nodes.sh` — PLAN.md M6 proof (b): two projects on
   one docker network, invite on a, join on b, ping across the tunnel, one
   command, cleans up after itself (`KEEP=1` to inspect).
+- `yaml-scripts.sh` — same lab, proof of the `scripts:` stanza: a
+  `scripts.host-up` added to b's `tinc.yaml` + `tincstack-cli reload` is
+  written to the runtime dir (0700) and runs when a comes back; deleting the
+  key + reload removes the file; a hand-made side file is left alone.
 
-## Requirements
+## Hook scripts
 
-Docker Engine with Compose v2.24+ (`additional_contexts: service:` and
-`!reset`), `/dev/net/tun` on the host, `NET_ADMIN` (granted in the compose
-file). No host installs.
+Put them in the YAML, not in the volume: `networks.<NETNAME>.scripts.<name>`
+(`docs/config-schema.md` "Scripts"). The daemon writes each entry to
+`/etc/tincstack/<NETNAME>/<name>` on start and on every reload and removes it
+when the key is deleted, so `docker compose exec node tincstack-cli reload`
+after editing the file is enough. A `scripts.tinc-up` replaces the built-in
+interface addressing; anything else (`host-up`, `subnet-up`, …) runs next to
+it. The image is Debian slim with `sh`, `bash`, `awk`, `sed` and `ip` — no
+`curl`, no `python` — so a hook that needs more should signal a sidecar
+(a file in the volume, a socket) rather than do the work itself.

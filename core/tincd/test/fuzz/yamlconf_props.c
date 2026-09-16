@@ -17,7 +17,13 @@
       8. "---" / "%YAML" markers are accepted, a bare scalar document is not;
       9. a key the parser would refuse (a 300-byte node name) makes emit()
          return NULL and save() fail instead of writing an unloadable file
-         (found by fuzz_invitation: the inviter chooses the invitee's Name).
+         (found by fuzz_invitation: the inviter chooses the invitee's Name);
+     10. the scripts: block (stream S, 2026-09-16): a literal-block script
+         with a shebang, `#` comment lines, blank lines, indented bodies and
+         a trailing-space line is listed by yamlconf_script_names(), read
+         back byte-for-byte by yamlconf_script_text(), survives
+         emit -> parse unchanged, and a `scripts:` map with a non-scalar
+         entry lists only the scalar ones.
 
     Built and run by `make props` / run.sh check (plain C, ASan+UBSan).
 
@@ -187,6 +193,76 @@ int main(void) {
 		CHECK(e != NULL);
 		free(e);
 		yamlconf_free(yc);
+	}
+
+	/* 10. scripts block round-trip */
+	{
+		const char *doc =
+		    "networks:\n"
+		    "  net:\n"
+		    "    options:\n"
+		    "      Name: a\n"
+		    "    scripts:\n"
+		    "      host-up: |\n"
+		    "        #!/bin/sh\n"
+		    "        # comment: with a colon\n"
+		    "\n"
+		    "        if [ -n \"$NODE\" ]; then\n"
+		    "            touch \"/run/marker-$NODE\"   # trailing comment\n"
+		    "        fi\n"
+		    "      tinc-up: |\n"
+		    "        ip link set \"$INTERFACE\" up\n"
+		    "      odd:\n"
+		    "        nested: map\n";
+		const char *host_up =
+		    "#!/bin/sh\n"
+		    "# comment: with a colon\n"
+		    "\n"
+		    "if [ -n \"$NODE\" ]; then\n"
+		    "    touch \"/run/marker-$NODE\"   # trailing comment\n"
+		    "fi";
+		yamlconf_t *yc = parse(doc);
+		CHECK(yc != NULL);
+
+		if(yc) {
+			const char **names = yamlconf_script_names(yc, "net");
+			CHECK(names && names[0] && names[1] && !names[2]);   /* odd: (a map) is not a script */
+			CHECK(names && names[0] && !strcmp(names[0], "host-up"));
+			CHECK(names && names[1] && !strcmp(names[1], "tinc-up"));
+			free(names);
+			char *t = yamlconf_script_text(yc, "net", "host-up");
+			CHECK(t && !strcmp(t, host_up));
+			free(t);
+			CHECK(yamlconf_script_text(yc, "net", "odd") == NULL);
+			CHECK(yamlconf_script_text(yc, "net", "missing") == NULL);
+
+			/* emit -> parse keeps the script byte for byte; emit is stable */
+			char *e1 = yamlconf_emit(yc);
+			yamlconf_t *yc2 = e1 ? parse(e1) : NULL;
+			CHECK(yc2 != NULL);
+			char *t2 = yc2 ? yamlconf_script_text(yc2, "net", "host-up") : NULL;
+			CHECK(t2 && !strcmp(t2, host_up));
+			char *e2 = yc2 ? yamlconf_emit(yc2) : NULL;
+			CHECK(e1 && e2 && !strcmp(e1, e2));
+			free(t2);
+			free(e2);
+			free(e1);
+			yamlconf_free(yc2);
+			yamlconf_free(yc);
+		}
+
+		/* A script line with trailing blanks or a tab cannot be a literal
+		   block (the parser would trim it); it must still read back exactly
+		   (the emitter falls back to a double-quoted scalar). */
+		{
+			char *e = normalise("networks:\n  net:\n    scripts:\n      tinc-up: \"a \\n\\tb\\n\"\n");
+			yamlconf_t *yc3 = e ? parse(e) : NULL;
+			char *t3 = yc3 ? yamlconf_script_text(yc3, "net", "tinc-up") : NULL;
+			CHECK(t3 && !strcmp(t3, "a \n\tb\n"));
+			free(t3);
+			free(e);
+			yamlconf_free(yc3);
+		}
 	}
 
 	if(failures) {

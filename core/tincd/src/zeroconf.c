@@ -193,7 +193,173 @@ char *zeroconf_default_name(void) {
 
 /* ---- scripts ------------------------------------------------------------- */
 
-int zeroconf_materialise_scripts(void) {
+/* Every script name execute_script() (script.c) can ask for from the runtime
+   dir. Used only to tell the operator, once, about a side file that is on
+   disk but not in the YAML; such a file is never touched. */
+static const char *const known_scripts[] = {
+	"tinc-up", "tinc-down", "host-up", "host-down", "subnet-up", "subnet-down",
+	"invitation-created", "invitation-accepted", NULL
+};
+
+/* Names this process has written into the runtime dir (kept across reloads
+   so a key deleted from the YAML has its file removed, and only that one). */
+static char **managed_scripts;
+static size_t managed_count;
+
+/* Side files already reported (see known_scripts). */
+static char **noted_scripts;
+static size_t noted_count;
+
+static bool in_list(char **list, size_t n, const char *name) {
+	for(size_t i = 0; i < n; i++) {
+		if(!strcmp(list[i], name)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void list_add(char ***list, size_t *n, const char *name) {
+	if(in_list(*list, *n, name)) {
+		return;
+	}
+
+	*list = xrealloc(*list, (*n + 1) * sizeof(**list));
+	(*list)[(*n)++] = xstrdup(name);
+}
+
+static void list_del(char **list, size_t *n, const char *name) {
+	for(size_t i = 0; i < *n; i++) {
+		if(!strcmp(list[i], name)) {
+			free(list[i]);
+			memmove(list + i, list + i + 1, (*n - i - 1) * sizeof(*list));
+			(*n)--;
+			return;
+		}
+	}
+}
+
+static bool in_yaml(const char **names, const char *name) {
+	for(size_t i = 0; names[i]; i++) {
+		if(!strcmp(names[i], name)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* A script name is a plain file name inside the runtime dir: no path
+   separators, not hidden, not a temp name of ours. */
+static bool script_name_ok(const char *name) {
+	return *name && !strpbrk(name, "/\\") && name[0] != '.' && strlen(name) < 200;
+}
+
+/* Current content of <confbase>/<name>, or NULL. Caller frees. */
+static char *script_read(const char *path) {
+	FILE *f = fopen(path, "rb");
+
+	if(!f) {
+		return NULL;
+	}
+
+	size_t cap = 4096, len = 0;
+	char *buf = xmalloc(cap);
+
+	for(;;) {
+		if(len + 1 >= cap) {
+			cap *= 2;
+			buf = xrealloc(buf, cap);
+		}
+
+		size_t rd = fread(buf + len, 1, cap - len - 1, f);
+		len += rd;
+
+		if(rd == 0) {
+			break;
+		}
+	}
+
+	fclose(f);
+	buf[len] = 0;
+	return buf;
+}
+
+/* Write `text` to <confbase>/<name> atomically: a temp file in the same
+   directory, created executable-by-owner only (0700, fchmod after open so
+   the umask cannot widen or narrow it), fsynced, then renamed over the
+   target. A script that tincd is about to run is therefore never observed
+   half-written, and a failed write leaves the previous file in place. */
+static bool script_write(const char *path, const char *text) {
+	char tmp[PATH_MAX];
+
+	if((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= sizeof(tmp)) {
+		errno = ENAMETOOLONG;
+		return false;
+	}
+
+#ifdef HAVE_WINDOWS
+	FILE *f = fopen(tmp, "wb");
+#else
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0700);
+	FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+
+	if(!f && fd >= 0) {
+		close(fd);
+	}
+
+	if(f) {
+		fchmod(fd, 0700);
+	}
+
+#endif
+
+	if(!f) {
+		return false;
+	}
+
+	size_t len = strlen(text);
+	bool ok = fwrite(text, 1, len, f) == len;
+
+	if(ok && len && text[len - 1] != '\n') {
+		ok = fputc('\n', f) != EOF;
+	}
+
+	ok = !fflush(f) && ok;
+#ifndef HAVE_WINDOWS
+	ok = !fsync(fileno(f)) && ok;
+#endif
+	ok = !fclose(f) && ok;
+
+	if(!ok) {
+		int saved = errno;
+		unlink(tmp);
+		errno = saved;
+		return false;
+	}
+
+#ifdef HAVE_WINDOWS
+
+	if(!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		unlink(tmp);
+		return false;
+	}
+
+#else
+
+	if(rename(tmp, path)) {
+		int saved = errno;
+		unlink(tmp);
+		errno = saved;
+		return false;
+	}
+
+#endif
+	return true;
+}
+
+int zeroconf_sync_scripts(void) {
 	if(!yamlconf_path || !yamlconf_global || !netname || !confbase) {
 		return 0;
 	}
@@ -204,13 +370,13 @@ int zeroconf_materialise_scripts(void) {
 		return 0;
 	}
 
-	int written = 0;
+	int changed = 0;
 
+	/* 1. Every scripts.<name> in the YAML is on disk with that content. */
 	for(size_t i = 0; names[i]; i++) {
 		const char *name = names[i];
 
-		/* A script name is a plain file name inside the runtime dir. */
-		if(!*name || strpbrk(name, "/\\") || name[0] == '.') {
+		if(!script_name_ok(name)) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Ignoring script with unsafe name `%s' in `%s'", name, yamlconf_path);
 			continue;
 		}
@@ -222,30 +388,87 @@ int zeroconf_materialise_scripts(void) {
 		}
 
 		char path[PATH_MAX];
-		snprintf(path, sizeof(path), "%s" SLASH "%s", confbase, name);
 
-		FILE *f = fopenmask(path, "w", 0700);
+		if((size_t)snprintf(path, sizeof(path), "%s" SLASH "%s", confbase, name) >= sizeof(path)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Script name `%s' too long for `%s'", name, confbase);
+			free(text);
+			continue;
+		}
 
-		if(!f) {
+		/* Same content already there (and ours or a side file with the same
+		   text): only make sure the mode is right, do not churn the file. */
+		char *have = script_read(path);
+		size_t tlen = strlen(text);
+		bool same = have && !strncmp(have, text, tlen) && (have[tlen] == 0 || (have[tlen] == '\n' && have[tlen + 1] == 0));
+		free(have);
+
+		if(same) {
+#ifndef HAVE_WINDOWS
+			chmod(path, 0700);
+#endif
+			list_add(&managed_scripts, &managed_count, name);
+			free(text);
+			continue;
+		}
+
+		if(!script_write(path, text)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Could not write script `%s' from `%s' into `%s': %s", name, yamlconf_path, confbase, strerror(errno));
 			free(text);
 			free(names);
 			return -1;
 		}
 
-		fputs(text, f);
+		logger(DEBUG_ALWAYS, LOG_INFO, "Wrote script `%s' from `%s' into `%s'", name, yamlconf_path, confbase);
+		list_add(&managed_scripts, &managed_count, name);
+		free(text);
+		changed++;
+	}
 
-		if(text[0] && text[strlen(text) - 1] != '\n') {
-			fputc('\n', f);
+	/* 2. A script this process wrote earlier whose key is gone from the YAML
+	   is removed: the YAML is the source of truth for what it put there. */
+	for(size_t i = 0; i < managed_count;) {
+		const char *name = managed_scripts[i];
+
+		if(in_yaml(names, name)) {
+			i++;
+			continue;
 		}
 
-		fclose(f);
-		chmod(path, 0700);
-		free(text);
-		written++;
+		char path[PATH_MAX];
+		snprintf(path, sizeof(path), "%s" SLASH "%s", confbase, name);
+
+		if(unlink(path) && errno != ENOENT) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Could not remove script `%s' (no longer in `%s'): %s", path, yamlconf_path, strerror(errno));
+			i++;
+			continue;
+		}
+
+		logger(DEBUG_ALWAYS, LOG_INFO, "Removed script `%s': no longer in `%s'", path, yamlconf_path);
+		list_del(managed_scripts, &managed_count, name);
+		changed++;
+	}
+
+	/* 3. A side file dropped in by hand (not from the YAML, not ours) is left
+	   alone -- it still runs -- and mentioned once so nobody wonders why the
+	   YAML does not describe what the node executes. */
+	for(size_t i = 0; known_scripts[i]; i++) {
+		const char *name = known_scripts[i];
+
+		if(in_yaml(names, name) || in_list(managed_scripts, managed_count, name) || in_list(noted_scripts, noted_count, name)) {
+			continue;
+		}
+
+		char path[PATH_MAX];
+		snprintf(path, sizeof(path), "%s" SLASH "%s", confbase, name);
+
+		if(!access(path, F_OK)) {
+			logger(DEBUG_ALWAYS, LOG_NOTICE, "Script `%s' is a side file not described by `%s' (scripts.%s); it runs as is and is left alone", path, yamlconf_path, name);
+			list_add(&noted_scripts, &noted_count, name);
+		}
 	}
 
 	free(names);
-	return written;
+	return changed;
 }
 
 /* ---- materialisation ----------------------------------------------------- */
@@ -578,15 +801,6 @@ static bool zeroconf_materialise_locked(bool reread) {
 
 	if(fresh) {
 		yamlconf_global = yc;
-	}
-
-	int scripts = zeroconf_materialise_scripts();
-
-	if(scripts < 0) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "Could not write scripts from `%s' into `%s': %s", yamlconf_path, confbase, strerror(errno));
-		return false;
-	} else if(scripts > 0) {
-		logger(DEBUG_ALWAYS, LOG_INFO, "Wrote %d script(s) from `%s' into `%s'", scripts, yamlconf_path, confbase);
 	}
 
 #undef NOTE

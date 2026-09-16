@@ -38,13 +38,16 @@ gen() {
         echo "    keys:"
         echo "      ed25519_priv: |"; sed 's/^/        /' "$tmp/ed25519_key.priv"
         echo "      rsa_priv: |"; sed 's/^/        /' "$tmp/rsa_key.priv"
+        # tinc-up comes from the schema's scripts: stanza: the daemon writes it
+        # to <dir>/<netname>/tinc-up (0700) on start and skips its built-in
+        # interface setup (docs/config-schema.md "Scripts"). No side file.
+        echo "    scripts:"
+        echo "      tinc-up: |"
+        echo "        #!/bin/sh"
+        # shellcheck disable=SC2016  # $INTERFACE is expanded by tincd, not here
+        echo '        ip link set "$INTERFACE" up'
+        echo "        ip addr add $vpn/24 dev \"\$INTERFACE\""
     } > "$d/tinc.yaml"
-    # tinc-up lives next to the YAML as <dir>/<netname>/tinc-up (the daemon's
-    # side-file directory in YAML mode; the schema's scripts: stanza is not
-    # implemented by yamlconf.c yet — see PLAN.md "Found during M9").
-    # shellcheck disable=SC2016  # $INTERFACE is expanded by tincd, not here
-    printf '#!/bin/sh\nip link set "$INTERFACE" up\nip addr add %s/24 dev "$INTERFACE"\n' "$vpn" > "$d/$NET/tinc-up"
-    chmod +x "$d/$NET/tinc-up"
     rm -rf "$tmp"
 }
 gen node1 172.31.77.11 10.79.0.1
@@ -65,6 +68,12 @@ for _ in $(seq 1 30); do
 done
 compose exec -T node1 ping -c 3 -W 2 10.79.0.2 || true
 compose exec -T node2 tinc -c /etc/tincstack/tinc.yaml info node1 || true
+# the interfaces came from scripts.tinc-up, not from the built-in autoif
+for n in node1 node2; do
+    if ! compose logs --no-log-prefix "$n" | grep -q "Wrote script \`tinc-up'"; then log "smoke: FAIL ($n did not materialise scripts.tinc-up)"; ok=0; fi
+    if compose logs --no-log-prefix "$n" | grep -q 'built-in tinc-up'; then log "smoke: FAIL ($n used the built-in tinc-up despite scripts.tinc-up)"; ok=0; fi
+    if [ "$(stat -c %a "$RUN/$n/$NET/tinc-up" 2>/dev/null)" != 700 ]; then log "smoke: FAIL ($n/$NET/tinc-up is not mode 0700)"; ok=0; fi
+done
 if [ "$ok" -eq 1 ]; then
     log "smoke: PASS (cross-node ping both ways, YAML mode, $CORE_IMAGE)"
 else

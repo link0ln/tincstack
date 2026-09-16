@@ -1217,10 +1217,34 @@ another network's addresses are dropped by the daemon's nft rules. Details:
     candidates: name-based tie-break in `req_key_ext_h` (`REQ_KEY` case:
     the lexicographically smaller name ignores the incoming request while its
     own session is pending), and/or jitter on the cooldown. Owner: core.
-  - 🟡 **`scripts:` stanza of `docs/config-schema.md` is not implemented** in
+  - ~~🟡 **`scripts:` stanza of `docs/config-schema.md` is not implemented** in
     `yamlconf.c` (no `scripts` key is read); in YAML mode `tinc-up` has to be
     a side-file at `<dir>/<netname>/tinc-up`. The smoke test does exactly
-    that. Owner: A/C (M2/M6) or schema doc.
+    that. Owner: A/C (M2/M6) or schema doc.~~ **Resolved 2026-09-16 (stream
+    S).** The key *was* read (M2: `yamlconf_script_names()`, written once at
+    start by `zeroconf_materialise()`), but not on reload, not atomically, and
+    a deleted key left its file behind. Now `zeroconf_sync_scripts()`
+    (`zeroconf.c`) runs from `setup_myself_reloadable()` — start and every
+    reload, before the tinc-up decision: each `scripts.<name>` is written
+    atomically (temp in the same dir, 0700, fsync, rename; unchanged content
+    is not rewritten), a key deleted from the YAML has its file removed (only
+    files this daemon wrote), a side file not in the YAML is left alone and
+    reported once; `scripts.tinc-up` wins over the built-in `autoif.c` (the
+    built-in is skipped), documented in `docs/config-schema.md` "Scripts".
+    `tinc set scripts.<name>` is not implemented (edit the file + `tinc
+    reload`; the CLI's variable table is for options/hosts). Property 10 in
+    `yamlconf_props.c` (scripts block round-trip incl. a trailing-space
+    line). **Proof** (`LAB=wss TINCSTACK_TAG=ws-s
+    platforms/linux/docker/yaml-scripts.sh`, exit 0): both nodes `built-in
+    tinc-up`; `scripts.host-up` appended to b's YAML + `tincstack-cli reload`
+    → ``Wrote script `host-up' … into `/etc/tincstack/tincstack'``, file `700
+    root`, no `.tmp` left, no marker yet; a restarted → marker
+    `/etc/tincstack/marker-node_a` = `node_a 10.16.6.2`; hand-made
+    `tinc-down` → ``Script `…/tinc-down' is a side file … left alone`` once
+    across two reloads, `host-up` not rewritten; key deleted + reload →
+    ``Removed script `…/host-up'``, file gone, `tinc-down` still there. The
+    smoke test now ships its `tinc-up` as `scripts.tinc-up` and asserts
+    `Wrote script`, no `built-in tinc-up`, mode 0700 → PASS on `ws-s`.
   - 🟡 **Linux MASQUERADE is not endpoint-independent on kernels ≥ 6.7**
     (measured: first destination keeps the source port, every later
     destination shares one other port). Any tincstack node behind a current

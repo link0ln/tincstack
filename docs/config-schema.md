@@ -139,10 +139,15 @@ networks:
         ...
 
     # ── per-network scripts (optional) ───────────────────────────────────────
-    scripts:                   # each entry is written to <runtime dir>/<name>
-      tinc-up: |               # (mode 0700) on every daemon start and run as the
-        ...                    # script of that name. Rarely needed: see
-                               # "Built-in interface setup" below.
+    scripts:                   # each entry is materialised by the daemon as
+      host-up: |               # <runtime dir>/<name> (mode 0700, atomic write)
+        #!/bin/sh              # on every start and on every reload, and run by
+        echo "$NODE up" >> /var/log/mesh   # tinc as the script of that name
+      tinc-up: |               # (tinc-up, tinc-down, host-up, host-down,
+        ...                    # subnet-up, subnet-down, invitation-created,
+                               # invitation-accepted). Deleting a key removes
+                               # the file on the next reload. tinc-up is rarely
+                               # needed: see "Built-in interface setup" below.
 
     # ── peer host records (the host database) ────────────────────────────────
     hosts:
@@ -189,6 +194,44 @@ An existing file that does not parse is **refused**, never overwritten. No
 (`cache/`, `invitations/`, pid/socket if `/var/run` is unwritable) go under
 `<dir of file>/<netname>/`.
 
+## Scripts (`scripts:`)
+
+`networks.<net>.scripts.<name>` holds the text of the script tinc runs as
+`<name>` (`tinc-up`, `tinc-down`, `host-up`, `host-down`, `subnet-up`,
+`subnet-down`, `invitation-created`, `invitation-accepted`; on Windows the
+key carries the `ScriptsExtension`, e.g. `tinc-up.bat`). The daemon
+materialises every entry into the runtime dir `<dir of file>/<netname>/`
+(`core/tincd/src/zeroconf.c`, `zeroconf_sync_scripts()`), so the unchanged
+`execute_script()` path (`script.c`) runs it with tinc's usual environment
+(`NETNAME`, `NAME`, `INTERFACE`, `NODE`, `REMOTEADDRESS`, …):
+
+- **when:** on every daemon start and on every reload (`tinc reload`, or any
+  CLI edit that asks the daemon to reload), before the `tinc-up` decision
+  below, so a script edited in the YAML takes effect without a restart;
+- **how:** each file is written atomically — a temp file in the same
+  directory, mode 0700 (owner only, executable), fsync, rename — so tinc
+  never runs a half-written script and a failed write leaves the previous
+  file in place (logged, the daemon keeps running). An entry whose content is
+  already on disk is not rewritten. Log: ``Wrote script `host-up' from
+  `…/tinc.yaml' into `…/<netname>'``;
+- **deleting** a key removes the file the daemon wrote at the next reload
+  (``Removed script `…/host-up': no longer in `…/tinc.yaml'``). Only files this
+  daemon process wrote are removed; the YAML is the source of truth for what
+  it put there;
+- **side files:** a script that is on disk but not in the YAML (dropped in by
+  hand, or left by an older image) is left alone and still runs; the daemon
+  says so once per name (``Script `…/tinc-down' is a side file not described by
+  `…/tinc.yaml' (scripts.tinc-down); it runs as is and is left alone``). A side
+  file with the same name as a YAML key is overwritten by the YAML;
+- a key that is not a plain file name (`/`, `\`, leading `.`) is ignored with
+  an error; a text that would not round-trip as a literal block (a line with
+  trailing blanks, a tab) is written double-quoted by the emitter and reads
+  back byte for byte (property 10 in `core/tincd/test/fuzz/yamlconf_props.c`).
+
+`tinc set`/`add`/`del` edit `options:` and `hosts.<node>` only; a script is
+edited in the file (the GUI or an editor) followed by `tinc reload`. Proof
+lab: `LAB=wss platforms/linux/docker/yaml-scripts.sh`.
+
 ## Built-in interface setup (Linux)
 
 Every YAML-mode node knows its own address, so no hand-written `tinc-up` is
@@ -204,7 +247,12 @@ ip route replace <InterfaceRoute> dev $INTERFACE      # one per InterfaceRoute
 
 itself (`core/tincd/src/autoif.c`). Windows sets the address through
 `WintunAddress`; Android hands the daemon a pre-configured fd; neither uses
-this path. A `scripts.tinc-up` in the YAML always wins over the built-in.
+this path. **Precedence:** a `scripts.tinc-up` in the YAML always wins — it is
+on disk before `device_enable()` looks, so the built-in is *skipped* entirely
+(the log then shows `Executing script tinc-up` and no `built-in tinc-up`
+line); the same holds for a hand-made side file. With neither, the built-in
+runs. `tinc-down` has no built-in counterpart: the kernel drops the address
+with the interface.
 
 ## Invitation and join in YAML mode
 
