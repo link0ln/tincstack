@@ -32,7 +32,10 @@ if (keystoreAvailable) keystoreProperties.load(new FileInputStream(keystorePrope
 // native/build-core.sh and packaged as executables named like shared
 // libraries (libtincd.so / libtinc.so) in jniLibs. See that script.
 def coreOutDir = layout.buildDirectory.dir("core")
-def coreAbis = ['arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64']
+// -PtincAbis="x86_64" builds (and packages) a single ABI, which is what the
+// emulator route needs (docker/emulator.sh); the default is every ABI.
+def coreAbis = (project.findProperty('tincAbis') ?: 'arm64-v8a armeabi-v7a x86 x86_64')
+    .toString().trim().split(/\s+/) as List
 def coreMinSdk = 21
 
 android {
@@ -113,6 +116,8 @@ tasks.register('buildTincCore', Exec) {
   inputs.dir(rootProject.file('../../core/tincd/src'))
   inputs.file(rootProject.file('../../core/tincd/meson.build'))
   inputs.file(rootProject.file('native/build-core.sh'))
+  inputs.property('abis', coreAbis)
+  inputs.property('crypto', (project.findProperty('tincCrypto') ?: 'openssl').toString())
   outputs.dir(coreOutDir.map { it.dir('jniLibs') })
   executable rootProject.file('native/build-core.sh').absolutePath
   doFirst {

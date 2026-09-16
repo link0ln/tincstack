@@ -1,0 +1,70 @@
+# Headless Android emulator for the tincstack app (platforms/android).
+#
+# Everything the emulator needs lives in this image: JDK 17, the Android
+# command-line tools, platform-tools (adb), the emulator and one x86_64 system
+# image at the app's targetSdk. Nothing is installed on the host; the container
+# needs only /dev/kvm (the host CPU must support virtualisation).
+#
+# The AVD is created at build time so a container start is just "boot".
+#
+# Usage: platforms/android/docker/emulator.sh (build | up | adb ... | down).
+# By hand:
+#   docker build -t wsy-android-emulator -f platforms/android/docker/Dockerfile.emulator \
+#       platforms/android/docker
+#   docker run -d --name wsy-emulator --device /dev/kvm wsy-android-emulator
+#   docker exec wsy-emulator adb shell getprop sys.boot_completed
+FROM debian:12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openjdk-17-jre-headless \
+        curl ca-certificates unzip \
+        procps iproute2 iputils-ping socat netcat-openbsd \
+        libpulse0 libnss3 libxcb1 libx11-6 libxcomposite1 libxcursor1 \
+        libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
+        libxtst6 libasound2 libdbus-1-3 libfontconfig1 libfreetype6 \
+        libgl1 libglu1-mesa libegl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Android SDK components. API level / image tag / ABI are build args so the
+# image can follow the app's build.gradle (compileSdk 34, minSdk 21).
+ARG CMDLINE_TOOLS=11076708
+ARG API=34
+ARG IMAGE_TAG=google_apis
+ARG ABI=x86_64
+ARG AVD_NAME=wsy
+ARG DEVICE=pixel_6
+
+ENV ANDROID_HOME=/opt/android-sdk-emu \
+    ANDROID_SDK_ROOT=/opt/android-sdk-emu \
+    ANDROID_AVD_HOME=/root/.android/avd \
+    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator
+
+RUN mkdir -p "$ANDROID_HOME/cmdline-tools" \
+    && curl -fsSL -o /tmp/cmdline-tools.zip \
+        "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS}_latest.zip" \
+    && unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools" \
+    && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
+    && rm /tmp/cmdline-tools.zip \
+    && yes | sdkmanager --licenses > /dev/null
+
+RUN sdkmanager --install "platform-tools" "emulator" \
+        "platforms;android-${API}" "system-images;android-${API};${IMAGE_TAG};${ABI}" > /dev/null
+
+# One AVD, baked in. A userdebug system image (google_apis, not
+# google_apis_playstore) is required: the proof reads the app's private files
+# through `adb root`.
+RUN echo no | avdmanager create avd --force \
+        --name "${AVD_NAME}" --device "${DEVICE}" \
+        --package "system-images;android-${API};${IMAGE_TAG};${ABI}" \
+    && printf '%s\n' \
+        'hw.keyboard=yes' \
+        'hw.gpu.enabled=yes' \
+        'hw.gpu.mode=swiftshader_indirect' \
+        'disk.dataPartition.size=4096M' \
+        >> "$ANDROID_AVD_HOME/${AVD_NAME}.avd/config.ini"
+
+ENV AVD_NAME=${AVD_NAME}
+COPY --chmod=0755 emulator-entrypoint.sh /usr/local/bin/emulator-entrypoint
+ENTRYPOINT ["/usr/local/bin/emulator-entrypoint"]
