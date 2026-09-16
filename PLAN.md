@@ -2029,6 +2029,35 @@ Defects identified during the source audit, to fix as their milestone is reached
   `tx_batch_*`, the `send_sptps_data()` hook, the two receive-loop brackets and
   the `sendmmsg` meson probe (`core/tincd/PATCHES.md` §4 keeps the negative
   result and the `16eb7bc` reference).
+- ~~🟠 **`set -o pipefail` + `| grep -q` made seven test scripts report the
+  opposite of what they measured.**~~ **Found and resolved 2026-09-16
+  (coordination pass, chasing the red `obfs-rekey-test` after stream W).**
+  `grep -q` exits on its first match, the producer on the left of the pipe gets
+  SIGPIPE, and under `pipefail` the whole pipeline then fails *because* the
+  pattern was found. It only bites once the producer's output is large enough
+  that it is still writing when grep leaves, which is why these scripts worked
+  for weeks and then "broke". Reproduction, on a real 8061-byte compose log
+  containing two matching lines: `docker compose -p <p> logs node | grep -q
+  ' Ready$'` → **exit 255**, `... | grep -c ' Ready$' >/dev/null` → **exit 0**.
+  Impact by site: `obfs-rekey-test.sh` `wait_ready()` could never return after a
+  restart, so the test failed as soon as the pre-restart log passed a few KiB —
+  the *whole* red result attributed to host load was this, and stream W's "load"
+  explanation for it was wrong; `two-nodes.sh`, `reload-test.sh` and
+  `yaml-scripts.sh` carried the identical `wait_ready` and were one log-growth
+  away from the same false failure; `testing/smoke/run.sh` (the CI gate) had it
+  in two *assertions*, where it can produce both a **false FAIL** (line 113,
+  `Wrote script \`tinc-up'` present but reported missing) and a **false PASS**
+  (line 114, `built-in tinc-up` present but the guard swallowed by the SIGPIPE
+  exit); `platforms/android/docker/emulator.sh` and `join-on-emulator.sh` had it
+  on `docker ps` / `docker logs` / `adb shell`. **Fix:** every presence test in a
+  `pipefail` script is now `| grep -c PATTERN >/dev/null` — `grep -c` reads to
+  EOF, so no SIGPIPE, and still exits non-zero only when the count is zero — with
+  a comment in each file naming the trap. `obfs-rekey-test.sh` additionally
+  counts `Ready` lines *before* restarting and waits for `n+1`, so it can no
+  longer be satisfied by the previous boot's log, and its failure path prints the
+  count, the CLI error and the container state instead of nothing. Audit:
+  `grep -ln pipefail $(git ls-files '*.sh')` × `| grep -q` → zero remaining
+  sites. `make lint` (shellcheck, 24 scripts) exits 0.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`

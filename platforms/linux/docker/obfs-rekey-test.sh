@@ -65,12 +65,32 @@ cli() { node "$1" tincstack-cli "${@:2}"; }
 logs() { docker compose -p "$1" logs --no-log-prefix node 2>/dev/null; }
 rekeys() { logs "$1" | grep -c 'obfs session key established' || true; }
 
+# wait_ready <project> [minimum number of `Ready' lines]
+#
+# `docker compose logs' keeps the whole history, so after a restart the PREVIOUS
+# boot's `Ready' is still there: waiting for the string alone would return while
+# the daemon is still coming back. The caller therefore passes how many `Ready'
+# lines it expects by now, and a restart bumps that. The second condition is
+# that the control socket answers.
+#
+# On timeout both conditions are reported separately, with the exec's actual
+# error, because a silent `not ready' that turns out to be a docker-level
+# failure costs an hour to tell apart from a daemon that did not start.
 wait_ready() {
-    local deadline=$(( SECONDS + WAIT ))
-    until logs "$1" | grep -q ' Ready$' && node "$1" tincstack-cli pid >/dev/null 2>&1; do
+    local proj=$1 want=${2:-1}
+    local deadline=$(( SECONDS + WAIT )) seen err
+    while :; do
+        seen=$(logs "$proj" | grep -c ' Ready$' || true)
+        if (( seen >= want )) && err=$(node "$proj" tincstack-cli pid 2>&1 >/dev/null); then
+            return 0
+        fi
         if (( SECONDS >= deadline )); then
-            echo "FAIL: $1 not ready within ${WAIT}s; log follows" >&2
-            logs "$1" >&2 || true
+            echo "FAIL: $proj not ready within ${WAIT}s" >&2
+            echo "  'Ready' lines: $seen (want >= $want)" >&2
+            echo "  tincstack-cli pid: ${err:-<no error, but the Ready count is short>}" >&2
+            echo "  container: $(docker compose -p "$proj" ps --format '{{.Name}} {{.State}} {{.Status}}' 2>&1 | tr '\n' ' ')" >&2
+            echo "  log follows" >&2
+            logs "$proj" >&2 || true
             return 1
         fi
         sleep 1
@@ -111,10 +131,13 @@ phase() {
     cli "$B" set KeyExpire "$ke_b" >/dev/null
     # A restart (not a reload) so the carrier and the timers are re-read from
     # a known state, and the log counters below start from zero.
+    local boots_a boots_b
+    boots_a=$(( $(logs "$A" | grep -c ' Ready$' || true) + 1 ))
+    boots_b=$(( $(logs "$B" | grep -c ' Ready$' || true) + 1 ))
     docker compose -p "$A" restart node >/dev/null
     docker compose -p "$B" restart node >/dev/null
-    wait_ready "$A"
-    wait_ready "$B"
+    wait_ready "$A" "$boots_a"
+    wait_ready "$B" "$boots_b"
 
     local out
     out=$(node "$B" ping -c "$WINDOW" -i 1 -W 2 "$a_ip" 2>&1 || true)
@@ -129,7 +152,7 @@ phase() {
     (( rb > 1 )) || miss "$label: b rotated $rb time(s) in ${WINDOW}s (want > 1)"
 
     for p in "$A" "$B"; do
-        if cli "$p" dump connections 2>/dev/null | grep -q 'transport obfs'; then
+        if cli "$p" dump connections 2>/dev/null | grep -c 'transport obfs' >/dev/null; then
             note "$p: still on the obfs carrier"
         else
             miss "$label: $p is not on the obfs carrier any more"

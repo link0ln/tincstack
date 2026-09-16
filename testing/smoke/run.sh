@@ -108,10 +108,18 @@ for _ in $(seq 1 30); do
 done
 compose exec -T node1 ping -c 3 -W 2 10.79.0.2 || true
 compose exec -T node2 tinc -c /etc/tincstack/tinc.yaml info node1 || true
+# NB: `<producer> | grep -q PATTERN` is a trap in a `set -o pipefail` script.
+# grep -q exits on the first match, the producer gets SIGPIPE, and pipefail then
+# makes the whole pipeline fail even though the pattern WAS found (`docker
+# compose logs` exits 255 that way). It only shows up once the producer's output
+# is big enough that it is still writing when grep leaves -- so these tests pass
+# for months and then "break" when a log grows. Every presence test here uses
+# `grep -c ... >/dev/null`, which reads to EOF and still exits 0 only when the
+# count is non-zero.
 # the interfaces came from scripts.tinc-up, not from the built-in autoif
 for n in node1 node2; do
-    if ! compose logs --no-log-prefix "$n" | grep -q "Wrote script \`tinc-up'"; then log "smoke: FAIL ($n did not materialise scripts.tinc-up)"; ok=0; fi
-    if compose logs --no-log-prefix "$n" | grep -q 'built-in tinc-up'; then log "smoke: FAIL ($n used the built-in tinc-up despite scripts.tinc-up)"; ok=0; fi
+    if ! compose logs --no-log-prefix "$n" | grep -c "Wrote script \`tinc-up'" >/dev/null; then log "smoke: FAIL ($n did not materialise scripts.tinc-up)"; ok=0; fi
+    if compose logs --no-log-prefix "$n" | grep -c 'built-in tinc-up' >/dev/null; then log "smoke: FAIL ($n used the built-in tinc-up despite scripts.tinc-up)"; ok=0; fi
     if [ "$(stat -c %a "$RUN/$n/$NET/tinc-up" 2>/dev/null)" != 700 ]; then log "smoke: FAIL ($n/$NET/tinc-up is not mode 0700)"; ok=0; fi
 done
 if [ "$ok" -eq 1 ]; then

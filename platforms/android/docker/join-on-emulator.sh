@@ -70,7 +70,7 @@ docker run -d --name "$INVITER" --network "$NET" --ip "$INVITER_IP" \
     -v "$LAB-a-data:/etc/tincstack" "tincstack/node:$TAG" >/dev/null
 
 deadline=$(( SECONDS + WAIT ))
-until docker logs "$INVITER" 2>&1 | grep -q ' Ready$'; do
+until docker logs "$INVITER" 2>&1 | grep -c ' Ready$' >/dev/null; do
     (( SECONDS < deadline )) || { docker logs "$INVITER" >&2; fail "inviter not ready in ${WAIT}s"; }
     sleep 2
 done
@@ -114,7 +114,7 @@ step "connect and ping the inviter through the tunnel"
 # the app's own intent API (intent/Actions.kt): CONNECT with a tinc:<net> URI
 adb shell am start -a "$PKG.intent.action.CONNECT" -d "tinc:$NETNAME" >/dev/null
 deadline=$(( SECONDS + WAIT ))
-until adb shell 'su 0 ip -br addr show tun0' 2>/dev/null | grep -q 'UNKNOWN\|UP'; do
+until adb shell 'su 0 ip -br addr show tun0' 2>/dev/null | grep -c 'UNKNOWN\|UP' >/dev/null; do
     (( SECONDS < deadline )) || {
         adb shell "su 0 cat /data/data/$PKG/cache/logs/tincapp.log" >&2 || true
         fail "VpnService.establish() produced no tun interface within ${WAIT}s"

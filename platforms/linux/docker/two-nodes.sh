@@ -36,10 +36,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# NB: `<producer> | grep -q PATTERN` is a trap in a `set -o pipefail` script.
+# grep -q exits on the first match, the producer gets SIGPIPE, and pipefail then
+# makes the whole pipeline fail even though the pattern WAS found (`docker
+# compose logs` exits 255 that way). It only shows up once the producer's output
+# is big enough that it is still writing when grep leaves -- so these tests pass
+# for months and then "break" when a log grows. Every presence test here uses
+# `grep -c ... >/dev/null`, which reads to EOF and still exits 0 only when the
+# count is non-zero.
 # wait_ready <project>: the daemon logged Ready and answers on its control socket.
 wait_ready() {
     local deadline=$(( SECONDS + WAIT ))
-    until docker compose -p "$1" logs --no-log-prefix node 2>/dev/null | grep -q ' Ready$' \
+    until docker compose -p "$1" logs --no-log-prefix node 2>/dev/null | grep -c ' Ready$' >/dev/null \
           && docker compose -p "$1" exec -T node tincstack-cli pid >/dev/null 2>&1; do
         if (( SECONDS >= deadline )); then
             echo "FAIL: $1 not ready within ${WAIT}s; log follows" >&2

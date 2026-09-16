@@ -35,7 +35,7 @@ build() {
 up() {
     [ -e /dev/kvm ] || die "/dev/kvm is missing: this host cannot run the emulator with hardware acceleration"
     build
-    if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+    if docker ps -a --format '{{.Names}}' | grep -cx "$NAME" >/dev/null; then
         docker start "$NAME" >/dev/null
     else
         docker run -d --name "$NAME" --device /dev/kvm \
@@ -54,7 +54,7 @@ wait_booted() {
             docker logs --tail 40 "$NAME" >&2 || true
             return 1
         fi
-        docker ps --format '{{.Names}}' | grep -qx "$NAME" || {
+        docker ps --format '{{.Names}}' | grep -cx "$NAME" >/dev/null || {
             echo "FAIL: container $NAME exited; console output:" >&2
             docker logs --tail 40 "$NAME" >&2
             return 1

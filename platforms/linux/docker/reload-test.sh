@@ -71,10 +71,18 @@ conn() { node "$1" tincstack-cli dump connections | awk -v n="$2" '$1 == n { pri
 conn_socket()    { conn "$1" "$2" 9; }
 conn_transport() { conn "$1" "$2" 13; }
 
+# NB: `<producer> | grep -q PATTERN` is a trap in a `set -o pipefail` script.
+# grep -q exits on the first match, the producer gets SIGPIPE, and pipefail then
+# makes the whole pipeline fail even though the pattern WAS found (`docker
+# compose logs` exits 255 that way). It only shows up once the producer's output
+# is big enough that it is still writing when grep leaves -- so these tests pass
+# for months and then "break" when a log grows. Every presence test here uses
+# `grep -c ... >/dev/null`, which reads to EOF and still exits 0 only when the
+# count is non-zero.
 # wait_ready <project>
 wait_ready() {
     local deadline=$(( SECONDS + WAIT ))
-    until logs "$1" | grep -q ' Ready$' && node "$1" tincstack-cli pid >/dev/null 2>&1; do
+    until logs "$1" | grep -c ' Ready$' >/dev/null && node "$1" tincstack-cli pid >/dev/null 2>&1; do
         if (( SECONDS >= deadline )); then
             echo "FAIL: $1 not ready within ${WAIT}s; log follows" >&2
             logs "$1" >&2 || true
