@@ -135,7 +135,7 @@ static void sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid,
 
 	/* obfs carrier: seal the whole single-flow frame so the SF magic and the
 	   fixed header never appear on the wire. */
-	uint8_t sealed[OBFS_HDR_LEN + SF_HDR_LEN + SF_MAX_PAYLOAD + OBFS_TAG_LEN + OBFS_MAX_JUNK];
+	uint8_t sealed[OBFS_MAX_OVERHEAD + SF_HDR_LEN + SF_MAX_PAYLOAD + OBFS_MAX_JUNK];
 
 	if(obfs) {
 		size_t slen = obfs_encode(obfs, frame, outlen, sealed, sizeof(sealed), init);

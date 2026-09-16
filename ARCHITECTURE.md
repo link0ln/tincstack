@@ -204,7 +204,13 @@ datagrams so they do not match tinc's SPTPS fingerprint. The redesign fixes the
 four defects of the prototype:
 
 - the junk/real discriminator is **authenticated**, derived from shared key
-  material, not a cleartext flag byte anyone can forge;
+  material, not a cleartext flag byte anyone can forge. The first datagrams use
+  a bootstrap key derived from the two nodes' public keys; once the link is up
+  the peers switch to a **per-link session key** exchanged over the
+  authenticated SPTPS meta channel, so the discriminator is a secret only the
+  two endpoints hold — not a mesh-wide one any enrolled member could forge
+  (security review R, finding M5-2). Keys are direction-separated and the nonce
+  is a per-direction counter with a replay window (findings M5-3…M5-5);
 - junk is emitted **around the handshake**, not on every data packet;
 - cold-start identification works: the receiver can classify the first datagram
   of a new session (the prototype forced the handshake onto UDP and then could

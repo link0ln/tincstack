@@ -24,7 +24,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/../.." && pwd)            # core/tincd
 OUT=${OUT:-/tmp/wsr-fuzz}
 IMAGE=${IMAGE:-tincstack/fuzz:ws-r}
-HARNESSES="fuzz_yamlconf fuzz_classify fuzz_invitation fuzz_pool fuzz_sf"
+HARNESSES="fuzz_yamlconf fuzz_classify fuzz_invitation fuzz_pool fuzz_sf fuzz_obfs"
 
 # Per-harness libFuzzer options (max input size; the sf harness is stateful
 # and wants longer inputs so several frames fit).
@@ -35,6 +35,7 @@ opts() {
         fuzz_invitation) echo "-max_len=8192" ;;
         fuzz_pool)       echo "-max_len=4096" ;;
         fuzz_sf)         echo "-max_len=16384" ;;
+        fuzz_obfs)       echo "-max_len=16384" ;;
     esac
 }
 

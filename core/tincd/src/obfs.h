@@ -2,25 +2,49 @@
 #define TINC_OBFS_H
 
 /*
-    obfs.h -- obfuscated-UDP carrier (M5, redesign of tinc-obfs).
+    obfs.h -- obfuscated-UDP carrier (M5, redesign of tinc-obfs; hardened for
+    security review R, findings M5-2..M5-6).
 
     obfs is an outer wrapper around the UDP datagram flow. Every datagram it
     carries -- the single-flow meta frames and the SPTPS data datagrams -- is
-    sealed with an authenticated frame keyed from material both peers already
-    share (their Ed25519 public keys), so:
+    sealed with an authenticated frame. The seal is the junk/real discriminator
+    (a Poly1305 tag, not a cleartext flag) and hides tinc's fingerprint; SPTPS
+    inside still provides identity and confidentiality and is never touched.
 
-      * the junk/real discriminator is a Poly1305 tag, not a cleartext flag
-        byte: an attacker without the key can neither forge a "real" datagram
-        nor tell junk from real;
-      * junk is emitted only around the handshake (ObfsJunkPacket*), never per
-        data packet;
-      * the receiver classifies the first datagram of a cold session with a
-        keyed check (like try_harder() for SPTPS), so a cold tunnel comes up;
-      * a relay strips the frame on receive and re-applies it per hop, so a
-        relayed SPTPS record is never double-wrapped.
+    Key schedule (frame format "v2"):
 
-    SPTPS is never touched: obfs seals the bytes SPTPS already produced. See
-    docs/transports.md, "Obfuscated UDP (obfs)".
+      * a per-direction BOOTSTRAP key is derived from the two nodes' Ed25519
+        public keys. Both peers already hold those, so it is available before
+        any handshake, which is what makes cold-start classification possible.
+        Because every mesh member holds every public key, the bootstrap key is
+        NOT a per-link secret: it is used only for the first datagrams, until a
+        session key exists (finding M5-2).
+
+      * a per-link SESSION key is derived from two fresh 32-byte seeds the peers
+        exchange over the authenticated SPTPS meta channel (request OBFS_KEY)
+        once the connection is up. Only the two endpoints know it; a third mesh
+        member cannot derive it, so it can neither classify nor forge steady
+        traffic. It is re-negotiated periodically (aligned with KeyExpire),
+        which also bounds the per-key nonce space (M5-2, rekey).
+
+      * keys are DIRECTION-SEPARATED (lo->hi and hi->lo labels), so a datagram
+        reflected back to its sender never verifies (finding M5-5).
+
+      * the ChaCha20-Poly1305 nonce is a strict per-direction 64-bit COUNTER
+        (whitened on the wire by XOR with a key-derived mask), so it never
+        repeats -> no keystream reuse or Poly1305 forgery. A configured magic
+        header is a separate plaintext prefix that costs no nonce entropy
+        (finding M5-3).
+
+      * a sliding replay window on the counter rejects replayed datagrams, and
+        the remembered peer address is moved only AFTER a datagram both
+        verifies and is fresh (finding M5-4).
+
+    Junk is emitted only around a handshake (ObfsJunkPacket*), never per data
+    packet. On a relay the frame is stripped on receive and re-applied per hop,
+    so a relayed SPTPS record is never double-wrapped.
+
+    See docs/transports.md, "Obfuscated UDP (obfs)".
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -43,14 +67,21 @@ typedef struct obfs_link_t obfs_link_t;
 
 /* ---- wire geometry ------------------------------------------------------- */
 
-/* nonce(8) + clen(2) + Poly1305 tag(16): the smallest possible real frame
-   wraps a zero-length inner payload. */
+/* magic(0 or 4) | nonce(8) | clen(2) | ChaCha20-Poly1305(inner) | tail-junk.
+   The nonce is the whitened counter; clen is the ciphertext length (network
+   order). The smallest real frame wraps a zero-length inner payload. */
+#define OBFS_MAGIC_LEN 4
 #define OBFS_NONCE_LEN 8
 #define OBFS_CLEN_LEN  2
 #define OBFS_TAG_LEN   16
 #define OBFS_HDR_LEN   (OBFS_NONCE_LEN + OBFS_CLEN_LEN)
 #define OBFS_MIN_FRAME (OBFS_HDR_LEN + OBFS_TAG_LEN)
+#define OBFS_MAX_OVERHEAD (OBFS_MAGIC_LEN + OBFS_HDR_LEN + OBFS_TAG_LEN)
 #define OBFS_MAX_JUNK  1400
+
+/* Length of the per-link seed exchanged over the meta channel for the session
+   key, and of the base64 that carries it on the wire. */
+#define OBFS_SEED_LEN 32
 
 /* ---- configuration (parsed from the YAML/config tree) -------------------- */
 
@@ -59,7 +90,7 @@ extern int obfs_junk_min;          /* ObfsJunkPacketMinSize */
 extern int obfs_junk_max;          /* ObfsJunkPacketMaxSize */
 extern int obfs_init_header_junk;  /* ObfsInitHeaderJunkSize: tail padding on handshake frames */
 extern int obfs_transport_header_junk; /* ObfsTransportHeaderJunkSize: tail padding on steady frames */
-extern uint32_t obfs_init_magic;   /* ObfsInitMagicHeader: shape the leading bytes of handshake frames */
+extern uint32_t obfs_init_magic;   /* ObfsInitMagicHeader: plaintext prefix on handshake frames */
 extern uint32_t obfs_transport_magic;  /* ObfsTransportMagicHeader */
 
 /* Parse the Obfs* options from config_tree. Never fails hard: bad values are
@@ -82,14 +113,25 @@ void obfs_close(connection_t *c);
 obfs_link_t *obfs_link_for_node(node_t *n);
 
 /* Mark a link active and remember the peer's current UDP address, so inbound
-   datagrams from it take the single-key fast path instead of a cold scan. */
+   datagrams from it take the single-key fast path instead of a cold scan.
+   Called only after a datagram has verified and passed the replay window. */
 void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr);
+
+/* ---- session key handshake (over the authenticated meta channel) --------- */
+
+/* After a connection over an obfs link activates, kick off the OBFS_KEY seed
+   exchange that establishes the per-link session key. No-op for non-obfs
+   connections, so ack_h can call it unconditionally. */
+void obfs_session_start(connection_t *c);
+
+/* Handle an OBFS_KEY request (declared as a request handler in protocol.h). */
 
 /* ---- framing ------------------------------------------------------------- */
 
 /* Seal `inlen' bytes into `out' (capacity `outcap'); returns the framed
    length, or 0 on error. `init' selects handshake-phase shaping (magic +
-   header junk) over steady-state shaping. */
+   header junk) over steady-state shaping. Uses the session key once it is
+   ready, else the bootstrap key. */
 size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init);
 
 /* SPTPS data path: if `to' is an active obfs link, seal `buf' and send it on
@@ -100,10 +142,11 @@ bool obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t l
 
 /* ---- inbound ------------------------------------------------------------- */
 
-/* Try to claim one inbound datagram: a keyed check unseals it and re-injects
-   the inner datagram (a single-flow meta frame or an SPTPS record) into the
-   normal receive path. Returns true if the datagram was an obfs frame (real
-   or, after failing every key, silently dropped as junk from a known peer). */
+/* Try to claim one inbound datagram: a keyed check unseals it (session key
+   first, then bootstrap), the replay window checks freshness, and on success
+   the inner datagram (a single-flow meta frame or an SPTPS record) is
+   re-injected into the normal receive path. Returns true if the datagram was
+   an obfs frame (real, or a replay/junk from a known peer that is dropped). */
 bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr);
 
 /* Emit ObfsJunkPacketCount junk datagrams toward a peer (around a handshake).

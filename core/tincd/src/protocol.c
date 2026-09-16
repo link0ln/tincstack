@@ -71,6 +71,7 @@ const request_entry_t *get_request_entry(request_t req) {
 		[SPTPS_PACKET] = {sptps_tcppacket_h, "SPTPS_PACKET"},
 		[UDP_INFO] = {udp_info_h, "UDP_INFO"},
 		[MTU_INFO] = {mtu_info_h, "MTU_INFO"},
+		[OBFS_KEY] = {obfs_key_h, "OBFS_KEY"},
 	};
 	return &request_entries[req];
 }
