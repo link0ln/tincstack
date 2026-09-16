@@ -1,0 +1,288 @@
+# tincstack release — runs ONLY when a `v*` tag is pushed, never on a normal
+# commit. One tag produces:
+#
+#   ghcr.io/<owner>/tincstack/core:<tag>   the daemon image (QUIC carrier built in)
+#   ghcr.io/<owner>/tincstack/node:<tag>   the compose-ready Linux node
+#     both also tagged `latest`
+#   tincstack-<tag>-windows-x86_64.zip     tincd.exe + tinc.exe (mingw cross-build)
+#   tincstack-<tag>.apk                    the Android app
+#   tincstack-<tag>-source.tar.gz          the tree at the tag, for Linux hosts
+#                                          (they run it through docker compose)
+#
+# The images are built, LOADED LOCALLY and smoke-tested first; they are pushed
+# only after that passes, so a release never publishes an image nobody ran.
+#
+# Linux hosts do not get a binary tarball on purpose: the supported Linux
+# deployment is `docker compose` against the published image
+# (platforms/linux/docker/compose.release.yml).
+#
+# Architecture: linux/amd64 only for now. arm64 needs either QEMU (the ngtcp2 +
+# GnuTLS stage makes that ~10x slower) or an arm64 runner; add it as a matrix
+# leg once a first release has gone out on amd64.
+#
+# Android signing is optional. With the four ANDROID_* secrets set the APK is
+# signed by gradle's release signingConfig (app/build.gradle reads
+# keystore.properties); without them the job still produces an APK and the
+# asset is named `-unsigned` so nobody installs it thinking it is signed.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # create the release, upload assets
+  packages: write   # push to ghcr.io
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: linux images (ghcr.io)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Image names (ghcr paths must be lowercase)
+        id: names
+        run: |
+          repo="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          echo "core=${REGISTRY}/${repo}/core" >> "$GITHUB_OUTPUT"
+          echo "node=${REGISTRY}/${repo}/node" >> "$GITHUB_OUTPUT"
+
+      # Build into the local docker daemon, not into the registry: the smoke
+      # test below has to run against exactly these bits before anyone can pull
+      # them.
+      - name: Build core
+        uses: docker/build-push-action@v6
+        with:
+          context: core
+          file: core/Dockerfile.build
+          load: true
+          tags: tincstack/core:rel
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Core sanity
+        run: docker run --rm tincstack/core:rel tincd --version | tee /dev/stderr | grep -qi tinc
+
+      - name: Build node
+        uses: docker/build-push-action@v6
+        with:
+          context: platforms/linux/docker
+          load: true
+          tags: tincstack/node:rel
+          build-args: CORE_IMAGE=tincstack/core:rel
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image that is about to be published
+        run: CORE_IMAGE=tincstack/core:rel testing/smoke/run.sh
+
+      # The node image adds the zero-config entrypoint on top of the core, so
+      # it gets its own check: an empty volume must become a configured,
+      # running node with no input at all (PLAN.md M1).
+      - name: Node image self-configures from an empty volume
+        run: |
+          set -eu
+          docker run -d --name relnode --cap-add NET_ADMIN \
+            --device /dev/net/tun -e PORT=655 tincstack/node:rel
+          for _ in $(seq 1 60); do
+            docker logs relnode 2>&1 | grep -q ' Ready$' && break
+            sleep 1
+          done
+          docker logs relnode
+          docker logs relnode 2>&1 | grep -q ' Ready$'
+          docker exec relnode tincstack-cli pid
+          docker exec relnode tincstack-cli get Name
+          docker rm -f relnode
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push core and node
+        run: |
+          set -eu
+          for img in "${{ steps.names.outputs.core }}:${{ github.ref_name }}" \
+                     "${{ steps.names.outputs.core }}:latest"; do
+            docker tag tincstack/core:rel "$img"
+            docker push "$img"
+          done
+          for img in "${{ steps.names.outputs.node }}:${{ github.ref_name }}" \
+                     "${{ steps.names.outputs.node }}:latest"; do
+            docker tag tincstack/node:rel "$img"
+            docker push "$img"
+          done
+
+  windows:
+    name: windows x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cross-build the core with mingw-w64
+        run: |
+          docker build -f core/Dockerfile.build-win -t tincstack/core-win:rel core/
+          mkdir -p dist/windows
+          docker run --rm -v "$PWD/dist/windows:/out" tincstack/core-win:rel
+
+      - name: Assert the artefacts are PE32+ binaries
+        run: |
+          docker run --rm -v "$PWD/dist/windows:/w:ro" debian:12-slim \
+            sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends file >/dev/null \
+                   && file /w/tincd.exe /w/tinc.exe | tee /dev/stderr | grep -qc "PE32+ executable" '
+
+      - name: Package
+        run: |
+          cp platforms/windows/build-windows.md dist/windows/README-build.md || true
+          cd dist/windows
+          zip -9 "../../tincstack-${{ github.ref_name }}-windows-x86_64.zip" ./*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: tincstack-${{ github.ref_name }}-windows-x86_64.zip
+          if-no-files-found: error
+
+  android:
+    name: android apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: android-actions/setup-android@v3
+
+      - name: SDK packages the build needs
+        run: sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
+
+      # keystore.properties is read by platforms/android/app/build.gradle; it is
+      # written here from secrets and never committed. Without the secrets the
+      # APK comes out unsigned, which the asset name says.
+      - name: Signing material (optional)
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::no ANDROID_KEYSTORE_BASE64 secret; the APK will be unsigned"
+            exit 0
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 -d > platforms/android/release.keystore
+          cat > platforms/android/keystore.properties <<EOF
+          storeFile=release.keystore
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build the app in the repository's own build container
+        run: |
+          docker build -t tincstack/android-build -f platforms/android/docker/Dockerfile.build platforms/android/docker
+          docker run --rm \
+            -v "$PWD":/src \
+            -v "$ANDROID_SDK_ROOT":/opt/android-sdk \
+            -v /tmp/gradle:/root/.gradle \
+            -w /src/platforms/android \
+            -e ANDROID_HOME=/opt/android-sdk -e ANDROID_SDK_ROOT=/opt/android-sdk \
+            tincstack/android-build ./gradlew --no-daemon assembleRelease
+
+      - name: Collect the APK
+        run: |
+          set -eu
+          apk=$(find platforms/android/app/build/outputs/apk/release -name '*.apk' | head -n1)
+          test -n "$apk"
+          if [ "${{ steps.signing.outputs.signed }}" = true ]; then
+            cp "$apk" "tincstack-${{ github.ref_name }}.apk"
+          else
+            cp "$apk" "tincstack-${{ github.ref_name }}-unsigned.apk"
+          fi
+          sha256sum tincstack-*.apk
+
+      - name: Never leave signing material in the workspace
+        if: always()
+        run: rm -f platforms/android/release.keystore platforms/android/keystore.properties
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: tincstack-*.apk
+          if-no-files-found: error
+
+  release:
+    name: publish the release
+    needs: [images, windows, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Source archive for Linux hosts
+        run: |
+          git archive --format=tar.gz \
+            --prefix="tincstack-${{ github.ref_name }}/" \
+            -o "tincstack-${{ github.ref_name }}-source.tar.gz" \
+            "${{ github.ref_name }}"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          repo="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          find assets -type f -print
+          cat > notes.md <<EOF
+          ## Linux (docker compose)
+
+              curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/tincstack-${{ github.ref_name }}-source.tar.gz
+              tar xzf tincstack-${{ github.ref_name }}-source.tar.gz
+              cd tincstack-${{ github.ref_name }}/platforms/linux/docker
+              TINCSTACK_VERSION=${{ github.ref_name }} docker compose -f compose.release.yml up -d
+
+          The image is pulled, not built:
+
+              ${REGISTRY}/$repo/node:${{ github.ref_name }}
+              ${REGISTRY}/$repo/core:${{ github.ref_name }}
+
+          Both images were smoke-tested (two-node YAML lab, ping both ways) before
+          this tag was published.
+
+          ## Windows
+
+          \`tincstack-${{ github.ref_name }}-windows-x86_64.zip\` — \`tincd.exe\` and
+          \`tinc.exe\`, cross-built with mingw-w64. \`wintun.dll\` is not included:
+          it is a Microsoft-signed binary from https://www.wintun.net/.
+
+          ## Android
+
+          The \`.apk\` asset. An asset named \`-unsigned\` was built without a
+          signing key and has to be signed before it will install.
+          EOF
+          mapfile -t built < <(find assets -type f)
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "tincstack ${{ github.ref_name }}" \
+            --notes-file notes.md \
+            "tincstack-${{ github.ref_name }}-source.tar.gz" \
+            "${built[@]}"

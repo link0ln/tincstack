@@ -40,15 +40,41 @@ docker run --rm tincstack/core:dev tincd --version
 
 ## Run a node on Linux
 
+From a release, pulling the published image (nothing is compiled):
+
 ```
+export COMPOSE_FILE=compose.release.yml
 cd platforms/linux/docker
-docker compose up -d                 # builds the core + node image, starts a self-configuring node
+TINCSTACK_VERSION=v0.1.0 docker compose up -d
 ./invite.sh laptop                   # one-line invitation for a new peer
 ./join.sh '<invitation>'             # on the other host
 ```
 
+From this checkout, building everything yourself:
+
+```
+cd platforms/linux/docker
+docker compose up -d                 # builds the core + node image, starts a self-configuring node
+```
+
 Set `PUBLIC_ADDRESS` in `.env` on the node that issues invitations. Details,
 environment variables and the two-node lab: `platforms/linux/docker/README.md`.
+
+## Releases
+
+`.github/workflows/release.yml` runs on a `v*` tag and on nothing else. One tag
+publishes `ghcr.io/<owner>/tincstack/core` and `.../node` (both also `latest`),
+and attaches the Windows cross-build, the Android APK and a source tarball to
+the GitHub release. The images are built, loaded and smoke-tested in the
+workflow *before* they are pushed, so a published tag is one that ran.
+
+```
+git tag -a v0.1.0 -m "…" && git push origin v0.1.0
+```
+
+Optional repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEY_PASSWORD` and `ANDROID_STORE_PASSWORD` sign the APK; without them
+the asset is published as `-unsigned`.
 
 ## Windows client
 

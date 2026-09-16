@@ -17,8 +17,13 @@
 # apart from any developer tag family.
 name: check
 
+# Tags are excluded on purpose: a `v*` tag runs .github/workflows/release.yml,
+# which builds and smoke-tests the same images before publishing them. Running
+# both would build everything twice for one push.
 on:
   push:
+    branches:
+      - '**'
   pull_request:
 
 permissions:

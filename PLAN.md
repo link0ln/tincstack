@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-16 (M9 closed by stream F; Port classification fixed in the consolidation pass; REQ_KEY glare fixed by stream K)
+**Last Updated:** 2026-09-16 (M9 closed by stream F; M10 publishing/release pipeline added, untested until the first tag; sendmmsg batching dropped; REQ_KEY glare fixed by stream K)
 
 A self-hosted mesh VPN distribution on a hardened tinc 1.1 core, with opt-in
 circumvention transports and per-platform delivery (Linux/Windows/Android).
@@ -1407,6 +1407,70 @@ another network's addresses are dropped by the daemon's nft rules. Details:
 - **Acceptance:** one command (`make check`) builds and verifies; the named
   regression shows the delta between the patched core and upstream with logs
   checked in. **Met.**
+
+---
+
+## Milestone M10 — publishing & releases 🟠 (2026-09-16, owner request)
+
+The tree now has a public home: `git@github.com:link0ln/tincstack.git`. Owner's
+requirements, verbatim in intent: build and publish **only on a tag**, so a
+normal commit never builds images; images go to the GitHub Container Registry
+for Linux hosts; the release carries Android and Windows builds as assets;
+Linux gets the archived repository instead of a binary, because Linux nodes run
+through docker compose; and the compose file people run must reference the
+registry image.
+
+- [x] **Repository pushed.** `origin` = `git@github.com:link0ln/tincstack.git`,
+  `master` at `ed9b325`, 126 commits. Before pushing, gitleaks (in a throwaway
+  container) scanned the whole history: **12 findings, all benign** — WebSocket
+  handshake nonces in two carrier proofs, `AAAA…`/`c2VjcmV0`/`REDACTED…`
+  placeholders in the fuzz corpus, the Android unit-test fixtures, the schema
+  docs and a help string, plus the one real blob already recorded in Known
+  Issues (upstream tinc's public ED25519 test vector in
+  `core/tincd/test/integration/cmd_sign_verify.py`). No node key, token or
+  certificate is in the tree.
+- [x] **`.github/workflows/release.yml`**, triggered by `push: tags: v*` and
+  nothing else. Jobs:
+  - `images` — builds `core/Dockerfile.build` (QUIC included) and the node
+    image with buildx, **loads them locally**, runs `testing/smoke/run.sh`
+    against the core image and a zero-config start against the node image, and
+    only then logs in to `ghcr.io` and pushes
+    `ghcr.io/<owner>/tincstack/{core,node}:<tag>` plus `:latest`. Publishing an
+    image nobody ran is exactly the failure this ordering removes.
+  - `windows` — `core/Dockerfile.build-win` cross-build, asserts `PE32+
+    executable` on both exes, zips them with their `SHA256SUMS`.
+  - `android` — the repository's own `platforms/android/docker/Dockerfile.build`
+    with the runner's SDK/NDK mounted, `./gradlew assembleRelease`. Signing is
+    optional: four `ANDROID_*` repository secrets materialise
+    `keystore.properties` (never committed, removed in an `always()` step); with
+    no secrets the asset is named `-unsigned` so nobody mistakes it for signed.
+  - `release` — `git archive` of the tag as the Linux artefact, then
+    `gh release create` with every artefact and notes that spell out the pull
+    commands.
+- [x] **`platforms/linux/docker/compose.release.yml`** — the same node service
+  with **no build section**, image
+  `ghcr.io/link0ln/tincstack/node:${TINCSTACK_VERSION:-latest}`
+  (`TINCSTACK_IMAGE` overrides the whole reference). `invite.sh` / `join.sh`
+  honour `COMPOSE_FILE`, so the release flow uses the same two helpers. The
+  building `docker-compose.yml` stays for development; a single file cannot do
+  both, because compose still builds when a service has a `build:` section.
+- [x] **`check.yml` no longer runs on tags** (`push: branches: '**'`), so one
+  tag does not build everything twice.
+- [x] Both workflows pass `actionlint` (which runs shellcheck over every `run:`
+  block); `compose.release.yml` passes `docker compose config`.
+- [ ] **Not yet proven: an actual tag has not been pushed.** Every step above is
+  static verification. The first `v*` tag is the real test, and the two most
+  likely failures are named here so they are not a surprise: the Android job
+  depends on `android-actions/setup-android` providing
+  `ndk;26.1.10909125`, and `ghcr.io` package creation needs the repository's
+  Actions to have package write permission.
+- [ ] **arm64 images.** Deliberately not in the first pipeline: the ngtcp2 +
+  GnuTLS stage under QEMU is roughly 10x slower, and an arm64 runner is the
+  better answer. Add as a matrix leg with a manifest merge once a first release
+  has gone out on amd64. Home SBC nodes are the obvious users, so this is a real
+  gap, not a cosmetic one.
+- [ ] **`tincmgr.exe` in the Windows asset** — stream X is building it; the
+  `windows` job ships only `tincd.exe`/`tinc.exe` until that lands.
 
 ---
 

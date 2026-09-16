@@ -8,6 +8,20 @@ deploy-time choices from the environment into that file.
 
 ## Quick start
 
+Two compose files, same node. `compose.release.yml` **pulls** the image the
+release workflow built for a tag; `docker-compose.yml` **builds** everything
+from this checkout. Running a release:
+
+```sh
+cd platforms/linux/docker
+export COMPOSE_FILE=compose.release.yml          # invite.sh / join.sh honour it
+TINCSTACK_VERSION=v0.1.0 docker compose up -d    # 1. pulls ghcr.io/…/node:v0.1.0
+./invite.sh laptop                               # 2. one-line invitation for "laptop"
+./join.sh '<the line from step 2>'               # 3. on the other host: joins with it
+```
+
+Working on tincstack instead:
+
 ```sh
 cd platforms/linux/docker
 docker compose up -d                 # 1. builds core/ + the node image, starts a node
@@ -60,6 +74,10 @@ full bring-up.
 - `docker-compose.yml` — the `core` service is build-only (`scale: 0`) and feeds
   the `node` build as the named context `core`, so one `up` on a clean checkout
   builds everything.
+- `compose.release.yml` — the same node with no build section at all: it pulls
+  `ghcr.io/link0ln/tincstack/node:${TINCSTACK_VERSION:-latest}`
+  (`TINCSTACK_IMAGE` overrides the whole reference). This is what a Linux host
+  running a release uses.
 - `Dockerfile` — the core image plus the entrypoint and `tincstack-cli`,
   nothing else (no interpreter, no helper, no scripts).
 - `entrypoint.sh` — join on first start, map env → YAML with the core's
