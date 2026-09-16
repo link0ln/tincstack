@@ -185,12 +185,21 @@ void transport_node_read_config(struct node_t *n, splay_tree_t *config_tree);
 const char *transport_accept_string(char *buf);
 
 /* Outbound selection: carrier to use for this attempt, advancing through
-   the preference list across attempts. transport_next_candidate() returns
-   false when the candidate list is exhausted (the caller backs off and the
-   next cycle starts from the top again). */
+   the preference list across attempts. transport_next_candidate() is called
+   after a failure *before activation*; it returns true when it moved on to
+   another candidate that can be dialled right away, false when the same
+   candidate is to be retried after the normal backoff (it is the carrier
+   that last activated and has not yet failed TRANSPORT_STICKY_FAILURES
+   times in a row) or when the list is exhausted (the next cycle starts
+   from the top of the preference list again). transport_candidate_activated()
+   is called when a connection is activated (ACK): it resets the walk so the
+   next reconnect starts from the operator's first preference and records the
+   carrier if this connection was the one we dialled. An activated link that
+   drops never advances the walk (net.c terminate_connection). */
+#define TRANSPORT_STICKY_FAILURES 3
 const transport_t *transport_current(struct outgoing_t *outgoing);
 bool transport_next_candidate(struct outgoing_t *outgoing);
-void transport_reset_candidates(struct outgoing_t *outgoing);
+void transport_candidate_activated(struct outgoing_t *outgoing, const struct connection_t *c);
 
 /* Meta-channel plumbing. */
 void transport_meta_flush(struct connection_t *c);           /* c->outbuf has new bytes */

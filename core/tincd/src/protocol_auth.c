@@ -1134,10 +1134,11 @@ bool ack_h(connection_t *c, const char *request) {
 		transport_node_read_config(n, c->config_tree);
 	}
 
-	/* A carrier was negotiated successfully; let the next reconnect start its
-	   preference walk afresh. */
+	/* A carrier was negotiated successfully: remember it as the one that
+	   works for this peer and let the next reconnect start its preference
+	   walk afresh. */
 	if(c->outgoing) {
-		transport_reset_candidates(c->outgoing);
+		transport_candidate_activated(c->outgoing, c);
 	}
 
 	if(!(c->options & options & OPTION_PMTU_DISCOVERY)) {

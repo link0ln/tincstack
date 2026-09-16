@@ -173,9 +173,12 @@ void terminate_connection(connection_t *c, bool report) {
 
 	if(outgoing) {
 		/* If the connection died before it was activated, the carrier we tried
-		   did not complete its handshake: fall back to the next candidate so a
-		   failing carrier ends at plain. An activated connection that drops is
-		   a normal reconnect and keeps its (already chosen) candidate. */
+		   did not complete its handshake: let the selector decide whether to
+		   retry it (it worked before and has not failed
+		   TRANSPORT_STICKY_FAILURES times in a row) or fall back to the next
+		   candidate. An activated connection that drops is a normal reconnect:
+		   the walk starts again from the first preference, never from a
+		   fallback (review L-2). */
 		if(!activated) {
 			transport_next_candidate(outgoing);
 		}

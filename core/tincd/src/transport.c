@@ -356,7 +356,17 @@ const char *transport_accept_string(char *buf) {
 
 /* ---- outbound selection -------------------------------------------------- */
 
-void transport_reset_candidates(outgoing_t *outgoing) {
+void transport_candidate_activated(outgoing_t *outgoing, const connection_t *c) {
+	transport_id_t id = c->transport ? c->transport->id : TRANSPORT_PLAIN;
+
+	/* Only a link we dialled ourselves proves that the candidate works: when
+	   the peer dialled us first, id_h() moves the outgoing_t onto its inbound
+	   connection, whose carrier is the peer's choice, not ours. */
+	if(outgoing->ncandidates && outgoing->candidates[outgoing->transport_idx] == id) {
+		outgoing->last_ok_mask = TRANSPORT_BIT(id);
+		outgoing->last_ok_failures = 0;
+	}
+
 	outgoing->ncandidates = 0;
 	outgoing->transport_idx = 0;
 }
@@ -387,7 +397,15 @@ static void build_candidates(outgoing_t *outgoing) {
 		}
 
 		char pbuf[TRANSPORT_LIST_MAX];
-		logger(DEBUG_CONNECTIONS, LOG_INFO, "Carrier candidates for %s: %s (peer accepts %s)", outgoing->node->name, buf, transport_mask_to_string(peer, pbuf));
+		char obuf[TRANSPORT_LIST_MAX];
+
+		if(outgoing->last_ok_mask) {
+			snprintf(obuf, sizeof(obuf), ", last activated %s", transport_mask_to_string(outgoing->last_ok_mask, pbuf));
+		} else {
+			*obuf = 0;
+		}
+
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Carrier candidates for %s: %s (peer accepts %s%s)", outgoing->node->name, buf, transport_mask_to_string(peer, pbuf), obuf);
 	}
 }
 
@@ -404,6 +422,29 @@ bool transport_next_candidate(outgoing_t *outgoing) {
 		build_candidates(outgoing);
 	}
 
+	transport_id_t cur = outgoing->candidates[outgoing->transport_idx];
+
+	/* A carrier that already activated a link to this peer is not given up
+	   on the first pre-activation failure (peer restarting, a single reset
+	   or blocked handshake): it is retried, with the normal reconnect
+	   backoff, until it has failed TRANSPORT_STICKY_FAILURES times in a row.
+	   Anything less would let one reset downgrade an https/quic link to
+	   plain (review L-2). */
+	if(outgoing->last_ok_mask == TRANSPORT_BIT(cur)) {
+		outgoing->last_ok_failures++;
+
+		if(outgoing->last_ok_failures < TRANSPORT_STICKY_FAILURES) {
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "Carrier %s failed for %s before activation (%d/%d) but worked before, retrying it",
+			       transport_name(cur), outgoing->node->name, outgoing->last_ok_failures, TRANSPORT_STICKY_FAILURES);
+			return false;
+		}
+
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Carrier %s failed %d times in a row for %s, no longer preferred",
+		       transport_name(cur), outgoing->last_ok_failures, outgoing->node->name);
+		outgoing->last_ok_mask = 0;
+		outgoing->last_ok_failures = 0;
+	}
+
 	if(outgoing->transport_idx + 1 < outgoing->ncandidates) {
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "Carrier %s failed for %s, falling back to %s",
 		       transport_name(outgoing->candidates[outgoing->transport_idx]), outgoing->node->name,
@@ -412,7 +453,10 @@ bool transport_next_candidate(outgoing_t *outgoing) {
 		return true;
 	}
 
-	/* Exhausted: the next cycle re-evaluates from the top. */
+	/* Exhausted: the next cycle restarts from the operator's first
+	   preference, so a walk never settles on plain. */
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Every carrier failed for %s, restarting from %s",
+	       outgoing->node->name, transport_name(outgoing->candidates[0]));
 	outgoing->ncandidates = 0;
 	outgoing->transport_idx = 0;
 	return false;

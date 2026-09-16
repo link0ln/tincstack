@@ -68,18 +68,58 @@ is blocked (see §4).
 1. On the first dial to a node, build the candidate list: walk
    `PreferredTransports`, keep each carrier that is (a) in the peer's accept
    mask and (b) dial-capable in this build. If the list is empty, it is
-   `[plain]`.
+   `[plain]`. The walk order is always the operator's preference order.
 2. Dial the current candidate. If its `dial` hook fails immediately (no socket),
-   advance to the next candidate and retry (`net_socket.c`).
+   the failure counts as in step 3 (`net_socket.c`); if the walk advanced, the
+   next candidate is dialled right away against the same addresses.
 3. If the connection dies **before it is activated** (the carrier's handshake
    never completed — detected in `terminate_connection` by the absence of an
-   edge), advance to the next candidate on the automatic reconnect. A failing
-   carrier therefore walks down the list and ends at `plain`.
-4. When a connection **activates** (ACK received), the candidate cycle is reset,
-   so the next reconnect re-evaluates preferences from the top.
+   edge), the walk advances to the next candidate on the automatic reconnect,
+   **except** for the carrier that last activated a link *we dialled* to this
+   peer: that one is retried, with the normal reconnect backoff, until it has
+   failed `TRANSPORT_STICKY_FAILURES` (**3**) times in a row (`Carrier https
+   failed for nodeb before activation (1/3) but worked before, retrying it`).
+   Only then is it given up (`Carrier https failed 3 times in a row for nodeb,
+   no longer preferred`) and the walk moves on. A carrier that never worked
+   is abandoned on its first failure, so a peer that cannot do it costs one
+   attempt, as before.
+4. When a connection **activates** (ACK received), the walk is reset to the
+   top of the preference list and, if the activated connection is the one we
+   dialled (not a link the peer opened towards us that inherited our
+   `outgoing`), its carrier is remembered as the one that works for this peer.
+5. An **activated link that drops** (peer reload, restart, RST, ping
+   timeout, `UDPRebindOnWake`) never advances the walk: the reconnect starts
+   at the first preference again, so a downgrade obtained through step 3 is
+   undone at the next reconnect and the walk never settles on `plain`.
+6. When every candidate has failed, the cycle restarts from the first
+   preference (`Every carrier failed for nodeb, restarting from https`).
+
+Why 3 and not 1 (review row L-2): before this rule a single refused re-dial —
+the peer still restarting, one blocked or reset TLS/QUIC handshake — moved an
+`https`/`quic` link to `plain`, and the link then stayed there until it
+dropped again. Now a downgrade needs the preferred carrier to fail three
+consecutive dials (5 s + 10 s + 15 s of backoff, so ~30 s of sustained
+blocking of that carrier towards that peer), and it is reverted at the next
+reconnect anyway. This is a nuisance bound, not a guarantee: an on-path party
+that can block the covert carrier for long enough still gets `plain`, because
+`plain` is the deliberate last resort of the list; the only way to forbid it is
+to leave it out of `PreferredTransports` **and** off the peer's accept list,
+which the design does not allow today (`plain` is forced into every accept
+list).
 
 One side's choice is enough; nothing has to be configured on both ends. A peer
 that advertises no list at all (upstream tinc) is treated as `plain`-only.
+
+**The dialler chooses.** The rules above govern *our* dials. When the peer
+dials us first (`AutoConnect`, its own `ConnectTo`) the link runs on the
+carrier *it* prefers, tinc keeps the newer of two connections between the same
+pair (`protocol_auth.c id_h`), and our `outgoing` is parked on that inbound
+link. A rendezvous with the default `PreferredTransports: [plain]` that knows
+our address will therefore bring a restarted link back as `plain` regardless
+of our preference (observed in the L-2 lab: after `kill -9` of B, B's
+autoconnect reached A over `plain` before A's own https re-dial). Until the
+acceptor can rank inbound carriers, give such peers the same preference or
+`AutoConnect: no`.
 
 ### ACK wire format (backward compatible)
 
@@ -255,6 +295,20 @@ SF is a dial *preference*, not a mode that removes TCP. If the SF handshake does
 not complete (UDP blocked or filtered), selection falls back down the preference
 list to `plain`, which dials the TCP meta connection (§2). The listener always
 accepts `plain` as well, so a peer can always reach a single-flow node over TCP.
+An SF link that drops *after* activation is re-dialled over SF first (§2 step
+5); only three consecutive handshake failures make the walk move on.
+
+### Sleep/wake and `UDPRebindOnWake` (review R-12)
+
+An SF (or obfs, or quic) session lives on the UDP socket. When the daemon
+detects that it slept (`net.c`, `sleeptime`) it closes every connection, and
+with `UDPRebindOnWake` it also rebinds the UDP sockets to fresh ports, so the
+session cannot survive: the link is torn down through `terminate_connection()`
+exactly like a peer's reload, and the outgoing re-dials. Because those links
+were *activated*, the re-dial starts from the first preference (§2 step 5) and
+comes back on the same carrier; the `outgoing_t` (candidates, last-activated
+carrier, failure count) is untouched by the rebind. The cost is one re-dial
+per link after wake, which is what the option is for.
 
 ---
 
@@ -824,7 +878,7 @@ because the connection dies before it activates:
 | pin mismatch / TLS failure | `NGTCP2_ERR_CRYPTO` | `CONNECTION_CLOSE` with the alert, log both fingerprints, next candidate |
 | Version Negotiation packet | `decode_version_cid` | v1 only: not claimed, session times out as above |
 | authenticator rejected (acceptor) | §9.4 | generic close, `quic: authenticator from <host> rejected`; the dialler logs `Carrier quic failed ..., falling back to plain` and dials plain, where the wrong key fails SPTPS too (d) |
-| mid-session: idle timeout, peer close, library error | `read_pkt` / `handle_expiry` errors | `terminate_connection` => reconnect re-evaluates preferences from the top (§2 step 4) |
+| mid-session: idle timeout, peer close, library error | `read_pkt` / `handle_expiry` errors | `terminate_connection` on an *activated* link => the reconnect starts from the first preference again, i.e. quic is re-dialled, and it is abandoned only after three consecutive pre-activation failures (§2 steps 3-5; `quic-carrier-test.sh` (l): reload, UDP black-hole, `kill -9` + restart all come back as quic) |
 
 **NAT rebind** needs no code on the dialling side: tinc's socket does not
 move, the NAT mapping does; the *acceptor* sees a new source address in

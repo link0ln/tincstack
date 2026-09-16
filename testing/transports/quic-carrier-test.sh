@@ -11,29 +11,36 @@
 #       blocked -> A ends up on plain and the tunnel still carries traffic;
 #   (d) a wrong-key dialler's authenticator is rejected and it falls back;
 #   (f) relay A-R-B with A-R on quic and R-B on plain, A<->B DROP'd.
+#   (l) review L-2: an *activated* quic link dropped by B's reload, by a UDP
+#       black-hole and by B's daemon being killed and kept down until A's
+#       first re-dial failed comes back as quic each time, never plain.
 #
 # All tooling runs in throwaway containers (nicolaka/netshoot for tcpdump and
-# the NAT gateway); nothing is installed on the host. Data under /tmp/wsg3-*.
+# the NAT gateway); nothing is installed on the host. Data under /tmp/<PFX>-quic-*.
 #
-# Usage: [ONLY="a b"] [LAB=prefix] [SUBNET=10.44.9] testing/transports/quic-carrier-test.sh [image] [image-without-quic]
-#   LAB (default wsg3q) prefixes every container/network name and the /tmp
-#   directory; a non-default LAB also gets its own /24 (see lab-env.sh).
+# Usage: [ONLY="a b"] [LAB=wsg3q] [SUBNET=10.44.9] testing/transports/quic-carrier-test.sh [image] [image-without-quic]
+#   The images default to tincstack/core:${TINCSTACK_TAG} and ...-noquic; PFX
+#   names the containers, network and data directory and NETBASE is the lab
+#   /24, so two copies of this lab can run side by side on one host.
 set -e
 [ -n "$QUIC_TRACE" ] && set -x
 
-IMG=${1:-tincstack/core:ws-g3}
-IMG_NOQUIC=${2:-tincstack/core:ws-g3-noquic}
+IMG=${1:-tincstack/core:${TINCSTACK_TAG:-ws-g3}}
+IMG_NOQUIC=${2:-${IMG}-noquic}
 TOOLS=nicolaka/netshoot
 DEFAULT_LAB=wsg3q; DEFAULT_SUBNET=10.44.9
 # shellcheck source=testing/transports/lab-env.sh
 . "$(dirname "$0")/lab-env.sh"
-PFX=$LAB
-BASE=/tmp/$LAB
+# LAB/SUBNET (lab-env.sh, the convention of every proof here) feed the names
+# below; PFX/NETBASE are accepted as aliases for compatibility.
+PFX=${PFX:-$LAB}
+NETBASE=${NETBASE:-$SUBNET}
+BASE=/tmp/${PFX}-quic
 NET=${PFX}net
 
-A_IP=$SUBNET.10
-B_IP=$SUBNET.11
-R_IP=$SUBNET.12
+A_IP=$NETBASE.10
+B_IP=$NETBASE.11
+R_IP=$NETBASE.12
 A_VPN=10.193.0.1
 B_VPN=10.193.0.2
 R_VPN=10.193.0.3
@@ -50,7 +57,7 @@ cleanup() {
 cleanup
 rm -rf "$BASE"-*
 mkdir -p "$BASE-a" "$BASE-b" "$BASE-r" "$BASE-x"
-docker network create --subnet "$SUBNET.0/24" "$NET" >/dev/null
+docker network create --subnet "$NETBASE.0/24" "$NET" >/dev/null
 
 # --- configs ----------------------------------------------------------------
 writecfg() { # dir name extra-yaml-lines...
@@ -367,11 +374,85 @@ docker exec ${PFX}-a ping -c1 -W1 "$B_IP" >/dev/null 2>&1 && miss "A can reach B
 stopall
 }
 
-for sec in ${ONLY:-a b c d f}; do sec_$sec; done
+sec_l() {
+# ============================================================================
+echo "===== (l) review L-2: an activated quic link that drops comes back as quic ====="
+# A dropped *activated* link is a plain reconnect that starts the carrier
+# walk from the first preference again; only failures before activation
+# advance it, and the carrier that last activated is abandoned only after
+# three such failures in a row (docs/transports.md §2). B does not dial A
+# itself (AutoConnect: no): the dialler chooses the carrier and B's own
+# preference is plain, so a B-initiated link would say nothing about A's
+# selection (that race is a separate, documented residual of L-2).
+reset_cfgs
+merge "$BASE-a" nodea "$BASE-b" nodeb "$B_IP" "$B_VPN" "$A_VPN"
+merge "$BASE-b" nodeb "$BASE-a" nodea "$A_IP" "$A_VPN" "$B_VPN"
+sed -i 's/^      AddressPool:/      AutoConnect: no\n      AddressPool:/' "$BASE-b/tinc.yaml"
+# A pings B every 5 s so a black-holed UDP path is declared dead in ~10 s.
+sed -i 's/^      AddressPool:/      PingInterval: 5\n      AddressPool:/' "$BASE-a/tinc.yaml"
+closes_of_a() { docker logs ${PFX}-a 2>&1 | grep -c "Closing connection with nodeb" || true; }
+closed_since() { [ "$(closes_of_a)" -gt "$1" ]; }
+alog_has() { docker logs ${PFX}-a 2>&1 | grep -q "$1"; }
+tunnel_up() { docker exec ${PFX}-a ping -c1 -W1 "$B_VPN" >/dev/null 2>&1; }
+wait_for() { # deadline-s command...: poll until the command succeeds
+	deadline=$(( $(date +%s) + $1 )); shift
+	while [ "$(date +%s)" -lt "$deadline" ]; do
+		"$@" && return 0
+		sleep 1
+	done
+	return 1
+}
+l2_check() { # label
+	if wait_for 60 tunnel_up && dumpc a | grep nodeb | grep -q "transport quic" && dumpc b | grep nodea | grep -q "transport quic"; then
+		pl=$(docker exec ${PFX}-a ping -c5 -i0.2 -W2 "$B_VPN" 2>&1 | grep -o '[0-9]*% packet loss')
+		[ "$pl" = "0% packet loss" ] && note "L-2 $1: A is back on quic (both ends), tunnel $pl" || miss "L-2 $1: back on quic but tunnel loss: $pl"
+	else
+		miss "L-2 $1: A reconnected over '$(dumpc a | grep nodeb | grep -o 'transport [a-z]*')' (expected quic); A log: $(docker logs ${PFX}-a 2>&1 | grep -E 'Carrier|via ' | tail -4 | tr '\n' '|')"
+	fi
+}
+
+start b "$B_IP" "$BASE-b"
+sleep 2
+start a "$A_IP" "$BASE-a"
+wait_for 20 alog_has "Connection with nodeb .* activated" || miss "L-2: no quic link to begin with"
+setvpn b "$B_VPN"
+setvpn a "$A_VPN"
+waitping a "$B_VPN" 3 && dumpc a | grep nodeb | grep -q "transport quic" && note "L-2: tunnel up over quic" || miss "L-2: initial link is not quic: $(dumpc a)"
+
+# (1) reload: B closes the activated link cleanly.
+c0=$(closes_of_a)
+docker exec ${PFX}-b tinc -c /etc/tincstack/tinc.yaml -n wsg3 reload >/dev/null 2>&1 || true
+wait_for 20 closed_since "$c0" || miss "L-2 reload: B's reload did not drop A's link"
+l2_check "reload"
+
+# (2) UDP black-hole at B until A declares the link dead, then lifted.
+c0=$(closes_of_a)
+docker exec ${PFX}-b iptables -I INPUT -p udp -s "$A_IP" -j DROP
+wait_for 60 closed_since "$c0" || miss "L-2 black-hole: A never declared the link dead"
+docker exec ${PFX}-b iptables -D INPUT -p udp -s "$A_IP" -j DROP
+l2_check "UDP black-hole"
+
+# (3) kill -9: B's daemon dies and stays down until A's first re-dial has
+# failed -- before the fix that single failure downgraded A to plain.
+c0=$(closes_of_a)
+docker kill -s KILL ${PFX}-b >/dev/null
+wait_for 30 closed_since "$c0" || miss "L-2 kill: A did not notice B's death"
+if wait_for 40 alog_has "Carrier quic failed for nodeb before activation (1/3) but worked before, retrying it"; then
+	note "L-2 kill: A log: $(docker logs ${PFX}-a 2>&1 | grep 'before activation (1/3)' | tail -1 | sed 's/.*Carrier/Carrier/')"
+else
+	miss "L-2 kill: A did not retry quic after the failed re-dial: $(docker logs ${PFX}-a 2>&1 | grep -E 'Carrier' | tail -3 | tr '\n' '|')"
+fi
+docker start ${PFX}-b >/dev/null
+l2_check "kill -9 + restart"
+docker logs ${PFX}-a 2>&1 | grep -q "falling back to plain" && miss "L-2: A fell back to plain at some point" || note "L-2: A never fell back to plain"
+stopall
+}
+
+for sec in ${ONLY:-a b c d f l}; do sec_$sec; done
 
 echo "==========================================="
 if [ "$fail" = 0 ]; then
-	echo "PASS: quic carrier negotiates, survives NAT rebind, falls back, rejects bad auth, relays"
+	echo "PASS: quic carrier negotiates, survives NAT rebind, falls back, rejects bad auth, relays, keeps its carrier across link drops"
 	exit 0
 else
 	echo "FAIL"
