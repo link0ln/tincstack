@@ -26,11 +26,13 @@
 #include "conf.h"
 #include "control_common.h"
 #include "logger.h"
+#include "names.h"
 #include "net.h"
 #include "protocol.h"
 #include "rsa.h"
 #include "utils.h"
 #include "xalloc.h"
+#include "yamlconf.h"
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
@@ -44,10 +46,29 @@ list_t connection_list = {
 
 connection_t *everyone;
 
+void connection_snapshot_host_config(connection_t *c) {
+	if(!yamlconf_path || !yamlconf_global || !netname || !c || !c->name) {
+		return;
+	}
+
+	c->host_digest_valid = yamlconf_host_digest(yamlconf_global, netname, c->name, c->host_digest);
+}
+
+/* conf.c hands us the name of every host record the daemon itself appends to,
+   so the next reload does not read our own write as an operator edit. */
+static void host_record_written(const char *name) {
+	for list_each(connection_t, c, &connection_list) {
+		if(c->name && !strcmp(c->name, name)) {
+			connection_snapshot_host_config(c);
+		}
+	}
+}
+
 void init_connections(void) {
 	everyone = new_connection();
 	everyone->name = xstrdup("everyone");
 	everyone->hostname = xstrdup("BROADCAST");
+	config_host_written_cb = host_record_written;
 }
 
 void exit_connections(void) {

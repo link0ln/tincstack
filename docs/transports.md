@@ -310,6 +310,23 @@ comes back on the same carrier; the `outgoing_t` (candidates, last-activated
 carrier, failure count) is untouched by the rebind. The cost is one re-dial
 per link after wake, which is what the option is for.
 
+### `tinc reload` does not drop the carrier (stream P)
+
+A reload is *not* a drop. `reload_configuration()` closes a meta connection only
+when that peer's host record changed, and in YAML mode "changed" means the
+record's **content** changed — `yamlconf_host_digest()` (SHA-512 truncated to
+256 bits) against the snapshot taken when we last read the record, not the
+mtime of a `hosts/<peer>` file that YAML mode does not have. Before this, every
+reload closed every link, and since `tinc set/add/del` reloads the running
+daemon itself, so did every configuration change; each of those drops then had
+to be repaired by the §2 step-5 re-dial, so a covert carrier survived only
+because that rule exists. Lines the daemon appends to a peer's record itself —
+the learned `Ed25519PublicKey`, the `TlsFingerprint` pinned after SPTPS
+activation (§8.3) — refresh the snapshot instead of counting as a change, so
+the first reload after an https or quic link comes up no longer bounces it.
+A genuine edit of a peer's record still terminates that one connection, which
+then re-dials from the first preference like any other activated-link drop.
+
 ---
 
 ## 5. Obfuscated UDP (`obfs`)

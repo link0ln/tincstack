@@ -28,7 +28,8 @@ export BASELINE_IMAGE := tincstack/baseline:$(TAG)
 SHELLCHECK_IMAGE ?= koalaman/shellcheck:stable
 SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-sim/natlab.sh \
                  testing/nat-sim/natprofile.sh testing/dpi-proof/run.sh testing/dpi-proof/capture.sh \
-                 testing/smoke/run.sh platforms/linux/docker/two-nodes.sh
+                 testing/smoke/run.sh platforms/linux/docker/two-nodes.sh \
+                 platforms/linux/docker/reload-test.sh
 # The transport proofs predate the lint target and carry info-level findings
 # (SC2086/SC2015 style); they are linted at warning severity so real defects
 # fail `make lint` without a rewrite of every proof script.

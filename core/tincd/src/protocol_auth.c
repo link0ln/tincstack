@@ -556,6 +556,11 @@ bool id_h(connection_t *c, const char *request) {
 		/* Ignore failures if no key known yet */
 	}
 
+	/* We have just read this peer's host record: remember its content so a
+	   later `tinc reload' can tell a real edit from the re-materialisation
+	   YAML mode does on every read (no-op in classic mode). */
+	connection_snapshot_host_config(c);
+
 	if(c->protocol_minor && !ecdsa_active(c->ecdsa)) {
 		c->protocol_minor = 1;
 	}

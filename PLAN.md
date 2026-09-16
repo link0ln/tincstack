@@ -1400,13 +1400,34 @@ Defects identified during the source audit, to fix as their milestone is reached
 - 🟢 **YAML emitter adds a blank line after every literal block** (pre-existing
   cosmetic quirk of `emit_scalar_value`). Parses fine; round-trip is stable.
 
-- 🟠 **`tinc reload` in YAML mode bounces every meta connection** (observed by
-  stream S, 2026-09-16, in the scripts lab): each reload logs `Host config file
-  of <peer> has been changed` and closes the link — the stock mtime check in
-  `net.c` sees YAML host text as "new" every time. Any `tinc set` followed by a
-  reload therefore briefly drops all links (and, before stream N's fix, may
-  downgrade the carrier). Fix: compare host-record content (hash), not mtime,
-  in YAML mode. Owner: core (conf/net).
+- ~~🟠 **`tinc reload` in YAML mode bounces every meta connection**~~ (observed
+  by stream S, 2026-09-16, in the scripts lab): each reload logged `Host config
+  file of <peer> has been changed` and closed the link. **Resolved 2026-09-16
+  (stream P):** the upstream check `stat()`s `<confbase>/hosts/<peer>` and
+  closes the link when the file is newer than `last_config_check`; in YAML mode
+  that tree does not exist at all (`config_fopen()` materialises the record as
+  text on every read), so the `stat()` failed and *every* peer looked changed on
+  *every* reload. `reload_configuration()` (`net.c`) now compares the record's
+  **content** in YAML mode: `yamlconf_host_digest()` (SHA-512/256 of the host
+  text) against a per-connection snapshot (`connection_t.host_digest`) taken
+  when the record is read (`id_h`) and refreshed through `config_host_written_cb`
+  whenever the daemon appends to it itself (learned `Ed25519PublicKey`,
+  `TlsFingerprint` pin — otherwise our own write read back as an operator edit).
+  Classic mode keeps the upstream mtime behaviour unchanged. Note the defect was
+  wider than "`tinc set` followed by a reload": `tinc set/add/del` sends
+  `REQ_RELOAD` to the running daemon itself (`tincctl.c:2236,2272`), so a bare
+  `tinc set` dropped every link. Proof `TINCSTACK_TAG=ws-p LAB=wsp
+  platforms/linux/docker/reload-test.sh` (new, two-project lab, b on
+  `PreferredTransports: [https, plain]`), same script on the pre-fix build
+  (a1d60ad, `TINCSTACK_TAG=ws-p-pre LAB=wspre`): **before** — 3 no-op reloads +
+  `tinc set PingInterval` + reload logged `Host config file of node_a has been
+  changed` 3× and closed the link to node_a 3× (a closed its link to node_b 2×),
+  tunnel ping **70 % packet loss**; **after** — `has been changed` 0×, `Closing
+  connection with node_a` 0×, same socket (10) on b and (14) on a throughout,
+  tunnel ping **0 % packet loss**, carrier still `https` on both ends. A real
+  change (`tinc add node_a.Address <a-ip> 655` + reload) still logs exactly one
+  `Host config file of node_a has been changed`, closes that one link and brings
+  it back on `https`, tunnel PASS. Run twice, EXIT=0 both times.
 - ~~🟠 **Windows cross-build broken by `decoy.c`**~~ **Resolved 2026-09-16
   (consolidation):** stream L's event-driven decoy included `<sys/socket.h>`
   directly, used `fcntl(O_NONBLOCK)` unguarded and `memmem()` (not in mingw);

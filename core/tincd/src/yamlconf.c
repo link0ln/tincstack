@@ -27,6 +27,7 @@
 #endif
 
 #include "yamlconf.h"
+#include "ed25519/sha512.h"
 
 /* ---- value tree ---------------------------------------------------------- */
 
@@ -700,6 +701,19 @@ char *yamlconf_host_text(yamlconf_t *yc, const char *net, const char *name) {
 	const yval_t *h = map_get(map_get(net_node(yc, net), "hosts"), name);
 	if(!h || h->type != Y_SCALAR) return NULL;
 	return strdup(h->scalar);
+}
+
+bool yamlconf_host_digest(yamlconf_t *yc, const char *net, const char *name, uint8_t *out) {
+	const yval_t *h = map_get(map_get(net_node(yc, net), "hosts"), name);
+	if(!h || h->type != Y_SCALAR) return false;
+
+	/* SHA-512 truncated to 256 bits. The record is attacker-influenced (a
+	   peer's own key and subnets are appended to it), so a non-cryptographic
+	   checksum would let a peer hide a change from the reload check. */
+	uint8_t full[64];
+	if(sha512(h->scalar, strlen(h->scalar), full) != 0) return false;
+	memcpy(out, full, YAMLCONF_DIGEST_LEN);
+	return true;
 }
 
 const char *yamlconf_key_pem(yamlconf_t *yc, const char *net, const char *which) {
