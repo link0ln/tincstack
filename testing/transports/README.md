@@ -1,6 +1,6 @@
-# testing/transports — M4 transport layer proofs
+# testing/transports — M4/M5 transport layer proofs
 
-Three self-contained checks. All tooling runs in throwaway Docker containers;
+Self-contained checks. All tooling runs in throwaway Docker containers;
 nothing is installed on the host. They need the core image built first:
 
     docker build -f core/Dockerfile.build -t tincstack/core:ws-b core/
@@ -15,7 +15,8 @@ the right handler class.
 
     sh testing/transports/classify-test.sh
 
-Expect: `26 checks, 0 failures`.
+Expect: `37 checks, 0 failures` (M5 G3 added the QUIC v1-only long-header
+rows and the keyed short-header rows, docs/transports.md §9.5).
 
 ## matrix-test.sh — outbound selection & fallback
 
@@ -50,3 +51,28 @@ relayed SPTPS key exchange can take ~20 s to establish; the script retries.)
     sh testing/transports/singleflow-test.sh
 
 Expect: `PASS: single-flow tunnel is UDP-only, cold-start works, relay path intact`.
+
+## quic-carrier-test.sh — the `quic` carrier (M5, G3)
+
+Needs the QUIC-enabled image (the default `core/Dockerfile.build` since G3) and,
+for the "built without QUIC" fallback case, the same Dockerfile with
+`--build-arg QUIC=disabled`:
+
+    docker build -f core/Dockerfile.build -t tincstack/core:ws-g3 core/
+    docker build -f core/Dockerfile.build --build-arg QUIC=disabled -t tincstack/core:ws-g3-noquic core/
+    sh testing/transports/quic-carrier-test.sh [image] [image-without-quic]
+
+Sections (`ONLY="a b"` runs a subset, `KEEP=1` leaves the containers up):
+(a) A `PreferredTransports: [quic, plain]`, B default -> ping both ways,
+`dump connections` shows `quic` on both, tcpdump on the port shows QUIC only
+(three long headers then short headers, no datagram without the QUIC fixed
+bit, no TCP connection established); (b) NAT rebind: an SNAT rule in A's netns
+maps its source port, is flipped 40000 -> 40001 mid-session and conntrack is
+flushed -> B logs `quic: path validated ... port 40001`, no re-handshake, ping
+continues; (c) fallback with B `Transports: [plain]`, B built without QUIC, and
+UDP to B DROP'd (handshake timeout -> `Carrier quic failed ... falling back to
+plain`); (d) a dialler with the wrong Ed25519 key: `quic: authenticator ...
+rejected` on B, dialler falls back; (f) relay A-R-B with A-R on quic and R-B on
+plain, A<->B severed.
+
+Expect: `PASS: quic carrier negotiates, survives NAT rebind, falls back, rejects bad auth, relays`.
