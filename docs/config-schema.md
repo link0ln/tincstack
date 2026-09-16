@@ -107,9 +107,21 @@ networks:
       HttpsDecoyUpstream: "example.com:80"    # or transparently proxy probers here
                                               # (host:port; Host header rewritten)
 
-      # QUIC carrier (point 7)
-      QuicPort: 443
-      # (QUIC keeps SPTPS inside it; cert handling shared with the HTTPS front)
+      # QUIC carrier (point 7; M5 G3). Compiled when tinc is built with ngtcp2 +
+      # GnuTLS on an OpenSSL build (the Docker image is); then `quic' is in the
+      # default accept list and is dialled only when a node lists it in
+      # PreferredTransports ([quic, plain]). Meta rides one QUIC stream, SPTPS
+      # data rides DATAGRAM frames; the node certificate (keys.tls_cert) and the
+      # https authenticator are shared. Mechanism: docs/transports.md §9.
+      QuicPort: 443                 # extra UDP listener for QUIC (e.g. 443 for
+                                    # HTTP/3 plausibility). Default = the tinc
+                                    # Port, i.e. no extra socket. Also valid in a
+                                    # peer's host record: the port to dial it on.
+      QuicSni: cdn.example.net      # SNI the quic DIAL presents; default = HttpsSni,
+                                    # else the peer's Address if it is a hostname,
+                                    # else none
+      QuicAlpn: h3                  # ALPN offered by the dial and required by the
+                                    # listener; default h3
 
     # ── embedded identity (self-contained config) ───────────────────────────
     keys:
@@ -146,9 +158,11 @@ networks:
         Ed25519PublicKey = ...
         Subnet = 10.210.0.2/32
         Transports = quic, https, plain   # peer's advertised carriers
-        TlsFingerprint = 6776...64f2      # pinned; the `https' dial verifies the
-                                          # peer cert against it (accept-on-first-
-                                          # use then pin if absent)
+        TlsFingerprint = 6776...64f2      # pinned; the `https' and `quic' dials
+                                          # verify the peer cert against it
+                                          # (accept-on-first-use then pin if absent)
+        QuicPort = 443                    # optional: dial this peer's quic carrier
+                                          # here instead of Port
 ```
 
 ## Zero-config materialisation (first run)

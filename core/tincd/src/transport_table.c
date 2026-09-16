@@ -41,7 +41,13 @@ static const struct {
 #else
 	[TRANSPORT_HTTPS] = { "https", false },
 #endif
+#if defined(HAVE_QUIC) && defined(HAVE_OPENSSL)
+	/* The quic carrier (ngtcp2 + GnuTLS) is compiled when meson found the
+	   libraries; it serves the node certificate from tls.c (OpenSSL build). */
+	[TRANSPORT_QUIC]  = { "quic",  true },
+#else
 	[TRANSPORT_QUIC]  = { "quic",  false },
+#endif
 #ifdef HAVE_TRANSPORT_TEST
 	[TRANSPORT_TEST]  = { "test",  true },
 #else
@@ -231,20 +237,23 @@ transport_tcp_class_t transport_classify_tcp(const uint8_t *buf, size_t len) {
 
 /* ---- UDP classifier ----------------------------------------------------- */
 
+/* Keyed lookup for QUIC 1-RTT short headers, set by transport_quic.c (or the
+   classifier unit test). NULL: no short-header packet is claimed as QUIC. */
+static bool (*quic_cid_matcher)(const uint8_t *dcid);
+
+void transport_set_quic_cid_matcher(bool (*matcher)(const uint8_t *dcid)) {
+	quic_cid_matcher = matcher;
+}
+
+/* Only QUIC version 1 is claimed. The carrier speaks v1 only, so v2, the
+   IETF drafts, greased versions and Version Negotiation (version 0) would
+   never reach a live session anyway -- and matching them widened the overlap
+   with a genuine SPTPS relay datagram from 2^-34 to about 2^-17 per node
+   (review R-10: 1/4 for the top two bits x ~2^17 accepted version words out
+   of 2^32). With exactly one 32-bit version word the residual is 2^-34 per
+   node, as documented in docs/transports.md §3. */
 static bool quic_version_known(uint32_t v) {
-	if(v == 0x00000001 || v == 0x6b3343cf || v == 0) {
-		return true; /* v1, v2, version negotiation */
-	}
-
-	if((v & 0xffff0000) == 0xff000000) {
-		return true; /* IETF drafts */
-	}
-
-	if((v & 0x0f0f0f0f) == 0x0a0a0a0a) {
-		return true; /* greased versions (RFC 9368) */
-	}
-
-	return false;
+	return v == 0x00000001;
 }
 
 transport_udp_class_t transport_classify_udp(const uint8_t *buf, size_t len, uint32_t accept_mask) {
@@ -254,10 +263,12 @@ transport_udp_class_t transport_classify_udp(const uint8_t *buf, size_t len, uin
 		return UDP_CLASS_SF;
 	}
 
-	/* 2. QUIC long header: form bit + fixed bit, followed by a version. Only
+	/* 2. QUIC long header: form bit + fixed bit, followed by version 1. Only
 	      claimed when the quic carrier is accepted; the residual overlap with
 	      an SPTPS relay datagram whose destination id starts with 0xC0..0xFF
-	      and a known version word is 2^-34 per node and is documented. */
+	      and whose next four bytes are 00 00 00 01 is 2^-34 per node -- and
+	      even then the carrier only consumes it if ngtcp2 accepts it as a
+	      >= 1200-byte Initial, otherwise it falls through (transport.c). */
 	if((accept_mask & TRANSPORT_BIT(TRANSPORT_QUIC)) && len >= 5 && (buf[0] & 0xc0) == 0xc0) {
 		uint32_t v = ((uint32_t)buf[1] << 24) | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 8) | buf[4];
 
@@ -266,11 +277,25 @@ transport_udp_class_t transport_classify_udp(const uint8_t *buf, size_t len, uin
 		}
 	}
 
-	/* 3. obfs: reserved. Its datagrams are keyed (they look random), so
+	/* 3. QUIC 1-RTT short header: form bit clear, fixed bit set (top two bits
+	      0x40), followed directly by the destination connection id. There is
+	      no version word to key on, so this is a keyed lookup of the 8-byte
+	      DCID against the CIDs we issued (docs/transports.md §9.6): a data
+	      packet whose first byte is 0x40..0x7f and whose next 8 bytes equal a
+	      live CID is 2^-64 per session, the same class of argument as the SF
+	      magic. Only ever claimed when quic is accepted and a matcher is set,
+	      so a build without the carrier never mis-routes a data packet. */
+	if((accept_mask & TRANSPORT_BIT(TRANSPORT_QUIC)) && quic_cid_matcher &&
+	                len >= 1 + TRANSPORT_QUIC_CIDLEN && (buf[0] & 0xc0) == 0x40 &&
+	                quic_cid_matcher(buf + 1)) {
+		return UDP_CLASS_QUIC;
+	}
+
+	/* 4. obfs: reserved. Its datagrams are keyed (they look random), so
 	      they cannot be told apart by pattern; the carrier's own keyed check
 	      (like try_harder() for SPTPS) claims them in transport_udp_dispatch()
-	      once it exists. */
+	      after this returns SPTPS. */
 
-	/* 4. everything else is the existing SPTPS / legacy data path. */
+	/* 5. everything else is the existing SPTPS / legacy data path. */
 	return UDP_CLASS_SPTPS;
 }

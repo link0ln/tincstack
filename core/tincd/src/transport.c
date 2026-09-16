@@ -27,6 +27,7 @@
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
 #include "obfs.h"
+#include "transport_quic.h"
 
 #include "decoy.h"
 
@@ -90,7 +91,25 @@ static const transport_t transports[TRANSPORT_MAX] = {
 #else
 	[TRANSPORT_HTTPS] = { .id = TRANSPORT_HTTPS, .name = "https", .caps = TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_META_TCP },
 #endif
+	/* quic (M5, G3): meta on one QUIC stream, SPTPS data in DATAGRAM frames,
+	   over the shared UDP socket. Needs ngtcp2+GnuTLS (HAVE_QUIC) and the
+	   node certificate (OpenSSL build). See transport_quic.c. */
+#if defined(HAVE_QUIC) && defined(HAVE_OPENSSL)
+	[TRANSPORT_QUIC]  = {
+		.id = TRANSPORT_QUIC, .name = "quic",
+		.caps = TRANSPORT_CAP_SINGLE_FLOW,
+		.init = quic_init,
+		.exit = quic_exit,
+		.dial = quic_dial,
+		.send = quic_send,
+		.close = quic_close,
+		.local_address = quic_local_address,
+		.udp_receive = quic_udp_receive,
+		.send_datagram = quic_send_datagram,
+	},
+#else
 	[TRANSPORT_QUIC]  = { .id = TRANSPORT_QUIC,  .name = "quic",  .caps = TRANSPORT_CAP_SINGLE_FLOW },
+#endif
 #ifdef HAVE_TRANSPORT_TEST
 	[TRANSPORT_TEST]  = { .id = TRANSPORT_TEST,  .name = "test",  .caps = TRANSPORT_CAP_META_TCP, .dial = test_dial },
 #else
@@ -248,6 +267,15 @@ bool transport_read_config(void) {
 	/* obfs option surface (ObfsJunkPacket*, ObfsInit*, ...): re-read on every
 	   (re)load so `tinc set Obfs... ; tinc reload' takes effect live. */
 	obfs_read_config();
+
+#if defined(HAVE_QUIC) && defined(HAVE_OPENSSL)
+
+	/* quic: re-serve a replaced node certificate on reload. */
+	if(!quic_read_config()) {
+		return false;
+	}
+
+#endif
 
 	logger(DEBUG_ALWAYS, LOG_INFO, "Transports accept=%s prefer=%s%s", transport_mask_to_string(transport_accept_mask, buf), pbuf, single_flow ? " (SingleFlow)" : "");
 
@@ -575,16 +603,27 @@ bool transport_udp_dispatch(listen_socket_t *ls, const uint8_t *buf, size_t len,
 		return true;
 
 	case UDP_CLASS_QUIC:
-		if(transports[TRANSPORT_QUIC].udp_receive) {
-			transports[TRANSPORT_QUIC].udp_receive(ls, buf, len, addr);
-		} else if(debug_level >= DEBUG_TRAFFIC) {
+#if defined(HAVE_QUIC) && defined(HAVE_OPENSSL)
+
+		/* A live session's packet, or a valid Initial. A long-header
+		   lookalike that ngtcp2 does not accept is NOT claimed: it falls
+		   through to the obfs keyed check and the SPTPS path below. */
+		if(quic_udp_try(ls, buf, len, addr)) {
+			return true;
+		}
+
+#else
+
+		if(debug_level >= DEBUG_TRAFFIC) {
 			char *hostname = sockaddr2hostname(addr);
 			logger(DEBUG_TRAFFIC, LOG_INFO, "Dropping QUIC datagram from %s: no quic carrier in this build", hostname);
 			free(hostname);
 		}
 
 		return true;
+#endif
 
+	/* fall through */
 	case UDP_CLASS_OBFS:
 	case UDP_CLASS_SPTPS:
 	default:

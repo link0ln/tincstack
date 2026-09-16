@@ -19,6 +19,13 @@
 static int failures = 0;
 static int checks = 0;
 
+/* A fake QUIC session table: exactly one live 8-byte connection id. */
+static const uint8_t live_cid[TRANSPORT_QUIC_CIDLEN] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+
+static bool fake_cid_matcher(const uint8_t *dcid) {
+	return !memcmp(dcid, live_cid, TRANSPORT_QUIC_CIDLEN);
+}
+
 static const char *tcp_name(transport_tcp_class_t c) {
 	switch(c) {
 	case TCP_CLASS_NEED_MORE:
@@ -137,6 +144,44 @@ int main(void) {
 	check_udp("QUIC v1, not accepted", quic, sizeof(quic), TRANSPORT_MASK_PLAIN, UDP_CLASS_SPTPS);
 	const uint8_t quicbad[] = {0xc3, 0xde, 0xad, 0xbe, 0xef, 0x00};
 	check_udp("long hdr, unknown ver", quicbad, sizeof(quicbad), all, UDP_CLASS_SPTPS);
+	/* Review R-10: only v1 is claimed; v2, drafts, grease and VN (version 0)
+	   fall through so the SPTPS overlap stays 2^-34, not 2^-17. */
+	const uint8_t quicv2[] = {0xd3, 0x6b, 0x33, 0x43, 0xcf, 0x08};
+	check_udp("long hdr, QUIC v2", quicv2, sizeof(quicv2), all, UDP_CLASS_SPTPS);
+	const uint8_t quicdraft[] = {0xc3, 0xff, 0x00, 0x00, 0x1d, 0x08};
+	check_udp("long hdr, draft-29", quicdraft, sizeof(quicdraft), all, UDP_CLASS_SPTPS);
+	const uint8_t quicgrease[] = {0xc3, 0x1a, 0x2a, 0x3a, 0x4a, 0x08};
+	check_udp("long hdr, greased ver", quicgrease, sizeof(quicgrease), all, UDP_CLASS_SPTPS);
+	const uint8_t quicvn[] = {0xc0, 0x00, 0x00, 0x00, 0x00, 0x08};
+	check_udp("long hdr, version neg.", quicvn, sizeof(quicvn), all, UDP_CLASS_SPTPS);
+	/* The real first packet of the spike's capture: c3 00 00 00 01 08 ... */
+	uint8_t initial[1200];
+	memset(initial, 0, sizeof(initial));
+	initial[0] = 0xc3;
+	initial[4] = 0x01;
+	initial[5] = 0x08;
+	check_udp("QUIC Initial, 1200 B", initial, sizeof(initial), all, UDP_CLASS_QUIC);
+
+	/* QUIC 1-RTT short header: fixed bit only (0x40..0x7f), then the 8-byte
+	   destination CID. Keyed: claimed only when the CID is one we issued
+	   (docs/transports.md §9.6), and only with a matcher registered. */
+	uint8_t shorthdr[1 + TRANSPORT_QUIC_CIDLEN + 20];
+	memset(shorthdr, 0x5a, sizeof(shorthdr));
+	shorthdr[0] = 0x41;
+	memcpy(shorthdr + 1, live_cid, TRANSPORT_QUIC_CIDLEN);
+	check_udp("short hdr, no matcher", shorthdr, sizeof(shorthdr), all, UDP_CLASS_SPTPS);
+	transport_set_quic_cid_matcher(fake_cid_matcher);
+	check_udp("short hdr, live CID", shorthdr, sizeof(shorthdr), all, UDP_CLASS_QUIC);
+	check_udp("short hdr, not accepted", shorthdr, sizeof(shorthdr), TRANSPORT_MASK_PLAIN, UDP_CLASS_SPTPS);
+	shorthdr[3] ^= 0xff;
+	check_udp("short hdr, unknown CID", shorthdr, sizeof(shorthdr), all, UDP_CLASS_SPTPS);
+	memcpy(shorthdr + 1, live_cid, TRANSPORT_QUIC_CIDLEN);
+	shorthdr[0] = 0x01; /* fixed bit clear: never QUIC */
+	check_udp("fixed bit clear, live CID", shorthdr, sizeof(shorthdr), all, UDP_CLASS_SPTPS);
+	shorthdr[0] = 0x41;
+	check_udp("short hdr, truncated", shorthdr, TRANSPORT_QUIC_CIDLEN, all, UDP_CLASS_SPTPS);
+	/* An SF frame whose cid slot happens to hold the live CID stays SF (checked first). */
+	transport_set_quic_cid_matcher(NULL);
 
 	/* A genuine SPTPS relay datagram: dst id then src id; first byte is a
 	   normal node-id byte, not the SF magic and not a QUIC long header. */

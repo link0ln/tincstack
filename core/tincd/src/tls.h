@@ -76,6 +76,12 @@ extern char *tls_cert_source;               /* human-readable origin, for the lo
 bool tls_init(void);
 void tls_exit(void);
 
+/* The node certificate/key as PEM text (the same source tls_init() uses),
+   for a carrier that needs the raw PEM (the quic carrier's GnuTLS backend).
+   Both are heap strings the caller frees; the key should be zeroed after use.
+   False if the certificate cannot be loaded/generated. */
+bool tls_current_pem(char **cert_pem, char **key_pem);
+
 #endif /* HAVE_OPENSSL */
 
 #endif /* TINC_TLS_H */

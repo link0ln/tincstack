@@ -87,11 +87,22 @@ transport_tcp_class_t transport_classify_tcp(const uint8_t *buf, size_t len);
 typedef enum transport_udp_class_t {
 	UDP_CLASS_SPTPS = 0,      /* the existing tinc data path (SPTPS datagram / legacy) */
 	UDP_CLASS_SF,             /* single-flow meta frame */
-	UDP_CLASS_QUIC,           /* QUIC long header (version negotiation / initial / handshake) */
+	UDP_CLASS_QUIC,           /* QUIC (long header, or a short header on a CID we issued) */
 	UDP_CLASS_OBFS,           /* reserved: the obfs carrier's keyed classifier claims it */
 } transport_udp_class_t;
 
 transport_udp_class_t transport_classify_udp(const uint8_t *buf, size_t len, uint32_t accept_mask);
+
+/* Connection-id length the quic carrier issues and the classifier keys on for
+   1-RTT short-header packets (docs/transports.md §9.6). */
+#define TRANSPORT_QUIC_CIDLEN 8
+
+/* Register a keyed lookup for QUIC short-header packets: given the 8-byte
+   destination connection id, return true if it belongs to one of our live
+   QUIC sessions. transport_quic.c sets a real one; the classifier unit test
+   sets a fake. NULL (the default) means no short-header packet is ever
+   claimed as QUIC, so a build without the carrier behaves like plain tinc. */
+void transport_set_quic_cid_matcher(bool (*matcher)(const uint8_t *dcid));
 
 /* ---- single-flow frame layout (shared by the classifier and transport_sf.c) */
 
@@ -138,6 +149,11 @@ typedef struct transport_t {
 	void (*close)(struct connection_t *c);
 	bool (*local_address)(struct connection_t *c, sockaddr_t *sa);
 	void (*udp_receive)(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr);
+	/* Data path (M5 quic): frame one SPTPS datagram (the exact bytes
+	   send_sptps_data() would put on the wire) on the carrier's flow instead
+	   of the plain UDP socket. false = does not fit the carrier's ceiling; the
+	   caller treats it like EMSGSIZE. NULL = data rides the plain UDP path. */
+	bool (*send_datagram)(struct connection_t *c, const void *buf, size_t len);
 } transport_t;
 
 #define TRANSPORT_CAP_META_TCP     0x01 /* meta channel is a TCP stream on the front port */

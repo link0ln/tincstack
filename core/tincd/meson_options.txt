@@ -100,6 +100,11 @@ option('sandbox',
        description: 'use sandboxing on platforms that support it')
 
 
+option('quic',
+       type: 'feature',
+       value: 'auto',
+       description: 'QUIC carrier (ngtcp2 with the GnuTLS backend); auto = when pkg-config finds libngtcp2 + libngtcp2_crypto_gnutls + gnutls')
+
 option('transport_test',
        type: 'boolean',
        value: false,
