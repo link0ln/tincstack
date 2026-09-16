@@ -37,9 +37,13 @@ extern yamlconf_t *yamlconf_global;
 /* True if `path` looks like a YAML config file (ends in .yaml/.yml). */
 bool yamlconf_is_yaml_path(const char *path);
 
-/* Return a readable, rewound FILE* holding `content`. Portable replacement for
-   tmpfile() (which on Windows creates files in C:\, unwritable for non-admins):
-   uses %TEMP% on Windows, tmpfile() on POSIX. Caller fclose()s it. */
+/* Return a readable, rewound FILE* holding `content` (config text or a
+   private-key PEM). Portable replacement for tmpfile(), which on Windows
+   creates files in C:\, unwritable for non-admins: POSIX uses tmpfile()
+   (0600, unlinked at once); Windows creates a delete-on-close temporary
+   next to the config file (the directory that already holds the keys) with
+   an ACL for the calling user and SYSTEM only -- never in %TEMP% (security
+   review R-13). Caller fclose()s it. */
 FILE *yamlconf_content_fp(const char *content);
 
 /* Parse a YAML config file. Returns NULL on error (unreadable, larger than

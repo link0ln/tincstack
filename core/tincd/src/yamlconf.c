@@ -17,6 +17,9 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <sddl.h>
+#include <io.h>
+#include <fcntl.h>
 #else
 #include <fcntl.h>
 #include <sys/file.h>
@@ -471,22 +474,121 @@ static yval_t *parse_text(char *text) {
 
 /* ---- public: temp FILE* (portable tmpfile) ------------------------------- */
 
-FILE *yamlconf_content_fp(const char *content) {
-	FILE *f;
 #ifdef _WIN32
-	char dir[MAX_PATH], path[MAX_PATH];
+/* The content handed to this function is config text and private-key PEM
+   (conf.c reads keys through it, zeroconf.c captures generated ones). It
+   must not land in %TEMP%, a directory every process of the user -- and on
+   a shared machine every user's sync/AV/backup agent -- can read (security
+   review R-13). The temporary is therefore created next to the config, in
+   the directory that already holds the keys, with an ACL that admits only
+   the calling user and SYSTEM, opened without sharing, marked temporary and
+   delete-on-close, so it has no name to reach for once the FILE* is gone.
+   %TEMP% is used only when there is no config path at all (no keys then). */
+static PSECURITY_DESCRIPTOR private_sd(void) {
+	HANDLE tok;
+	PSECURITY_DESCRIPTOR sd = NULL;
 
-	if(!GetTempPathA(sizeof(dir), dir) || !GetTempFileNameA(dir, "tyc", 0, path)) {
+	if(!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) {
 		return NULL;
 	}
 
-	f = fopen(path, "w+bTD");       /* T=temporary, D=delete-on-close (MSVCRT) */
+	DWORD n = 0;
+	GetTokenInformation(tok, TokenUser, NULL, 0, &n);
+	TOKEN_USER *tu = n ? malloc(n) : NULL;
 
-	if(!f) {
-		f = fopen(path, "w+b");
+	if(tu && GetTokenInformation(tok, TokenUser, tu, n, &n)) {
+		char *sid = NULL;
+
+		if(ConvertSidToStringSidA(tu->User.Sid, &sid)) {
+			char sddl[256];
+			snprintf(sddl, sizeof(sddl), "D:P(A;;FA;;;%s)(A;;FA;;;SY)", sid);
+			ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl, SDDL_REVISION_1, &sd, NULL);
+			LocalFree(sid);
+		}
 	}
 
+	free(tu);
+	CloseHandle(tok);
+	return sd;
+}
+
+static FILE *private_tmpfile(void) {
+	char dir[MAX_PATH];
+
+	if(yamlconf_path) {
+		if(strlen(yamlconf_path) >= sizeof(dir)) {
+			return NULL;
+		}
+
+		strcpy(dir, yamlconf_path);
+		char *slash = strrchr(dir, '\\');
+		char *fslash = strrchr(dir, '/');
+
+		if(fslash > slash) {
+			slash = fslash;
+		}
+
+		if(slash) {
+			slash[1] = 0;
+		} else {
+			strcpy(dir, ".\\");
+		}
+	} else if(!GetTempPathA(sizeof(dir), dir)) {
+		return NULL;
+	}
+
+	static unsigned counter;
+	PSECURITY_DESCRIPTOR sd = private_sd();
+	SECURITY_ATTRIBUTES sa = { sizeof(sa), sd, FALSE };
+	FILE *f = NULL;
+
+	for(int tries = 0; tries < 64 && !f; tries++) {
+		char path[MAX_PATH];
+
+		if(snprintf(path, sizeof(path), "%s.tyc-%lu-%lu-%u.tmp", dir,
+		            (unsigned long) GetCurrentProcessId(), (unsigned long) GetTickCount(), ++counter) >= (int) sizeof(path)) {
+			break;
+		}
+
+		HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, sd ? &sa : NULL, CREATE_NEW,
+		                       FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+
+		if(h == INVALID_HANDLE_VALUE) {
+			if(GetLastError() == ERROR_FILE_EXISTS) {
+				continue;
+			}
+
+			break;
+		}
+
+		int fd = _open_osfhandle((intptr_t) h, _O_RDWR | _O_BINARY);
+
+		if(fd < 0) {
+			CloseHandle(h);
+			break;
+		}
+
+		f = _fdopen(fd, "w+b");
+
+		if(!f) {
+			_close(fd);
+		}
+	}
+
+	if(sd) {
+		LocalFree(sd);
+	}
+
+	return f;
+}
+#endif
+
+FILE *yamlconf_content_fp(const char *content) {
+	FILE *f;
+#ifdef _WIN32
+	f = private_tmpfile();
 #else
+	/* tmpfile(): created 0600 and unlinked at once, so it has no name. */
 	f = tmpfile();
 #endif
 

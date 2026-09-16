@@ -300,6 +300,13 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 
 	if(st.st_mtime + invitation_lifetime < now.tv_sec) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Peer %s tried to use expired invitation %s", c->hostname, cookie);
+
+		/* Nobody can redeem it any more, so do not leave the claimed
+		   ".used" file behind for `tinc invite`'s weekly sweep (R-14). */
+		if(unlink(usedname)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Could not remove expired invitation %s: %s", usedname, strerror(errno));
+		}
+
 		return false;
 	}
 
