@@ -31,7 +31,16 @@ RUN="$HERE/$SMOKE_RUN"
 compose() { docker compose -f "$HERE/compose.yml" "$@"; }
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
-cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$RUN"; }
+# Everything under $RUN that a container wrote belongs to root (tincd runs as
+# root inside the node containers; so does `generate-keys`). A caller who is
+# not root cannot delete those files even though it owns $RUN, so the removal
+# goes through a container first and the plain rm is only the fallback. Both
+# are tolerant: cleanup runs from an EXIT trap under `set -e`.
+cleanup() {
+    compose down -v --remove-orphans >/dev/null 2>&1 || true
+    docker run --rm -v "$HERE:/mnt" "$CORE_IMAGE" rm -rf "/mnt/$SMOKE_RUN" >/dev/null 2>&1 || true
+    rm -rf "$RUN" 2>/dev/null || true
+}
 cleanup
 trap cleanup EXIT
 mkdir -p "$RUN"
@@ -42,7 +51,12 @@ gen() {
     local tmp="$RUN/keys-$name" d="$RUN/$name"
     mkdir -p "$tmp/hosts" "$d/$NET"
     printf 'Name = %s\n' "$name" > "$tmp/tinc.conf"
-    docker run --rm -v "$tmp:/k" "$CORE_IMAGE" tinc -c /k generate-keys >/dev/null 2>&1
+    # `tinc generate-keys` runs as root in the container and writes the private
+    # keys 0600 root:root; the `sed` calls below read them as whoever started
+    # this script. On a CI runner that is not root, so the keys are handed back
+    # to the caller in the same container run rather than left unreadable.
+    docker run --rm -v "$tmp:/k" "$CORE_IMAGE" \
+        sh -c "tinc -c /k generate-keys && chown -R $(id -u):$(id -g) /k" >/dev/null 2>&1
     # host record: Address/Port/Subnet + the public keys tinc appended
     { printf 'Address = %s\nPort = 655\nSubnet = %s/32\n' "$lan" "$vpn"; cat "$tmp/hosts/$name"; } > "$RUN/host-$name.txt"
     {
