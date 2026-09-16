@@ -1458,6 +1458,19 @@ registry image.
   tag does not build everything twice.
 - [x] Both workflows pass `actionlint` (which runs shellcheck over every `run:`
   block); `compose.release.yml` passes `docker compose config`.
+- [x] **Top-level `LICENSE.md`.** The repository is public and carries GPL v2
+  (tinc core and everything derived from it) and GPL v3 (the Android app,
+  descended from tincapp) code, with no top-level statement of either. The file
+  records what applies where and does not relicense anything. **Open question
+  for the owner:** `platforms/windows/`, `platforms/linux/docker/`, `testing/`
+  and the docs were written for tincstack and carry no per-file header;
+  `LICENSE.md` currently says "treat as GPL v2 or later, matching the core",
+  which is the safe reading, not a decision.
+- [x] **`make secrets` / `.gitleaks.toml`, wired into `check.yml`.** The
+  allowlist enumerates each known key-shaped string (placeholder bodies, the
+  `Sec-WebSocket-Key` handshake nonces, upstream's public ED25519 test vector)
+  instead of silencing the rule, so a genuinely new secret still fails. Current
+  state: `no leaks found` over 105 commits.
 - [ ] **Not yet proven: an actual tag has not been pushed.** Every step above is
   static verification. The first `v*` tag is the real test, and the two most
   likely failures are named here so they are not a surprise: the Android job

@@ -45,6 +45,16 @@ jobs:
       - name: make lint
         run: make lint
 
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: make secrets
+        run: make secrets
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30

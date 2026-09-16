@@ -30,6 +30,7 @@ DATE ?= $(shell date +%Y-%m-%d)
 export CORE_IMAGE := tincstack/core:$(TAG)
 export BASELINE_IMAGE := tincstack/baseline:$(TAG)
 SHELLCHECK_IMAGE ?= koalaman/shellcheck:stable
+GITLEAKS_IMAGE ?= zricethezav/gitleaks:latest
 # Every shell script here is linted at shellcheck's default (full) severity.
 # The transport proofs used to be linted at -S warning because of pre-existing
 # SC2086/SC2015 findings; those were cleaned up (stream U), so there is one
@@ -46,7 +47,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/transports/classify-test.sh
 
 .PHONY: check build-core build-baseline build-lab smoke nat-quick nat-full laptop \
-        validate-nat dpi-baseline lint clean promote
+        validate-nat dpi-baseline lint secrets clean promote
 
 check: build-core build-baseline smoke validate-nat nat-quick dpi-baseline
 	@echo "make check: OK (run id $(RUN); lab results under testing/*/results/run/$(RUN)/)"
@@ -85,6 +86,13 @@ dpi-baseline: build-lab
 
 lint:
 	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x $(SHELL_SCRIPTS)
+
+# The repository is public: nothing key-shaped may enter it. .gitleaks.toml
+# enumerates the placeholders and the one public upstream test vector that are
+# allowed, so a genuinely new secret still fails this.
+secrets:
+	docker run --rm -v "$(CURDIR):/repo:ro" $(GITLEAKS_IMAGE) \
+	    detect --source=/repo --config=/repo/.gitleaks.toml --no-banner --redact -v
 
 clean:
 	testing/nat-sim/lab.sh clean

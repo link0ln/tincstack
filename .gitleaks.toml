@@ -1,0 +1,36 @@
+# gitleaks configuration for tincstack.
+#
+#   docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:latest \
+#       detect --source=/repo --config=/repo/.gitleaks.toml --no-banner --redact -v
+#
+# The repository is public and must never carry a node key, an invitation token
+# or a certificate. It does carry key-SHAPED strings, and they are enumerated
+# below one by one rather than silenced with a blanket rule, so a genuinely new
+# secret still trips the scan.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "private-key"
+[rules.allowlist]
+regexTarget = "match"
+regexes = [
+  # placeholder bodies, allowing for a raw-string margin between banner and
+  # body: AAAA..., base64("secret"), REDACTED..., or a literal "..." in docs
+  '''-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[^-]{0,40}?(A{16,}|c2VjcmV0|REDACTED|\.\.\.)''',
+  # the PEM banner quoted in code, docs and assertions, with no body at all
+  '''-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----("|\\n|[^-]{0,4}-----END)''',
+]
+paths = [
+  # upstream tinc's public ED25519 test vector, used as a deterministic
+  # signature fixture. Byte-identical to gsliepen/tinc; no node uses it.
+  '''core/tincd/test/integration/cmd_sign_verify\.py''',
+]
+
+[[rules]]
+id = "generic-api-key"
+[rules.allowlist]
+paths = [
+  # `Sec-WebSocket-Key` is a per-handshake base64 nonce, not a credential.
+  '''testing/transports/(https-carrier|tls-front)-test\.sh''',
+]
