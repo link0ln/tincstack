@@ -512,9 +512,15 @@ key within roughly one `OBFS_SELFHEAL_DELAY` plus a meta-channel round trip
 (≈ 1 s), not the previous up-to-30 s; the 30 s tick is now only a backstop of a
 backstop. A *fresh* connection still legitimately uses the bootstrap key for the
 first few frames until its first `OBFS_KEY` exchange completes — that is the
-documented cold-start window, not a revert. (The residual was found by
-`obfs-test.sh` PART 4 under host load; `obfs-test.sh` PART 8 is the churn
-regression, and the deterministic before/after is the `fuzz_obfs` self-test.)
+documented cold-start window, not a revert. (The residual was first seen by
+`obfs-test.sh` PART 4 under host load, but it does **not** need load: on an idle
+host, 2026-09-16, `obfs-test.sh` PART 8 against the pre-fix build left **6 of 10
+connection replacements stuck on the bootstrap key** for the full 120 s deadline
+— 673 of 1099 steady frames readable by anyone holding both public keys — while
+the fixed build measured 0 stuck and 0 of 1172 on the same lab minutes later,
+and 0 of 1182 under a parallel fuzz campaign. PART 8 is therefore both the churn
+regression and a live before/after; the `fuzz_obfs` self-test is the
+deterministic mechanism proof.)
 
 ### Nonce and replay window (findings M5-3, M5-4)
 

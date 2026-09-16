@@ -19,9 +19,15 @@
 #   LAB (default wsbsf) prefixes every container/network name and the /tmp
 #   directory; a non-default LAB also gets its own /24 (see lab-env.sh), so
 #   two runs can share a host.
+#   The image is the first argument, else tincstack/core:$TINCSTACK_TAG, the
+#   same selector every other proof takes. Silently defaulting to the stream
+#   image this test was written against means a house-style invocation tests
+#   a months-old core and reports its state as today's (measured: a run with
+#   TINCSTACK_TAG set but no argument tested tincstack/core:ws-o and failed
+#   PART 8, which the current core passes).
 set -e
 
-IMG=${1:-tincstack/core:ws-b}
+IMG=${1:-tincstack/core:${TINCSTACK_TAG:-dev}}
 TCPDUMP_IMG=nicolaka/netshoot
 DEFAULT_LAB=wsbsf; DEFAULT_SUBNET=10.31.9
 # shellcheck source=testing/transports/lab-env.sh

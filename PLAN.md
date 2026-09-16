@@ -1,18 +1,29 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-16 (M7 and M8 closed by streams X and Y; M10 publishing/release pipeline added, untested until the first tag; sendmmsg batching dropped)
+**Last Updated:** 2026-09-16 (stream W merged and verified live; the
+`pipefail` + `grep -q` defect that made seven proofs report the opposite of
+what they measured is fixed; the transport proofs no longer silently test a
+stale stream image)
 
-**Regression state of `master` after merging streams X and Y** — every proof below
-was run on a fresh build of this tree (`tincstack/core:nosendmmsg`, the tag name
-is just the build that dropped the sendmmsg path) on 2026-09-16, each exit 0:
+**Regression state of `master`**, all 2026-09-16, each exit 0. On
+`tincstack/core:w` (the merged tree: streams X, Y and W): `obfs-test` **three
+times** — 0 of 1176 and 0 of 1172 steady frames readable with the public-key
+bootstrap key on an idle host, and 0 of 1182 under a parallel 6-harness fuzz
+campaign (host load ≈ 8); worst session-key window 1 s, 0 of 10 replacements
+stuck in every run. `obfs-rekey-test` (held back until W merged): **PASS** —
+session keys a=5 b=5 symmetric, a=10 b=10 one-sided, 0 % packet loss in both
+phases. `two-nodes`, `yaml-scripts`, `reload-test`: PASS, re-run after the
+`grep -q` harness fix. The fuzz gate (`run.sh check`: `yamlconf_props` + 6
+harnesses, all ok — which also executes `selftest_close_preserves_session`) and
+a 900 s campaign over all six harnesses: no crash, no new artifact. `make lint`
+(shellcheck, 24 scripts), `make secrets` ("no leaks found"), `actionlint`, and
+GitHub Actions `check` green on the pushed head `5f68245`.
+On `tincstack/core:nosendmmsg` (the same tree before W, which differs only in
+`obfs.c`, so these are unaffected by the merge and were not re-run):
 `classify` (37 checks, 0 failures), `singleflow` ("relay path intact"),
 `tls-front`, `https-carrier`, `quic-carrier` (with a `QUIC=disabled` second
-image), `obfs` ("relay intact"), `matrix` (needs `-Dtransport_test=true`),
-`smoke`, `two-nodes`, `yaml-scripts`, `reload-test`, the fuzz gate (6 harnesses
-+ `yamlconf_props`, all ok), `make lint`, `make secrets` ("no leaks found"),
-`actionlint`, the Windows cross-build and `tincmgr.exe` end to end.
-`obfs-rekey-test` is deliberately **not** in that list: stream W is changing
-`obfs.c`, so it is re-run after that merge, not before.
+image), `matrix` (needs `-Dtransport_test=true`), `smoke`, the Windows
+cross-build and `tincmgr.exe` end to end, and the Android `assembleRelease`.
 
 A self-hosted mesh VPN distribution on a hardened tinc 1.1 core, with opt-in
 circumvention transports and per-platform delivery (Linux/Windows/Android).
@@ -1871,16 +1882,25 @@ Defects identified during the source audit, to fix as their milestone is reached
   `terminate_connection()` ordering (owner closed with `node->connection` NULL
   while a sibling is on the list); it **aborts on the pre-fix `obfs_close()`
   condition** and **passes with the fix** (`run.sh check`, EXIT 1 → 0).
-  Integration guard: `obfs-test.sh` PART 8 forces ≥10 connection replacements
+  Integration guard: `obfs-test.sh` PART 8 forces ≥ 10 connection replacements
   (both nodes `ConnectTo` each other) and asserts every replacement re-
   establishes a session key on both ends and that steady traffic is 0-of-N
-  bootstrap-decryptable — measured **0 / 1198 steady frames over 10
-  replacements, worst session-key window 0 s** (idle) and clean under
-  concurrent-lab load. **Honest caveat:** the original *stuck-for-30 s* live
-  symptom was a rare scheduler-interleaving race that could **not** be
-  reproduced on demand here (27 establishments across 3 concurrent labs under
-  load ≈31: 0 hits), so the closure rests on the deterministic unit before/after
-  and the code fix, not on a re-observed 174→0 live capture.
+  bootstrap-decryptable. **Live before/after, same lab, same idle host,
+  2026-09-16** (obtained by accident: the proof silently defaulted to the
+  pre-fix stream image, see the image-selector defect below, which turned the
+  run into the "before" arm stream W had said it could not reproduce):
+  `tincstack/core:ws-o` (pre-fix) → **6 of 10 replacements stuck on the
+  bootstrap key for the full 120 s deadline, 673 of 1099 steady frames
+  decryptable with the public-key bootstrap key, worst window 120 s, FAIL**;
+  `tincstack/core:w` (post-fix), immediately after, same host, same lab names
+  → **0 stuck, 0 of 1172 steady frames decryptable, worst window 1 s, PASS**.
+  An earlier idle run of the post-fix image gave 0 / 1176, worst window 1 s.
+  The deterministic unit before/after (`selftest_close_preserves_session`,
+  aborts pre-fix, passes post-fix) still stands as the mechanism proof; the
+  numbers above are the live confirmation, so stream W's "could not reproduce
+  the live symptom, closure rests on the unit test" caveat is withdrawn — the
+  symptom reproduces on demand on an idle host, 6 times in 10, on the pre-fix
+  build.
 - ~~🟢 **`testing/smoke/run.sh` silently tested whatever `tincstack/core:ws-f`
   happened to be.**~~ **Resolved 2026-09-16 (coordination pass):** it took
   `CORE_IMAGE`/`WSF_TAG` while every other proof takes `TINCSTACK_TAG`, so an
@@ -2058,6 +2078,23 @@ Defects identified during the source audit, to fix as their milestone is reached
   count, the CLI error and the container state instead of nothing. Audit:
   `grep -ln pipefail $(git ls-files '*.sh')` × `| grep -q` → zero remaining
   sites. `make lint` (shellcheck, 24 scripts) exits 0.
+- ~~🟠 **The transport proofs silently tested the stream image they were written
+  against, not the core you asked for.**~~ **Found and resolved 2026-09-16
+  (coordination pass).** `obfs-test.sh`, `singleflow-test.sh` and
+  `matrix-test.sh` took the image only as `$1` (`IMG=${1:-tincstack/core:ws-o}`
+  and friends) and ignored `TINCSTACK_TAG`, the selector every other proof and
+  both Linux labs take; `tls-front`, `https-carrier` and `quic-carrier` honoured
+  the variable but still fell back to `ws-l` / `ws-g3`. Reproduction and impact:
+  `TINCSTACK_TAG=w LAB=wso2 ./obfs-test.sh` ran **`tincstack/core:ws-o`**, a
+  months-old build, and returned FAIL on PART 8 — reported against a core that
+  passes it. This is the same papercut as the `testing/smoke/run.sh`
+  `CORE_IMAGE` one below, and it is worse than a wasted run: a stale image can
+  also report a *pass* for a regression the current tree has. **Fix:** every
+  proof is now `IMG=${1:-tincstack/core:${TINCSTACK_TAG:-dev}}`
+  (`matrix-test.sh`: `dev-test`, it needs `-Dtransport_test=true`), with the
+  reason in each header and `testing/transports/README.md` updated to build
+  `dev` / `dev-test` / `dev-noquic`. The accidental run was not wasted: it is
+  the pre-fix arm of the live before/after now recorded against stream W above.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`

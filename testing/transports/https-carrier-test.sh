@@ -28,7 +28,7 @@
 #   see lab-env.sh). PFX/NETBASE are accepted as aliases.
 set -e
 
-IMG=${1:-tincstack/core:${TINCSTACK_TAG:-ws-l}}
+IMG=${1:-tincstack/core:${TINCSTACK_TAG:-dev}}
 TOOLS=nicolaka/netshoot
 DEFAULT_LAB=wslh; DEFAULT_SUBNET=10.42.9
 # shellcheck source=testing/transports/lab-env.sh

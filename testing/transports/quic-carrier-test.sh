@@ -29,7 +29,7 @@
 set -e
 [ -n "$QUIC_TRACE" ] && set -x
 
-IMG=${1:-tincstack/core:${TINCSTACK_TAG:-ws-g3}}
+IMG=${1:-tincstack/core:${TINCSTACK_TAG:-dev}}
 IMG_NOQUIC=${2:-${IMG}-noquic}
 TOOLS=nicolaka/netshoot
 DEFAULT_LAB=wsg3q; DEFAULT_SUBNET=10.44.9

@@ -43,9 +43,15 @@
 #   LAB (default wso) prefixes every container name, the docker network
 #   (<LAB>obfs) and the /tmp data directories; a non-default LAB also gets its
 #   own /24 (see lab-env.sh), so two runs can share a host.
+#   The image is the first argument, else tincstack/core:$TINCSTACK_TAG, the
+#   same selector every other proof takes. Silently defaulting to the stream
+#   image this test was written against means a house-style invocation tests
+#   a months-old core and reports its state as today's (measured: a run with
+#   TINCSTACK_TAG set but no argument tested tincstack/core:ws-o and failed
+#   PART 8, which the current core passes).
 set -e
 
-IMG=${1:-tincstack/core:ws-o}
+IMG=${1:-tincstack/core:${TINCSTACK_TAG:-dev}}
 TCPDUMP_IMG=nicolaka/netshoot
 DEFAULT_LAB=wso; DEFAULT_SUBNET=10.37.90
 # shellcheck source=testing/transports/lab-env.sh
@@ -543,13 +549,17 @@ fi
 # session key was (re)established. The window from a replacement to the new
 # session key is measured from the daemon log timestamps and reported.
 #
-# NB the exact scheduler-interleaving that stranded a link on the bootstrap key
-# for a full 30 s tick was only ever seen under heavy host load; on an idle host
-# both builds keep the session across a replacement. This part is the
-# deterministic REGRESSION guard for the general behaviour (forced replacement
-# never leaves steady traffic bootstrap-readable, and a session key always comes
-# back), not a before/after demonstrator -- that is the fuzz_obfs self-test
-# `selftest_close_preserves_session', which aborts on the pre-fix obfs_close().
+# This part IS a before/after demonstrator, on an idle host: measured 2026-09-16
+# on the same lab minutes apart, pre-fix tincstack/core:ws-o -> 6 of 10
+# replacements stuck on the bootstrap key for the full ${WAIT} s deadline and
+# 673 of 1099 steady frames readable with the public-key bootstrap key; post-fix
+# tincstack/core:w -> 0 stuck, 0 of 1172 readable, worst window 1 s. (The
+# earlier note here said the symptom needed heavy host load and that both builds
+# pass when idle -- that was wrong, and it is why the fix was nearly closed on
+# unit evidence alone.) Post-fix runs so far: 0 of 3530 steady frames over three
+# runs, idle and under a parallel fuzz campaign. The mechanism proof stays the
+# fuzz_obfs self-test `selftest_close_preserves_session', which aborts on the
+# pre-fix obfs_close() condition.
 echo "===== PART 8: connection-replacement churn keeps the per-link session key (M5-2) ====="
 reset_lab
 CHURN=${OBFS_CHURN:-10}

@@ -24,7 +24,7 @@
 #   directory; a non-default LAB also gets its own /24 (see lab-env.sh).
 set -e
 
-IMG=${1:-tincstack/core:${TINCSTACK_TAG:-ws-l}}
+IMG=${1:-tincstack/core:${TINCSTACK_TAG:-dev}}
 TOOLS=nicolaka/netshoot
 DEFAULT_LAB=wsl; DEFAULT_SUBNET=10.41.9
 # shellcheck source=testing/transports/lab-env.sh

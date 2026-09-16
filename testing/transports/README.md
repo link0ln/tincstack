@@ -3,7 +3,13 @@
 Self-contained checks. All tooling runs in throwaway Docker containers;
 nothing is installed on the host. They need the core image built first:
 
-    docker build -f core/Dockerfile.build -t tincstack/core:ws-b core/
+    docker build -f core/Dockerfile.build -t tincstack/core:dev core/
+
+Every proof takes the image as its first argument and otherwise builds the name
+from `TINCSTACK_TAG` (default `dev`), the same selector `testing/smoke/run.sh`
+and the `platforms/linux/docker/` labs take. Passing neither used to select the
+stream image each test was written against, which silently reported a
+months-old core's behaviour as today's.
 
 ## Running two proofs at once (`LAB=`, `SUBNET=`)
 
@@ -56,7 +62,7 @@ Needs an image built with the stub carrier:
 
     sed 's/-Dbuildtype=release/-Dbuildtype=release -Dtransport_test=true/' \
         core/Dockerfile.build > /tmp/Dockerfile.test
-    docker build -f /tmp/Dockerfile.test -t tincstack/core:ws-b-test core/
+    docker build -f /tmp/Dockerfile.test -t tincstack/core:dev-test core/
     sh testing/transports/matrix-test.sh
 
 Expect: `PASS: test carrier tried, fell back to plain, tunnel came up`.
@@ -85,8 +91,8 @@ Needs the QUIC-enabled image (the default `core/Dockerfile.build` since G3) and,
 for the "built without QUIC" fallback case, the same Dockerfile with
 `--build-arg QUIC=disabled`:
 
-    docker build -f core/Dockerfile.build -t tincstack/core:ws-g3 core/
-    docker build -f core/Dockerfile.build --build-arg QUIC=disabled -t tincstack/core:ws-g3-noquic core/
+    docker build -f core/Dockerfile.build -t tincstack/core:dev core/
+    docker build -f core/Dockerfile.build --build-arg QUIC=disabled -t tincstack/core:dev-noquic core/
     sh testing/transports/quic-carrier-test.sh [image] [image-without-quic]
 
 Sections (`ONLY="a b"` runs a subset, `KEEP=1` leaves the containers up):
