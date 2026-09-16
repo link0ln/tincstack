@@ -110,16 +110,62 @@ list).
 One side's choice is enough; nothing has to be configured on both ends. A peer
 that advertises no list at all (upstream tinc) is treated as `plain`-only.
 
-**The dialler chooses.** The rules above govern *our* dials. When the peer
-dials us first (`AutoConnect`, its own `ConnectTo`) the link runs on the
-carrier *it* prefers, tinc keeps the newer of two connections between the same
-pair (`protocol_auth.c id_h`), and our `outgoing` is parked on that inbound
-link. A rendezvous with the default `PreferredTransports: [plain]` that knows
-our address will therefore bring a restarted link back as `plain` regardless
-of our preference (observed in the L-2 lab: after `kill -9` of B, B's
-autoconnect reached A over `plain` before A's own https re-dial). Until the
-acceptor can rank inbound carriers, give such peers the same preference or
-`AutoConnect: no`.
+### When the peer dials first (acceptor-side rule, review row L-2 residual)
+
+The rules above govern *our* dials. When the peer dials us first
+(`AutoConnect`, its own `ConnectTo`) the link runs on the carrier *it*
+prefers, and tinc keeps the newer of two connections between the same pair
+(`protocol_auth.c id_h`), parking our `outgoing` on that inbound link. A
+rendezvous with the default `PreferredTransports: [plain]` that knows our
+address therefore used to bring a restarted link back as `plain` regardless of
+our preference, and it stayed there until the next drop (observed in the L-2
+lab: after `kill -9` of B, B's autoconnect reached A over `plain` before A's
+own https re-dial, which then found `Already connected`).
+
+The acceptor now has one rule, and it is deliberately the smallest one that
+cannot oscillate:
+
+> **7.** If a link the *peer* opened towards us runs on a carrier that ranks
+> **below** the candidate our own `outgoing` would dial next, we dial ours
+> anyway instead of suppressing it with `Already connected`
+> (`net_socket.c setup_outgoing_connection`; `protocol_auth.c ack_h` arms the
+> dial when our `outgoing` was parked on the inbound link). The peer's link
+> stays up and carries traffic the whole time; when ours activates, the
+> existing `id_h` dedup keeps the newer connection and drops the older one, so
+> the pair is never left with zero connections.
+
+The ranking is **not** each node's own preference list — that would flap, as
+two nodes with mirrored lists would each keep overriding the other. It is the
+fixed carrier order `plain < sf < obfs < https < quic` (the `transport_id_t`
+enum, `transport_outranks_connection()`), which every build compiles
+identically, so:
+
+- only one of the two nodes can ever want to re-dial (if A's candidate
+  outranks B's carrier, B's cannot outrank A's), and
+- a re-dial moves the surviving link strictly **up** a bounded order, so the
+  rule terminates after at most one extra dial per drop.
+
+It is also bounded on the failure side: `transport_current()` only ever offers
+a carrier the peer's accept list advertises, and if that dial keeps failing,
+step 3's walk moves on after `TRANSPORT_STICKY_FAILURES` attempts, at which
+point our candidate no longer outranks the inbound carrier and the rule
+disengages. On default settings (`PreferredTransports: [plain]` on both ends)
+it never fires at all: it can only engage when an operator asked for a
+more-wrapped carrier.
+
+What the rule does **not** do: it does not let us refuse a link, and it does
+not stop a peer from reaching us over `plain` in the first place — `plain` is
+forced into every accept list. It only stops a peer's `plain` re-dial from
+*keeping* our covert carrier down.
+
+    A: PreferredTransports [https, plain], ConnectTo nodeb
+    B: PreferredTransports [plain] (default), AutoConnect yes, knows A's Address
+
+    kill -9 B  ->  B restarts, dials A over plain, link activates
+    A: "Connected to nodeb over plain, which we rank below https:
+        dialling https as well"
+    A's https link activates -> id_h drops the plain one on both ends
+    A, B: dump connections -> transport https
 
 ### ACK wire format (backward compatible)
 
@@ -309,6 +355,23 @@ were *activated*, the re-dial starts from the first preference (§2 step 5) and
 comes back on the same carrier; the `outgoing_t` (candidates, last-activated
 carrier, failure count) is untouched by the rebind. The cost is one re-dial
 per link after wake, which is what the option is for.
+
+### `tinc reload` does not drop the carrier (stream P)
+
+A reload is *not* a drop. `reload_configuration()` closes a meta connection only
+when that peer's host record changed, and in YAML mode "changed" means the
+record's **content** changed — `yamlconf_host_digest()` (SHA-512 truncated to
+256 bits) against the snapshot taken when we last read the record, not the
+mtime of a `hosts/<peer>` file that YAML mode does not have. Before this, every
+reload closed every link, and since `tinc set/add/del` reloads the running
+daemon itself, so did every configuration change; each of those drops then had
+to be repaired by the §2 step-5 re-dial, so a covert carrier survived only
+because that rule exists. Lines the daemon appends to a peer's record itself —
+the learned `Ed25519PublicKey`, the `TlsFingerprint` pinned after SPTPS
+activation (§8.3) — refresh the snapshot instead of counting as a change, so
+the first reload after an https or quic link comes up no longer bounces it.
+A genuine edit of a peer's record still terminates that one connection, which
+then re-dials from the first preference like any other activated-link drop.
 
 ---
 

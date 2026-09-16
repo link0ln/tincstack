@@ -24,6 +24,7 @@
 #define TINC_YAMLCONF_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 
 typedef struct yamlconf yamlconf_t;
@@ -166,6 +167,16 @@ char *yamlconf_options_text(yamlconf_t *yc, const char *net);
 
 /* Newly-allocated host-file text for net/name (caller frees), or NULL. */
 char *yamlconf_host_text(yamlconf_t *yc, const char *net, const char *name);
+
+/* Content fingerprint of networks.<net>.hosts.<name>: SHA-512 of the host-file
+   text, truncated to YAMLCONF_DIGEST_LEN bytes. False (and `out' untouched) if
+   the record does not exist. This is how the daemon tells a real change of a
+   peer's host record from the re-materialisation that happens on every read:
+   in YAML mode there is no hosts/ file to stat, so reload_configuration()'s
+   upstream mtime check saw every peer as changed and closed every link
+   (PLAN.md Known Issues, stream S, 2026-09-16). */
+#define YAMLCONF_DIGEST_LEN 32
+bool yamlconf_host_digest(yamlconf_t *yc, const char *net, const char *name, uint8_t *out);
 
 /* Private-key PEM for net ("ed25519_priv" | "rsa_priv"), or NULL (owned by yc). */
 const char *yamlconf_key_pem(yamlconf_t *yc, const char *net, const char *which);

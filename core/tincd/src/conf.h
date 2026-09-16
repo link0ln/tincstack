@@ -61,4 +61,11 @@ extern bool read_server_config(splay_tree_t *config_tree);
 extern bool read_host_config(splay_tree_t *config_tree, const char *name, bool verbose);
 extern bool append_config_file(const char *name, const char *key, const char *value);
 
+/* Called with the node name after append_config_file() changed a host record
+   in YAML mode. Set by the daemon (connection.c) so that a line the daemon
+   itself appends -- a learned Ed25519 key, a TlsFingerprint pin -- does not
+   look like an operator edit to reload_configuration()'s change detector.
+   NULL in the CLI, which has no connections. */
+extern void (*config_host_written_cb)(const char *name);
+
 #endif

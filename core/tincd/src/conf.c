@@ -46,6 +46,9 @@ list_t cmdline_conf = {
 	.delete = (list_action_t)free_config,
 };
 
+/* See conf.h: registered by the daemon, NULL in the CLI. */
+void (*config_host_written_cb)(const char *name) = NULL;
+
 static int config_compare(const config_t *a, const config_t *b) {
 	int result;
 
@@ -514,6 +517,10 @@ bool append_config_file(const char *name, const char *key, const char *value) {
 
 		if(yamlconf_global) {
 			yamlconf_host_add_line(yamlconf_global, netname, name, key, value);
+		}
+
+		if(config_host_written_cb) {
+			config_host_written_cb(name);
 		}
 
 		return true;

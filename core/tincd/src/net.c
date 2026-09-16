@@ -36,6 +36,7 @@
 #include "subnet.h"
 #include "utils.h"
 #include "watchdog.h"
+#include "yamlconf.h"
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
@@ -473,6 +474,40 @@ int reload_configuration(void) {
 
 	for list_each(connection_t, c, &connection_list) {
 		if(c->status.control) {
+			continue;
+		}
+
+		if(yamlconf_path) {
+			/* YAML mode: there is no hosts/ tree to stat (config_fopen()
+			   materialises the record as text on every read), so the upstream
+			   mtime check below saw *every* peer as changed and closed *every*
+			   meta connection on *every* reload (PLAN.md Known Issues, stream
+			   S, 2026-09-16). Compare the record's content instead: only a
+			   peer whose host record really changed since we last read it is
+			   disconnected. Classic mode keeps the upstream behaviour. */
+			uint8_t digest[YAMLCONF_DIGEST_LEN];
+			bool present = c->name && yamlconf_global && netname &&
+			               yamlconf_host_digest(yamlconf_global, netname, c->name, digest);
+
+			if(!c->host_digest_valid) {
+				/* Nothing to compare against yet (connection still
+				   unidentified, or its record only just appeared). */
+				connection_snapshot_host_config(c);
+				continue;
+			}
+
+			if(!present) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config of %s has been removed", c->name);
+				terminate_connection(c, c->edge);
+				continue;
+			}
+
+			if(memcmp(c->host_digest, digest, sizeof(digest))) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config file of %s has been changed", c->name);
+				memcpy(c->host_digest, digest, sizeof(digest));
+				terminate_connection(c, c->edge);
+			}
+
 			continue;
 		}
 

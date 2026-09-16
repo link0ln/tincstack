@@ -28,6 +28,7 @@
 #include "list.h"
 #include "sptps.h"
 #include "logger.h"
+#include "yamlconf.h"
 
 #define OPTION_INDIRECT         0x0001
 #define OPTION_TCPONLY          0x0002
@@ -129,6 +130,12 @@ typedef struct connection_t {
 
 	const struct transport_t *transport; /* carrier this connection runs on (NULL = plain TCP / control) */
 	void *transport_data;           /* carrier-private state (e.g. the single-flow session) */
+
+	/* YAML mode only: fingerprint of the peer's host record as it stood when
+	   we last read it, so reload_configuration() can spot a real change
+	   (see connection_snapshot_host_config()). */
+	uint8_t host_digest[YAMLCONF_DIGEST_LEN];
+	bool host_digest_valid;
 } connection_t;
 
 extern list_t connection_list;
@@ -141,5 +148,13 @@ extern connection_t *new_connection(void) ATTR_MALLOC ATTR_DEALLOCATOR(free_conn
 extern void connection_add(connection_t *c);
 extern void connection_del(connection_t *c);
 extern bool dump_connections(struct connection_t *c);
+
+/* Remember the current content of this peer's host record (YAML mode; a no-op
+   in classic mode, where reload_configuration() keeps the upstream mtime
+   check). Called whenever we read the record for the connection, and --
+   through config_host_written_cb -- whenever the daemon itself appends a line
+   to it (a learned Ed25519 key, a TlsFingerprint pin), so that our own write
+   is not mistaken for an operator edit on the next reload. */
+extern void connection_snapshot_host_config(connection_t *c);
 
 #endif
