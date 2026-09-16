@@ -1784,12 +1784,29 @@ registry image.
   green (SDK discovery, build container, `testDebugUnitTest assembleRelease`),
   on a runner, without the `android-actions/setup-android` action that failed
   on the v0.1.0 tag. `actionlint` clean.
-- [ ] **One manual step after the first tag:** a package Actions creates in
-  `ghcr.io` is **private even when the repository is public**, so nobody else
-  can `docker pull` it until the owner flips both packages to Public once
-  (repository → Packages → Package settings → Change visibility). Nothing in
-  the workflow can do this; the API needs a token with `packages` scope that
-  `GITHUB_TOKEN` does not carry.
+- [x] **The one manual step is done (owner, 2026-09-16): both ghcr packages are
+  Public.** A package Actions creates is private even when the repository is
+  public, and nothing in the workflow can change that — the API needs a token
+  with `packages` scope that `GITHUB_TOKEN` does not carry. **Verified
+  anonymously, end to end, on this host:**
+  - anonymous ghcr token (`ghcr.io/token?scope=repository:…:pull`) then
+    `GET /v2/link0ln/tincstack/{node,core}/manifests/{v0.1.1,latest,v0.1.0}` →
+    **HTTP 200** for all six;
+  - `docker --config <empty dir> pull ghcr.io/link0ln/tincstack/node:v0.1.1`
+    (no credentials at all) → `Status: Downloaded newer image`, digest
+    `sha256:7399543eabc84780adde9f662717a99a98cb425c1936909898cdda29ed33e618`;
+  - the release notes' own instruction, from the published source archive:
+    `COMPOSE_FILE=compose.release.yml TINCSTACK_VERSION=v0.1.1 docker compose
+    up -d` → `Ready`, `tincstack-cli pid` answers, `tincstack-cli invite` issues
+    an invitation; a second container started from the same pulled image with
+    that `INVITE` joined (`Carrier candidates … plain (peer accepts
+    plain,sf,obfs,https,quic)` → `Connection … activated`) and both ends pinged
+    through the tunnel, **0 % packet loss both ways** (10.50.0.1 ↔ 10.50.0.2),
+    both containers running image
+    `sha256:8aea9b07c32c37112a040efb306e0a37caf830ebb6a44db6bbd6ecd6a7372f42`.
+  - Note for the record: a bare `GET /v2/…/manifests/…` with no token returns
+    401 from ghcr for **public** images too, so that response alone says nothing
+    about visibility — an earlier check in this session read it as "private".
 - [ ] **arm64 images.** Deliberately not in the first pipeline: the ngtcp2 +
   GnuTLS stage under QEMU is roughly 10x slower, and an arm64 runner is the
   better answer. Add as a matrix leg with a manifest merge once a first release
