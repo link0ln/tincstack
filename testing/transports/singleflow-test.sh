@@ -15,29 +15,35 @@
 # nothing is installed on the host. Requires the ws-b image (SingleFlow is in
 # every build).
 #
-# Usage: testing/transports/singleflow-test.sh [image]
+# Usage: [LAB=prefix] [SUBNET=10.31.9] testing/transports/singleflow-test.sh [image]
+#   LAB (default wsbsf) prefixes every container/network name and the /tmp
+#   directory; a non-default LAB also gets its own /24 (see lab-env.sh), so
+#   two runs can share a host.
 set -e
 
 IMG=${1:-tincstack/core:ws-b}
 TCPDUMP_IMG=nicolaka/netshoot
-NET=wsbsf
-BASE=/tmp/wsb-sf
+DEFAULT_LAB=wsbsf; DEFAULT_SUBNET=10.31.9
+# shellcheck source=testing/transports/lab-env.sh
+. "$(dirname "$0")/lab-env.sh"
+NET=$LAB
+BASE=/tmp/$LAB
 
-A_IP=10.31.9.10
-R_IP=10.31.9.11
-B_IP=10.31.9.12
+A_IP=$SUBNET.10
+R_IP=$SUBNET.11
+B_IP=$SUBNET.12
 
 A_VPN=10.181.0.1
 R_VPN=10.181.0.2
 B_VPN=10.181.0.3
 
 cleanup() {
-	docker rm -f wsbsf-a wsbsf-r wsbsf-b wsbsf-cap >/dev/null 2>&1 || true
+	docker rm -f "$LAB-a" "$LAB-r" "$LAB-b" "$LAB-cap" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup
 docker network rm "$NET" >/dev/null 2>&1 || true
-docker network create --subnet 10.31.9.0/24 "$NET" >/dev/null
+docker network create --subnet "$SUBNET.0/24" "$NET" >/dev/null
 
 rm -rf "$BASE"-a "$BASE"-r "$BASE"-b
 mkdir -p "$BASE"-a "$BASE"-r "$BASE"-b
@@ -133,14 +139,14 @@ print("configs merged")
 PYEOF
 
 start() { # name ip dir
-	docker run -d --name "wsbsf-$1" --network "$NET" --ip "$2" --cap-add NET_ADMIN \
+	docker run -d --name "$LAB-$1" --network "$NET" --ip "$2" --cap-add NET_ADMIN \
 		--device /dev/net/tun -v "$3":/etc/tincstack "$IMG" \
 		tincd -c /etc/tincstack/tinc.yaml -n wsb -D -d2 >/dev/null
 }
 
 setvpn() { # name vpnip
-	docker exec "wsbsf-$1" ip addr add "$2/24" dev wsb 2>/dev/null || true
-	docker exec "wsbsf-$1" ip link set wsb up
+	docker exec "$LAB-$1" ip addr add "$2/24" dev wsb 2>/dev/null || true
+	docker exec "$LAB-$1" ip link set wsb up
 }
 
 # ============================ PART 1: two nodes =============================
@@ -152,14 +158,14 @@ setvpn r "$R_VPN"
 setvpn a "$A_VPN"
 
 # capture on the relay's tinc port while A pings R over the tunnel
-docker run -d --name wsbsf-cap --net container:wsbsf-r --cap-add NET_RAW "$TCPDUMP_IMG" \
+docker run -d --name "$LAB-cap" --net "container:$LAB-r" --cap-add NET_RAW "$TCPDUMP_IMG" \
 	tcpdump -n -l -i eth0 'port 655' >/dev/null 2>&1
 sleep 1
-ping1=$(docker exec wsbsf-a ping -c3 -W2 "$R_VPN" 2>&1 | tail -2)
+ping1=$(docker exec "$LAB-a" ping -c3 -W2 "$R_VPN" 2>&1 | tail -2)
 sleep 1
-docker stop wsbsf-cap >/dev/null 2>&1
-cap=$(docker logs wsbsf-cap 2>&1)
-docker rm -f wsbsf-cap >/dev/null 2>&1
+docker stop "$LAB-cap" >/dev/null 2>&1
+cap=$(docker logs "$LAB-cap" 2>&1)
+docker rm -f "$LAB-cap" >/dev/null 2>&1
 
 tcp=$(echo "$cap" | grep -c "Flags" || true)
 udp=$(echo "$cap" | grep -c "UDP" || true)
@@ -177,10 +183,10 @@ start b "$B_IP" "$BASE-b"
 sleep 4
 setvpn b "$B_VPN"
 # Sever direct A<->B reachability so traffic must go through R.
-docker exec wsbsf-a iptables -A INPUT  -s "$B_IP" -j DROP
-docker exec wsbsf-a iptables -A OUTPUT -d "$B_IP" -j DROP
-docker exec wsbsf-b iptables -A INPUT  -s "$A_IP" -j DROP
-docker exec wsbsf-b iptables -A OUTPUT -d "$A_IP" -j DROP
+docker exec "$LAB-a" iptables -A INPUT  -s "$B_IP" -j DROP
+docker exec "$LAB-a" iptables -A OUTPUT -d "$B_IP" -j DROP
+docker exec "$LAB-b" iptables -A INPUT  -s "$A_IP" -j DROP
+docker exec "$LAB-b" iptables -A OUTPUT -d "$A_IP" -j DROP
 # The first packets trigger the relayed SPTPS key exchange through R; give it
 # up to ~25 s to establish, then require a clean run.
 relay_ok=0
@@ -188,7 +194,7 @@ i=0
 while [ "$i" -lt 5 ]; do
 	i=$((i + 1))
 	sleep 5
-	ping2=$(docker exec wsbsf-a ping -c4 -W3 "$B_VPN" 2>&1 | tail -2)
+	ping2=$(docker exec "$LAB-a" ping -c4 -W3 "$B_VPN" 2>&1 | tail -2)
 	recv=$(echo "$ping2" | grep -oE '[0-9]+ received' | grep -oE '[0-9]+')
 	echo "relay attempt $i: $(echo "$ping2" | head -1)"
 

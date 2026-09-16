@@ -12,23 +12,28 @@
 #       core/Dockerfile.build > /tmp/Dockerfile.test
 #   docker build -f /tmp/Dockerfile.test -t tincstack/core:ws-b-test core/
 #
-# Usage: testing/transports/matrix-test.sh [image]
+# Usage: [LAB=prefix] [SUBNET=10.30.9] testing/transports/matrix-test.sh [image]
+#   LAB (default wsbmtx) prefixes every container/network name and the /tmp
+#   directories; a non-default LAB also gets its own /24 (see lab-env.sh).
 set -e
 
 IMG=${1:-tincstack/core:ws-b-test}
-NET=wsbmtx
-A_IP=10.30.9.10
-B_IP=10.30.9.11
-DA=/tmp/wsb-mtx-a
-DB=/tmp/wsb-mtx-b
+DEFAULT_LAB=wsbmtx; DEFAULT_SUBNET=10.30.9
+# shellcheck source=testing/transports/lab-env.sh
+. "$(dirname "$0")/lab-env.sh"
+NET=$LAB
+A_IP=$SUBNET.10
+B_IP=$SUBNET.11
+DA=/tmp/$LAB-a
+DB=/tmp/$LAB-b
 
 cleanup() {
-	docker rm -f wsbmtx-a wsbmtx-b >/dev/null 2>&1 || true
+	docker rm -f "$LAB-a" "$LAB-b" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup
 docker network rm "$NET" >/dev/null 2>&1 || true
-docker network create --subnet 10.30.9.0/24 "$NET" >/dev/null
+docker network create --subnet "$SUBNET.0/24" "$NET" >/dev/null
 
 rm -rf "$DA" "$DB"
 mkdir -p "$DA" "$DB"
@@ -82,11 +87,11 @@ open(db + '/tinc.yaml', 'w').write(sb)
 print("merged")
 PYEOF
 
-docker run -d --name wsbmtx-a --network "$NET" --ip "$A_IP" --cap-add NET_ADMIN --device /dev/net/tun -v "$DA":/etc/tincstack "$IMG" tincd -c /etc/tincstack/tinc.yaml -n wsb -D -d3 >/dev/null
-docker run -d --name wsbmtx-b --network "$NET" --ip "$B_IP" --cap-add NET_ADMIN --device /dev/net/tun -v "$DB":/etc/tincstack "$IMG" tincd -c /etc/tincstack/tinc.yaml -n wsb -D -d3 >/dev/null
+docker run -d --name "$LAB-a" --network "$NET" --ip "$A_IP" --cap-add NET_ADMIN --device /dev/net/tun -v "$DA":/etc/tincstack "$IMG" tincd -c /etc/tincstack/tinc.yaml -n wsb -D -d3 >/dev/null
+docker run -d --name "$LAB-b" --network "$NET" --ip "$B_IP" --cap-add NET_ADMIN --device /dev/net/tun -v "$DB":/etc/tincstack "$IMG" tincd -c /etc/tincstack/tinc.yaml -n wsb -D -d3 >/dev/null
 sleep 7
 
-log=$(docker logs wsbmtx-b 2>&1)
+log=$(docker logs "$LAB-b" 2>&1)
 echo "----- node B relevant log -----"
 echo "$log" | grep -iE "via test|simulated dial|falling back|via plain|activated" || true
 echo "-------------------------------"
