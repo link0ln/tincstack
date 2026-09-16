@@ -39,22 +39,29 @@
 # tcpdump runs in a throwaway container attached to a node's netns, so nothing
 # is installed on the host. Image: tincstack/core:ws-g2.
 #
-# Usage: testing/transports/obfs-test.sh [image]
+# Usage: [LAB=prefix] [SUBNET=10.37.90] testing/transports/obfs-test.sh [image]
+#   LAB (default wso) prefixes every container name, the docker network
+#   (<LAB>obfs) and the /tmp data directories; a non-default LAB also gets its
+#   own /24 (see lab-env.sh), so two runs can share a host.
 set -e
 
 IMG=${1:-tincstack/core:ws-o}
 TCPDUMP_IMG=nicolaka/netshoot
-NET=wsoobfs
-BASE=/tmp/wso-obfs
-PFX=wso
-PCAPDIR=/tmp/wso-obfs-pcap
+DEFAULT_LAB=wso; DEFAULT_SUBNET=10.37.90
+# shellcheck source=testing/transports/lab-env.sh
+. "$(dirname "$0")/lab-env.sh"
+NET=${LAB}obfs
+BASE=/tmp/$LAB-obfs
+PCAPDIR=/tmp/$LAB-obfs-pcap
 WAIT=120   # deadline ceiling for every readiness poll; the happy path exits as
            # soon as the link is clean (observed 17-81 s for the relayed obfs KEX
            # under load), so a larger ceiling only adds tolerance, never latency.
 
-A_IP=10.37.90.10
-R_IP=10.37.90.11
-B_IP=10.37.90.12
+A_IP=$SUBNET.10
+R_IP=$SUBNET.11
+B_IP=$SUBNET.12
+ATK1_IP=$SUBNET.50
+ATK2_IP=$SUBNET.51
 A_VPN=10.182.0.1
 R_VPN=10.182.0.2
 B_VPN=10.182.0.3
@@ -66,12 +73,19 @@ JCOUNT=8
 
 fail=0
 cleanup() {
-	docker rm -f ${PFX}-a ${PFX}-r ${PFX}-b ${PFX}-cap ${PFX}-atk >/dev/null 2>&1 || true
+	docker rm -f "$LAB-a" "$LAB-r" "$LAB-b" "$LAB-cap" "$LAB-atk" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+# On exit take the network down too -- reset_lab() between parts must keep it,
+# but a finished run must not leave one docker network per LAB behind.
+# shellcheck disable=SC2329  # invoked from the EXIT trap below
+cleanup_exit() {
+	cleanup
+	docker network rm "$NET" >/dev/null 2>&1 || true
+}
+trap cleanup_exit EXIT
 cleanup
 docker network rm "$NET" >/dev/null 2>&1 || true
-docker network create --subnet 10.37.90.0/24 "$NET" >/dev/null
+docker network create --subnet "$SUBNET.0/24" "$NET" >/dev/null
 
 rm -rf "$BASE"-a "$BASE"-r "$BASE"-b
 mkdir -p "$BASE"-a "$BASE"-r "$BASE"-b
@@ -152,15 +166,15 @@ PYEOF
 }
 
 start() { # letter ip dir
-	docker run -d --name "${PFX}-$1" --network "$NET" --ip "$2" --cap-add NET_ADMIN \
+	docker run -d --name "$LAB-$1" --network "$NET" --ip "$2" --cap-add NET_ADMIN \
 		--device /dev/net/tun -v "$3":/etc/tincstack "$IMG" \
 		tincd -c /etc/tincstack/tinc.yaml -n wsg2 -D -d2 >/dev/null
 }
 setvpn() { # letter vpnip  (idempotent; the device may not exist yet right after start)
-	docker exec "${PFX}-$1" ip addr add "$2/24" dev wsg2 >/dev/null 2>&1 || true
-	docker exec "${PFX}-$1" ip link set wsg2 up >/dev/null 2>&1 || true
+	docker exec "$LAB-$1" ip addr add "$2/24" dev wsg2 >/dev/null 2>&1 || true
+	docker exec "$LAB-$1" ip link set wsg2 up >/dev/null 2>&1 || true
 }
-logs() { docker logs "${PFX}-$1" 2>&1; }
+logs() { docker logs "$LAB-$1" 2>&1; }
 activated() { logs "$1" | grep -q ' activated'; }
 
 # wait_link <n1> <n1-vpn> <n2> <n2-vpn>: both daemons logged "activated" AND the
@@ -172,8 +186,8 @@ wait_link() {
 	while :; do
 		setvpn "$1" "$2"; setvpn "$3" "$4"
 		if activated "$1" && activated "$3" \
-		   && docker exec "${PFX}-$1" ping -c1 -W1 "$4" >/dev/null 2>&1 \
-		   && docker exec "${PFX}-$3" ping -c1 -W1 "$2" >/dev/null 2>&1; then
+		   && docker exec "$LAB-$1" ping -c1 -W1 "$4" >/dev/null 2>&1 \
+		   && docker exec "$LAB-$3" ping -c1 -W1 "$2" >/dev/null 2>&1; then
 			return 0
 		fi
 		if [ "$(date +%s)" -ge "$deadline" ]; then
@@ -196,7 +210,7 @@ wait_clean() {
 	deadline=$(( $(date +%s) + WAIT ))
 	cnt=${3:-4}
 	while :; do
-		out=$(docker exec "${PFX}-$1" ping -c"$cnt" -W2 "$2" 2>&1 | tail -2)
+		out=$(docker exec "$LAB-$1" ping -c"$cnt" -W2 "$2" 2>&1 | tail -2)
 		if echo "$out" | grep -q " 0% packet loss"; then
 			echo "$out"
 			return 0
@@ -211,14 +225,14 @@ wait_clean() {
 loss() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)?% packet loss' || echo '?'; }
 
 capture_start() { # letter
-	docker run -d --name ${PFX}-cap --net container:${PFX}-$1 --cap-add NET_RAW "$TCPDUMP_IMG" \
+	docker run -d --name "$LAB-cap" --net "container:$LAB-$1" --cap-add NET_RAW "$TCPDUMP_IMG" \
 		tcpdump -n -xx -i eth0 'udp port 655' >/dev/null 2>&1
 	sleep 1
 }
 capture_stop() {
-	docker stop ${PFX}-cap >/dev/null 2>&1 || true
-	docker logs ${PFX}-cap 2>&1
-	docker rm -f ${PFX}-cap >/dev/null 2>&1 || true
+	docker stop "$LAB-cap" >/dev/null 2>&1 || true
+	docker logs "$LAB-cap" 2>&1
+	docker rm -f "$LAB-cap" >/dev/null 2>&1 || true
 }
 hex_of() { echo "$1" | grep -oE '0x[0-9a-f]+:.*' | sed 's/0x[0-9a-f]*://' | tr -dc '0-9a-f'; }
 count_len_between() { echo "$1" | grep -oE 'length [0-9]+' | awk -v lo="$2" -v hi="$3" '{if($2>=lo&&$2<=hi)n++} END{print n+0}'; }
@@ -228,7 +242,7 @@ junk_events() { n=0; for l in "$@"; do n=$(( n + $(logs "$l" | grep -c 'obfs jun
 
 reset_lab() {
 	cleanup
-	docker network create --subnet 10.37.90.0/24 "$NET" >/dev/null 2>&1 || true
+	docker network create --subnet "$SUBNET.0/24" "$NET" >/dev/null 2>&1 || true
 	rm -rf "$BASE"-a "$BASE"-r "$BASE"-b; mkdir -p "$BASE"-a "$BASE"-r "$BASE"-b
 }
 
@@ -238,8 +252,8 @@ reset_lab() {
 cap_pcap_start() { # letter file
 	rm -f "$PCAPDIR/$2"
 	mkdir -p "$PCAPDIR"
-	docker rm -f ${PFX}-cap >/dev/null 2>&1 || true
-	docker run -d --name ${PFX}-cap --net container:${PFX}-$1 -v "$PCAPDIR":/cap --cap-add NET_RAW "$TCPDUMP_IMG" \
+	docker rm -f "$LAB-cap" >/dev/null 2>&1 || true
+	docker run -d --name "$LAB-cap" --net "container:$LAB-$1" -v "$PCAPDIR":/cap --cap-add NET_RAW "$TCPDUMP_IMG" \
 		tcpdump -n -U -w "/cap/$2" -i eth0 'udp port 655' >/dev/null 2>&1
 	# poll until the pcap header is on disk (24 bytes), deadline WAIT, then a
 	# short settle so libpcap's BPF filter is actually attached before the
@@ -252,7 +266,7 @@ cap_pcap_start() { # letter file
 	done
 	sleep 2
 }
-cap_pcap_stop() { docker stop ${PFX}-cap >/dev/null 2>&1 || true; docker rm -f ${PFX}-cap >/dev/null 2>&1 || true; }
+cap_pcap_stop() { docker stop "$LAB-cap" >/dev/null 2>&1 || true; docker rm -f "$LAB-cap" >/dev/null 2>&1 || true; }
 
 # node's OWN Ed25519 public key, read from its host block in its own yaml.
 ownpubkey() { # letter name
@@ -266,8 +280,8 @@ ownpubkey() { # letter name
 # send a raw UDP payload (hex) to a node's port from a DISTINCT source address,
 # impersonating an off-path attacker. Uses a throwaway netshoot container.
 raw_send() { # atk_ip dst_ip hexpayload repeat
-	docker rm -f ${PFX}-atk >/dev/null 2>&1 || true
-	docker run --rm --name ${PFX}-atk --network "$NET" --ip "$1" "$TCPDUMP_IMG" \
+	docker rm -f "$LAB-atk" >/dev/null 2>&1 || true
+	docker run --rm --name "$LAB-atk" --network "$NET" --ip "$1" "$TCPDUMP_IMG" \
 		python3 -c "
 import socket,sys
 data=bytes.fromhex('$3')
@@ -290,7 +304,7 @@ crossinject a b
 start b "$B_IP" "$BASE-b"; start a "$A_IP" "$BASE-a"
 wait_link a "$A_VPN" b "$B_VPN" || fail=1
 capture_start a
-docker exec ${PFX}-a ping -c3 -W2 "$B_VPN" >/dev/null 2>&1 || true
+docker exec "$LAB-a" ping -c3 -W2 "$B_VPN" >/dev/null 2>&1 || true
 sf_cap=$(capture_stop)
 sf_magic=$(sfmagic "$(hex_of "$sf_cap")")
 echo "BEFORE (sf):  SF magic 9f747366 occurrences on the wire = $sf_magic"
@@ -319,7 +333,7 @@ if ba=$(wait_clean b "$A_VPN"); then ba_ok=1; else ba_ok=0; fi
 
 # steady-state flood: no new handshake, so the sender's junk counter must not move
 junk_before=$(junk_events a b)
-docker exec ${PFX}-a ping -c30 -i0.2 -W2 "$B_VPN" >/dev/null 2>&1 || true
+docker exec "$LAB-a" ping -c30 -i0.2 -W2 "$B_VPN" >/dev/null 2>&1 || true
 junk_after=$(junk_events a b)
 junk_steady=$(( junk_after - junk_before ))
 
@@ -356,10 +370,10 @@ start r "$R_IP" "$BASE-r"; start a "$A_IP" "$BASE-a"; start b "$B_IP" "$BASE-b"
 wait_link a "$A_VPN" r "$R_VPN" || fail=1
 wait_link b "$B_VPN" r "$R_VPN" || fail=1
 # Sever direct A<->B reachability so traffic must go through R.
-docker exec ${PFX}-a iptables -A INPUT  -s "$B_IP" -j DROP
-docker exec ${PFX}-a iptables -A OUTPUT -d "$B_IP" -j DROP
-docker exec ${PFX}-b iptables -A INPUT  -s "$A_IP" -j DROP
-docker exec ${PFX}-b iptables -A OUTPUT -d "$A_IP" -j DROP
+docker exec "$LAB-a" iptables -A INPUT  -s "$B_IP" -j DROP
+docker exec "$LAB-a" iptables -A OUTPUT -d "$B_IP" -j DROP
+docker exec "$LAB-b" iptables -A INPUT  -s "$A_IP" -j DROP
+docker exec "$LAB-b" iptables -A OUTPUT -d "$A_IP" -j DROP
 # The first packets trigger the relayed SPTPS key exchange through R; poll until
 # a full ping run is clean (<= WAIT s), which covers establishment + convergence.
 t0=$(date +%s)
@@ -381,7 +395,7 @@ crossinject a b
 start b "$B_IP" "$BASE-b"; start a "$A_IP" "$BASE-a"
 wait_link a "$A_VPN" b "$B_VPN" || fail=1
 capture_start b
-docker exec ${PFX}-a ping -c3 -W2 "$B_VPN" >/dev/null 2>&1 || true
+docker exec "$LAB-a" ping -c3 -W2 "$B_VPN" >/dev/null 2>&1 || true
 def_cap=$(capture_stop)
 if def_ping=$(wait_clean a "$B_VPN"); then def_ok=1; else def_ok=0; fi
 def_magic=$(sfmagic "$(hex_of "$def_cap")")
@@ -431,8 +445,8 @@ wait_clean b "$A_VPN" >/dev/null 2>&1 || true
 
 # steady-state capture, well after the session key switch, both directions.
 cap_pcap_start b steady.pcap
-docker exec ${PFX}-a ping -c30 -i0.2 -W2 "$B_VPN" >/dev/null 2>&1 || true
-docker exec ${PFX}-b ping -c30 -i0.2 -W2 "$A_VPN" >/dev/null 2>&1 || true
+docker exec "$LAB-a" ping -c30 -i0.2 -W2 "$B_VPN" >/dev/null 2>&1 || true
+docker exec "$LAB-b" ping -c30 -i0.2 -W2 "$A_VPN" >/dev/null 2>&1 || true
 cap_pcap_stop
 
 # ---- (a) M5-2: third party with both public keys cannot decrypt steady traffic
@@ -460,10 +474,10 @@ echo "  captured A->B datagram: $(printf '%s' "$PAYLOAD" | cut -c1-24)... (${#PA
 
 # ---- (b) M5-4: replay from a DIFFERENT address must not repoint the link
 if [ -n "$PAYLOAD" ]; then
-	raw_send 10.37.90.50 "$B_IP" "$PAYLOAD" 20 >/dev/null 2>&1
+	raw_send "$ATK1_IP" "$B_IP" "$PAYLOAD" 20 >/dev/null 2>&1
 	# if the replay had repointed B's link to the attacker, A<->B would stall
 	if rep=$(wait_clean a "$B_VPN"); then
-		echo "  (b) after replay flood from 10.37.90.50: A<->B $(loss "$rep") -- link not repointed"
+		echo "  (b) after replay flood from $ATK1_IP: A<->B $(loss "$rep") -- link not repointed"
 	else
 		echo "MISS: A<->B did not recover after a replay flood (link may have been repointed, M5-4)"; fail=1
 	fi
@@ -474,7 +488,7 @@ fi
 # ---- (c) M5-5: a reflected datagram must not close the session
 if [ -n "$PAYLOAD" ]; then
 	closes_before=$(logs a | grep -c 'session closed\|session reset' || true)
-	raw_send 10.37.90.51 "$A_IP" "$PAYLOAD" 20 >/dev/null 2>&1   # reflect A's own tx frame back to A
+	raw_send "$ATK2_IP" "$A_IP" "$PAYLOAD" 20 >/dev/null 2>&1   # reflect A's own tx frame back to A
 	closes_after=$(logs a | grep -c 'session closed\|session reset' || true)
 	if refl=$(wait_clean a "$B_VPN"); then
 		echo "  (c) after reflecting A's frame to A: A<->B $(loss "$refl") ; teardown log lines ${closes_before}->${closes_after}"
