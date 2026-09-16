@@ -1495,6 +1495,28 @@ Defects identified during the source audit, to fix as their milestone is reached
   in `make lint`). Note for the record: the documented rotation had **no test**
   before this — stream O's proofs covered the key's secrecy, nonces, replay and
   cold scan, but never that the key actually changes.
+- 🟠 **The obfs link can fall back to the mesh-wide bootstrap key *after* the
+  per-link session key was established, and stay there for up to one 30 s
+  self-heal tick.** Found 2026-09-16 in the coordination pass, on master with
+  streams O, U and P merged, while the host was loaded (three labs running):
+  `obfs-test.sh` PART 4 reported `obfs session key established` on **both**
+  ends (its convergence poll passed, so this is not the test racing the
+  handshake) and the steady-state capture was still **174 of 174 datagrams
+  decryptable** with the public-key bootstrap key — i.e. every mesh member
+  could read the traffic, which is exactly what M5-2 was about. The same test
+  on an idle host: 0 of 176. Stream O saw one instance of this (172/172) and
+  attributed it to the superseded-connection race it fixed in `obfs_close()`;
+  the reproduction above shows a residual path — most likely a link reset while
+  `node->connection` is momentarily NULL (`superseded` is then false, so the
+  reset runs), with recovery left to the `obfs_periodic` self-heal tick.
+  Impact: a window of up to 30 s per connection replacement in which the
+  obfuscation is only as strong as the mesh-wide key. Reproduce: run
+  `testing/transports/obfs-test.sh` while two other labs are running, or force
+  a connection replacement (stream P's acceptor-side rule makes that routine).
+  Fix direction: re-issue the seed exchange the moment an active link is found
+  without a session key (on the send path, rate-limited) instead of waiting for
+  the tick, and make the reset condition depend on the surviving connection
+  rather than on `node->connection` being set at that instant.
 - 🟡 **Local-address fallback for invitations is only a hint.** M1 added a
   last-resort fallback (default-route source address) so a zero-config node can
   invite without a TTY; behind NAT it yields a private address. It prints a
