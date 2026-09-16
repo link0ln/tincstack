@@ -15,20 +15,25 @@
 # All tooling runs in throwaway containers (nicolaka/netshoot for tcpdump and
 # the NAT gateway); nothing is installed on the host. Data under /tmp/wsg3-*.
 #
-# Usage: [ONLY="a b"] testing/transports/quic-carrier-test.sh [image] [image-without-quic]
+# Usage: [ONLY="a b"] [LAB=prefix] [SUBNET=10.44.9] testing/transports/quic-carrier-test.sh [image] [image-without-quic]
+#   LAB (default wsg3q) prefixes every container/network name and the /tmp
+#   directory; a non-default LAB also gets its own /24 (see lab-env.sh).
 set -e
 [ -n "$QUIC_TRACE" ] && set -x
 
 IMG=${1:-tincstack/core:ws-g3}
 IMG_NOQUIC=${2:-tincstack/core:ws-g3-noquic}
 TOOLS=nicolaka/netshoot
-PFX=wsg3q
-BASE=/tmp/wsg3-quic
+DEFAULT_LAB=wsg3q; DEFAULT_SUBNET=10.44.9
+# shellcheck source=testing/transports/lab-env.sh
+. "$(dirname "$0")/lab-env.sh"
+PFX=$LAB
+BASE=/tmp/$LAB
 NET=${PFX}net
 
-A_IP=10.44.9.10
-B_IP=10.44.9.11
-R_IP=10.44.9.12
+A_IP=$SUBNET.10
+B_IP=$SUBNET.11
+R_IP=$SUBNET.12
 A_VPN=10.193.0.1
 B_VPN=10.193.0.2
 R_VPN=10.193.0.3
@@ -45,7 +50,7 @@ cleanup() {
 cleanup
 rm -rf "$BASE"-*
 mkdir -p "$BASE-a" "$BASE-b" "$BASE-r" "$BASE-x"
-docker network create --subnet 10.44.9.0/24 "$NET" >/dev/null
+docker network create --subnet "$SUBNET.0/24" "$NET" >/dev/null
 
 # --- configs ----------------------------------------------------------------
 writecfg() { # dir name extra-yaml-lines...

@@ -1,10 +1,17 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # two-nodes.sh -- PLAN.md M6 proof (b), one command, non-interactive:
 # two compose projects (<LAB>-a founding, <LAB>-b invitee) on one docker
 # network; invite on a, join on b, ping across the tunnel. Exit 0 = the tunnel
 # carries traffic both ways. Everything it creates is removed on exit unless
 # KEEP=1. Tunables: LAB (project prefix, default wsc), TINCSTACK_TAG (image
 # tag, default dev), WAIT (seconds per readiness wait, default 60).
+# Bash only (pipefail, [[ ]], arithmetic): `sh two-nodes.sh` would die on
+# `set -o pipefail` with dash's "Illegal option", so fail with a clear message
+# first. Run it directly or as `bash two-nodes.sh`.
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "two-nodes.sh: this script needs bash; run it directly or with 'bash two-nodes.sh' (not 'sh')" >&2
+    exit 2
+fi
 set -euo pipefail
 cd "$(dirname "$0")"
 

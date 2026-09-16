@@ -5,6 +5,25 @@ nothing is installed on the host. They need the core image built first:
 
     docker build -f core/Dockerfile.build -t tincstack/core:ws-b core/
 
+## Running two proofs at once (`LAB=`, `SUBNET=`)
+
+Every docker-based proof here (`singleflow`, `tls-front`, `https-carrier`,
+`quic-carrier`, `matrix`) sources `lab-env.sh` and takes `LAB=<prefix>`
+like `platforms/linux/docker/two-nodes.sh`: the prefix goes into every
+container and network name and the `/tmp/<LAB>*` data directory, and a
+non-default `LAB` also moves the lab `/24` to a `LAB`-derived third octet
+(`SUBNET=10.31.42` overrides it). The defaults are the historical names
+(`wsbsf-*`, `wsl-*`, `wslh-*`, `wsg3q-*`, `wsbmtx-*`), so the commands below
+still work unchanged, and the scripts still remove *their own* leftovers on
+start — only those. Two concurrent runs:
+
+    LAB=wst1 sh testing/transports/singleflow-test.sh tincstack/core:dev &
+    LAB=wst2 sh testing/transports/singleflow-test.sh tincstack/core:dev
+
+`obfs-test.sh` still hard-codes `wsg2o-*` / `wsg2obfs` / `10.37.9.0/24`
+(it is being edited by stream O; give it the same `lab-env.sh` treatment when
+that lands). `classify-test.sh` creates no named container.
+
 ## classify-test.sh — front classifier unit test
 
 Compiles `classify_test.c` against the real `transport_table.c` (the classifier

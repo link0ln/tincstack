@@ -1,8 +1,0 @@
-nodeb id c5888a302717 at MYSELF port 655 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 0058 nexthop nodeb via nodeb distance 0 pmtu 1518 (min 0 max 1518) rx 79 7526 tx 76 7340
-nodel id 67201023cea7 at 100.64.0.4 port 836 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 105a nexthop relay via nodel distance 2 pmtu 1518 (min 0 max 1518) rx 73 7154 tx 73 7154 rtt 0.078
-relay id 75b4babbcd84 at 100.64.0.10 port 655 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 08da nexthop relay via relay distance 1 pmtu 1439 (min 1439 max 1439) rx 5 222 tx 5 310 rtt 0.036
-
-nodeb to relay at 100.64.0.10 port 655 local 192.168.120.5 port 655 options 700000c weight 0
-nodel to relay at 100.64.0.10 port 655 local 192.168.130.5 port 655 options 700000c weight 0
-relay to nodeb at 100.64.0.3 port 655 local 100.64.0.10 port 655 options 700000c weight 0
-relay to nodel at 100.64.0.4 port 655 local 100.64.0.10 port 655 options 700000c weight 0

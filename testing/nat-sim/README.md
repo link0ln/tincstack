@@ -29,9 +29,22 @@ testing/nat-sim/lab.sh laptop                          # the named regression, c
 testing/nat-sim/lab.sh glare                           # simultaneous REQ_KEY
 ```
 
-Results go to `results/<date>/` (logs, `dump nodes/edges`, `info`, gateway
-rule/conntrack dumps, `summary.md`). Keys are generated inside the container
-and are never written there. Exit code: 0 = every scenario PASS.
+Results go to `results/run/<run-id>/` (logs, `dump nodes/edges`, `info`,
+gateway rule/conntrack dumps, `summary.md`); the run id is `$WSF_RUN` or
+`<date>-<HHMMSS>-<pid>`, and `make check` exports one `WSF_RUN` for all its
+lab steps. `results/run/` is git-ignored: a run never touches the committed
+evidence. Keys are generated inside the container and are never written
+there. Exit code: 0 = every scenario PASS.
+
+The committed tree `results/<date>/` is a *curated* subset, produced by
+`lab.sh promote results/run/<run-id> [results/<date>]` (or `make promote
+RUN=<run-id>`): every `summary.md` / `result.json`, the validate-nat JSON
+lines, the laptop regression's `nodel.log` + port/conntrack notes, every
+glare-fix log, the dpi-proof report/fingerprint/pcap. Per-pair node logs,
+dumps and gateway dumps are not promoted and `.gitignore` refuses them under
+`results/` (the two gateway dumps cited below are un-ignored by path). Until
+2026-09-16 (stream T) the full 2026-09-16 run was committed: 767 files /
+17.7 MiB; the curated tree is 112 files / 0.83 MiB.
 
 Options: `--image core|baseline|both`, `--rtt MS` (netem on every gateway's
 external interface), `--wait S` (direct-UDP budget, default 90),
@@ -172,7 +185,9 @@ Pass = all stages recovered within 60 s, the same tincd process alive
 throughout, fewer than 20 `Invalid packet seqno` and fewer than 20
 `Got REQ_KEY … while we already started a SPTPS session` lines across all logs
 (the livelock signatures PATCHES.md §1 removes). Run for `core` and `baseline`;
-the delta is the proof. Logs of both runs are committed under `results/`.
+the delta is the proof. L's log (`nodel.log`), `nodel-udp-port.txt`, the
+carrier conntrack snapshot and the summaries of both runs are committed under
+`results/<date>/laptop/`; the full run stays in `results/run/`.
 
 ## REQ_KEY glare (`lab.sh glare`) — found during M9
 
@@ -205,4 +220,6 @@ baseline` = patched initiator against a stock responder). Evidence:
 - `natlab.sh` — the lab itself (runs inside the container).
 - `natprofile.sh` — NAT profiles (runs inside a gateway namespace).
 - `udpprobe.py` — NAT classifier used by `validate-nat`.
-- `results/<date>/` — committed evidence (no keys; grep before committing).
+- `results/run/<run-id>/` — full output of every run (git-ignored).
+- `results/<date>/` — committed, curated evidence (`lab.sh promote`; no keys —
+  promote greps for key material and fails if it finds any).

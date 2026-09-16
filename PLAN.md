@@ -1150,12 +1150,18 @@ another network's addresses are dropped by the daemon's nft rules. Details:
   **Proof:** `make check` run 2026-09-16 → exit 0 in ~6 min:
   `smoke: PASS (cross-node ping both ways, YAML mode)`, `validate-nat: all 6
   profiles behave as declared`, 5 quick pairs PASS, `baseline fingerprints
-  present: …six…`, `make check: OK`. Note: `make check` re-runs its subset
-  into `results/<today>/`, so the committed 2026-09-16 tree carries the full
-  matrix plus that re-run (identical outcomes).
+  present: …six…`, `make check: OK`. Since stream T every lab step writes into the git-ignored
+  `results/run/<run-id>/` (one `RUN` id per `make` invocation) and the
+  committed `results/2026-09-16/` trees are the curated subset
+  (`make promote RUN=…` / `lab.sh promote`), so a re-run never overwrites the
+  evidence. CI: `.github/workflows/check.yml` (stream T) runs `make lint`,
+  the core build (QUIC stage, buildx layer cache in GHA), the smoke test and
+  `validate-nat` + the quick matrix on push/PR — validated with actionlint
+  and by running each step's command locally in order; **not yet observed
+  running on GitHub**.
 - **Found during M9** (core sources untouched; evidence under
   `testing/nat-sim/results/2026-09-16/`):
-  - 🟢 **Lab evidence is committed in full** (`testing/**/results/`, ~20 MB of
+  - ~~🟢 **Lab evidence is committed in full** (`testing/**/results/`, ~20 MB of
     per-node tincd logs, 700+ files for one run; `make check` writes a new
     `results/<today>/` tree on every run). Impact: repository bloat grows
     with every recorded run, and `make check` in a checkout overwrites the
@@ -1163,11 +1169,29 @@ another network's addresses are dropped by the daemon's nft rules. Details:
     files after one run). Consolidation: keep `summary.md`, `result.json`
     and the laptop/glare logs that the proof lines cite, gitignore the rest
     (or move full logs to a release artifact), and have `make check` write
-    to a run-scoped directory.
-  - 🟢 `testing/transports/singleflow-test.sh` uses fixed container/network
+    to a run-scoped directory.~~ **Resolved 2026-09-16 (stream T):**
+    `testing/{nat-sim,dpi-proof}/results/` in git went from **767 files /
+    17.7 MiB to 112 files / 0.83 MiB** (kept: every `summary.md` and
+    `result.json`, `validate-nat*.jsonl`, `laptop/*/nodel.log` +
+    `nodel-udp-port.txt` + the conntrack snapshot, every `glare-fix/` log,
+    `plain.report.txt` + `.fingerprint.json` + `.pcap`, and the two `gw-*.txt`
+    the README cites by path); `lab.sh` / `dpi-proof/run.sh` / `make check`
+    write to the git-ignored `results/run/<run-id>/`; `.gitignore` refuses
+    node logs, dumps and gateway dumps under `results/`; `lab.sh promote`
+    (`make promote RUN=…`) copies the curated subset into `results/<date>/`.
+  - ~~🟢 `testing/transports/singleflow-test.sh` uses fixed container/network
     names (`wsbsf-*`) and removes the `wsbsf` network on start: two
     concurrent runs kill each other (stream K). Parametrise the prefix like
-    `two-nodes.sh` (`LAB=`).
+    `two-nodes.sh` (`LAB=`).~~ **Resolved 2026-09-16 (stream T):**
+    `singleflow`, `tls-front`, `https-carrier`, `quic-carrier` and `matrix`
+    source `testing/transports/lab-env.sh` and take `LAB=` (names, `/tmp`
+    dir) plus a `LAB`-derived or explicit `SUBNET=` (two runs also collided
+    on the docker `/24`); defaults unchanged. Proof on `tincstack/core:dev`:
+    `LAB=wst1` and `LAB=wst2` singleflow runs started together, both PASS
+    (exit 0); tls-front, https-carrier, matrix (`ws-b-test`) and
+    quic-carrier PASS with `LAB=wst*`. `obfs-test.sh` still has fixed
+    `wsg2o-*` names (stream O is editing it; same treatment when it lands).
+    `two-nodes.sh` now refuses `sh` with a message (it needs bash).
   - ~~🟠 **REQ_KEY glare has no tie-break (upstream 1.1pre18 and core).**~~
     **Resolved 2026-09-16 (stream K, core patch 5 — `core/tincd/PATCHES.md`
     §5, `docs/source-inventory.md`).** Upstream 1.1 HEAD (`211e3dfa`) has the
