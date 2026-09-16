@@ -1,0 +1,110 @@
+# tincstack CI — the same verification `make check` runs locally, split into
+# jobs so the docker builds are cached and the labs run in parallel:
+#
+#   lint   make lint (shellcheck in a container)
+#   build  core/Dockerfile.build (with the QUIC stage) via buildx, layer cache
+#          in the GitHub Actions cache; the image is handed to the lab jobs as
+#          an artifact so nothing is built twice
+#   smoke  testing/smoke (two-node docker compose, YAML mode, ping both ways)
+#   nat    the NAT lab: upstream baseline image + lab image, then
+#          validate-nat, the quick matrix and the dpi baseline capture
+#          (`--privileged` for network namespaces — permitted on GitHub's
+#          ubuntu runners); 40-minute budget, lab output uploaded as artifact
+#
+# Every step calls the Makefile targets `make check` calls, in the same order;
+# `make -o build-core -o build-baseline` marks the already-built images as
+# up to date so the lab jobs do not rebuild them. TAG=ci keeps the images
+# apart from any developer tag family.
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TAG: ci
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: make lint
+        run: make lint
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build core image (core/Dockerfile.build, QUIC stage included)
+        uses: docker/build-push-action@v6
+        with:
+          context: core
+          file: core/Dockerfile.build
+          tags: tincstack/core:${{ env.TAG }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: tincd --version
+        run: docker run --rm "tincstack/core:$TAG" tincd --version
+      - name: save the image for the lab jobs
+        run: docker save "tincstack/core:$TAG" | gzip -1 > core-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-image
+          path: core-image.tar.gz
+          retention-days: 1
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: core-image
+      - name: load core image
+        run: docker load < core-image.tar.gz
+      - name: make smoke
+        run: make -o build-core smoke
+
+  nat:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: core-image
+      - name: load core image
+        run: docker load < core-image.tar.gz
+      - name: make build-baseline (upstream tinc 1.1pre18 from the release tarball)
+        run: make build-baseline
+      - name: make validate-nat
+        run: make -o build-core -o build-baseline validate-nat
+      - name: make nat-quick
+        run: make -o build-core -o build-baseline nat-quick
+      - name: make dpi-baseline
+        run: make -o build-core -o build-baseline dpi-baseline
+      - name: upload lab output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-results
+          path: |
+            testing/nat-sim/results/run/
+            testing/dpi-proof/results/run/
+          if-no-files-found: ignore
+          retention-days: 14
