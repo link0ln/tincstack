@@ -1816,9 +1816,14 @@ registry image.
   image was cross-built here under `tonistiigi/binfmt` qemu
   (`docker buildx --platform linux/arm64 -f core/Dockerfile.build`, then
   `docker build --platform linux/arm64 --build-arg CORE_IMAGE=tincstack/core:arm64`)
-  and the emulated build cost about **11 minutes** of compile, not the hours
-  the "10x" guess implied -- a nightly matrix leg is affordable today, without
-  waiting for an arm64 runner. Proof that the artefact is real, not just
+  and the emulated build cost **978 s of build stages end to end** (~16 min),
+  of which tinc's own compile is only **154 s** -- the bulk is the emulated
+  `apt-get` layers (301 + 228 + 166 s), which a cached base image removes
+  entirely. (An earlier revision of this entry said "about 11 minutes of
+  compile"; that was a guess from a partial log, and the split matters: the
+  thing to optimise is the base image, not the compiler.) So the "roughly 10x,
+  wait for an arm64 runner" reasoning above is too pessimistic -- a matrix leg
+  is affordable on an ordinary runner today. Proof that the artefact is real, not just
   built: `tincstack/node:arm64` (130 MB, `Architecture: arm64`) was shipped to
   the home router with `docker save | gzip | ssh root@192.168.1.1 docker load`
   and started there from
