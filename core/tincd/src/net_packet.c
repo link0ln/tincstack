@@ -1319,17 +1319,26 @@ static void try_sptps(node_t *n) {
 
 	logger(DEBUG_TRAFFIC, LOG_INFO, "No valid key known yet for %s (%s)", n->name, n->hostname);
 
+	/* 30s instead of 10s: under high RTT or congested TCP relay paths, the
+	   SPTPS handshake genuinely needs more than 10s. Resetting again too early
+	   tears down an in-progress handshake and feeds the stale-packet livelock
+	   described in sptps.c.
+	   Jitter ±20% (patch 5): when two nodes arm this timer in the same instant
+	   (the REQ_KEY-glare case) a fixed cooldown makes them retry in the same
+	   second and collide again. A small random spread decorrelates the two
+	   sides' retries so recovery converges even if the deterministic tie-break
+	   in protocol_key.c did not apply (e.g. one peer is unpatched). */
 	if(!n->status.waitingforkey) {
 		send_req_key(n);
-	} else if(n->last_req_key + 30 < now.tv_sec) {
-		/* 30s instead of 10s: under high RTT or congested TCP relay paths,
-		   the SPTPS handshake genuinely needs more than 10s. Resetting again
-		   too early tears down an in-progress handshake and feeds the
-		   stale-packet livelock described in sptps.c. */
-		logger(DEBUG_ALWAYS, LOG_DEBUG, "No key from %s after 30 seconds, restarting SPTPS", n->name);
-		sptps_stop(&n->sptps);
-		n->status.waitingforkey = false;
-		send_req_key(n);
+	} else {
+		int cooldown = 30 + (int)prng(13) - 6;   /* 24..36s */
+
+		if(n->last_req_key + cooldown < now.tv_sec) {
+			logger(DEBUG_ALWAYS, LOG_DEBUG, "No key from %s after %d seconds, restarting SPTPS", n->name, cooldown);
+			sptps_stop(&n->sptps);
+			n->status.waitingforkey = false;
+			send_req_key(n);
+		}
 	}
 
 	return;

@@ -82,6 +82,7 @@ Reusable **as code** (this is the adopted core):
 | Single-file YAML config — daemon **read** | `src/yamlconf.c` (own parser, no libyaml), `conf.c:config_fopen()`, `keys.c`, `names.c` | `-c tinc.yaml` | Works via ad-hoc harness; no unit test yet |
 | Single-file YAML config — daemon **write-back** of learned peer keys | `yamlconf_append_host_line()`, `append_config_file()` (`conf.c:443`) | — | Works; re-emits whole file (loses comments) |
 | sendmmsg() relay TX batching | `src/net_packet.c:1011-1095` | compile-time `HAVE_SENDMMSG` | **Measured slightly worse; author says do not deploy.** Keep behind a default-off switch or drop |
+| REQ_KEY glare tie-break + jittered restart cooldown (tincstack patch 5, `core/tincd/PATCHES.md` §5) | `src/protocol_key.c` (`req_key_ext_h`, `REQ_KEY` case), `src/net_packet.c` (`try_sptps`) | none (hardcoded) | Added 2026-09-16 by stream K after the M9 lab measured 30–90 s of relay-only traffic per simultaneous SPTPS start. When both peers are pending initiators the lexicographically smaller `Name` keeps its session and ignores the peer's `REQ_KEY`, the larger one yields as responder; the 30 s "No key after N seconds" cooldown (patch 1) gets ±20 % jitter. Wire-compatible: no new message; against an unpatched peer it is either resolved in one round trip (patched side has the smaller name) or identical to stock (larger name), never worse. Proof: `testing/nat-sim/results/2026-09-16/glare-fix/` |
 
 Reference-only / to finish:
 - Invitations are **stock upstream** (`src/invitation.c`, untouched). `tinc invite`

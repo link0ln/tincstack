@@ -96,6 +96,49 @@ so there is nothing to batch, and the extra in-batch `memcpy` adds a little
 overhead. The patch is kept for reference and would only help at much higher,
 bursty packet rates. **Not recommended to deploy as-is.**
 
+## 5. SPTPS: REQ_KEY glare tie-break + jittered restart cooldown (tincstack, stream K)
+
+**Problem.** Found by the M9 NAT lab (`testing/nat-sim/lab.sh glare`). When two
+nodes start sending to each other in the same instant, both call
+`send_req_key()` and become SPTPS *initiators*. The `REQ_KEY` handler in
+`protocol_key.c` (upstream 1.1 HEAD `211e3dfa` included — no fix exists
+upstream) unconditionally stops its own session and restarts as *responder*, so
+after the exchange **both** sides are responders: neither will ever send a SIG,
+each side's stale handshake record hits a fresh responder that expects seqno 1
+(`Invalid packet seqno: 0 != 1`), and the only way out is the "No key from X
+after N seconds, restarting SPTPS" timer in `try_sptps()`. Both timers were
+armed in the same second, so the retry collides again; the session eventually
+succeeds by accident. Measured before the fix (full-cone × full-cone, both
+sides ping at once, `--rtt 50`): core 90 s **FAIL** / 32 s / 31 s to the first
+key (4 / 1 / 1 restarts), upstream baseline 23 / 46 / 35 s (3 / 7 / 5 restarts).
+
+**Fix.**
+- `protocol_key.c` (`req_key_ext_h`, `case REQ_KEY`): if we already have a
+  *pending initiator* session with that peer (`from->sptps.label &&
+  from->sptps.initiator`), break the tie by name: the lexicographically smaller
+  `Name` keeps its initiator session and ignores the incoming request; the
+  larger one yields (stock behaviour: stop, restart as responder, feed the
+  peer's KEX). Both sides evaluate the same `strcmp` on the same two names, so
+  exactly one initiator survives. Two initiators can never complete (the SIG
+  record carries the initiator flag and each side verifies the *opposite*
+  flag), which is why the rule must be symmetric rather than "always keep".
+- `net_packet.c` (`try_sptps`): the 30 s restart cooldown of patch 1 is
+  jittered ±20 % (24–36 s, `prng`) so two nodes that armed it together do not
+  retry in the same second.
+
+**Result.** Same scenario after the fix, core × core: key in 1 s in 6/6 runs
+(rtt 50 ms ×3, rtt 1 ms ×3), 0 restarts, 0 `Invalid packet seqno`; the
+tie-break lines appear on both sides in 5 of the 6 runs (the 6th raced clean).
+
+**Wire compatibility.** No new message, no changed encoding, SPTPS untouched.
+An unpatched peer always tears its own session down on `REQ_KEY`, so against a
+stock 1.1 node: if the patched node has the smaller name it keeps its
+initiator session and the stock node answers as responder (glare resolved in
+one round trip); if the patched node has the larger name it yields exactly as
+stock does, both end up responders as before, and the (now jittered) timer
+recovers — never worse than stock. Fully fixed only when both ends carry the
+patch.
+
 ---
 
 ## Building

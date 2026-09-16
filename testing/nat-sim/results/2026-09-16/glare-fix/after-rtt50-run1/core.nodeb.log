@@ -1,0 +1,133 @@
+2026-09-15 23:37:55 NOTICE  tincd 1.1pre18 (Sep 15 2026 23:37:23) starting, debug level 5
+2026-09-15 23:37:55 INFO    Transports accept=plain,sf,obfs,https prefer=plain
+2026-09-15 23:37:55 INFO    UDPDiscoveryBurst 5, UDPRebindOnWake no
+2026-09-15 23:37:55 INFO    /dev/net/tun is a Linux tun/tap device (tun mode)
+2026-09-15 23:37:55 NOTICE  Listening on 0.0.0.0 port 655
+2026-09-15 23:37:55 NOTICE  Generated a self-signed TLS certificate into `/lab/nodes/nodeb'
+2026-09-15 23:37:55 INFO    TLS certificate ready (generated self-signed (confbase files)), fingerprint 0f0924a4340e73e9ca405106dd8ea182d1a7b5ff03cf107f9ce36123d4fdf68e
+2026-09-15 23:37:55 INFO    Executing script tinc-up
+2026-09-15 23:37:55 NOTICE  Ready
+2026-09-15 23:37:55 INFO    Carrier candidates for relay: plain (peer accepts plain)
+2026-09-15 23:37:55 INFO    Trying to connect to relay (100.64.0.10 port 655) via plain
+2026-09-15 23:37:55 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 23:37:55 INFO    Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+2026-09-15 23:37:55 INFO    Connected to relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 DEBUG   Sending ID to relay (100.64.0.10 port 655): 0 nodeb 17.7
+2026-09-15 23:37:55 DEBUG   Sending 13 bytes of raw metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 DEBUG   Got ID from relay (100.64.0.10 port 655): 0 relay 17.7
+2026-09-15 23:37:55 DEBUG   Sending ACK to relay (100.64.0.10 port 655): 4 655 52 700000c plain,sf,obfs,https
+2026-09-15 23:37:55 DEBUG   Sending 37 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 DEBUG   Got ACK from relay (100.64.0.10 port 655): 4 655 26 700000c plain,sf,obfs,https
+2026-09-15 23:37:55 NOTICE  Connection with relay (100.64.0.10 port 655) activated
+2026-09-15 23:37:55 DEBUG   Sending ADD_SUBNET to relay (100.64.0.10 port 655): 10 4c4eae4e nodeb 10.77.0.3
+2026-09-15 23:37:55 DEBUG   Sending 28 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 DEBUG   Sending ADD_EDGE to everyone (BROADCAST): 12 8ea3ad76 nodeb relay 100.64.0.10 655 700000c 39 192.168.120.5 655
+2026-09-15 23:37:55 DEBUG   Sending 69 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 DEBUG   Got ADD_SUBNET from relay (100.64.0.10 port 655): 10 ae695217 nodea 10.77.0.2
+2026-09-15 23:37:55 DEBUG   Forwarding ADD_SUBNET from relay (100.64.0.10 port 655): 10 ae695217 nodea 10.77.0.2
+2026-09-15 23:37:55 DEBUG   Got ADD_EDGE from relay (100.64.0.10 port 655): 12 85480b5d nodea relay 100.64.0.10 655 700000c 39 192.168.110.5 655
+2026-09-15 23:37:55 DEBUG   Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 85480b5d nodea relay 100.64.0.10 655 700000c 39 192.168.110.5 655
+2026-09-15 23:37:55 DEBUG   Got ADD_SUBNET from relay (100.64.0.10 port 655): 10 41826f9e relay 10.77.0.1
+2026-09-15 23:37:55 DEBUG   Forwarding ADD_SUBNET from relay (100.64.0.10 port 655): 10 41826f9e relay 10.77.0.1
+2026-09-15 23:37:55 DEBUG   Got ADD_EDGE from relay (100.64.0.10 port 655): 12 b7b8d450 relay nodea 100.64.0.2 655 700000c 39 100.64.0.10 655
+2026-09-15 23:37:55 DEBUG   Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 b7b8d450 relay nodea 100.64.0.2 655 700000c 39 100.64.0.10 655
+2026-09-15 23:37:55 DEBUG   Got ADD_EDGE from relay (100.64.0.10 port 655): 12 c0fe306d relay nodeb 100.64.0.3 655 700000c 39 100.64.0.10 655
+2026-09-15 23:37:55 DEBUG   Forwarding ADD_EDGE from relay (100.64.0.10 port 655): 12 c0fe306d relay nodeb 100.64.0.3 655 700000c 39 100.64.0.10 655
+2026-09-15 23:37:55 DEBUG   UDP address of relay set to 100.64.0.10 port 655
+2026-09-15 23:37:55 DEBUG   UDP address of nodea set to 100.64.0.2 port 655
+2026-09-15 23:37:55 DEBUG   Node nodea (100.64.0.2 port 655) became reachable
+2026-09-15 23:37:55 DEBUG   Node relay (100.64.0.10 port 655) became reachable
+2026-09-15 23:37:55 DEBUG   Caching recent address for relay
+2026-09-15 23:37:55 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 62
+2026-09-15 23:37:55 DEBUG   Received packet of 62 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 23:37:55 INFO    Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 DEBUG   Got REQ_KEY from relay (100.64.0.10 port 655): 15 relay nodeb 15 AAAAAAIAlxoIICsYrpiLYkXVx1HKjUiLnEL5m6Hhs+k9hBmwbNMHoFZRWV0HnwIPNOmzXGokZ5+9WfPQ+6OB6IpLXOVAsB
+2026-09-15 23:37:55 DEBUG   Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb relay AAAAAAIAWLMt2L7sOsCX98UcOk2uyIzDCI+0ZkUWoQZo0uncwzSPh4pSXGG2R/UpFfY1SqE5i3LNWW2dOeIdW+sd8/8KYC -1 -1 -1 0
+2026-09-15 23:37:55 DEBUG   Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 23:37:55 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 23:37:55 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 23:37:55 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 23:37:55 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 23:37:55 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 23:37:55 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 23:37:55 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 23:37:55 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 23:37:55 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 23:37:55 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 18
+2026-09-15 23:37:55 DEBUG   Received packet of 18 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:55 WARNING Cannot route packet from relay (100.64.0.10 port 655): unknown type 0
+2026-09-15 23:37:58 DEBUG   Got ANS_KEY from relay (100.64.0.10 port 655): 16 relay nodeb AAAABAIPvXO7M43Prx5lSNYRJn7flSJ65FjU75Zrg3A+/WBxjJlPM/NCDim91VB89cNkwTvGSL7tIAZx4GOrv56kLojA -1 -1 -1 0
+2026-09-15 23:37:58 DEBUG   Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb relay AAAABA4KjhX1rSgrXeD7NJLsf+twcOj7g55gmXG8GAE+HxC60Xz3hccyVlOOKhHiF0lbZBvQVjngW+d1RPdYsi2xVFrC -1 -1 -1 0
+2026-09-15 23:37:58 DEBUG   Sending 119 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    SPTPS key exchange with relay (100.64.0.10 port 655) successful
+2026-09-15 23:37:58 DEBUG   Read packet of 98 bytes from Linux tun/tap device (tun mode)
+2026-09-15 23:37:58 ERROR   Sending packet of 98 bytes to nodea (100.64.0.2 port 655)
+2026-09-15 23:37:58 INFO    No valid key known yet for nodea (100.64.0.2 port 655)
+2026-09-15 23:37:58 DEBUG   Sending REQ_KEY to relay (100.64.0.10 port 655): 15 nodeb nodea 15 AAAAAAIAUoxS4vhLoUvXvJojK1x+j8ei6ND2g0N92wjpme2bdDG/lctCfTxeuVqXIt7huu/NQkZCRxBCI9vTTWUNj6Ku6C
+2026-09-15 23:37:58 DEBUG   Sending 113 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to nodea (100.64.0.2 port 655)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:58 INFO    Sending UDP probe length 18 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:58 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655) rtt=25.285
+2026-09-15 23:37:58 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Got type 2 UDP probe reply 18 from relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 DEBUG   Got REQ_KEY from relay (100.64.0.10 port 655): 15 nodea nodeb 15 AAAAAAIAHGqqi3DKmUlLI4zMpU9m/gfBeibM3NjO6GN/O6zgx3+sjtCu9aVVP5m4EHbSx03oC7jFCClXmVCenZIIACwDvD
+2026-09-15 23:37:58 DEBUG   Sending UDP_INFO to relay (100.64.0.10 port 655): 22 nodeb nodea 192.168.120.5 655
+2026-09-15 23:37:58 DEBUG   Sending 33 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 DEBUG   Got REQ_KEY from nodea while our SPTPS session is pending; yielding as responder (glare tie-break: we lose)
+2026-09-15 23:37:58 DEBUG   Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb nodea AAAAAAIAEjGCPbrQFD7qdrD5vpWkrtk7tX7Y0FLSEsxBtNburqeRaD0edX+o24tDP9k8VJCyJkIq/xm/N2TXqrk4kmdbiD -1 -1 -1 0
+2026-09-15 23:37:58 DEBUG   Sending 121 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 DEBUG   Sending MTU_INFO to relay (100.64.0.10 port 655): 23 nodeb nodea 1518
+2026-09-15 23:37:58 DEBUG   Sending 20 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 DEBUG   Got UDP_INFO from relay (100.64.0.10 port 655): 22 nodea nodeb 100.64.0.2 40655
+2026-09-15 23:37:58 DEBUG   UDP address of nodea set to 100.64.0.2 port 40655
+2026-09-15 23:37:58 DEBUG   Got ANS_KEY from relay (100.64.0.10 port 655): 16 nodea nodeb AAAABAodYUeVd4al8QROflEy2djCP2zzv0RhjswqDdSCdIMUxm2OwJWVkxYV707ic3/dVCni93BgIka+07plfQQWTWJA -1 -1 -1 0
+2026-09-15 23:37:58 DEBUG   Sending ANS_KEY to relay (100.64.0.10 port 655): 16 nodeb nodea AAAABAoIr6Gq8+oEB+k572yyCh9BvB22Qe9Hz6wNccwXVbtkmu2sEWek3JZKJv4ciUjOFCXuVchk54Unn14dY/wyTl4B -1 -1 -1 0
+2026-09-15 23:37:58 DEBUG   Sending 119 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    SPTPS key exchange with nodea (100.64.0.2 port 40655) successful
+2026-09-15 23:37:58 DEBUG   Got MTU_INFO from relay (100.64.0.10 port 655): 23 nodea nodeb 1518
+2026-09-15 23:37:58 DEBUG   Read packet of 62 bytes from Linux tun/tap device (tun mode)
+2026-09-15 23:37:58 INFO    Broadcasting packet of 62 bytes from nodeb (MYSELF port 655)
+2026-09-15 23:37:58 ERROR   Sending packet of 62 bytes to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 DEBUG   Sending PACKET to relay (100.64.0.10 port 655): 17 62
+2026-09-15 23:37:58 DEBUG   Sending 6 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 DEBUG   Sending 62 bytes of metadata to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending type 2 probe reply length 18 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:58 INFO    Using system-provided maximum tinc MTU for relay (100.64.0.10 port 655): 1439
+2026-09-15 23:37:58 INFO    Sending UDP probe length 1439 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:58 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:59 INFO    Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+2026-09-15 23:37:59 INFO    Fixing MTU of relay (100.64.0.10 port 655) to 1439 after 1 probes
+2026-09-15 23:37:59 INFO    Got type 2 UDP probe reply 1439 from relay (100.64.0.10 port 655)
+2026-09-15 23:37:59 INFO    Got UDP probe request 1439 from relay (100.64.0.10 port 655)
+2026-09-15 23:37:59 INFO    Sending type 2 probe reply length 1439 to relay (100.64.0.10 port 655)
+2026-09-15 23:37:59 INFO    Sending packet from nodeb (MYSELF port 655) to relay (100.64.0.10 port 655) via relay (100.64.0.10 port 655) (UDP)
+2026-09-15 23:37:59 DEBUG   Got PACKET from relay (100.64.0.10 port 655): 17 62
+2026-09-15 23:37:59 DEBUG   Received packet of 62 bytes from relay (100.64.0.10 port 655)
+2026-09-15 23:37:59 DEBUG   Writing packet of 62 bytes to Linux tun/tap device (tun mode)
+2026-09-15 23:37:59 INFO    Broadcasting packet of 62 bytes from relay (100.64.0.10 port 655)
