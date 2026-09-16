@@ -262,6 +262,13 @@ jobs:
           EOF
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
+      # -PtincCrypto=nolegacy is not a preference, it is the only thing that
+      # builds: app/build.gradle defaults to openssl, and core/tincd/src/tls.c
+      # uses OpenSSL 3.0-only API (EVP_EC_gen, SSL_OP_NO_RENEGOTIATION) that
+      # the LibreSSL the Android cross-build ships does not have. See PLAN.md
+      # Known Issues. The released APK therefore speaks SPTPS/Ed25519 only and
+      # not the legacy RSA protocol; the release notes say so. Drop the flag
+      # once tls.c has a LibreSSL fallback and build-core.sh builds libssl.
       - name: Build the app in the repository's own build container
         run: |
           docker build -t tincstack/android-build -f platforms/android/docker/Dockerfile.build platforms/android/docker
@@ -271,7 +278,7 @@ jobs:
             -v /tmp/gradle:/root/.gradle \
             -w /src/platforms/android \
             -e ANDROID_HOME=/opt/android-sdk -e ANDROID_SDK_ROOT=/opt/android-sdk \
-            tincstack/android-build ./gradlew --no-daemon assembleRelease
+            tincstack/android-build ./gradlew --no-daemon -PtincCrypto=nolegacy assembleRelease
 
       - name: Collect the APK
         run: |
@@ -360,6 +367,10 @@ jobs:
 
           The \`.apk\` asset. An asset named \`-unsigned\` was built without a
           signing key and has to be signed before it will install.
+
+          It is built \`-PtincCrypto=nolegacy\`: SPTPS/Ed25519 only, **no legacy
+          RSA protocol**, so it cannot talk to a tinc 1.0-era peer. That is a
+          build constraint, not a choice — see Known Issues in \`PLAN.md\`.
           EOF
           mapfile -t built < <(find assets -type f)
           gh release create "$VERSION" \

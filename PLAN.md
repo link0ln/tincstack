@@ -1652,6 +1652,15 @@ registry image.
   depends on `android-actions/setup-android` providing
   `ndk;26.1.10909125`, and `ghcr.io` package creation needs the repository's
   Actions to have package write permission.
+- [x] **The `android` job would have failed on its first run.** `assembleRelease`
+  with no flags takes `app/build.gradle`'s default `-PtincCrypto=openssl`,
+  which does not compile (see the `tls.c` entry in Known Issues). The job now
+  passes `-PtincCrypto=nolegacy` explicitly, with the reason in a comment and
+  in the release notes: **the released APK speaks SPTPS/Ed25519 only and cannot
+  talk to a tinc 1.0-era peer.** The gradle default is deliberately left as
+  `openssl`, because it documents the intended configuration and
+  `platforms/android/readme.md` already warns that it is broken; flipping it
+  would hide the defect instead of fixing it.
 - [ ] **One manual step after the first tag:** a package Actions creates in
   `ghcr.io` is **private even when the repository is public**, so nobody else
   can `docker pull` it until the owner flips both packages to Public once
