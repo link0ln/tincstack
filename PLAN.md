@@ -1739,6 +1739,33 @@ registry image.
   `app/build/outputs/apk/release/app-release-unsigned.apk` 4 558 685 B carrying
   `libtincd.so` + `libtinc.so` for all four ABIs (arm64-v8a, armeabi-v7a, x86,
   x86_64).
+- [x] **The pipeline has now produced a release: `v0.1.1`, 2026-09-16.**
+  <https://github.com/link0ln/tincstack/releases/tag/v0.1.1> — assets
+  `tincstack-v0.1.1-source.tar.gz` (1 223 884 B),
+  `tincstack-v0.1.1-unsigned.apk` (4 561 589 B) and
+  `tincstack-v0.1.1-windows-x86_64.zip` (58 803 268 B); images pushed as
+  `ghcr.io/link0ln/tincstack/{core,node}:v0.1.1` and `:latest`. Verified after
+  publication: the source archive holds 1053 files and its
+  `platforms/linux/docker/compose.release.yml` names
+  `ghcr.io/link0ln/tincstack/node:${TINCSTACK_VERSION:-latest}`, so the release
+  notes' first instruction works from the archive alone.
+  - 🟠 **The third defect the tag found, after the buildx and setup-android
+    ones:** the `release` job pulled **every** artefact of the run with a
+    single `actions/download-artifact@v4` and died with `Unable to download
+    artifact(s) ... after 5 retries` — with all three build jobs green and the
+    images already pushed to ghcr, so the run left the registry ahead of the
+    repository. The same blanket download would also have attached buildx's
+    `<owner>~<repo>~XXXX.dockerbuild` record blob to the release as an asset.
+    **Fixed:** `DOCKER_BUILD_RECORD_UPLOAD: false` on the core build so the
+    blob never exists, two downloads **by name** (`windows`, `android`), an
+    explicit error when `assets/` comes out empty, and an `::error::`
+    annotation around `gh release create`. Proven by the v0.1.1 run: three
+    assets, no blob.
+  - **`v0.1.0` stays as a tag with no release.** Its run pushed
+    `ghcr.io/link0ln/tincstack/{core,node}:v0.1.0` before the release job
+    failed, so those image tags exist and point at a core without stream Z.
+    Delete them in the package settings if that bothers you; nothing references
+    them.
 - [ ] 🟡 **CI does not build the Android app at all.** Both of the android job's
   failures above were found by running it by hand, not by `check.yml`, which
   builds only the core image and the Linux labs. An `assembleRelease` +
