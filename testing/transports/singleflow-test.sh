@@ -39,6 +39,7 @@ B_VPN=10.181.0.3
 
 cleanup() {
 	docker rm -f "$LAB-a" "$LAB-r" "$LAB-b" "$LAB-cap" >/dev/null 2>&1 || true
+	docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup

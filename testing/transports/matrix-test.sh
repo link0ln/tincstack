@@ -29,6 +29,7 @@ DB=/tmp/$LAB-b
 
 cleanup() {
 	docker rm -f "$LAB-a" "$LAB-b" >/dev/null 2>&1 || true
+	docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup
