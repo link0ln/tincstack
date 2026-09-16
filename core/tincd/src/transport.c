@@ -462,6 +462,30 @@ bool transport_next_candidate(outgoing_t *outgoing) {
 	return false;
 }
 
+/* Global carrier ranking for the acceptor-side rule. The transport_id_t order
+   (plain < sf < obfs < https < quic) doubles as "how much wrapping the carrier
+   puts around SPTPS", and every build compiles the same table, so both ends
+   agree on it without negotiating anything. The `test' stub carrier takes part
+   in no comparison. */
+static int carrier_rank(transport_id_t id) {
+	return id < TRANSPORT_TEST ? (int) id : -1;
+}
+
+bool transport_outranks_connection(outgoing_t *outgoing, const connection_t *c) {
+	if(!outgoing || !c || c->status.control || !c->node) {
+		return false;
+	}
+
+	int have = carrier_rank(c->transport ? c->transport->id : TRANSPORT_PLAIN);
+
+	if(have < 0) {
+		return false;
+	}
+
+	int want = carrier_rank(transport_current(outgoing)->id);
+	return want > have;
+}
+
 /* ---- meta-channel plumbing ----------------------------------------------- */
 
 void transport_meta_flush(connection_t *c) {

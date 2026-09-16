@@ -1096,6 +1096,10 @@ bool ack_h(connection_t *c, const char *request) {
 		return false;
 	}
 
+	/* Did *we* dial this link? The dedup below may hand us an outgoing_t that
+	   belongs to a link the peer opened, which is a different thing. */
+	const bool we_dialled = c->outgoing;
+
 	/* Check if we already have a node_t for him */
 
 	n = lookup_node(c->name);
@@ -1145,6 +1149,19 @@ bool ack_h(connection_t *c, const char *request) {
 	   walk afresh. */
 	if(c->outgoing) {
 		transport_candidate_activated(c->outgoing, c);
+	}
+
+	/* Acceptor-side carrier rule (review row L-2 residual, docs/transports.md
+	   §2 "When the peer dials first"): the peer reached us on a carrier we
+	   rank below the one we would dial, and the dedup above parked our
+	   outgoing_t on its link, so nothing would ever re-dial. Arm it; the link
+	   the peer opened keeps carrying traffic until ours activates. */
+	if(!we_dialled && c->outgoing && transport_outranks_connection(c->outgoing, c)) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "%s reached us over %s, which we rank below %s: re-dialling",
+		       c->name, c->transport ? c->transport->name : "plain",
+		       transport_current(c->outgoing)->name);
+		c->outgoing->timeout = 0;
+		retry_outgoing(c->outgoing);
 	}
 
 	if(!(c->options & options & OPTION_PMTU_DISCOVERY)) {

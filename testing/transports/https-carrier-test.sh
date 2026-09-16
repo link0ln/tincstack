@@ -202,8 +202,8 @@ echo "===== M5-1: black-holed upstream at B must not stall B's loop ====="
 # and lost pings; after it the fetch is asynchronous.
 docker exec ${PFX}-b sh -c "sed -i 's/      AddressPool:/      HttpsDecoyUpstream: $NETBASE.250:80\n      AddressPool:/' /etc/tincstack/tinc.yaml"
 docker exec ${PFX}-b tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload >/dev/null 2>&1 || true
-# In YAML mode a reload sees every host record as changed and closes the
-# link; wait for A to re-establish it before measuring.
+# A reload no longer closes a link whose host record did not change (stream P),
+# but this one edits B's config, so wait for the tunnel either way.
 deadline=$(( $(date +%s) + 30 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
 	docker exec ${PFX}-a ping -c1 -W1 "$B_VPN" >/dev/null 2>&1 && break
@@ -260,10 +260,22 @@ l2_check() { # label expected-carrier
 	fi
 }
 
-# (1) reload: B closes the activated link cleanly.
+# (1) reload: since stream P a reload does not close a link whose host record
+# did not change (PLAN.md Known Issues), so the strongest statement here is
+# that the link is not touched at all and stays on https. The drop-and-recover
+# path this case used to exercise is covered by (2) and (3) below; that both
+# daemons survive a reload under an https link is review row L-1.
 c0=$(closes_of_a)
 docker exec ${PFX}-b tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload >/dev/null 2>&1 || true
-wait_for 20 closed_since "$c0" || miss "L-2 reload: B's reload did not drop A's link"
+sleep 5
+if [ "$(closes_of_a)" = "$c0" ] && [ "$(carrier_of_a)" = "transport https" ]; then
+	note "L-2 reload: B's reload left the activated https link alone (closes still $c0)"
+else
+	miss "L-2 reload: B's reload disturbed the link (closes $c0 -> $(closes_of_a), carrier '$(carrier_of_a)')"
+fi
+for n in a b; do
+	[ "$(docker inspect -f '{{.State.Running}}' ${PFX}-$n 2>/dev/null)" = true ] || miss "L-1: node $n died on B's reload under an https link"
+done
 l2_check "reload" https
 
 # (2) TCP reset: B's kernel socket is destroyed, A sees a RST.
@@ -298,9 +310,11 @@ else
 fi
 docker start ${PFX}-b >/dev/null
 l2_check "after three refused https dials" plain
+# Drop that plain link (a reset, since a reload no longer closes an untouched
+# link): the walk must restart from the operator's first preference.
 c0=$(closes_of_a)
-docker exec ${PFX}-b tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload >/dev/null 2>&1 || true
-wait_for 20 closed_since "$c0" || miss "L-2 3x: B's reload did not drop the plain link"
+docker run --rm --net container:${PFX}-b --cap-add NET_ADMIN "$TOOLS" ss -K -t dst "$A_IP" >/dev/null 2>&1 || true
+wait_for 20 closed_since "$c0" || miss "L-2 3x: the plain link was not dropped"
 l2_check "plain link dropped, walk restarts from the preference" https
 
 echo "===== M5-7: a TLS bump on A's first dial must not leave a pin ====="
@@ -403,6 +417,59 @@ note "UDP datagrams on the port: $udp"
 [ "$udp" = 0 ] && note "no UDP on the port (single TLS flow, TCP-only-equivalent)" || miss "UDP seen on the port ($udp)"
 [ "$idleak" = 0 ] && note "no cleartext tinc ID line on the wire" || miss "cleartext tinc ID line leaked"
 [ "$nameleak" = 0 ] && note "no cleartext key material on the wire" || miss "cleartext key material leaked"
+
+echo "===== L-2 residual: a peer's plain re-dial must not keep our carrier down ====="
+# Review row L-2, residual (stream P). B gets `AutoConnect' and A's address and
+# keeps the default `PreferredTransports: [plain]'. After `kill -9' B restarts
+# and reaches A over plain *before* A's own https re-dial; tinc keeps the newer
+# of two connections (`id_h'), so A's outgoing was parked on the plain link and
+# the covert carrier was lost until the next drop. The acceptor-side rule
+# (docs/transports.md §2 "When the peer dials first") dials https anyway and
+# lets it replace the plain link once it activates; the ranking is the carrier
+# order, which both ends compile, so only one side ever re-dials.
+carrier_of_b() { docker exec ${PFX}-b tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections 2>/dev/null | grep nodea | grep -o 'transport [a-z]*'; }
+closes_of_b() { docker logs ${PFX}-b 2>&1 | grep -c "Closing connection with nodea" || true; }
+rule_fired() { docker logs ${PFX}-a 2>&1 | grep -q "which we rank below https"; }
+both_https() { [ "$(carrier_of_a)" = "transport https" ] && [ "$(carrier_of_b)" = "transport https" ]; }
+
+docker kill -s KILL ${PFX}-b >/dev/null
+sed -i "s/^      AddressPool:/      AutoConnect: yes\n      AddressPool:/" "$BASE-b/tinc.yaml"
+sed -i "s/^      nodea: |\$/      nodea: |\n        Address = $A_IP\n        Port = 655/" "$BASE-b/tinc.yaml"
+grep -q 'AutoConnect: yes' "$BASE-b/tinc.yaml" || miss "L-2 residual: could not give B AutoConnect"
+docker start ${PFX}-b >/dev/null
+note "B restarted with AutoConnect and A's address, PreferredTransports still the default [plain]"
+
+if wait_for 60 rule_fired; then
+	note "A: $(docker logs ${PFX}-a 2>&1 | grep 'which we rank below https' | tail -1 | sed 's/.*INFO *//')"
+else
+	miss "L-2 residual: B's plain link never reached A first, the rule was not exercised: $(docker logs ${PFX}-a 2>&1 | grep -E 'Carrier|rank below|Already connected' | tail -4 | tr '\n' '|')"
+fi
+
+if wait_for 60 both_https; then
+	note "L-2 residual: both ends settled on https (A $(carrier_of_a), B $(carrier_of_b))"
+else
+	miss "L-2 residual: A '$(carrier_of_a)', B '$(carrier_of_b)' (expected https on both); A log: $(docker logs ${PFX}-a 2>&1 | grep -E 'Carrier|rank below|activated' | tail -4 | tr '\n' '|')"
+fi
+
+# No flapping: over the next 60 s neither end may close the link again and the
+# carrier must stay https. Polled, so a flap is caught when it happens.
+ca0=$(closes_of_a); cb0=$(closes_of_b)
+flaps=0
+i=0
+while [ "$i" -lt 12 ]; do
+	sleep 5
+	i=$(( i + 1 ))
+	both_https || { flaps=$(( flaps + 1 )); note "  t+$(( i * 5 ))s: A '$(carrier_of_a)' B '$(carrier_of_b)'"; }
+done
+ca1=$(closes_of_a); cb1=$(closes_of_b)
+note "60 s window: A closes $ca0 -> $ca1, B closes $cb0 -> $cb1, off-carrier samples $flaps"
+if [ "$flaps" = 0 ] && [ "$ca1" = "$ca0" ] && [ "$cb1" = "$cb0" ]; then
+	note "L-2 residual: stable on https for 60 s, no flapping"
+else
+	miss "L-2 residual: the link flapped (A $ca0->$ca1, B $cb0->$cb1, $flaps off-carrier samples)"
+fi
+pl=$(docker exec ${PFX}-a ping -c5 -i0.2 -W2 "$B_VPN" 2>&1 | grep -o '[0-9]*% packet loss')
+[ "$pl" = "0% packet loss" ] && note "L-2 residual: tunnel $pl" || miss "L-2 residual: tunnel loss: $pl"
 
 echo "==========================================="
 

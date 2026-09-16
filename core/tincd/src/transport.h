@@ -201,6 +201,15 @@ const transport_t *transport_current(struct outgoing_t *outgoing);
 bool transport_next_candidate(struct outgoing_t *outgoing);
 void transport_candidate_activated(struct outgoing_t *outgoing, const struct connection_t *c);
 
+/* Acceptor-side rule (review row L-2 residual, docs/transports.md §2 "When the
+   peer dials first"): true when `c' -- a link the *peer* opened towards us --
+   runs on a carrier that ranks below the candidate this outgoing_t would dial
+   next, so our dial should go ahead instead of being suppressed by "Already
+   connected". The ranking is the transport_id_t order, which both ends compile
+   identically, so only one of the two nodes can ever want to re-dial and the
+   surviving link only ever moves *up* the order: the rule terminates. */
+bool transport_outranks_connection(struct outgoing_t *outgoing, const struct connection_t *c);
+
 /* Meta-channel plumbing. */
 void transport_meta_flush(struct connection_t *c);           /* c->outbuf has new bytes */
 void transport_connection_close(struct connection_t *c);     /* before connection_del() */

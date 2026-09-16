@@ -757,11 +757,29 @@ void setup_outgoing_connection(outgoing_t *outgoing, bool verbose) {
 		n->address_cache = open_address_cache(n);
 	}
 
-	if(n->connection) {
+	if(n->connection && !transport_outranks_connection(outgoing, n->connection)) {
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "Already connected to %s", n->name);
-	} else {
-		do_outgoing_connection(outgoing);
+		return;
 	}
+
+	if(n->connection) {
+		/* The peer dialled us on a carrier we rank below the one we would
+		   dial (review row L-2 residual, docs/transports.md §2). Dial ours
+		   anyway: its link stays up and carries traffic until ours activates,
+		   at which point ack_h() keeps the newer connection and drops the
+		   old one, so the pair is never left with zero connections. */
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Connected to %s over %s, which we rank below %s: dialling %s as well",
+		       n->name, n->connection->transport ? n->connection->transport->name : "plain",
+		       transport_current(outgoing)->name, transport_current(outgoing)->name);
+
+		/* Only one connection may own the outgoing_t: if ack_h() parked it on
+		   the peer's inbound link, hand it to the dial we are about to make. */
+		if(n->connection->outgoing == outgoing) {
+			n->connection->outgoing = NULL;
+		}
+	}
+
+	do_outgoing_connection(outgoing);
 }
 
 static bool check_tarpit(const sockaddr_t *sa, int fd) {
