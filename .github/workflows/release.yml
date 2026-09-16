@@ -20,6 +20,12 @@
 # GnuTLS stage makes that ~10x slower) or an arm64 runner; add it as a matrix
 # leg once a first release has gone out on amd64.
 #
+# FIRST RELEASE, ONE MANUAL STEP: a package that Actions creates in ghcr.io is
+# private even when the repository is public, so `docker pull` fails for
+# everyone else until the owner sets both packages to Public once (repository →
+# Packages → the package → Package settings → Change visibility). After that it
+# stays public for every later tag.
+#
 # Android signing is optional. With the four ANDROID_* secrets set the APK is
 # signed by gradle's release signingConfig (app/build.gradle reads
 # keystore.properties); without them the job still produces an APK and the

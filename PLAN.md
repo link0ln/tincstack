@@ -1486,6 +1486,12 @@ registry image.
   depends on `android-actions/setup-android` providing
   `ndk;26.1.10909125`, and `ghcr.io` package creation needs the repository's
   Actions to have package write permission.
+- [ ] **One manual step after the first tag:** a package Actions creates in
+  `ghcr.io` is **private even when the repository is public**, so nobody else
+  can `docker pull` it until the owner flips both packages to Public once
+  (repository → Packages → Package settings → Change visibility). Nothing in
+  the workflow can do this; the API needs a token with `packages` scope that
+  `GITHUB_TOKEN` does not carry.
 - [ ] **arm64 images.** Deliberately not in the first pipeline: the ngtcp2 +
   GnuTLS stage under QEMU is roughly 10x slower, and an arm64 runner is the
   better answer. Add as a matrix leg with a manifest merge once a first release
