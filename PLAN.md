@@ -1778,7 +1778,12 @@ registry image.
   Android change, zero on every other commit. It is deliberately the same
   three steps as the release job's android leg (same SDK discovery, same
   `-PtincCrypto=nolegacy`, same container), so a red run here means the
-  release would be red too. `actionlint` clean.
+  release would be red too. **Proof:** the workflow file matches its own path
+  filter, so pushing it was its first real run —
+  <https://github.com/link0ln/tincstack/actions/runs/35139673064>, every step
+  green (SDK discovery, build container, `testDebugUnitTest assembleRelease`),
+  on a runner, without the `android-actions/setup-android` action that failed
+  on the v0.1.0 tag. `actionlint` clean.
 - [ ] **One manual step after the first tag:** a package Actions creates in
   `ghcr.io` is **private even when the repository is public**, so nobody else
   can `docker pull` it until the owner flips both packages to Public once
