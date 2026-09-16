@@ -91,8 +91,18 @@ jobs:
           name: core-image
       - name: load core image
         run: docker load < core-image.tar.gz
+      # A failing lab prints everything it knows, but a workflow log is only
+      # readable by someone with admin rights on the repository. The tail is
+      # re-emitted as an error annotation, which anyone watching the run (or
+      # the check-runs API) can read.
       - name: make smoke
-        run: make -o build-core smoke
+        run: |
+          set -o pipefail
+          make -o build-core smoke 2>&1 | tee smoke.log || {
+            msg=$(tail -n 40 smoke.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=make smoke failed::$msg"
+            exit 1
+          }
 
   nat:
     needs: build
