@@ -1078,8 +1078,25 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	   before it goes on the wire. The relay strips the seal on receive and this
 	   re-applies it per hop, so a relayed record is never double-wrapped. When
 	   the hop is not an obfs link the datagram is sent unchanged below. */
-	if(obfs_wrap_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay)) {
+	size_t obfs_excess = 0;
+
+	switch(obfs_wrap_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay, &obfs_excess)) {
+	case OBFS_SEND_OK:
 		return true;
+
+	case OBFS_SEND_TOOBIG:
+
+		/* The seal does not fit the path. Same contract as the quic carrier
+		   above and as EMSGSIZE on the plain socket below -- except that obfs
+		   knows exactly how many bytes were over, so the packet size drops by
+		   precisely that much and PMTU discovery converges in one step. Before
+		   this, obfs swallowed the EMSGSIZE and every oversized probe was lost
+		   silently, so discovery never converged and the carrier looked hung. */
+		reduce_mtu(relay, (int)origlen - (int)(obfs_excess ? obfs_excess : 1));
+		return true;
+
+	case OBFS_SEND_PLAIN:
+		break;
 	}
 
 	if(sendto(listen_socket[sock].udp.fd, buf, buf_ptr - buf, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {

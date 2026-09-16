@@ -116,7 +116,11 @@ static uint32_t get32(const uint8_t *p) {
 	return ntohl(v);
 }
 
-static void sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init) {
+/* Returns false ONLY when the datagram could not be put on the wire because it
+   does not fit the path (EMSGSIZE). Every other outcome -- sent, would block,
+   any other socket error -- is true, so the caller only reacts to the one case
+   retransmission can never fix. */
+static bool sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init) {
 	uint8_t frame[SF_HDR_LEN + SF_MAX_PAYLOAD];
 
 	memcpy(frame, sf_magic, SF_MAGIC_LEN);
@@ -142,7 +146,7 @@ static void sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid,
 
 		if(!slen) {
 			logger(DEBUG_TRAFFIC, LOG_WARNING, "Could not obfs-seal a single-flow frame");
-			return;
+			return true;
 		}
 
 		out = sealed;
@@ -150,12 +154,41 @@ static void sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid,
 	}
 
 	if(sendto(listen_socket[sock].udp.fd, (void *)out, outlen, 0, &peer->sa, SALEN(peer->sa)) < 0 && !sockwouldblock(sockerrno)) {
+		if(sockmsgsize(sockerrno)) {
+			/* Larger than the path MTU, and tinc sets DF: retransmitting the
+			   same bytes can only fail the same way. Say so with the size, at a
+			   level that is visible without -d5 -- the old line was a bare
+			   "Message too long" behind DEBUG_TRAFFIC, which is why a dial that
+			   died here looked like a hang. */
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Single-flow frame of %zu bytes does not fit the path: %s", outlen, sockstrerror(sockerrno));
+			return false;
+		}
+
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Error sending single-flow frame: %s", sockstrerror(sockerrno));
 	}
+
+	return true;
 }
 
+static void sf_schedule_reap(void);
+
 static void sf_send_frame(sf_session_t *s, uint8_t type, uint8_t flags, uint32_t seq, const void *payload, size_t len) {
-	sf_send_raw(s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established);
+	if(sf_send_raw(s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established)) {
+		return;
+	}
+
+	/* The frame does not fit the path. Fail the session NOW instead of letting
+	   the retransmission timer resend the identical bytes until SF_SYN_RETRIES
+	   runs out: on a dial that is 3.5 s of apparent hang before the carrier
+	   selector moves on, and the retries cannot succeed. Declaring the session
+	   dead is the defined degradation -- the reaper terminates the connection
+	   and the next carrier in PreferredTransports is tried at once. */
+	if(!s->dead) {
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Single-flow %s to %s (%s) cannot fit the path MTU; failing the carrier over",
+		       s->established ? "link" : "dial", s->c->name, s->c->hostname);
+		s->dead = true;
+		sf_schedule_reap();
+	}
 }
 
 static struct timeval ms_to_tv(int ms) {
@@ -173,8 +206,6 @@ static sf_session_t *sf_lookup(const uint8_t *cid) {
 
 	return NULL;
 }
-
-static void sf_schedule_reap(void);
 
 /* ---- retransmission ------------------------------------------------------ */
 
@@ -256,6 +287,28 @@ static void sf_schedule_reap(void) {
 
 /* ---- sending ------------------------------------------------------------- */
 
+/* How many payload bytes may go into one segment. SF_MAX_PAYLOAD for a plain
+   flow; for an obfs flow, the largest inner payload the seal (magic + header +
+   tag + the configured tail junk) still leaves inside the path MTU. Chunking
+   against the path is what makes the shaping options free: the meta stream
+   simply takes one more segment instead of producing a datagram the kernel
+   refuses. Re-evaluated per segment, so a path MTU that changes mid-stream is
+   picked up on the next one. */
+static uint32_t sf_payload_limit(sf_session_t *s) {
+	uint32_t max = SF_MAX_PAYLOAD;
+
+	if(s->obfs) {
+		size_t inner = obfs_max_inner(s->obfs, !s->established);
+		size_t room = inner > SF_HDR_LEN ? inner - SF_HDR_LEN : 1;
+
+		if(room < max) {
+			max = (uint32_t)room;
+		}
+	}
+
+	return max;
+}
+
 bool sf_send(connection_t *c) {
 	sf_session_t *s = c->transport_data;
 
@@ -263,9 +316,10 @@ bool sf_send(connection_t *c) {
 		return false;
 	}
 
-	while(c->outbuf.len > c->outbuf.offset && s->inflight.count < SF_WINDOW) {
+	while(c->outbuf.len > c->outbuf.offset && s->inflight.count < SF_WINDOW && !s->dead) {
+		uint32_t limit = sf_payload_limit(s);
 		uint32_t avail = c->outbuf.len - c->outbuf.offset;
-		uint32_t n = avail < SF_MAX_PAYLOAD ? avail : SF_MAX_PAYLOAD;
+		uint32_t n = avail < limit ? avail : limit;
 		char *p = buffer_read(&c->outbuf, n);
 
 		sf_segment_t *seg = xmalloc(sizeof(*seg));

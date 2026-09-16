@@ -2262,6 +2262,98 @@ Defects identified during the source audit, to fix as their milestone is reached
   reason in each header and `testing/transports/README.md` updated to build
   `dev` / `dev-test` / `dev-noquic`. The accidental run was not wasted: it is
   the pre-fix arm of the live before/after now recorded against stream W above.
+- ~~🔴 **obfs emits datagrams larger than the path MTU: the dial hangs and falls
+  back to plain, and PMTU discovery never converges.**~~ **Found 2026-09-16
+  between two real hosts over the internet (a VPS at 80.87.200.39 and a NATed
+  laptop), resolved 2026-09-17 (stream AB).**
+  *Symptom:* with `PreferredTransports: obfs` the dial hung ~5 s and fell back to
+  plain; the acceptor logged
+  `WARNING Error sending obfs datagram to laptop (...): Message too long`.
+  *Reproduction (now deterministic and local):* put the pair on a docker network
+  with `--opt com.docker.network.driver.mtu=1400`. With
+  `ObfsInitHeaderJunkSize: 1400` the released core logs four
+  `Error sending single-flow frame: Message too long` (the SF SYN and its three
+  retries, 0.5 + 1 + 2 s) and then `Carrier obfs failed for nodeb, falling back
+  to plain`. `testing/transports/obfs-mtu-test.sh` is that lab; run against
+  `tincstack/core:aa-master` (= the v0.1.1 release code) it reports
+  `MISS: the obfs carrier failed and fell back (the defect)`, 8 EMSGSIZE lines,
+  and `PMTU discovery did not converge on the 1500-byte lab`.
+  *Root cause:* tinc sets `IP_MTU_DISCOVER`, so an oversized datagram is refused
+  with EMSGSIZE rather than fragmented, and **every** obfs size was clamped
+  against a constant instead of the path. Three components pushed datagrams over
+  the path, and the third was broken on **every** path, 1500-byte docker bridges
+  included:
+  (a) `ObfsInit/TransportHeaderJunkSize` — tail padding clamped only to
+  `OBFS_MAX_JUNK` (1400), so a handshake frame could reach 24 + 1200 + 30 + 1400
+  = 2654 bytes and no SF frame of a dial could ever go out;
+  (b) `ObfsJunkPacketMaxSize` — standalone junk up to 1400 + 28 = 1428 bytes on
+  the wire, over a 1400-byte path, and `obfs_send_junk()` broke out of its loop
+  on the error *without a log line*;
+  (c) the 26/30-byte seal itself on a full-size SPTPS datagram —
+  `choose_initial_maxmtu()` sizes a tinc packet so the datagram is *exactly* the
+  path MTU and knows nothing about a carrier, so the seal always overshot by 26,
+  and `obfs_wrap_send()` swallowed the EMSGSIZE (logged at `DEBUG_TRAFFIC`,
+  never fed to `reduce_mtu()`), so every top-end PMTU probe was lost silently
+  and discovery never converged. Measured on a plain 1500-byte lab with the
+  release image: 2-4 `Message too long` lines and **no** `Fixing MTU` line at
+  all within the observation window.
+  *Fix (stream AB):* a per-link **path budget** — the kernel's route MTU toward
+  the peer (`getsockopt(IP_MTU)`/`IPV6_MTU` on a throwaway connected socket, the
+  same source `choose_initial_maxmtu()` uses, so it also follows an ICMP-learned
+  PMTU), cached 10 s, falling back to 1280 (the IPv6 minimum) when the kernel
+  will not say. Junk is sized to fit rather than dropped: `obfs_max_inner()`
+  reserves the configured junk *before* the payload and `transport_sf.c` chunks
+  the meta stream against it, so shaping costs one extra segment, not a lost
+  datagram; junk yields only below a 256-byte payload floor. The data path
+  cannot chunk, so `obfs_wrap_send()` now returns `OBFS_SEND_TOOBIG` with the
+  exact overshoot and `send_sptps_data()` feeds it to `reduce_mtu()` — the same
+  contract the quic carrier already had, except the overshoot is exact, so
+  discovery converges in one probe. A kernel EMSGSIZE that still happens is
+  logged at `DEBUG_ALWAYS` with the size and the re-queried budget; an SF frame
+  the path refuses fails the session at once (`sf_send_frame`) so the carrier
+  fails over immediately instead of after 3.5 s of apparent hang. Obfuscation is
+  not weakened: junk is made to fit, never removed, and SPTPS/Ed25519 is
+  untouched.
+  *Measurements (tincstack/core:ab):* `obfs-mtu-test.sh` PASS — 1400-byte path
+  with junk at the ceiling: obfs carrier up, 0%/0% loss, 0 EMSGSIZE, junk still
+  emitted, largest datagram on the wire **1372 bytes = exactly the budget**,
+  `Fixing MTU ... to 1273 after 1 probes`; 1280-byte path: up, 0%/0% loss, 0
+  EMSGSIZE; 1500-byte path: 0 EMSGSIZE, `Fixing MTU ... to 1413` (below the 1443
+  a plain link reaches — the seal accounted for). Regression: `obfs-test.sh`
+  8/8, `classify-test.sh`, `testing/smoke/run.sh`, `two-nodes.sh`, fuzz
+  `build`+`check` (incl. `fuzz_obfs` self-tests) all pass.
+  *Residual:* on a platform without `IP_MTU`/`IPV6_MTU` (Windows) the budget is
+  the 1280-byte assumption, so junk there is capped lower than the path could
+  carry — safe, but conservative. A middlebox that drops oversized datagrams
+  without sending ICMP is invisible to the kernel's route MTU; tinc's own PMTU
+  probing (which now converges) covers the data path, and the meta path relies on
+  a sealed SF frame being at most 1254 bytes, i.e. any path of >= 1282 bytes.
+- 🟡 **`quic` never emits an oversized datagram, but tinc's PMTU discovery over
+  it does not converge on a reduced-MTU path.** Measured 2026-09-17 (stream AB)
+  on the same lab, `PreferredTransports: [quic, plain]`, `tincstack/core:ab`:
+  - MTU 1500: ping 0%/0% loss, 0 EMSGSIZE, `Fixing MTU ... to 1367 after 1
+    probes` within ~11 s.
+  - MTU 1400 (three runs): 0 EMSGSIZE — `quic_send_datagram()` bounds every
+    datagram by `ngtcp2_conn_get_max_tx_udp_payload_size()` and never hands an
+    oversized one to the socket, so the obfs defect above has no quic analogue.
+    But **zero** `Fixing MTU` lines in ~2.5 minutes on either node, and the
+    tunnel took 58 s to reach a clean 4-packet run (20-100% loss before that,
+    with connection churn: "Established a second connection ... closing old
+    connection", "Could not set up a meta connection").
+  *Cause:* the hook returns a bare `false`, and `send_sptps_data()` answers with
+  `reduce_mtu(relay, origlen - 1)` — one byte per failed probe. `maxmtu` starts
+  at `choose_initial_maxmtu()` (1343 on a 1400-byte path) while QUIC's
+  conservative initial datagram ceiling is ~1165, so discovery needs ~180
+  single-byte steps. Traffic still flows (records below the ceiling go through),
+  so this is slow/never-finishing discovery, not a dead tunnel.
+  *Not fixed here, deliberately:* the fix is the same one obfs just got — report
+  the overshoot instead of a bare boolean — but that changes the shared
+  `send_datagram` hook signature in `transport.h`/`transport.c` while stream AA
+  is working in `transport.c`. Small, but not safely concurrent. Owner: whoever
+  picks up the quic carrier next.
+  *How much churn is quic's own and how much was the loaded host* (several other
+  streams' labs were running) was not separated; the 1500-byte control run on the
+  same host was clean, which is the reason for reporting it at all.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`
