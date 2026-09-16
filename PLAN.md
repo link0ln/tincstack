@@ -1812,6 +1812,26 @@ registry image.
   better answer. Add as a matrix leg with a manifest merge once a first release
   has gone out on amd64. Home SBC nodes are the obvious users, so this is a real
   gap, not a cosmetic one.
+  **Measured 2026-09-16, and the gap is now a lived one.** The whole arm64
+  image was cross-built here under `tonistiigi/binfmt` qemu
+  (`docker buildx --platform linux/arm64 -f core/Dockerfile.build`, then
+  `docker build --platform linux/arm64 --build-arg CORE_IMAGE=tincstack/core:arm64`)
+  and the emulated build cost about **11 minutes** of compile, not the hours
+  the "10x" guess implied -- a nightly matrix leg is affordable today, without
+  waiting for an arm64 runner. Proof that the artefact is real, not just
+  built: `tincstack/node:arm64` (130 MB, `Architecture: arm64`) was shipped to
+  the home router with `docker save | gzip | ssh root@192.168.1.1 docker load`
+  and started there from
+  `/mnt/usb-8ba4d39c/storage/tincstack/` (compose v2.32.4 already on its
+  flash, `network_mode: host` because that dockerd runs `--iptables=false`).
+  It came up as a full node -- `QUIC carrier ready (ngtcp2 1.25.0, GnuTLS)`,
+  `Interface tincstack configured with 10.170.0.4/24`, joined ruvds2 by
+  invitation on the first try, `router -> ruvds2` 26.7 ms, 0% loss over the
+  tunnel -- on an aarch64 OpenWrt-ish firmware with a 32 MB read-only rootfs.
+  The existing `gnet` tinc on that box (container `tinc`, `tap5`,
+  10.200.240.7) was untouched and still carries 8.8.8.8 at 69 ms.
+  Until the matrix leg exists, an SBC owner has to do that cross-build by
+  hand, which is exactly the "real gap" this item claims.
 - [x] **`tincmgr.exe` is in the Windows asset** (stream X merged). The job runs
   the repository's own `platforms/windows/build-core-win.sh` and
   `build-exe.sh`, so CI and a developer run the same two commands. `wintun.dll`
