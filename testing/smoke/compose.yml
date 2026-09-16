@@ -1,27 +1,31 @@
 # Two-node smoke test for `make check`: two core nodes with explicit YAML
-# configs (generated at run time by run.sh into ./run/, never committed) on one
+# configs (generated at run time by run.sh into ./run*/, never committed) on one
 # compose network; run.sh asserts a ping across the tunnel.
-name: wsf-smoke
+#
+# SMOKE_PROJECT / SMOKE_SUBNET / SMOKE_RUN are exported by run.sh from its LAB
+# (see run.sh); the defaults below are the historical values, so a bare
+# `docker compose -f compose.yml down` still targets the default lab.
+name: ${SMOKE_PROJECT:-wsf-smoke}
 services:
   node1:
     image: ${CORE_IMAGE:-tincstack/core:ws-f}
     cap_add: [NET_ADMIN]
     devices: ["/dev/net/tun:/dev/net/tun"]
-    volumes: ["./run/node1:/etc/tincstack"]
+    volumes: ["./${SMOKE_RUN:-run}/node1:/etc/tincstack"]
     command: ["tincd", "-D", "-d3", "-c", "/etc/tincstack/tinc.yaml"]
     networks:
-      smoke: {ipv4_address: 172.31.77.11}
+      smoke: {ipv4_address: "${SMOKE_SUBNET:-172.31.77}.11"}
   node2:
     image: ${CORE_IMAGE:-tincstack/core:ws-f}
     cap_add: [NET_ADMIN]
     devices: ["/dev/net/tun:/dev/net/tun"]
-    volumes: ["./run/node2:/etc/tincstack"]
+    volumes: ["./${SMOKE_RUN:-run}/node2:/etc/tincstack"]
     command: ["tincd", "-D", "-d3", "-c", "/etc/tincstack/tinc.yaml"]
     depends_on: [node1]
     networks:
-      smoke: {ipv4_address: 172.31.77.12}
+      smoke: {ipv4_address: "${SMOKE_SUBNET:-172.31.77}.12"}
 networks:
   smoke:
-    name: wsf-smoke
+    name: ${SMOKE_PROJECT:-wsf-smoke}
     ipam:
-      config: [{subnet: 172.31.77.0/24}]
+      config: [{subnet: "${SMOKE_SUBNET:-172.31.77}.0/24"}]

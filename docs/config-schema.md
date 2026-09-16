@@ -228,9 +228,41 @@ materialises every entry into the runtime dir `<dir of file>/<netname>/`
   trailing blanks, a tab) is written double-quoted by the emitter and reads
   back byte for byte (property 10 in `core/tincd/test/fuzz/yamlconf_props.c`).
 
-`tinc set`/`add`/`del` edit `options:` and `hosts.<node>` only; a script is
-edited in the file (the GUI or an editor) followed by `tinc reload`. Proof
-lab: `LAB=wss platforms/linux/docker/yaml-scripts.sh`.
+### Editing a script from the CLI
+
+`tinc -c <file>.yaml get|set|del scripts.<name>` edits the stanza the same way
+`tinc set` edits `options:` and `hosts.<node>`: under the writers' lock, with a
+re-read of the file first (the daemon writes learned keys into it), an atomic
+save, and a reload request to the running daemon — so the change is materialised
+without a restart and without an explicit `tinc reload`, and without racing the
+daemon's own writes (hand-editing a YAML of a *running* node does race them).
+
+    tinc -c tinc.yaml set scripts.tinc-up @./tinc-up   # body from a FILE
+    tinc -c tinc.yaml get scripts.tinc-up              # prints the body
+    tinc -c tinc.yaml del scripts.tinc-up              # drops the key
+
+- **the body comes from a file**, `@<path>`; an inline value is refused with a
+  message naming the `@file` form. A script is multi-line, and `tinc set`
+  concatenates its arguments with single spaces into one 4096-byte buffer and
+  then splits on `[ \t=]`, which would both mangle and silently truncate a
+  script — and a truncated script still runs as root. Stdin is not used either:
+  it is already `tinc`'s own command stream in shell/batch mode, so `@-` is
+  deliberately not accepted;
+- `get` prints the stored text plus a newline; since the emitter writes a
+  literal block and the parser chomps, that is a byte-for-byte round trip of a
+  file that ends in a single newline;
+- `<name>` must be a plain file name (no `/`, no `\`, no leading dot) — the
+  same rule the daemon applies when it materialises the stanza. `scripts.` is
+  therefore a reserved prefix in the CLI's `<node>.<variable>` namespace: a node
+  literally named `scripts` cannot be edited as `scripts.<Variable>`;
+- deleting the last entry removes the `scripts:` key itself (an empty map would
+  be emitted as `{}` and read back as a scalar);
+- YAML mode only: in a confbase tree a script is just a file in the confbase,
+  and the CLI says so.
+
+Proof lab: `LAB=wss platforms/linux/docker/yaml-scripts.sh` (step 6 covers the
+CLI: `set @file` → `Wrote script`, mode 0700, `get` round trip, inline refused,
+the script runs on the next `host-up`, `del` → `Removed script`).
 
 ## Built-in interface setup (Linux)
 

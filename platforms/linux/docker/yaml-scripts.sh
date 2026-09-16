@@ -153,5 +153,43 @@ node "$B" test ! -e $RUNDIR/host-up || { echo "FAIL: host-up still on disk" >&2;
 node "$B" test -x $RUNDIR/tinc-down || { echo "FAIL: side file tinc-down was removed" >&2; exit 1; }
 node "$B" tincstack-cli pid >/dev/null
 
+step "6. tinc set/get/del scripts.<name> (@file), daemon picks it up without an explicit reload"
+# The CLI writes into networks.<net>.scripts.<name> under the writers' lock and
+# asks the running daemon to reload, so no `tincstack-cli reload' here.
+# shellcheck disable=SC2016  # $NODE is for the daemon's script env, not this shell
+node "$B" sh -c 'cat > /tmp/host-up.new <<'"'"'SH'"'"'
+#!/bin/sh
+# set by `tinc set scripts.host-up @file`
+echo "$NODE via-cli" > "/etc/tincstack/marker2-$NODE"
+SH'
+node "$B" tincstack-cli set scripts.host-up @/tmp/host-up.new
+wait_log "$B" "Wrote script \`host-up'" 2
+mode=$(node "$B" stat -c '%a %U' $RUNDIR/host-up)
+[[ $mode == "700 root" ]] || { echo "FAIL: host-up from the CLI is not 0700 ($mode)" >&2; exit 1; }
+# get prints exactly what set wrote (the YAML block scalar is chomped and get
+# adds the newline back, so this is a byte-for-byte round trip of the file)
+node "$B" sh -c 'tinc -n tincstack -c /etc/tincstack/tinc.yaml get scripts.host-up > /tmp/host-up.get \
+    && diff -u /tmp/host-up.new /tmp/host-up.get' \
+    || { echo "FAIL: get scripts.host-up did not return what set wrote" >&2; exit 1; }
+# an inline body is refused, with the @file hint
+if err=$(node "$B" tincstack-cli set scripts.host-up '#!/bin/sh' 2>&1); then
+    echo "FAIL: an inline script body was accepted" >&2; exit 1
+fi
+[[ $err == *"read from a file"* ]] || { echo "FAIL: no @file hint in: $err" >&2; exit 1; }
+# the script the CLI installed really runs: restart a so node_a comes up again
+docker compose -p "$A" restart node >/dev/null
+wait_ready "$A"
+wait_file "$B" /etc/tincstack/marker2-node_a
+echo "marker2: $(node "$B" cat /etc/tincstack/marker2-node_a)"
+# del removes the key and the daemon removes the file, again without a reload
+node "$B" tincstack-cli del scripts.host-up
+wait_log "$B" "Removed script \`$RUNDIR/host-up'" 2
+node "$B" test ! -e $RUNDIR/host-up || { echo "FAIL: host-up still on disk after del" >&2; exit 1; }
+if node "$B" grep -q 'host-up' /etc/tincstack/tinc.yaml; then echo "FAIL: scripts.host-up still in the YAML" >&2; exit 1; fi
+if node "$B" tincstack-cli del scripts.host-up 2>/dev/null; then echo "FAIL: deleting a missing script succeeded" >&2; exit 1; fi
+node "$B" test -x $RUNDIR/tinc-down || { echo "FAIL: side file tinc-down was removed" >&2; exit 1; }
+node "$B" tincstack-cli pid >/dev/null
+
 echo
-echo "PASS: scripts stanza materialised on reload, ran on host-up, removed on key deletion"
+echo "PASS: scripts stanza materialised on reload, ran on host-up, removed on key deletion,"
+echo "      tinc set/get/del scripts.<name> edits the YAML and the daemon follows"

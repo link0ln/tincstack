@@ -50,16 +50,6 @@ miss() { echo "  MISS: $1"; fail=1; }
 
 # CPU ticks (user+system, 100 Hz) of the daemon (PID 1 in its container).
 ticks() { docker exec "$LAB-node" cat /proc/1/stat | awk '{print $14+$15}'; }
-# Poll for a log line with a deadline instead of a fixed sleep.
-wait_log() { # pattern seconds
-	_d=$(( $(date +%s) + $2 ))
-	while [ "$(date +%s)" -lt "$_d" ]; do
-		docker logs "$LAB-node" 2>&1 | grep -q "$1" && return 0
-		sleep 0.5
-	done
-	return 1
-}
-
 cat > "$BASE/tinc.yaml" <<EOF
 networks:
   wsg1:
@@ -196,7 +186,11 @@ PY
 t1=$(ticks)
 r1_ticks=$((t1 - t0))
 note "daemon CPU while one 'G' byte was pending: $r1_ticks ticks over the probe ($r1)"
-[ "$r1_ticks" -lt 50 ] && note "R-1: no busy loop (< 0.5 s CPU)" || miss "R-1: daemon burned $r1_ticks ticks on one pending byte"
+if [ "$r1_ticks" -lt 50 ]; then
+	note "R-1: no busy loop (< 0.5 s CPU)"
+else
+	miss "R-1: daemon burned $r1_ticks ticks on one pending byte"
+fi
 # The daemon closes (and tarpits: the fd is held, so the client sees no FIN,
 # hence closed_after=-1 above is expected) an undecided connection after the
 # front deadline; the log line is the proof.
@@ -223,7 +217,11 @@ PY
 t1=$(ticks)
 m8_ticks=$((t1 - t0))
 note "daemon CPU while an 8 MB decoy sat unread for 8 s: $m8_ticks ticks"
-[ "$m8_ticks" -lt 50 ] && note "M5-8: no busy loop on a non-reading client" || miss "M5-8: daemon burned $m8_ticks ticks on a non-reading client"
+if [ "$m8_ticks" -lt 50 ]; then
+	note "M5-8: no busy loop on a non-reading client"
+else
+	miss "M5-8: daemon burned $m8_ticks ticks on a non-reading client"
+fi
 if docker logs "$LAB-node" 2>&1 | tail -n +"$logmark" | grep -q "Timeout from .* during authentication"; then
 	note "M5-8: the stalled decoy connection was dropped by the authentication timeout"
 else
@@ -297,7 +295,11 @@ p2=$(docker run --rm --net "container:$LAB-node" "$TOOLS" curl -sk --max-time 10
 wait
 p2hs=${p2%% *}
 note "probe 2 while probe 1 hung on the black-holed upstream: TLS handshake ${p2hs}s, total ${p2#* }s"
-awk "BEGIN{exit !(${p2hs:-99} < 1.0)}" 2>/dev/null && note "M5-1: the loop served probe 2's handshake while probe 1's upstream fetch was pending (< 1 s)" || miss "M5-1: probe 2's handshake took ${p2hs}s: the loop was stalled by probe 1"
+if awk "BEGIN{exit !(${p2hs:-99} < 1.0)}" 2>/dev/null; then
+	note "M5-1: the loop served probe 2's handshake while probe 1's upstream fetch was pending (< 1 s)"
+else
+	miss "M5-1: probe 2's handshake took ${p2hs}s: the loop was stalled by probe 1"
+fi
 
 echo "==========================================="
 

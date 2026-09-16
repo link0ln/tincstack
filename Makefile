@@ -20,21 +20,28 @@
 # nat-quick, dpi-baseline), with TAG=ci and the core build cached in GHA.
 TAG ?= ws-f
 export WSF_TAG := $(TAG)
+# LAB names the smoke lab: the compose project and its network ($(LAB)-smoke),
+# its /24 and testing/smoke/run*. Two `make smoke LAB=...` runs with different
+# LABs can share a host; the default keeps the historical `wsf-smoke` names.
+LAB ?= wsf
 RUN ?= $(shell date +%Y-%m-%d)-$(shell date +%H%M%S)
 export WSF_RUN := $(RUN)
 DATE ?= $(shell date +%Y-%m-%d)
 export CORE_IMAGE := tincstack/core:$(TAG)
 export BASELINE_IMAGE := tincstack/baseline:$(TAG)
 SHELLCHECK_IMAGE ?= koalaman/shellcheck:stable
+# Every shell script here is linted at shellcheck's default (full) severity.
+# The transport proofs used to be linted at -S warning because of pre-existing
+# SC2086/SC2015 findings; those were cleaned up (stream U), so there is one
+# list and one severity again.
 SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-sim/natlab.sh \
                  testing/nat-sim/natprofile.sh testing/dpi-proof/run.sh testing/dpi-proof/capture.sh \
-                 testing/smoke/run.sh platforms/linux/docker/two-nodes.sh
-# The transport proofs predate the lint target and carry info-level findings
-# (SC2086/SC2015 style); they are linted at warning severity so real defects
-# fail `make lint` without a rewrite of every proof script.
-TEST_SCRIPTS := testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
-                testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
-                testing/transports/matrix-test.sh testing/transports/classify-test.sh
+                 testing/smoke/run.sh platforms/linux/docker/two-nodes.sh \
+                 platforms/linux/docker/yaml-scripts.sh \
+                 testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
+                 testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
+                 testing/transports/obfs-test.sh testing/transports/matrix-test.sh \
+                 testing/transports/classify-test.sh
 
 .PHONY: check build-core build-baseline build-lab smoke nat-quick nat-full laptop \
         validate-nat dpi-baseline lint clean promote
@@ -57,7 +64,7 @@ build-lab: build-core build-baseline
 	testing/nat-sim/lab.sh build
 
 smoke: build-core
-	testing/smoke/run.sh
+	LAB=$(LAB) testing/smoke/run.sh
 
 validate-nat: build-lab
 	testing/nat-sim/lab.sh validate-nat
@@ -76,9 +83,8 @@ dpi-baseline: build-lab
 
 lint:
 	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x $(SHELL_SCRIPTS)
-	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x -S warning $(TEST_SCRIPTS)
 
 clean:
 	testing/nat-sim/lab.sh clean
 	-docker compose -f testing/smoke/compose.yml down -v --remove-orphans
-	rm -rf testing/smoke/run
+	rm -rf testing/smoke/run testing/smoke/run-*

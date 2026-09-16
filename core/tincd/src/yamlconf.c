@@ -1107,6 +1107,40 @@ bool yamlconf_host_del(yamlconf_t *yc, const char *net, const char *name) {
 	return map_del(hosts, name);
 }
 
+void yamlconf_script_set_text(yamlconf_t *yc, const char *net, const char *name, const char *text) {
+	yval_t *scripts = map_get_or_create_map(net_node_create(yc, net), "scripts");
+	char *copy = strdup(text ? text : "");
+	size_t n = strlen(copy);
+
+	/* The emitter writes a multi-line value as a literal block and the parser
+	   chomps, so a stored trailing newline would not survive the round trip
+	   (block_scalar_safe() refuses it and it would become a quoted scalar).
+	   Strip it here, exactly as a hand-written block in the file reads back. */
+	while(n && (copy[n - 1] == '\n' || copy[n - 1] == '\r')) {
+		copy[--n] = 0;
+	}
+
+	map_set_scalar(scripts, name, copy);
+	free(copy);
+}
+
+bool yamlconf_script_del(yamlconf_t *yc, const char *net, const char *name) {
+	yval_t *netnode = map_get(map_get(yc->root, "networks"), net);
+	yval_t *scripts = map_get(netnode, "scripts");
+
+	if(!map_del(scripts, name)) {
+		return false;
+	}
+
+	/* An empty map is emitted as `scripts: {}', which the parser reads back as
+	   a scalar; drop the key when its last entry goes. */
+	if(!scripts->npairs) {
+		map_del(netnode, "scripts");
+	}
+
+	return true;
+}
+
 /* ---- locking ------------------------------------------------------------- */
 
 /* Writers (the daemon persisting a learned key, `tinc set', a join, the
