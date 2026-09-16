@@ -1146,7 +1146,9 @@ another network's addresses are dropped by the daemon's nft rules. Details:
   smoke test in **YAML mode** with explicit configs (`testing/smoke/`, keys
   generated at run time, cross-node ping both ways), `validate-nat`, the NAT
   quick subset (4 pairs, core), dpi baseline; non-zero on any failure, no
-  interactive step. `make lint` = shellcheck in a container (clean).
+  interactive step. `make lint` = shellcheck in a container (clean; since
+  stream U at shellcheck's default severity for every script, the transport
+  proofs included).
   **Proof:** `make check` run 2026-09-16 → exit 0 in ~6 min:
   `smoke: PASS (cross-node ping both ways, YAML mode)`, `validate-nat: all 6
   profiles behave as declared`, 5 quick pairs PASS, `baseline fingerprints
@@ -1189,9 +1191,23 @@ another network's addresses are dropped by the daemon's nft rules. Details:
     on the docker `/24`); defaults unchanged. Proof on `tincstack/core:dev`:
     `LAB=wst1` and `LAB=wst2` singleflow runs started together, both PASS
     (exit 0); tls-front, https-carrier, matrix (`ws-b-test`) and
-    quic-carrier PASS with `LAB=wst*`. `obfs-test.sh` still has fixed
-    `wsg2o-*` names (stream O is editing it; same treatment when it lands).
+    quic-carrier PASS with `LAB=wst*`.
     `two-nodes.sh` now refuses `sh` with a message (it needs bash).
+    **`obfs-test.sh` followed 2026-09-16 (stream U)** once stream O was merged:
+    it sources `lab-env.sh` too (`DEFAULT_LAB=wso`, `DEFAULT_SUBNET=10.37.90`),
+    so `LAB=` moves the five container names, the `<LAB>obfs` network, the
+    `/tmp/<LAB>-obfs*` data and pcap directories, the lab `/24` **and** the two
+    off-path attacker addresses of the replay/reflection checks (`$SUBNET.50`,
+    `.51`) — the historical names are the defaults. Its EXIT trap now also
+    removes the network (it only removed containers, so with `LAB=` every run
+    would have leaked one docker network; `reset_lab()` between parts still
+    keeps it). **Proof** on
+    `tincstack/core:dev`: `LAB=wsu1` (10.37.157.0/24) and `LAB=wsu2`
+    (10.37.54.0/24) started together, **both exit 0**, both `PASS: obfs
+    cold-start works, fingerprint gone, junk per-handshake, relay intact,
+    defaults plain; … (M5-2/4/5/6)`, no `MISS` line, and after the pair no
+    `wsu*obfs` network is left behind; `singleflow-test.sh` `LAB=wsu1`/`wsu2`
+    concurrently, both exit 0.
   - ~~🟠 **REQ_KEY glare has no tie-break (upstream 1.1pre18 and core).**~~
     **Resolved 2026-09-16 (stream K, core patch 5 — `core/tincd/PATCHES.md`
     §5, `docs/source-inventory.md`).** Upstream 1.1 HEAD (`211e3dfa`) has the
@@ -1255,8 +1271,9 @@ another network's addresses are dropped by the daemon's nft rules. Details:
     files this daemon wrote), a side file not in the YAML is left alone and
     reported once; `scripts.tinc-up` wins over the built-in `autoif.c` (the
     built-in is skipped), documented in `docs/config-schema.md` "Scripts".
-    `tinc set scripts.<name>` is not implemented (edit the file + `tinc
-    reload`; the CLI's variable table is for options/hosts). Property 10 in
+    ~~`tinc set scripts.<name>` is not implemented (edit the file + `tinc
+    reload`; the CLI's variable table is for options/hosts).~~ **Implemented
+    2026-09-16 (stream U)**, see the entry below. Property 10 in
     `yamlconf_props.c` (scripts block round-trip incl. a trailing-space
     line). **Proof** (`LAB=wss TINCSTACK_TAG=ws-s
     platforms/linux/docker/yaml-scripts.sh`, exit 0): both nodes `built-in
@@ -1269,6 +1286,77 @@ another network's addresses are dropped by the daemon's nft rules. Details:
     ``Removed script `…/host-up'``, file gone, `tinc-down` still there. The
     smoke test now ships its `tinc-up` as `scripts.tinc-up` and asserts
     `Wrote script`, no `built-in tinc-up`, mode 0700 → PASS on `ws-s`.
+  - ~~🟡 **`tinc set scripts.<name>` is missing**: in YAML mode a script can
+    only be installed by hand-editing `tinc.yaml`, which races the daemon's own
+    write-back of learned keys on a running node (the CLI takes the writers'
+    lock, an editor does not).~~ **Resolved 2026-09-16 (stream U).**
+    `tinc -c <file>.yaml get|set|del scripts.<name>` (`cmd_config_script()` in
+    `tincctl.c`, `yamlconf_script_set_text()`/`yamlconf_script_del()` in
+    `yamlconf.c`) writes `networks.<net>.scripts.<name>` through the same
+    lock → re-read → atomic save → `REQ_RELOAD` sequence the options/hosts path
+    uses, so stream S's `zeroconf_sync_scripts()` materialises it with no
+    restart and no explicit `tinc reload`. **The body comes from a file**
+    (`set scripts.tinc-up @./tinc-up`); an inline value is refused with a
+    message naming the `@file` form, because `cmd_config()` concatenates argv
+    with single spaces into one 4096-byte buffer and splits it on `[ \t=]`
+    (a script would be mangled *and* silently truncated — and a truncated
+    script still runs as root), and stdin is already `tinc`'s own command
+    stream in shell/batch mode, so `@-` is not accepted either. `get` prints
+    the text + a newline (a byte-for-byte round trip of a file ending in one
+    newline, since the emitter writes a literal block and the parser chomps);
+    the name must be a plain file name, so `scripts.` is a reserved prefix in
+    the CLI's `<node>.<variable>` namespace; deleting the last entry drops the
+    `scripts:` key (an empty map would be emitted as `{}` and read back as a
+    scalar); outside YAML mode the CLI says a script is a file in the confbase.
+    Documented in `docs/config-schema.md` "Editing a script from the CLI".
+    **Proof** (`LAB=wsu5 TINCSTACK_TAG=ws-u
+    platforms/linux/docker/yaml-scripts.sh`, exit 0 — step 6 added to that
+    script): `set scripts.host-up @/tmp/host-up.new` with the daemon running →
+    ``Wrote script `host-up'`` (2nd write), `700 root`, `get` diffs clean
+    against the source file, an inline body refused with "read from a file",
+    a restarted → marker `/etc/tincstack/marker2-node_a` = `node_a via-cli`
+    (the CLI-installed script really ran), `del scripts.host-up` →
+    ``Removed script `…/host-up'``, file gone, key gone from the YAML, a second
+    `del` exits 1, the hand-made `tinc-down` side file untouched.
+    Regression on `ws-u`: `review-r-live.sh` ALL PASSED (exit 0),
+    `two-nodes.sh` PASS (exit 0), fuzz gate `run.sh build && run.sh check`
+    exit 0 (yamlconf_props + 6 harnesses, `fuzz_invitation`/`fuzz_pool` link
+    `tincctl.c`).
+  - ~~🟢 **`testing/smoke/` uses a fixed compose project, network and `/24`**
+    (`wsf-smoke`, `172.31.77.0/24`, `testing/smoke/run/`): two concurrent
+    `make smoke` runs tear each other's containers down and fight over the
+    docker subnet.~~ **Resolved 2026-09-16 (stream U).** `testing/smoke/run.sh`
+    sources `testing/transports/lab-env.sh` (`DEFAULT_LAB=wsf`,
+    `DEFAULT_SUBNET=172.31.77`) and exports `SMOKE_PROJECT` (`<LAB>-smoke`,
+    both the compose project and the network name), `SMOKE_SUBNET` and
+    `SMOKE_RUN` (`run` for the default LAB, `run-<LAB>` otherwise) into
+    `compose.yml`, which keeps the historical values as its own defaults so a
+    bare `docker compose -f testing/smoke/compose.yml down` still targets the
+    default lab. `make smoke LAB=…` passes it through (`LAB ?= wsf`), `make
+    clean` also removes `testing/smoke/run-*`, `.gitignore` covers them.
+    **Proof** on `tincstack/core:dev`: `LAB=wsua` (172.31.114.0/24) and
+    `LAB=wsub` (172.31.105.0/24) started together, **both exit 0**, both
+    `smoke: PASS (cross-node ping both ways, YAML mode)`; then
+    `TAG=dev make -o build-core smoke` with the default LAB → exit 0,
+    project/network `wsf-smoke` on `172.31.77.0/24` as before.
+  - ~~🟢 **The transport proofs are linted at `-S warning`** (`TEST_SCRIPTS` in
+    the Makefile, stream T): dozens of pre-existing SC2086/SC2015 findings kept
+    `make lint` from running them at the default severity the rest of the tree
+    gets, so a real quoting defect in a proof could hide among them.~~
+    **Resolved 2026-09-16 (stream U).** 117 SC2086 (unquoted `${PFX}-…`
+    container names, `[ $i -lt … ]`, `[ $case = … ]`), 51 SC2015
+    (`cond && note … || miss …`, which runs `miss` when `note` fails) and 20
+    SC2329 were cleaned up mechanically — quoting via `shellcheck -f diff`,
+    every `A && B || C` rewritten as `if A; then B; else C; fi`, the
+    indirect-dispatch false positives silenced with one justified directive per
+    site (a file-level one in `quic-carrier-test.sh`, whose sections are all
+    dispatched as `sec_"$sec"`), and one genuinely dead helper (`wait_log` in
+    `tls-front-test.sh`) deleted. No assertion changed. `TEST_SCRIPTS` is gone:
+    one `SHELL_SCRIPTS` list, one severity, and `obfs-test.sh` (never linted
+    before) is in it. **Proof:** `make lint` exit 0 at the default severity;
+    every touched script re-run on `tincstack/core:dev` — `singleflow` ×2
+    concurrent, `obfs` ×2 concurrent, `tls-front`, `https-carrier`,
+    `quic-carrier`, all exit 0.
   - ~~🟡 **Linux MASQUERADE is not endpoint-independent on kernels ≥ 6.7**
     (measured: first destination keeps the source port, every later
     destination shares one other port). Any tincstack node behind a current
@@ -1323,6 +1411,7 @@ milestone as "Found during Mk" (consolidated into Known Issues at merge).
 | N | review L-2 | carrier retention across link drops (`transport.c` candidates, `net.c`) | L, G3 merged |
 | S | M2/M9 findings | `scripts:` stanza sync, MASQUERADE note, R-13/R-14 | R merged |
 | T | M9 infra | run-scoped lab results, curated evidence, `LAB=` for proofs, CI workflow | F, K merged |
+| U | M9 infra | `LAB=` for obfs-test and the smoke lab, full-severity shellcheck, `tinc set scripts.<name>` | O, S, T merged |
 
 Merged into master, in order: A, B, C, D, E, H, G2, Q, G1, F, R, G2 (test
 hardening), K, L, G3, S, T, N, O. No stream running.
