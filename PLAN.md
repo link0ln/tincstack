@@ -1429,6 +1429,14 @@ Defects identified during the source audit, to fix as their milestone is reached
   drop; do not present as a feature (Architecture §10).
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
+- 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`
+  carries upstream tinc's ED25519 test key (verified 2026-09-16 byte-identical
+  to `gsliepen/tinc` `test/integration/cmd_sign_verify.py`), used as a
+  deterministic signature vector. It is public upstream material and no node
+  uses it, but secret scanners (GitHub push protection, gitleaks) will flag it
+  on the first push — expect that and allow-list the path rather than
+  rewriting history. Every other key-shaped string in the tree is a
+  placeholder (`AAAA…`, `REDACTED…`).
 
 ## Guardrails (from ARCHITECTURE.md — restated so they are not skipped)
 
