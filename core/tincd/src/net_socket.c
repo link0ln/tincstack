@@ -460,6 +460,21 @@ void retry_outgoing(outgoing_t *outgoing) {
 		outgoing->timeout = maxtimeout;
 	}
 
+	/* Defect C, third symptom: get_recent_address() consumes its candidate
+	   list once -- the persisted cache, then the addresses the meta graph
+	   advertises for the node, then its Address statements -- and rewinds only
+	   when a connection actually came up (pong_h) or when the carrier walk
+	   moves on. A peer we know only from the graph has no Address statement,
+	   so after the single graph-derived candidate is spent every later retry
+	   logs "Could not set up a meta connection to X" without opening a socket,
+	   and the pair never recovers however long the backoff runs. Rewind here:
+	   the backoff just extended above is what bounds the attempt rate, so this
+	   costs one re-walk of a handful of addresses per retry, not a storm.
+	   Upstream 1.1pre18 has the same gap (measured). */
+	if(outgoing->node && outgoing->node->address_cache) {
+		reset_address_cache(outgoing->node->address_cache);
+	}
+
 	timeout_add(&outgoing->ev, retry_outgoing_handler, outgoing, &(struct timeval) {
 		outgoing->timeout, jitter()
 	});
@@ -755,6 +770,28 @@ void setup_outgoing_connection(outgoing_t *outgoing, bool verbose) {
 
 	if(!n->address_cache) {
 		n->address_cache = open_address_cache(n);
+	}
+
+	/* Defect C: a meta connection to a peer whose Ed25519 key we do not have
+	   cannot authenticate -- id_h() has nothing to hand to sptps_start() -- so
+	   dialling one is provably wasted, and it is what produced the
+	   "Timeout ... during authentication" the field report shows. For a node
+	   we met only over the graph (both invited by the same third node) neither
+	   side has a host record, and upstream only fetches the key when *traffic*
+	   needs it, i.e. long after the meta connection gave up. Ask for it over
+	   the graph and come back on the normal backoff instead of dialling into a
+	   refusal; the answer takes one relay round trip, so the next attempt has
+	   it. send_req_pubkey() returns false when there is nobody to ask (no
+	   nexthop, or the key is already known), and then we dial as before.
+
+	   Bounded on purpose: only while the backoff is still short (at most the
+	   5/10/15/20/25 s rounds, ~75 s). If the key still has not arrived by
+	   then something else is wrong and we go back to dialling anyway rather
+	   than stalling this outgoing_t silently. */
+	if(outgoing->timeout < 30 && !node_read_ecdsa_public_key(n) && send_req_pubkey(n)) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Deferring the dial to %s until its Ed25519 key arrives over the graph", n->name);
+		retry_outgoing(outgoing);
+		return;
 	}
 
 	if(n->connection && !transport_outranks_connection(outgoing, n->connection)) {

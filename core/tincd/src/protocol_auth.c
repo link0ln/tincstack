@@ -95,6 +95,32 @@ static bool send_proxyrequest(connection_t *c) {
 	}
 }
 
+/* The Ed25519 key of a node we know only from the meta graph, as a fresh
+   ecdsa_t the connection owns, or NULL. The key itself reached us over an
+   already-authenticated meta link (ANS_PUBKEY), so using it is not a shortcut
+   past authentication -- it is the *input* to it: whoever is on the other end
+   still has to complete the SPTPS handshake against it, which fails closed
+   without the private half. Defect C: two nodes invited by the same third node
+   have no host record for each other, and both the acceptor (id_h) and the
+   dialler (send_id) used to treat that as "identity unknown". */
+static ecdsa_t *ecdsa_from_graph(char *name) {
+	node_t *n = lookup_node(name);
+
+	if(!n || n == myself || !node_read_ecdsa_public_key(n)) {
+		return NULL;
+	}
+
+	char *b64 = ecdsa_get_base64_public_key(n->ecdsa);
+
+	if(!b64) {
+		return NULL;
+	}
+
+	ecdsa_t *key = ecdsa_set_base64_public_key(b64);
+	free(b64);
+	return key;
+}
+
 bool send_id(connection_t *c) {
 	gettimeofday(&c->start, NULL);
 
@@ -105,6 +131,25 @@ bool send_id(connection_t *c) {
 
 		if(c->outgoing && !ecdsa_active(c->ecdsa)) {
 			c->ecdsa = read_ecdsa_public_key(&c->config_tree, c->name);
+
+			/* Defect C, dialler side (measured on the field stand: `Connected
+			   to euvds (...)' immediately followed by `Cannot open config file
+			   .../hosts/euvds'). There is no host record for a peer we met
+			   over the graph, and upstream's answer here is to announce
+			   protocol 17.1 -- i.e. to silently downgrade the whole meta
+			   connection from SPTPS/Ed25519 to legacy RSA, for which we have
+			   no key either, so the connection fails anyway and a `nolegacy'
+			   build cannot even try. Take the key from the graph instead and
+			   stay on 17.2. */
+			if(!c->ecdsa) {
+				c->ecdsa = ecdsa_from_graph(c->name);
+
+				if(c->ecdsa) {
+					logger(DEBUG_CONNECTIONS, LOG_INFO,
+					       "No host record for %s; dialling it with the Ed25519 key the graph gave us",
+					       c->name);
+				}
+			}
 
 			// We don't know the ECDSA key of the peer, try to connect to RSA and then upgrade
 			if(!c->ecdsa) {
@@ -545,11 +590,52 @@ bool id_h(connection_t *c, const char *request) {
 		c->config_tree = create_configuration();
 
 		if(!read_host_config(c->config_tree, c->name, false)) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Peer %s had unknown identity (%s)", c->hostname, c->name);
-			return false;
-		}
+			/* Defect C: two nodes invited by the same third node know each
+			   other only from the meta graph. Neither was ever handed a host
+			   record for the other, so upstream tinc 1.1 rejects the ID here
+			   and the pair stays relayed through the inviter forever (measured
+			   identically on upstream 1.1pre18 with classic tinc.conf/hosts,
+			   so this is not a YAML-mode artefact).
 
-		if(experimental && !ecdsa_active(c->ecdsa)) {
+			   A host record is not what authenticates a peer -- the Ed25519 key
+			   is. If the graph already gave us that key (it travels over
+			   already-authenticated meta links as ANS_PUBKEY), accept the name
+			   and let the SPTPS handshake below prove possession of it: it
+			   fails closed for anyone who does not hold the private half, so
+			   nothing is trusted that was not authenticated, and a node whose
+			   key we do not have is still refused.
+
+			   Without the key we must refuse this connection -- but we ask for
+			   it over the graph, so the dial the peer retries a few seconds
+			   later (net_socket.c retry_outgoing) finds it here. */
+			node_t *n = lookup_node(c->name);
+			ecdsa_t *graphkey = n ? ecdsa_from_graph(c->name) : NULL;
+
+			if(!graphkey) {
+				if(n && n->status.reachable) {
+					/* Not an operator error and it repeats on every retry
+					   until the key arrives: INFO, not ERROR. */
+					logger(DEBUG_CONNECTIONS, LOG_INFO,
+					       "Peer %s (%s) is known from the graph but its Ed25519 key is not here yet; requesting it",
+					       c->name, c->hostname);
+					send_req_pubkey(n);
+				} else {
+					logger(DEBUG_ALWAYS, LOG_ERR, "Peer %s had unknown identity (%s)", c->hostname, c->name);
+				}
+
+				return false;
+			}
+
+			if(ecdsa_active(c->ecdsa)) {
+				ecdsa_free(graphkey);
+			} else {
+				c->ecdsa = graphkey;
+			}
+
+			logger(DEBUG_CONNECTIONS, LOG_INFO,
+			       "Peer %s (%s) has no host record; authenticating it against the Ed25519 key the graph gave us",
+			       c->name, c->hostname);
+		} else if(experimental && !ecdsa_active(c->ecdsa)) {
 			c->ecdsa = read_ecdsa_public_key(&c->config_tree, c->name);
 		}
 

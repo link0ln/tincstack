@@ -35,6 +35,9 @@
 #include "random.h"
 #include "xalloc.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 void send_key_changed(void) {
 #ifndef DISABLE_LEGACY
 	send_request(everyone, "%d %x %s", KEY_CHANGED, prng(UINT32_MAX), myself->name);
@@ -109,6 +112,38 @@ static bool send_initial_sptps_data(void *handle, uint8_t type, const void *data
 	b64encode_tinc(data, buf, len);
 
 	return send_request(to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, myself->name, to->name, REQ_KEY, buf);
+}
+
+/* Ask a node we only know from the meta graph for its Ed25519 public key,
+   without starting an SPTPS session (that is what send_req_key() does, and it
+   is the *data* path). Defect C: two nodes invited by the same third node have
+   no host record for each other, so neither can finish the ID exchange of a
+   direct meta connection until one of them has learned the other's key. The
+   key exchange used to be triggered only by traffic, i.e. only after the meta
+   connection had already failed and the pair had settled on the relay.
+
+   Rate limited to one request per node per REQ_PUBKEY_INTERVAL: id_h() calls
+   this for an unauthenticated peer that claims a name we know, so without the
+   limit a stranger opening connections in a loop could make us flood the relay
+   with requests. */
+#define REQ_PUBKEY_INTERVAL 5
+
+bool send_req_pubkey(node_t *to) {
+	if(node_read_ecdsa_public_key(to)) {
+		return true;
+	}
+
+	if(!to->status.reachable || !to->nexthop || !to->nexthop->connection || to == myself) {
+		return false;
+	}
+
+	if(to->last_req_pubkey && now.tv_sec - to->last_req_pubkey < REQ_PUBKEY_INTERVAL) {
+		return false;
+	}
+
+	to->last_req_pubkey = now.tv_sec;
+	logger(DEBUG_PROTOCOL, LOG_DEBUG, "Requesting Ed25519 key for %s (%s) over the meta graph", to->name, to->hostname);
+	return send_request(to->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, to->name, REQ_PUBKEY);
 }
 
 bool send_req_key(node_t *to) {
@@ -206,20 +241,46 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		}
 
 		char *pubkey = ecdsa_get_base64_public_key(myself->connection->ecdsa);
-		send_request(from->nexthop->connection, "%d %s %s %d %s", REQ_KEY, myself->name, from->name, ANS_PUBKEY, pubkey);
+		/* Defect D: our accept mask rides along as one extra, space-free
+		   token. Upstream's ANS_PUBKEY parser is
+		   `sscanf(request, "%*d %*s %*s %*d " MAX_STRING, pubkey)', which
+		   stops at the first whitespace, so an upstream (or older tincstack)
+		   peer ignores it and nothing on the wire changes for it. A peer that
+		   does understand it stops assuming a distance-2-or-more node is
+		   plain-only.
+		   The mask is advisory, never a permission: the acceptor still
+		   enforces its own Transports/AllowPlainMeta, so the worst a lying
+		   relay can do is cause a dial the other end refuses. */
+		char acceptlist[TRANSPORT_LIST_MAX];
+		send_request(from->nexthop->connection, "%d %s %s %d %s %s", REQ_KEY, myself->name, from->name, ANS_PUBKEY, pubkey, transport_accept_string(acceptlist));
 		free(pubkey);
 		return true;
 	}
 
 	case ANS_PUBKEY: {
+		char pubkey[MAX_STRING_SIZE];
+		char histransports[MAX_STRING_SIZE] = "";
+		int fields = sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING, pubkey, histransports);
+
+		/* Learn the peer's accept mask even when we already had its key: the
+		   key is cached forever, the mask is what goes stale. */
+		if(fields >= 2 && *histransports) {
+			uint32_t mask;
+			char bad[TRANSPORT_LIST_MAX];
+
+			if(transport_parse_list(histransports, &mask, NULL, NULL, bad) && mask) {
+				from->transports = mask;
+			} else {
+				logger(DEBUG_PROTOCOL, LOG_WARNING, "Ignoring Transports of %s in ANS_PUBKEY: unknown carrier `%s'", from->name, bad);
+			}
+		}
+
 		if(node_read_ecdsa_public_key(from)) {
 			logger(DEBUG_PROTOCOL, LOG_WARNING, "Got ANS_PUBKEY from %s (%s) even though we already have his pubkey", from->name, from->hostname);
 			return true;
 		}
 
-		char pubkey[MAX_STRING_SIZE];
-
-		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING, pubkey) == 1) {
+		if(fields >= 1) {
 			from->ecdsa = ecdsa_set_base64_public_key(pubkey);
 		}
 

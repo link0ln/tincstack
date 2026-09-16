@@ -47,6 +47,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/transports/classify-test.sh \
                  testing/transports/plain-refuse-test.sh \
                  testing/transports/carrier-switch-test.sh \
+                 testing/transports/invitee-mesh-test.sh \
                  platforms/windows/build-core-win.sh platforms/windows/build-exe.sh \
                  platforms/windows/pyinstaller-in-wine.sh \
                  platforms/android/docker/emulator.sh \

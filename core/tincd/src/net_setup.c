@@ -87,7 +87,11 @@ bool node_read_ecdsa_public_key(node_t *n) {
 	splay_tree_t config;
 	init_configuration(&config);
 
-	if(!read_host_config(&config, n->name, true)) {
+	/* Quiet: this is a lazy probe ("do we have a key for n yet?"), and for a
+	   node we know only from the meta graph the answer is legitimately no
+	   until ANS_PUBKEY arrives (defect C). It used to be verbose, i.e. one
+	   LOG_ERR at DEBUG_ALWAYS per probe. */
+	if(!read_host_config(&config, n->name, false)) {
 		goto exit;
 	}
 

@@ -1,6 +1,14 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-16 (stream W merged and verified live; the
+**Last Updated:** 2026-09-16 (stream AC: **defects C and D are closed** -- two
+nodes invited by the same third node now peer directly instead of being
+relayed through their inviter forever, and a node's carrier accept mask now
+travels over the meta graph. Measured against upstream tinc 1.1pre18 and
+against classic `tinc.conf` + `hosts/` on the same binary: **all three
+symptoms of defect C are upstream tinc 1.1 behaviour, none is YAML-specific.**
+New harness `testing/transports/invitee-mesh-test.sh` reproduces the defect on
+demand (`--expect-defect`) and asserts the fix by default. Earlier: stream W
+merged and verified live; the
 `pipefail` + `grep -q` defect that made seven proofs report the opposite of
 what they measured is fixed; the transport proofs no longer silently test a
 stale stream image. Stream Z **merged**: `AllowPlainMeta` — a node can finally
@@ -2287,63 +2295,6 @@ Defects identified during the source audit, to fix as their milestone is reached
   reason in each header and `testing/transports/README.md` updated to build
   `dev` / `dev-test` / `dev-noquic`. The accidental run was not wasted: it is
   the pre-fix arm of the live before/after now recorded against stream W above.
-- 🟠 **Defect C — two invitees of the same node never peer directly; every
-  leaf-to-leaf packet is relayed through the inviter, forever.** Found
-  2026-09-16 on the real three-host stand (ruvds2 = founder,
-  `laptop` = NATed workstation, `euvds` = public VPS, all `ghcr.io/…/node:v0.1.1`,
-  each joined with an invitation issued by ruvds2). Both leaves learn each
-  other over the meta graph and both try a direct meta connection within
-  4 s of the second join; both fail, and both stop trying:
-  - acceptor side: `Cannot open config file /etc/tincstack/tincstack/hosts/laptop:
-    No such file or directory` → `Peer 79.139.184.85 port 1202 had unknown
-    identity (laptop)` → connection closed. The YAML has no section for a node
-    this daemon has never authenticated, and `config_fopen()` (conf.c:302)
-    serves host text only from the YAML document, so the ID exchange dies
-    before the pubkey can be learned.
-  - dialer side: `Timeout from euvds … during authentication`, then
-    `Every carrier failed for euvds, restarting from plain`.
-  - a few seconds later REQ_PUBKEY/ANS_PUBKEY does its job and
-    `append_config_file()` writes `laptop: Ed25519PublicKey = …` into
-    `tinc.yaml` — but that learned line carries **no `Address`**, so every
-    subsequent retry is `Could not set up a meta connection to <peer>`, the
-    AutoConnect backoff runs out (5 → 10 → 15 → 20 → 25 → 30 s) and the pair
-    is left relayed. Measured after 10 min: `dump nodes` on both leaves shows
-    `nexthop ruvds2 … distance 2 … transports plain`, `laptop → euvds`
-    10 packets 20 % loss 45.7 ms avg (the two lost are the first two, while
-    the relay path settles), `euvds → laptop` 0 % loss 46.1 ms avg, while
-    each leaf → ruvds2 is 4.4 ms / 40.2 ms respectively. Impact: the hub
-    carries all traffic of every pair it invited, is a single point of failure
-    for them, and NAT traversal between leaves — the reason to run this and
-    not WireGuard — never happens. It is worst in exactly the configuration
-    the one-line onboarding story pushes people into (invite everyone from one
-    node). Not yet proven to be a tincstack regression rather than upstream
-    1.1 behaviour in YAML dress; the lab repro (three containers, two
-    invitations from the same founder) must be run against classic
-    `tinc.conf` + `hosts/` too before blaming YAML mode. **Dispatched as
-    stream AC.**
-    **Corroborated 2026-09-16 on a fourth node**: the router (aarch64, its own
-    cross-built arm64 image, `10.170.0.4`) joined the same founder and
-    reproduced every line of this -- including the punchline. `router` and
-    `laptop` are on the *same LAN* (the router is the workstation's gateway;
-    both appear to ruvds2 as 79.139.184.85), and their tunnel traffic is
-    relayed through a VPS in another country: `router -> laptop` 33.4 ms
-    average where the wire is under a millisecond, `router -> euvds` 61.3 ms,
-    `router -> ruvds2` (its only direct link) 26.7 ms. Each first burst also
-    loses its first two packets while the relay path settles (2 of 5 here,
-    2 of 10 on the three-node stand): nothing is queued while a path is set
-    up. That part is upstream behaviour and is only visible because every
-    leaf pair keeps having to establish one.
-- 🟡 **Defect D — `Transports` is not propagated past one hop.** Same stand,
-  same `dump nodes`: ruvds2 lists both leaves as
-  `transports plain,sf,obfs,https,quic`, but each leaf lists the *other* leaf
-  as `transports plain` — the accept mask is learned from the ACK of a direct
-  meta connection (`ack_h()`, protocol_auth.c:1152) and from the node's own
-  YAML section, and nothing carries it over the graph. Consequence: even when
-  defect C is fixed, the first direct leaf-to-leaf dial can only offer `plain`,
-  so two censored leaves would negotiate cleartext tinc between themselves
-  while both are configured for obfs/https/quic. Impact is bounded (the link
-  still comes up, and `AllowPlainMeta = no` turns it into a hard failure
-  instead of a silent downgrade), which is why it is 🟡 and not 🟠.
 - ~~🔴 **`tinc disconnect` killed the re-dial it had just started, so the carrier
   of a running node could not be changed.**~~ **Found 2026-09-16 (owner),
   resolved 2026-09-16 (stream AA).**
@@ -2431,6 +2382,157 @@ Defects identified during the source audit, to fix as their milestone is reached
   3. `disconnect` against a peer holding two simultaneous connections (the
      `ack_h()` "second connection" case) is unmeasured; the snapshot plus
      liveness check is written for it.
+- ~~🟠 **Defect C — two invitees of the same node never peer directly; every
+  leaf-to-leaf packet is relayed through the inviter, forever.**~~ Found
+  2026-09-16 on the real three-host stand (ruvds2 = founder,
+  `laptop` = NATed workstation, `euvds` = public VPS, all
+  `ghcr.io/…/node:v0.1.1`, each joined with an invitation issued by ruvds2;
+  a fourth node, the aarch64 `router` at 10.170.0.4, reproduced it too and gave
+  the sharpest number: the router is the workstation's own LAN gateway — both
+  appear to the founder as 79.139.184.85 — and their tunnel traffic was still
+  relayed through a VPS in another country, **33.4 ms** where the wire is
+  sub-millisecond; router→euvds 61.3 ms, router→ruvds2 (its only direct link)
+  26.7 ms. **Closed 2026-09-16 (stream AC).**
+
+  **Reproduced in the lab, then measured against three controls.** The new
+  harness `testing/transports/invitee-mesh-test.sh` stands up the same topology
+  in three containers (founder invites both leaves; neither leaf is ever given
+  a host record for the other — the script asserts that before it starts) and
+  has two modes: `--expect-defect` asserts the pre-fix behaviour, the default
+  asserts the fix.
+  - `LAB=wsacimd testing/transports/invitee-mesh-test.sh tincstack/core:ac-base
+    --expect-defect` → `PASS(repro)`, with the field log lines verbatim:
+    `ERROR Cannot open config file /etc/tincstack/tincstack/hosts/leaf2: No
+    such file or directory` → `ERROR Peer 10.33.19.12 port 53702 had unknown
+    identity (leaf2)` → `WARNING Timeout from leaf2 (…) during authentication`
+    → `ERROR Could not set up a meta connection to leaf2` repeating on every
+    retry, and `dump nodes` on both leaves ending at
+    `nexthop founder … distance 2 … transports plain`.
+  - **Control 1 — same binary, classic `tinc.conf` + `hosts/` + `tinc invite` /
+    `tinc join`, no YAML:** identical, line for line
+    (`Cannot open config file /usr/local/etc/tinc/tincstack/hosts/leaf2` →
+    `Peer 10.45.9.12 port 39720 had unknown identity (leaf2)` →
+    `Timeout … during authentication` → `Could not set up a meta connection`,
+    `distance 2` both ways).
+  - **Control 2 — upstream tinc 1.1pre18 (`tincstack/baseline:ws-f`), classic
+    config, same topology:** identical again (`Peer 10.46.9.12 port 56584 had
+    unknown identity (leaf2)`, backoff 5→10→15→20 s, `distance 2`).
+  **Verdict: none of the three symptoms is YAML-mode-specific.** All three are
+  upstream tinc 1.1 behaviour; YAML mode only changes the text of the path in
+  the message, because `config_fopen()` (conf.c) returns `ENOENT` for a node
+  with no `hosts:` section exactly as the filesystem does for a missing file.
+  Source diff confirms it: `address_cache.c` differs from upstream only in the
+  splay/`init_configuration` API churn and a `free(ai->ai_addr)` leak fix, and
+  `do_outgoing_connection()` / `setup_outgoing_connection()` / `id_h()`'s
+  `unknown identity` branch are upstream's.
+
+  **Three independent causes, all upstream, all fixed here:**
+  1. *The acceptor rejects a name it knows from the graph* — `id_h()`
+     (`protocol_auth.c`) required `read_host_config()` to succeed. A host
+     record is not what authenticates a peer; the Ed25519 key is. `id_h()` now
+     falls back to the key the graph gave us (`ecdsa_from_graph()`, fed by
+     ANS_PUBKEY over already-authenticated meta links) and lets the SPTPS
+     handshake prove possession of it — **SPTPS/Ed25519 is not bypassed, it is
+     the gate**: a node whose key we do not have is still refused, and the
+     version-rollback check is untouched. When the key is missing we now ask
+     for it over the graph (`send_req_pubkey()`, rate-limited to one request
+     per node per 5 s so an unauthenticated stranger cannot use this to flood
+     a relay) and log the refusal at `DEBUG_CONNECTIONS`/`LOG_INFO` instead of
+     `LOG_ERR`, because it is an expected transient, not an operator error.
+  2. *The dialler silently downgrades to legacy RSA* — `send_id()`
+     (`protocol_auth.c`) reads the peer's host record and, when it is absent,
+     announces protocol **17.1** instead of 17.2, i.e. drops the meta
+     connection from SPTPS/Ed25519 to legacy RSA, for which it has no key
+     either. This is the second half of the field observation `Connected to
+     euvds (88.218.122.166 port 655)` immediately followed by `Cannot open
+     config file …/hosts/euvds` — the dialler path needs the record too, not
+     just the ID handler. `send_id()` now takes the key from the graph by the
+     same `ecdsa_from_graph()` and stays on 17.2; a `nolegacy` build could not
+     even have tried the downgrade.
+  3. *The address cache is single-shot* — `get_recent_address()` consumes the
+     persisted cache, then the addresses the graph advertises, then the
+     `Address` statements, and rewinds only on a *successful* connection
+     (`pong_h`) or when the carrier walk moves on. A peer known only from the
+     graph has no `Address` statement, so after its single graph-derived
+     candidate is spent every retry logs `Could not set up a meta connection`
+     **without opening a socket** — which is why the AutoConnect backoff
+     (5→10→15→20→25→30 s) ran out with nothing to show. `retry_outgoing()`
+     (`net_socket.c`) now rewinds the cache; the backoff it just extended is
+     what bounds the attempt rate, so this is a handful of addresses per retry,
+     not a storm.
+  Plus two things that follow from them: `setup_outgoing_connection()` defers a
+  dial to a peer whose key it does not have (that dial is provably unauthenticable)
+  and asks for the key instead — **bounded**: only while the backoff is under
+  30 s, after which it dials anyway rather than stalling the `outgoing_t`
+  silently; and the "host record is absent" message, which `read_host_config()`
+  already marks non-verbose, moved from `LOG_ERR` at `DEBUG_CONNECTIONS` (i.e.
+  visible at the default `-d1`, several lines per dial attempt, forever) to
+  `LOG_DEBUG` at `DEBUG_PROTOCOL`. `node_read_ecdsa_public_key()`
+  (`net_setup.c`) is a lazy probe and now reads quietly for the same reason;
+  every verbose caller (fsck, `tinc export`, the explicit key reads) is
+  unchanged.
+
+  **Proof (`LAB=wsacimz testing/transports/invitee-mesh-test.sh
+  tincstack/core:ac`, EXIT 0):**
+  `l1: leaf2 is DIRECT (distance 1, nexthop leaf2)`,
+  `l2: leaf1 is DIRECT (distance 1, nexthop leaf1)`,
+  `dump edges` carries `leaf1 to leaf2` and `leaf2 to leaf1`, and — the part
+  that rules out a relay — **with the founder container stopped** both pings
+  are `3 packets transmitted, 3 received, 0% packet loss` (0.117–0.230 ms).
+  Neither leaf logs `unknown identity`, `Could not set up a meta connection to
+  <peer>` or `Timeout from <peer> … during authentication`; the only ERROR left
+  in either log is the founder we deliberately killed. Convergence is one relay
+  round trip: `Deferring the dial to leaf2 until its Ed25519 key arrives over
+  the graph` → `Learned Ed25519 public key from leaf2` →
+  `Connection with leaf2 … activated`, all in the same second.
+  Carriers and onboarding re-checked on the same build:
+  `testing/transports/matrix-test.sh tincstack/core:ac-test` PASS,
+  `testing/transports/plain-refuse-test.sh tincstack/core:ac` PASS,
+  `CORE_IMAGE=tincstack/core:ac testing/smoke/run.sh` PASS,
+  `TINCSTACK_TAG=ac platforms/linux/docker/two-nodes.sh` PASS.
+- ~~🟡 **Defect D — `Transports` is not propagated past one hop.**~~ Same
+  stand, same `dump nodes`: ruvds2 listed both leaves as
+  `transports plain,sf,obfs,https,quic`, but each leaf listed the *other* leaf
+  as `transports plain` — the accept mask is learned from the ACK of a *direct*
+  meta connection (`ack_h()`) and from the node's own host record, and nothing
+  carried it over the graph, so the first direct leaf-to-leaf dial could only
+  ever offer `plain`. **Closed 2026-09-16 (stream AC)**, because it did fall
+  out cleanly once C was fixed and needed no new request type: the mask now
+  rides on **ANS_PUBKEY** as one extra, space-free token
+  (`protocol_key.c`, `transport_accept_string()` /`transport_parse_list()`).
+  Upstream's parser is `sscanf(request, "%*d %*s %*s %*d " MAX_STRING, pubkey)`,
+  which stops at the first whitespace, so an upstream or older-tincstack peer
+  ignores the extra token and nothing on the wire changes for it; relays
+  forward the request verbatim (`send_request(to->nexthop->connection, "%s",
+  request)`), so an old node in the middle is transparent. The mask is
+  **advisory, never a permission**: the acceptor still enforces its own
+  `Transports`/`AllowPlainMeta`, so the worst a lying relay can do is provoke a
+  dial the other end refuses — no worse than today's unconditional `plain`.
+  Proof: in the fixed run both leaves show
+  `transports plain,sf,obfs,https,quic` for the other leaf, and the dialling
+  leaf logs `Carrier candidates for leaf1: plain (peer accepts
+  plain,sf,obfs,https,quic)` **before** `Trying to connect to leaf1` — i.e.
+  the mask was known at first-dial time, not learned afterwards from the ACK.
+  `plain-refuse-test.sh` (which is the test for "a peer that refuses plain")
+  still passes on the same build.
+- 🟢 **First burst on a fresh relayed path loses its first two packets** —
+  not part of defect C, and **not tincstack's**: measured 2026-09-16 (stream
+  AC) on three builds, same lab, 5-packet bursts on a never-used path.
+  `tincstack/core:ac-base` (pre-fix, relayed): `icmp_seq` 1 and 2 lost,
+  **40 % of 5**, second burst on the same path 0 %.
+  **Upstream tinc 1.1pre18** (`tincstack/baseline:ws-f`, classic config, same
+  topology, tun addressed by hand): `icmp_seq` 1 and 2 lost, **40 % of 5**,
+  second burst 0 % — byte-for-byte the same symptom, so it is upstream
+  behaviour (`try_sptps()` in `net_packet.c` requests the SPTPS key on the
+  first packet that needs it and nothing is queued while the handshake runs;
+  tincstack differs there only in the documented 30 s ± jitter cooldown vs
+  upstream's fixed 10 s). It matches the field numbers (2 of 5 on the router,
+  2 of 10 on the three-host stand). Fixing defect C removes it for an invitee
+  pair as a side effect: on `tincstack/core:ac` the same first burst over the
+  now-direct path is **0 % of 5**, `icmp_seq=1` at 0.226 ms, because the meta
+  connection and its keys are already up before any traffic. It would still
+  show on a genuinely new relayed path; queueing the first packets is a
+  separate change and is **not** made here.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`

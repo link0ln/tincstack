@@ -158,3 +158,29 @@ logged; switching back to `plain` is asserted too, and so is `disconnect`
 saying why it closed a link.
 
 Expect: `PASS: the carrier of a running node can be changed with set + reload + disconnect`.
+## invitee-mesh-test.sh — defects C and D (two invitees of the same node)
+
+The proof for PLAN.md's Known Issues "Defect C — two invitees of the same node
+never peer directly" and "Defect D — `Transports` is not propagated past one
+hop". Three containers: a public founder that issues both invitations, and two
+leaves that join with `tinc join` and are never given a host record for each
+other (the script asserts that before it measures anything).
+
+    sh testing/transports/invitee-mesh-test.sh [image] [--expect-defect]
+
+Default mode asserts the fix: both leaves see the other at `distance 1` with
+the other leaf as its own `nexthop`, each knows the other's real carrier accept
+mask (defect D — it now travels on ANS_PUBKEY, not only on a direct ACK), and
+the tunnel carries traffic both ways **with the founder container stopped**,
+which is what rules out a relay. Neither leaf may log `unknown identity`,
+`Could not set up a meta connection to <peer>` or `Timeout from <peer> …
+during authentication`.
+
+`--expect-defect` asserts the opposite and is how the defect was reproduced
+against a pre-fix image: the two field error lines must appear and both leaves
+must end at `nexthop founder … distance 2`. Run it against
+`tincstack/core:<pre-fix tag>` to see the original behaviour; against a fixed
+build it fails, which is the point.
+
+Expect: `PASS: two invitees of the same node peer directly, with the founder stopped`
+(or `PASS(repro): both leaves are permanently relayed through their inviter`).
