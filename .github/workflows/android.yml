@@ -1,0 +1,93 @@
+# tincstack Android CI — only when the Android app changes.
+#
+# Why a workflow of its own instead of a job in check.yml: the owner asked for
+# less building per commit, not more, and a per-job path filter does not exist
+# in GitHub Actions -- `on.push.paths` is per workflow. This one runs the two
+# things that would have caught both of the release job's Android failures
+# (which were found by hand, on a tag, not by CI):
+#
+#   * assembleRelease -- the release variant had never been built by anyone
+#     before the first tag, and it died twice: once on the gradle default
+#     -PtincCrypto=openssl, which does not compile, and once in R8 on
+#     SnakeYAML's java.beans references.
+#   * testDebugUnitTest -- the Robolectric suite.
+#
+# Roughly ten runner-minutes, and only on a push that touches the app, the
+# native build or this file. Everything runs in the repository's own build
+# container with the runner's SDK mounted, exactly like release.yml, so a red
+# run here means the release job would be red too.
+name: android
+
+on:
+  push:
+    paths:
+      - 'platforms/android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'platforms/android/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: assembleRelease + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same as release.yml: the runner image already ships the SDK and its
+      # cmdline-tools, so no third-party setup action is involved.
+      - name: SDK packages the build needs
+        run: |
+          set -eo pipefail
+          sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}
+          mgr=$(find "$sdk/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n1)
+          if [ -z "$mgr" ]; then
+            echo "::error title=no sdkmanager::looked under $sdk/cmdline-tools; SDK contents: $(find "$sdk" -maxdepth 1 2>&1 | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "sdkmanager: $mgr"
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          yes | "$mgr" --licenses >/dev/null 2>&1 || true
+          "$mgr" --install "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" 2>&1 | tee sdk.log || {
+            msg=$(tail -n 30 sdk.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=sdkmanager install failed::$msg"
+            exit 1
+          }
+
+      - name: Build container
+        run: docker build -t tincstack/android-build -f platforms/android/docker/Dockerfile.build platforms/android/docker
+
+      # -PtincCrypto=nolegacy for the same reason release.yml passes it: the
+      # gradle default (openssl) does not compile against the LibreSSL the
+      # Android cross-build ships. See PLAN.md Known Issues.
+      - name: assembleRelease and unit tests
+        run: |
+          set -eo pipefail
+          docker run --rm \
+            -v "$PWD":/src \
+            -v "$ANDROID_SDK_ROOT":/opt/android-sdk \
+            -v /tmp/gradle:/root/.gradle \
+            -w /src/platforms/android \
+            -e ANDROID_HOME=/opt/android-sdk -e ANDROID_SDK_ROOT=/opt/android-sdk \
+            tincstack/android-build \
+            ./gradlew --no-daemon -PtincCrypto=nolegacy testDebugUnitTest assembleRelease \
+            2>&1 | tee gradle.log || {
+              msg=$(tail -n 40 gradle.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+              echo "::error title=android build failed::$msg"
+              exit 1
+            }
+
+      - name: What was built
+        run: |
+          set -eo pipefail
+          find platforms/android/app/build/outputs/apk -name '*.apk' -exec ls -l {} +

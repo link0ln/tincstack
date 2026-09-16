@@ -1766,13 +1766,19 @@ registry image.
     failed, so those image tags exist and point at a core without stream Z.
     Delete them in the package settings if that bothers you; nothing references
     them.
-- [ ] 🟡 **CI does not build the Android app at all.** Both of the android job's
-  failures above were found by running it by hand, not by `check.yml`, which
-  builds only the core image and the Linux labs. An `assembleRelease` +
-  `testDebugUnitTest` job would have caught both on the commit that introduced
-  them, at roughly ten runner-minutes per push. Not added, because the owner
-  asked for less building per commit, not more; raising it so the trade-off is
-  a decision rather than an oversight.
+- [x] 🟡 **CI now builds the Android app — but only when the app changes.**
+  Both of the android job's failures above were found by running it by hand on
+  a tag, not by `check.yml`, which builds only the core image and the Linux
+  labs. The owner asked for less building per commit, and GitHub has no
+  per-job path filter (`on.push.paths` is per workflow), so this is its own
+  workflow: `.github/workflows/android.yml` runs
+  `testDebugUnitTest assembleRelease` in the repository's own build container
+  with the runner's SDK, on a push or PR that touches `platforms/android/**`
+  or that file, and nothing otherwise. Roughly ten runner-minutes on an
+  Android change, zero on every other commit. It is deliberately the same
+  three steps as the release job's android leg (same SDK discovery, same
+  `-PtincCrypto=nolegacy`, same container), so a red run here means the
+  release would be red too. `actionlint` clean.
 - [ ] **One manual step after the first tag:** a package Actions creates in
   `ghcr.io` is **private even when the repository is public**, so nobody else
   can `docker pull` it until the owner flips both packages to Public once
