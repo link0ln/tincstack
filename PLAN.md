@@ -498,11 +498,61 @@ this order (cheapest / most-contained first). Full wire formats go in
   `UDP datagrams: 0`, no cleartext tinc ID line, no cleartext key material; a
   live `curl -k` prober during the session gets the decoy; a forged and a
   replayed authenticator each get the decoy (no `101`). `PASS`.
-- [ ] 🟡 **QUIC carrier** (point 7). msquic integration (reference: tinc-quic
-  wiring) carrying SPTPS records over datagrams + one stream; certificate handling
-  shared with the HTTPS front; connection migration for NAT rebind. **Proof:** a
-  QUIC-negotiated link tunnels; falls back to a common carrier when one side lacks
-  QUIC.
+- [x] 🟡 **QUIC carrier** (point 7). ngtcp2 integration (msquic rejected by
+  stream Q, see below) carrying SPTPS records over datagrams + one stream;
+  certificate handling shared with the HTTPS front; connection migration for NAT
+  rebind. **Proof:** a QUIC-negotiated link tunnels; falls back to a common
+  carrier when one side lacks QUIC.
+  - **Done (G3, 2026-09-16):** `transport_quic.c` + `transport_quic_tls.c`
+    (ngtcp2 1.25.0 + GnuTLS on tinc's own UDP socket and event loop), the §8.3
+    authenticator factored into `authn.c` and sent as the first bytes of stream
+    0, SPTPS data in DATAGRAM frames via the new `send_datagram` hook,
+    v1-only + keyed-CID classifier rows, `-Dquic=auto|enabled|disabled`,
+    ngtcp2 folded into `core/Dockerfile.build` (`ARG QUIC`), `QuicPort` /
+    `QuicSni` / `QuicAlpn`. Mechanism: docs/transports.md §9. All proofs from
+    `testing/transports/quic-carrier-test.sh` (image ws-g3, run 2026-09-16,
+    `PASS`):
+    - (a) A `PreferredTransports: [quic, plain]`, B default: `A -> B ping 0%
+      loss`, `B -> A ping 0% loss`; `dump connections` on both shows
+      `transport quic`; `tinc info nodea` on B lists quic; B log `quic:
+      authenticated peer nodea`; tcpdump on the port: `288 UDP datagrams`,
+      header sequence `LLLSSSS…` (3 long headers = Initial/Handshake, then 285
+      short), `fixed bit clear (SPTPS-shaped): 0`, `0 SYN-ACK, 0 with payload`
+      (no TCP meta connection; the only 2 TCP segments are B's autoconnect SYN
+      before A was up and A's RST).
+    - (b) NAT rebind: SNAT in A's netns maps its source port to 40000, flipped
+      to 40001 mid-session + conntrack flushed → B log `quic: path validated
+      for nodea, remote now 10.44.9.10 port 40001`; `quic: connection from`
+      count 1 before and after (no re-handshake); ping `0% loss` both ways
+      after the flip; B `dump connections: nodea now at port 40001`; A never
+      re-dialled or fell back.
+    - (c) fallback: B `Transports: [plain]` and B built without QUIC
+      (`--build-arg QUIC=disabled`, image ws-g3-noquic) → A log `Carrier
+      candidates for nodeb: plain`, tunnel on plain, ping 0% loss; UDP to B
+      DROP'd → A log `Carrier quic failed for nodeb, falling back to plain`
+      (handshake timeout = PingTimeout 5 s), tunnel on plain, ping 0% loss.
+    - (d) A running with another node's Ed25519 key → B log `quic:
+      authenticator from 10.44.9.10 port 655 rejected`, never `authenticated
+      peer`; A log `Carrier quic failed for nodeb, falling back to plain`,
+      then dials plain where SPTPS rejects it too. Replay: the same
+      `authn_verify` replay cache as https (proven there with a replayed
+      cookie); over QUIC a captured authenticator is dead on arrival anyway
+      because the exporter differs per session — no QUIC-level replay injector
+      exists (docs §9.11).
+    - (e) regressions on ws-g3: `classify-test.sh` `37 checks, 0 failures`;
+      `singleflow-test.sh` PASS; `https-carrier-test.sh` PASS;
+      `tls-front-test.sh` PASS; `platforms/linux/docker/two-nodes.sh`
+      (`TINCSTACK_TAG=ws-g3`, needs bash) PASS; `obfs-test.sh` at this branch's
+      base fails on its fixed sleeps (the timing flake master fixed with
+      polling) — master's polling version run against ws-g3: obfs tunnel `0%
+      loss` both ways, relay A–R–B up, plain-wire part PASS, only the junk log
+      marker missing because master's obfs.c log-level change is not in this
+      branch (merge resolves it).
+    - (f) relay A–R–B, A–R on quic, R–B plain, A↔B DROP'd: `R: A's link is
+      quic`, `R: B's link is plain`, `A -> B relayed through R 0% loss`, `B ->
+      A relayed 0% loss`, direct A↔B confirmed severed.
+    - QUIC-less build stays green: ws-g3-noquic `tincd` links neither ngtcp2
+      nor GnuTLS, `Transports accept=plain,sf,obfs,https`.
   - Stream Q (2026-09-16): dependency + spike. Library decided: **ngtcp2 1.25.0
     + GnuTLS backend**, not msquic (msquic owns its sockets/threads and cannot
     take datagrams from the M4 front's UDP socket; comparison in
@@ -519,8 +569,8 @@ this order (cheapest / most-contained first). Full wire formats go in
     version 1, 1200 bytes). Design for G3 in docs/transports.md §9. Found: the §3
     UDP classifier only catches long headers; 1-RTT short-header packets need a
     keyed CID lookup (§9.6) before the carrier can work; `active_connection_id_limit`
-    must be > 2 (spike: 8) or the second migration fails. Carrier not integrated;
-    box stays open.
+    must be > 2 (spike: 8) or the second migration fails. Carrier integrated by
+    G3 (above).
 - [x] 🟡 Runtime control CLI for obfuscation (`tinc obfs status|set|…`) **with
   persistence** to the YAML (the prototype's changes were lost on reload).
   **Done (G2, 2026-09-16):** `cmd_obfs` in `tincctl.c` implements
@@ -552,6 +602,34 @@ this order (cheapest / most-contained first). Full wire formats go in
     but not `n->ecdsa`), so obfs had to call `node_read_ecdsa_public_key()`
     before deriving a link key on dial and in the cold-start scan. Fixed in
     `obfs.c` (within area).
+
+- **Found during M5 (G3):**
+  - 🟠 `net.c terminate_connection()` computed `activated = c->edge != NULL`
+    *after* the edge had been deleted, so it was always false and every
+    reconnect — including one after a long-lived, authenticated link dropped —
+    advanced the carrier candidate walk instead of retrying the preferred
+    carrier (an M4 defect that only showed once a carrier that can drop
+    mid-session existed). Fixed by evaluating the flag first. File outside
+    G3's area — reported.
+  - 🟡 Review R-10 was right: the classifier's "known QUIC version" set (~2¹⁷
+    words) put the SPTPS-relay overlap at ~2⁻¹⁷ per node, not the documented
+    2⁻³⁴. Fixed by matching v1 only (the carrier speaks nothing else) → 2⁻³⁴,
+    plus `quic_udp_try` only consumes a packet ngtcp2 confirms (live CID or a
+    ≥ 1200-byte Initial); docs §3/§9.5 carry the arithmetic, unit test rows
+    added.
+  - 🟢 `dump connections` did not follow a NAT rebind (the session peer moved,
+    `c->address`/`hostname` did not); fixed in the path-validation callback.
+  - 🟢 The two-node lab `platforms/linux/docker/two-nodes.sh` uses `set -o
+    pipefail` and must be run with bash, not `sh` (not changed; noted).
+  - Files touched outside the G3 area: `tls.c`/`tls.h` (`tls_current_pem()`
+    accessor for the one node certificate), `net.c` (the defect above),
+    `tincctl.c` (`QuicPort`/`QuicSni`/`QuicAlpn` in `variables[]`; master also
+    changed this file — merge). `https.c` changed only to call the factored
+    `authn.c`.
+  - Decision: ngtcp2 folded into `core/Dockerfile.build` (`ARG QUIC=enabled`),
+    `Dockerfile.build-quic` removed — the compose lab and every default node
+    image now carry the carrier, which decision 2 needs; `QUIC=disabled` proves
+    the plain build.
 ### Found during M5 (G1)
 
 - 🟢 **`nmap -sV` labels the port `http (nginx)`, not `https`.** The listen port
@@ -766,8 +844,11 @@ what that leaves open.
   `[plain]` written explicitly. `::test_transports_tab_validation_blocks_save`
   (cert without key + empty accept list refused; then only `Transports`,
   `TlsCert`, `TlsKey` written).
-- [ ] 🟠 **Peer negotiates QUIC after the tick** — end-to-end proof belongs to
-  M4/M5 (the carriers do not exist yet); nothing to run here.
+- [x] 🟠 **Peer negotiates QUIC after the tick** — proven by M5 G3
+  (`testing/transports/quic-carrier-test.sh` (a), image ws-g3, 2026-09-16):
+  `PreferredTransports: [quic, plain]` on one node only, the peer at defaults →
+  `tinc dump connections` shows `transport quic` on both sides (ping 0% loss,
+  wire QUIC-only). The GUI writes exactly that line, so the tick is sufficient.
 - [x] 🟡 Fix adoption defects — each with its check:
   - **atomic `tinc.yaml` save**: `yaml_config.atomic_write_text` (temp in the
     same dir + fsync + `os.replace` + dir fsync, mode preserved); `save()`
