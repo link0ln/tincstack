@@ -1,2 +1,0 @@
-natprofile: fullcone ext=ext(100.64.0.2) int=int(192.168.110.254) inside=192.168.110.5 map=40655:655 udp_to=default/default rtt=0ms
-natprofile: symmetric ext=ext(100.64.0.3) int=int(192.168.120.254) inside=any map=dyn udp_to=default/default rtt=0ms

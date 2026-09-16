@@ -6,11 +6,15 @@
 #   run.sh baseline                 = capture plain (+ assert fingerprints present)
 #
 # Profiles are testing/dpi-proof/profiles/<name>.conf (extra tinc.conf lines for
-# both nodes). Results: testing/dpi-proof/results/<date>/ (pcap, fingerprint
-# JSON, text report, tincd logs; no keys).
+# both nodes). Results: testing/dpi-proof/results/run/<run-id>/ (git-ignored:
+# pcap, fingerprint JSON, text report, tincd logs; no keys); run-id defaults to
+# <YYYY-MM-DD>-<HHMMSS>-<pid> or $WSF_RUN. The committed tree results/<date>/
+# is curated with `testing/nat-sim/lab.sh promote SRC DEST` (report,
+# fingerprint JSON and pcap only), never written by a run.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAG="${WSF_TAG:-ws-f}"
+RUN_ID="${WSF_RUN:-$(date +%Y-%m-%d)-$(date +%H%M%S)-$$}"
 LAB_IMAGE="tincstack/natlab:$TAG"
 
 ensure_image() { docker image inspect "$LAB_IMAGE" >/dev/null 2>&1 || "$HERE/../nat-sim/lab.sh" build; }
@@ -21,8 +25,9 @@ capture() {
     while [ $# -gt 0 ]; do
         case "$1" in --out) out="$2"; shift 2 ;; *) args+=("$1"); shift ;; esac
     done
-    out="${out:-$HERE/results/$(date +%Y-%m-%d)}"
+    out="${out:-$HERE/results/run/$RUN_ID}"
     mkdir -p "$out"; out="$(cd "$out" && pwd)"
+    echo "results: $out" >&2
     ensure_image
     docker run --rm --privileged --name "wsf-dpi-$$" \
         -v "$out:/out" -v "$HERE/profiles:/opt/dpi-profiles:ro" "$LAB_IMAGE" \
@@ -39,7 +44,7 @@ compare() {
 }
 
 baseline() {
-    local out="${1:-$HERE/results/$(date +%Y-%m-%d)}"
+    local out="${1:-$HERE/results/run/$RUN_ID}"
     capture plain --out "$out"
     # The plain capture must be fingerprintable, otherwise the detectors are
     # broken and any later "absent" verdict would be meaningless.

@@ -7,23 +7,44 @@
 #   make laptop         the CGNAT / sleep-resume regression, core vs baseline
 #   make dpi-baseline   capture plain tinc and assert its fingerprints
 #   make lint           shellcheck every shell script (in a container)
+#   make promote        copy the curated evidence of one run into the committed
+#                       results/<DATE>/ trees (RUN=<run-id> [DATE=<YYYY-MM-DD>])
 #
 # TAG selects the image tag family (tincstack/core:$(TAG), tincstack/baseline:$(TAG),
 # tincstack/natlab:$(TAG)); WSF_TAG is exported for the scripts.
+# RUN is the run id: every lab step of one `make` invocation writes into
+# testing/{nat-sim,dpi-proof}/results/run/$(RUN)/ (git-ignored); the committed
+# results/<date>/ trees are only touched by `make promote`.
+# CI: .github/workflows/check.yml runs the same targets in the same order on
+# every push/PR (lint, build-core, smoke, build-baseline, validate-nat,
+# nat-quick, dpi-baseline), with TAG=ci and the core build cached in GHA.
 TAG ?= ws-f
 export WSF_TAG := $(TAG)
+RUN ?= $(shell date +%Y-%m-%d)-$(shell date +%H%M%S)
+export WSF_RUN := $(RUN)
+DATE ?= $(shell date +%Y-%m-%d)
 export CORE_IMAGE := tincstack/core:$(TAG)
 export BASELINE_IMAGE := tincstack/baseline:$(TAG)
 SHELLCHECK_IMAGE ?= koalaman/shellcheck:stable
 SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-sim/natlab.sh \
                  testing/nat-sim/natprofile.sh testing/dpi-proof/run.sh testing/dpi-proof/capture.sh \
-                 testing/smoke/run.sh
+                 testing/smoke/run.sh platforms/linux/docker/two-nodes.sh
+# The transport proofs predate the lint target and carry info-level findings
+# (SC2086/SC2015 style); they are linted at warning severity so real defects
+# fail `make lint` without a rewrite of every proof script.
+TEST_SCRIPTS := testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
+                testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
+                testing/transports/matrix-test.sh testing/transports/classify-test.sh
 
 .PHONY: check build-core build-baseline build-lab smoke nat-quick nat-full laptop \
-        validate-nat dpi-baseline lint clean
+        validate-nat dpi-baseline lint clean promote
 
 check: build-core build-baseline smoke validate-nat nat-quick dpi-baseline
-	@echo "make check: OK"
+	@echo "make check: OK (run id $(RUN); lab results under testing/*/results/run/$(RUN)/)"
+
+promote:
+	testing/nat-sim/lab.sh promote testing/nat-sim/results/run/$(RUN) testing/nat-sim/results/$(DATE)
+	testing/nat-sim/lab.sh promote testing/dpi-proof/results/run/$(RUN) testing/dpi-proof/results/$(DATE)
 
 build-core:
 	docker build -f core/Dockerfile.build -t $(CORE_IMAGE) core/
@@ -55,6 +76,7 @@ dpi-baseline: build-lab
 
 lint:
 	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x $(SHELL_SCRIPTS)
+	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x -S warning $(TEST_SCRIPTS)
 
 clean:
 	testing/nat-sim/lab.sh clean

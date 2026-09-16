@@ -12,8 +12,14 @@ veth pair, `tcpdump -w` on the peer's end of the veth. Nothing on the host.
 ```
 testing/dpi-proof/run.sh baseline                 # capture plain tinc, assert fingerprints PRESENT
 testing/dpi-proof/run.sh capture obfs             # profiles/obfs.conf appended to both tinc.conf (M5)
-testing/dpi-proof/run.sh compare results/<d>/plain.fingerprint.json results/<d>/obfs.fingerprint.json
+testing/dpi-proof/run.sh compare results/run/<id>/plain.fingerprint.json results/run/<id>/obfs.fingerprint.json
 ```
+
+Every run writes into `results/run/<run-id>/` (git-ignored; `<run-id>` =
+`$WSF_RUN` or `<date>-<HHMMSS>-<pid>`, shared with the NAT lab under
+`make check`). The committed `results/<date>/` tree holds only the curated
+`*.report.txt`, `*.fingerprint.json` and `*.pcap`, copied by
+`testing/nat-sim/lab.sh promote results/run/<run-id> results/<date>`.
 
 `compare` exits 1 while any fingerprint that was PRESENT in the plain capture
 is still PRESENT in the tier's capture, 2 if the tier's capture carried no tinc
@@ -39,14 +45,15 @@ hide is in those first 16 bytes plus the sizes/timing, and the TCP banner.
 
 ## Baseline (proof for the M9 box)
 
-`results/<date>/plain.report.txt` — all six fingerprints PRESENT on the core's
-plain wire image. `run.sh compare plain plain` exits 1 (self-test of the
-harness: an unchanged wire image must fail).
+`results/2026-09-16/plain.report.txt` — all six fingerprints PRESENT on the
+core's plain wire image (`plain.fingerprint.json` + `plain.pcap` next to it;
+the tincd logs of that capture were not kept). `run.sh compare plain plain`
+exits 1 (self-test of the harness: an unchanged wire image must fail).
 
 ## Adding a tier (M5)
 
 1. `profiles/<tier>.conf` — the tinc.conf lines that enable the tier on both nodes.
-2. `run.sh capture <tier>` → `results/<date>/<tier>.fingerprint.json`.
-3. `run.sh compare results/<date>/plain.fingerprint.json results/<date>/<tier>.fingerprint.json`.
+2. `run.sh capture <tier>` → `results/run/<id>/<tier>.fingerprint.json`.
+3. `run.sh compare results/run/<id>/plain.fingerprint.json results/run/<id>/<tier>.fingerprint.json`.
 4. Extend `fingerprint.py` when a tier introduces a *new* pattern worth
    guarding (e.g. a fixed TLS SNI, a constant QUIC connection-id length).
