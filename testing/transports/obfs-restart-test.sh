@@ -96,10 +96,26 @@ done
 sleep 5
 
 # An obfs/sf link has no socket of its own -- it rides the shared UDP socket --
-# so `socket' is -1 by design and `status' is what says it is activated.
+# so `socket' is -1 by design and cannot say whether the link is up.
+#
+# `status' cannot say it either, and an earlier cut of this script that used
+# `status != 0' was only right by accident. Bit 8 (0x100) of a connection's
+# status is `mst', "this connection is part of the minimum spanning tree"
+# (connection.h) -- not "activated". In a two-node lab the only meta connection
+# is necessarily in the MST once it comes up, so the two coincide; on the
+# four-node field stand a perfectly live obfs link sits outside the MST and
+# reports `status 0'. Measured there, which is how this was caught.
+#
+# So ask the question directly: the connection must be listed with the obfs
+# carrier AND the peer must be reachable at distance 1, i.e. through that very
+# connection. With two nodes a peer at distance 1 has no other way to be
+# reachable, and a peer whose dial is still in flight is not reachable at all.
 up() {
 	docker exec "$LAB-b" tincstack-cli dump connections 2>/dev/null |
-		awk '/^nodea /{for(i=1;i<=NF;i++){if($i=="status")st=$(i+1); if($i=="transport")t=$(i+1)}; if(st != "0" && t=="obfs") print "yes"}' |
+		awk '/^nodea /{for(i=1;i<=NF;i++){if($i=="transport")t=$(i+1)}; if(t=="obfs") found=1}
+		     END{exit !found}' || return
+	docker exec "$LAB-b" tincstack-cli dump nodes 2>/dev/null |
+		awk '/^nodea /{for(i=1;i<=NF;i++){if($i=="distance")d=$(i+1)}; if(d=="1") print "yes"}' |
 		head -1
 }
 

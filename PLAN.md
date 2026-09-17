@@ -2837,6 +2837,85 @@ Defects identified during the source audit, to fix as their milestone is reached
   *How much churn is quic's own and how much was the loaded host* (several other
   streams' labs were running) was not separated; the 1500-byte control run on the
   same host was clean, which is the reason for reporting it at all.
+- **Field re-test of defects E and F on the same four real hosts, 2026-09-17**,
+  every node redeployed on `tincstack/node:aef` built from master 926d346
+  (defect F's epoch fix + stream AE merged). **The router's image was refreshed
+  without writing 130 MB to its USB flash**: only the two aarch64 binaries and
+  the two shell helpers changed, so a 968 KB context was shipped and the image
+  was rebuilt in place there `FROM tincstack/node:abc-arm64` — the flash that
+  dropped off the USB bus during the previous 130 MB `docker load` was written
+  once, with about a megabyte. Its ext4 is clean since the reboot
+  (`dmesg | grep -c "EXT4-fs error"` = 0, 106 GB free).
+
+  **Defect E is closed in the field.** Before the rollout the pair was in
+  exactly the documented half-state:
+
+      laptop: router ... nexthop ruvds2 via router distance 2 ... transports plain
+      router: laptop ... nexthop ruvds2 via laptop distance 2 ... transports plain
+
+  i.e. data direct, meta relayed through a VPS in another country, and the
+  accept mask never propagated. After the rollout, all three of AE's fixes are
+  visible, in order:
+
+      laptop  04:36:38 WARNING Could not set up a meta connection to router (4 times in a row; further attempts are logged at -d3 until one succeeds)
+      laptop  04:38:45 DEBUG   Could not set up a meta connection to router (8 times in a row)
+      laptop  04:38:04 INFO    Carrier candidates for router: plain (peer accepts plain,sf,obfs,https,quic)
+      router  04:39:22 INFO    No address of laptop accepts a meta connection, but its UDP data path is direct: dialling laptop (79.139.184.85 port 1181) via sf
+      router  04:39:22 INFO    Dialling laptop (79.139.184.85 port 1181) via single-flow UDP
+      router  04:39:22 NOTICE  Connection with laptop (79.139.184.85 port 1181) activated
+
+  — point (1) (the ERROR is quieted after three rounds), point (3) (the peer's
+  mask now reads `plain,sf,obfs,https,quic` where it read `plain` for hours),
+  and point (2) (the fallback). 35 s and three failed plain dials from daemon
+  start to a direct link; both sides then show `distance 1`, `transport sf`.
+
+  **And the fallback turned out to be a bootstrap, not a crutch** — a field
+  finding AE could not have had. Within seconds of the `sf` meta connection
+  coming up the router cached the address that connection's UDP flow actually
+  uses and dialled it over ordinary TCP:
+
+      router  04:48:52 INFO    Trying to connect to laptop (192.168.1.200 port 6552) via plain
+      router  04:48:52 NOTICE  Connection with laptop (192.168.1.200 port 6552) activated
+
+  The pair is now direct on **plain**, at the laptop's LAN address, which
+  neither node advertises and neither could have dialled before (the router only
+  ever had the shared public address). So the fallback's real value here is that
+  it lets `Caching recent address` learn a working address at all; AE's "the
+  fallback is not remembered across reconnects" caveat matters less than it
+  looks, because after one round the pair no longer needs it. This does **not**
+  retire the fallback: the address cache can only cache an address that a meta
+  connection already succeeded at.
+
+  **Defect F's second cause is closed in the field, and the fix earned its
+  keep.** With `laptop` switched to `PreferredTransports obfs` the link to the
+  hub came up and carried traffic (0 % loss, 22.2 ms to `ruvds2`, 45.8 ms to
+  `euvds`), and the node was then restarted five times:
+
+      RESULT: obfs re-established after 5 of 5 restarts; hub replay-window restarts +2; hub obfs accepts +5
+
+  Two of those five restarts drew a counter below the hub's high-water mark and
+  were saved by the new epoch restart — on the pre-fix build those two dials
+  would have been silent black-outs:
+
+      ruvds2  04:48:27 INFO    Restarting the obfs replay window for laptop at counter 131700747468804: this frame opens a new single-flow session under the bootstrap key, so the peer has restarted
+      ruvds2  04:48:41 INFO    Restarting the obfs replay window for laptop at counter 107849511272841: ...
+
+  2 of 5 is consistent with the ~38 %/62 % split measured in the lab. The stand
+  was put back on `PreferredTransports plain` afterwards.
+
+  **Two of my own measuring mistakes, recorded because both produced a green
+  result that meant nothing.** (a) The first two cuts of the field restart
+  script checked `docker logs --since 3m` and then `grep -c >= 1`; `docker logs`
+  keeps the whole history across a compose restart, so both were satisfied by
+  the *previous* run's line and reported "obfs back after 0 s" five times in a
+  row. Only a before/after **count delta** answers this question. (b) The lab
+  harness `obfs-restart-test.sh` used `status != 0` as its "activated" test.
+  Status bit 8 (0x100) is `mst`, "part of the minimum spanning tree"
+  (connection.h) — in a two-node lab that coincides with "up", on the four-node
+  field stand a live obfs link outside the MST reports `status 0`. The predicate
+  now asks for the obfs carrier in `dump connections` **and** `distance 1` in
+  `dump nodes`, and both arms of the harness were re-calibrated after the
+  change.
 - **Field re-test of streams AA, AB and AC, 2026-09-17, four real hosts**
   (`ruvds2` hub / `laptop` NATed workstation / `euvds` public VPS / `router`
   aarch64 home gateway, all redeployed on a locally built `tincstack/node:abc`
