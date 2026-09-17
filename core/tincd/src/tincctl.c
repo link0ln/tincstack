@@ -1693,6 +1693,7 @@ const var_t variables[] = {
 	   listener policy, so an inviter must not be able to switch it on the
 	   invitee's machine (invitation.c, security review R). */
 	{"AllowPlainMeta", VAR_SERVER},
+	{"UdpMetaFallback", VAR_SERVER},
 	{"AutoConnect", VAR_SERVER | VAR_SAFE},
 	{"BindToAddress", VAR_SERVER | VAR_MULTIPLE},
 	{"BindToInterface", VAR_SERVER},

@@ -122,6 +122,7 @@ extern bool send_del_edge(struct connection_t *c, const struct edge_t *e);
 extern void send_key_changed(void);
 extern bool send_req_key(struct node_t *to);
 extern bool send_req_pubkey(struct node_t *to);
+extern bool send_req_transports(struct node_t *to);
 extern bool send_ans_key(struct node_t *to);
 extern bool send_tcppacket(struct connection_t *c, const struct vpn_packet_t *packet);
 extern bool send_sptps_tcppacket(struct connection_t *c, const void *packet, size_t len);

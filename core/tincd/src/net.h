@@ -135,6 +135,14 @@ typedef struct outgoing_t {
 	   TRANSPORT_STICKY_FAILURES such failures (docs/transports.md §2). */
 	uint32_t last_ok_mask;
 	int last_ok_failures;
+
+	/* Defect E. `failures' counts dial cycles that ended without a single
+	   activated connection; it is what turns the "Could not set up a meta
+	   connection" ERROR from a per-cycle line into a one-off, and it is reset
+	   the moment a link to this peer comes up. `udp_fallback_used' is the
+	   once-per-cycle token for transport_udp_meta_fallback(). */
+	int failures;
+	bool udp_fallback_used;
 } outgoing_t;
 
 typedef struct ports_t {
