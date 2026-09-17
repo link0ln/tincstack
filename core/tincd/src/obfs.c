@@ -1039,10 +1039,34 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 		return false;
 	}
 
+	/* An address that is already bound to a node whose UDP path is confirmed is
+	   usually carrying that node's ordinary SPTPS data, and running the keyed
+	   check over the whole node tree for every one of those datagrams would be
+	   pure waste. But "usually" is not "always": the moment an already-running
+	   network switches to obfs, the dialler's sealed handshake frames arrive
+	   from exactly such an address. Skipping the check unconditionally -- which
+	   is what this did -- dropped them silently, so obfs could only ever be
+	   dialled between nodes that had never exchanged UDP data, i.e. never in
+	   the field (stream AD; the acceptor logged "unknown source and/or
+	   destination ID" and the dialler timed out in authentication).
+
+	   So ask first whether the SPTPS path would actually claim this datagram,
+	   and only then leave it alone. This is the "let the data path try first"
+	   ordering, done with the cheap half of that path: no crypto, no re-entry,
+	   just the identification process_sptps_udp() performs. Cost in the steady
+	   state, per datagram from a confirmed plain peer: one six-byte memcmp for
+	   a direct datagram (the overwhelming majority), plus two O(log N) node-id
+	   lookups for a relayed one. The alternative -- keying the skip on whether
+	   an obfs dial is in flight -- does not work here: the side that drops the
+	   frames is the ACCEPTOR, which has no dial of its own to key on.
+
+	   Mis-claiming is not the hazard the guard was guarding against: the keyed
+	   check is authenticated, so a genuine data packet cannot be taken for an
+	   obfs frame. A silent drop is, and that is what this removes. */
 	node_t *known = lookup_node_udp(&addr);
 
-	if(known && known->status.udp_confirmed) {
-		return false; /* an established plain peer: leave it to the SPTPS path */
+	if(known && known->status.udp_confirmed && sptps_udp_addresses_known_nodes(known, buf, len)) {
+		return false; /* an established plain peer's own data: leave it to the SPTPS path */
 	}
 
 	unsigned total = node_tree.count;

@@ -184,3 +184,45 @@ build it fails, which is the point.
 
 Expect: `PASS: two invitees of the same node peer directly, with the founder stopped`
 (or `PASS(repro): both leaves are permanently relayed through their inviter`).
+
+## obfs-confirmed-peer-test.sh — turning a *running* network covert
+
+The proof for PLAN.md's Known Issue "an already-running network cannot be
+switched to obfs". On the stand, two nodes with a confirmed UDP data path
+could never bring up an obfs link: the dial timed out in authentication and
+fell back to plain, while the acceptor logged, at the same seconds,
+`Received UDP packet from <peer> … with unknown source and/or destination ID`.
+The sealed frames arrived and the acceptor refused to look at them, because
+`obfs_udp_try()` skipped its keyed check for any source address bound to a
+node with `udp_confirmed` — which is the normal state of every working pair.
+
+    sh testing/transports/obfs-confirmed-peer-test.sh [image] [--expect-defect]
+    CARRIER=sf   sh testing/transports/obfs-confirmed-peer-test.sh [image]
+    CARRIER=quic sh testing/transports/obfs-confirmed-peer-test.sh [image]
+
+Three containers: `nodea` (founder, the acceptor, at `-d5` so the drop is
+visible), `nodeb` (the dialler) and `nodec`. The third node is the whole
+difference from `carrier-switch-test.sh`: with only two nodes, `tinc disconnect`
+makes the dialler **unreachable** on the acceptor, `graph.c` clears
+`udp_confirmed`, the guard does not fire and the two-node test passes on a
+broken daemon. `nodec` keeps the dialler reachable through the mesh, so the
+acceptor's `udp_confirmed` survives the disconnect — the script asserts that
+in six consecutive samples taken from the instant of the disconnect, and
+retries the whole switch (up to three times) if the mesh reconverges in a way
+that loses it, because a run that loses it proves nothing either way.
+
+PART 4 is the control: remove `nodec`, restart the dialler with the same
+configuration, and the carrier comes up **even on a pre-fix image** — which is
+what isolates the failure to the acceptor's stale `udp_confirmed`.
+
+`CARRIER=sf` and `CARRIER=quic` run the identical scenario over the other two
+UDP carriers in `transport_udp_dispatch()`; both pass on a pre-fix image, so
+neither is shadowed by a confirmed plain peer (`transport_classify_udp()`
+claims them on a magic prefix, a version word or a live connection id and
+never looks the source address up).
+
+`KEEP=1` leaves `/tmp/<LAB>-{a,b,c}/tincd.log` behind for a post-mortem.
+
+Expect: `PASS: a running network with a confirmed UDP path can be switched to obfs`
+(or `PASS(repro): a peer whose UDP path the acceptor has confirmed cannot be
+dialled over obfs`).

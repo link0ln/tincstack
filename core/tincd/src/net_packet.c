@@ -1798,6 +1798,50 @@ static node_t *try_harder(const sockaddr_t *from, const vpn_packet_t *pkt) {
 	return match;
 }
 
+/* Would process_sptps_udp() below recognise this datagram as ordinary data
+   from `n', the node the source address is bound to?
+
+   The obfs carrier asks before it decides to leave a datagram from an
+   already-confirmed plain peer alone. It used to skip its keyed check for
+   every such peer, which made obfs undialable on any network that was already
+   carrying traffic -- the only networks that ever need it (stream AD). This
+   is the cheap half of "let the SPTPS path try first": it runs exactly the
+   identification process_sptps_udp() runs, and nothing else.
+
+   A relay-capable peer (protocol option version >= 4, which is every build
+   that can speak obfs at all) prefixes each data datagram with a destination
+   and a source node id -- all-zero destination for a direct one. An obfs
+   frame starts with its whitened nonce instead, so the destination id is
+   random: it is neither zero nor a node we know, and the datagram falls
+   through to the keyed check instead of being dropped. The residual is one
+   frame in 2^48 whose first six bytes happen to be zero; that frame is
+   dropped and the handshake retries.
+
+   A peer that is not relay-capable has no such header, so every datagram from
+   it is "direct" and nothing here can tell obfs from data. That is safe
+   rather than lucky: such a build has no obfs carrier either, and the address
+   we looked up is that very node's. */
+bool sptps_udp_addresses_known_nodes(const node_t *n, const uint8_t *buf, size_t len) {
+	if(!n->status.sptps || (n->options >> 24) < 4) {
+		return true;
+	}
+
+	if(len < 2 * sizeof(node_id_t)) {
+		return false;
+	}
+
+	node_id_t nullid = {0};
+	node_id_t dst, src;
+	memcpy(&dst, buf, sizeof(dst));
+	memcpy(&src, buf + sizeof(dst), sizeof(src));
+
+	if(!memcmp(&dst, &nullid, sizeof(nullid))) {
+		return true; /* a direct datagram addressed to us */
+	}
+
+	return lookup_node_id(&src) && lookup_node_id(&dst);
+}
+
 /* The SPTPS / legacy UDP data path, split out so the obfs carrier can
    re-inject a datagram it just unsealed without going back through the carrier
    dispatcher (which would try to classify the inner bytes again). */
