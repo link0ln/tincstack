@@ -1118,6 +1118,10 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		if(!from->status.validkey) {
 			from->status.validkey = true;
 			from->status.waitingforkey = false;
+			/* Whatever the route did while this exchange was in flight, it
+			   completed. The mark must not outlive the exchange it describes
+			   (it is also visible in `dump nodes'). */
+			from->status.sptps_route_stale = false;
 			logger(DEBUG_META, LOG_INFO, "SPTPS key exchange with %s (%s) successful", from->name, from->hostname);
 		}
 

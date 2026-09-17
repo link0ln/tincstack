@@ -804,6 +804,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 	}
 
 	from->status.validkey = true;
+	from->status.sptps_route_stale = false;   /* the exchange completed; see receive_sptps_record */
 	from->sent_seqno = 0;
 
 	if(*address && *port) {

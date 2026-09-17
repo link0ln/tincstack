@@ -7,7 +7,7 @@ flake: sf spent its whole 24 s retransmission budget on a path where every
 `sendto` returned `EPERM`; the REQ_KEY glare tie-break then defended a key
 exchange that had gone out over that dead path; and nothing noticed when the
 route changed under a pending exchange. 4 of 8 runs took 35-61 s before, 61 of
-62 take 2-5 s now (12 of 12 on the shipped build). The proof now prints the
+62 take 2-5 s now (12 of 12 on each of the last two builds). The proof now prints the
 number and separates "slow" from "never", and the residual (1 run in 62, cause
 not established) is written down rather than papered over. The NAT lab the tie-break was written for is
 unchanged: key after 1 s, 0 seqno errors, 0 restarts.
@@ -2907,21 +2907,32 @@ Defects identified during the source audit, to fix as their milestone is reached
   | before (`:ae`) | 8 | 4 | **4** |
   | + fix 1 (`:sf2`) | 8 | 6 | 2 |
   | + fixes 2 and 3 (`:sf3`) | 62 | 61 | 1 |
-  | shipped (`:sf4`) | 12 | **12** | 0 |
+  | `:sf4` | 12 | **12** | 0 |
+  | shipped (`:sf5`) | 12 | **12** | 0 |
 
-  `:sf4` is `:sf3` plus a memory-safety correction to fix 3 that I found while
-  reviewing my own diff: `prev_nexthop` could name a node `net.c` had already
-  deleted (`node_del` reaps unreachable nodes between graph runs), and the log
-  line followed it. The snapshot is now taken only for nodes reachable as of
-  the previous run, the pointer is compared and never dereferenced, and the
-  field is cleared after use. Everything measured on `:sf3` was re-measured on
-  `:sf4` rather than carried over.
+  Two corrections to my own fix 3, both found by reviewing the diff and the
+  field, not by a test:
+  - `:sf4` — `prev_nexthop` could name a node `net.c` had already deleted
+    (`node_del` reaps unreachable nodes between graph runs) and the log line
+    followed it. The snapshot is now taken only for nodes reachable as of the
+    previous run, the pointer is compared and never dereferenced, and the field
+    is cleared after use.
+  - `:sf5` — after deploying `:sf4` to the four-host stand the router showed
+    `status 20da` permanently: the mark survived the key exchange it described
+    and stayed visible in `dump nodes`. Harmless in practice (`send_req_key()`
+    clears it before every new exchange, and the flag is only read while
+    `waitingforkey`, which implies that call ran), but a flag that outlives
+    what it describes is a trap for the next reader. Both places that set
+    `validkey` now clear it.
+
+  Everything was re-measured on each build rather than carried over.
 
   **The residual is real and is not being hidden.** One run in 62 on `:sf3`
   still spent one SPTPS cooldown, and I could not reproduce it on demand (32
   probe runs and 20 further test runs after the one that caught it were all
-  2-5 s), so its cause is not established. `:sf4`'s own 12 runs were all fast,
-  which is not enough to claim it is gone -- 12 runs cannot see a 1-in-60 event. PART 2 therefore now *measures* the time, prints it
+  2-5 s), so its cause is not established. `:sf4` and `:sf5` were 12 of 12 fast
+  each, which is not enough to claim it is gone -- 12 runs cannot see a
+  1-in-60 event. PART 2 therefore now *measures* the time, prints it
   on success, and distinguishes the two failures: "came up, but only after Ns"
   names this residual and says what to grep for, while "never reached B" is the
   relay path itself being broken. A budget of 20 s with a 120 s hard limit;
@@ -2942,9 +2953,9 @@ Defects identified during the source audit, to fix as their milestone is reached
   `obfs-restart-test`, `smoke`, `make lint`.
 
   **`obfs-confirmed-peer-test.sh` failed once in that suite and it is not this
-  change**, measured rather than assumed: 3 of 4 PASS on `:sf4` and 3 of 4 on
-  `:ae` (the build before any of these fixes). It is the harness's own
-  precondition -- it needs the acceptor to hold `udp_confirmed` through the
+  change**, measured rather than assumed: 3 of 4 PASS on `:sf4`, 3 of 4 on
+  `:ae` (the build before any of these fixes), and 4 of 4 on `:sf5`. It is the
+  harness's own precondition -- it needs the acceptor to hold `udp_confirmed` through the
   dial and says so itself ("this attempt proves nothing, retrying") -- at a
   rate of roughly 1 run in 4. Worth tightening in that harness one day; it is
   not a daemon defect.
