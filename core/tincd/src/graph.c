@@ -131,6 +131,12 @@ void sssp_bfs(void) {
 		n->status.visited = false;
 		n->status.indirect = true;
 		n->distance = -1;
+
+		/* Snapshot the route, but only for a node that was reachable as of the
+		   previous run: `nexthop' of an unreachable node can point at a node
+		   that net.c has since deleted, and a dangling pointer must not even be
+		   compared, let alone followed. */
+		n->prev_nexthop = n->status.reachable ? n->nexthop : NULL;
 	}
 
 	/* Begin with myself */
@@ -209,6 +215,36 @@ void sssp_bfs(void) {
 	}
 
 	list_free(todo_list);
+
+	/* An SPTPS key exchange is carried by the meta channel, so it travels over
+	   whatever `nexthop' was when we started it. If that route has just changed
+	   -- the direct meta connection we were using went away and the peer is now
+	   behind a relay, say -- the records we sent went out over a path that no
+	   longer exists, and the peer will never answer them. Nothing retransmits
+	   them: try_sptps() waits out a 24-36 s cooldown before restarting, and the
+	   REQ_KEY glare tie-break will even defend the dead session against the
+	   peer's own fresh request, which arrived over the new route and works.
+	   Measured in singleflow-test.sh PART 2: a severed direct link cost 31-61 s
+	   of blackout, almost all of it spent guarding a handshake that had nowhere
+	   to go.
+
+	   Mark it instead. The flag says only "this pending exchange lost its
+	   route"; protocol_key.c and net_packet.c decide what to do about it, and
+	   both clear it. One mark per reroute, so a flapping edge produces one
+	   restart per flap rather than a storm. */
+	for splay_each(node_t, n, &node_tree) {
+		if(n != myself && n->status.visited && n->status.waitingforkey && !n->status.validkey
+		                && n->prev_nexthop && n->nexthop != n->prev_nexthop) {
+			/* prev_nexthop is compared, never followed (see the snapshot
+			   above); the name in the message is the route we have NOW, which
+			   this BFS just computed and is therefore live. */
+			logger(DEBUG_PROTOCOL, LOG_DEBUG, "The route to %s changed while we were waiting for its key (now via %s); the pending key exchange went out over the old one",
+			       n->name, n->nexthop ? n->nexthop->name : "(nothing)");
+			n->status.sptps_route_stale = true;
+		}
+
+		n->prev_nexthop = NULL;
+	}
 }
 
 static void check_reachability(void) {

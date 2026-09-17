@@ -1231,6 +1231,15 @@ static void try_sptps(node_t *n) {
 	   in protocol_key.c did not apply (e.g. one peer is unpatched). */
 	if(!n->status.waitingforkey) {
 		send_req_key(n);
+	} else if(n->status.sptps_route_stale) {
+		/* The route this exchange went out over is gone (graph.c). Waiting out
+		   the cooldown would only be waiting for an answer to records that
+		   cannot arrive. Restart now, over the route we have. */
+		logger(DEBUG_ALWAYS, LOG_DEBUG, "The route to %s changed under our pending key exchange, restarting SPTPS over the new one", n->name);
+		n->status.sptps_route_stale = false;
+		sptps_stop(&n->sptps);
+		n->status.waitingforkey = false;
+		send_req_key(n);
 	} else {
 		int cooldown = 30 + (int)prng(13) - 6;   /* 24..36s */
 

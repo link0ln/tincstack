@@ -48,6 +48,10 @@ extern const char *winerror(int);
 #define sockstrerror(x) winerror(x)
 #define sockwouldblock(x) ((x) == WSAEWOULDBLOCK || (x) == WSAEINTR)
 #define sockmsgsize(x) ((x) == WSAEMSGSIZE)
+/* The kernel refused to put this datagram on the wire towards this address:
+   a local firewall rule, no route, the interface down. Synchronous, local and
+   unambiguous -- unlike silence, which can always be a lossy path. */
+#define sockunreachable(x) ((x) == WSAEACCES || (x) == WSAENETUNREACH || (x) == WSAEHOSTUNREACH || (x) == WSAENETDOWN || (x) == WSAEADDRNOTAVAIL)
 #define sockinprogress(x) ((x) == WSAEINPROGRESS || (x) == WSAEWOULDBLOCK)
 #define sockinuse(x) ((x) == WSAEADDRINUSE)
 #define socknotconn(x) ((x) == WSAENOTCONN)
@@ -61,6 +65,10 @@ static inline long jitter(void) {
 #define sockstrerror(x) strerror(x)
 #define sockwouldblock(x) ((x) == EWOULDBLOCK || (x) == EINTR)
 #define sockmsgsize(x) ((x) == EMSGSIZE)
+/* See the Windows branch above. EPERM is what an iptables DROP/REJECT on
+   OUTPUT returns, and it is what a node whose path has just been severed sees
+   on every send -- while the packets it is waiting for simply never arrive. */
+#define sockunreachable(x) ((x) == EPERM || (x) == EACCES || (x) == ENETUNREACH || (x) == EHOSTUNREACH || (x) == ENETDOWN || (x) == EADDRNOTAVAIL)
 #define sockinprogress(x) ((x) == EINPROGRESS)
 #define sockinuse(x) ((x) == EADDRINUSE)
 #define socknotconn(x) ((x) == ENOTCONN)

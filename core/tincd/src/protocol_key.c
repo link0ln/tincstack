@@ -128,6 +128,13 @@ static bool send_initial_sptps_data(void *handle, uint8_t type, const void *data
    with requests. */
 #define REQ_PUBKEY_INTERVAL 5
 
+/* How long an SPTPS session we started counts as "simultaneous" with a REQ_KEY
+   arriving from the peer (see the glare tie-break in req_key_ext_h). Real glare
+   is decided in milliseconds; this is generous enough to cover a relayed round
+   trip on a slow path and far short of the 24-36 s restart cooldown it exists
+   to avoid waiting for. */
+#define SPTPS_GLARE_WINDOW 5
+
 bool send_req_pubkey(node_t *to) {
 	if(node_read_ecdsa_public_key(to)) {
 		return true;
@@ -199,6 +206,7 @@ bool send_req_key(node_t *to) {
 		sptps_stop(&to->sptps);
 		to->status.validkey = false;
 		to->status.waitingforkey = true;
+		to->status.sptps_route_stale = false;   /* this one goes out over the route we have now */
 		to->last_req_key = now.tv_sec;
 		to->incompression = myself->incompression;
 		return sptps_start(&to->sptps, to, true, true, myself->connection->ecdsa, to->ecdsa, label, labellen, send_initial_sptps_data, receive_sptps_record);
@@ -361,13 +369,43 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			   unpatched peer always tears its own session down here, so at
 			   worst (patched node loses the tie against an unpatched peer)
 			   the behaviour is unchanged from stock and the old timer still
-			   recovers it — never worse. */
-			if(strcmp(myself->name, from->name) < 0) {
+			   recovers it — never worse.
+
+			   But only for GENUINE glare. The tie-break assumes both sessions
+			   were started in the same instant and are equally viable. When
+			   ours is older than one relayed round trip and nothing has come
+			   back, that assumption is false and "we win" keeps a session that
+			   cannot complete. Measured in singleflow-test.sh PART 2: a node
+			   whose direct path was severed had started its KEX over that path
+			   two seconds earlier, then discarded the peer's fresh REQ_KEY —
+			   which had arrived over the relay, which worked — and sat out the
+			   full "No key from X after N seconds" cooldown. Past the window a
+			   peer's REQ_KEY is newer information than our own silence, so we
+			   yield and let it be the initiator. It just sent that request, so
+			   exactly one initiator remains; genuine glare is decided within
+			   milliseconds and is unaffected. */
+			/* Two ways our own session can have lost its claim to the
+			   tie-break: the route it went out over is gone (graph.c set the
+			   flag), or it has simply been pending too long to be glare. The
+			   first is the one that bites: both sides start a key exchange in
+			   the same second, ours goes out over a direct meta connection
+			   that is severed a moment later, and defending it costs a full
+			   cooldown while the peer's request -- which came over the relay
+			   that works -- is discarded. */
+			time_t pending = now.tv_sec - from->last_req_key;
+			bool stale = from->status.sptps_route_stale || pending >= SPTPS_GLARE_WINDOW;
+
+			if(!stale && strcmp(myself->name, from->name) < 0) {
 				logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while our SPTPS session is pending; keeping ours (glare tie-break: we win)", from->name);
 				return true;
 			}
 
-			logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while our SPTPS session is pending; yielding as responder (glare tie-break: we lose)", from->name);
+			if(stale) {
+				logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while our own SPTPS session (pending %ld s, route %s) cannot be answered; yielding as responder rather than defending it", from->name, (long)pending, from->status.sptps_route_stale ? "gone" : "silent");
+				from->status.sptps_route_stale = false;
+			} else {
+				logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while our SPTPS session is pending; yielding as responder (glare tie-break: we lose)", from->name);
+			}
 		} else if(from->sptps.label) {
 			logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while we already started a SPTPS session!", from->name);
 		}

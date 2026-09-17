@@ -44,6 +44,7 @@ typedef union node_status_t {
 		bool validkey_in: 1;            /* 1 if we have sent a valid key to him */
 		bool has_address: 1;            /* 1 if we know an external address for this node */
 		bool ping_sent: 1;              /* 1 if we sent a UDP probe but haven't received the reply yet */
+		bool sptps_route_stale: 1;      /* 1 if the route changed under a pending key exchange (graph.c) */
 	};
 	uint32_t value;
 } node_status_t;
@@ -121,6 +122,7 @@ typedef struct node_t {
 	char *tls_fingerprint;                  /* pinned SHA-256 of its TLS cert (hex), or NULL if unknown */
 	time_t last_req_pubkey;                 /* Last time a bare REQ_PUBKEY was relayed towards this node (rate limit) */
 	time_t last_req_transports;             /* Last time we asked this node for its carrier list (rate limit) */
+	struct node_t *prev_nexthop;            /* nexthop as of the previous graph run; only meaningful inside graph() */
 } node_t;
 
 extern struct node_t *myself;

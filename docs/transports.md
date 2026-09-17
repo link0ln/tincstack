@@ -451,6 +451,23 @@ duplicate ACKs. A DATA frame also carries `ack`, so a busy link needs no separat
 ACK frames. Out-of-order arrivals are not buffered (go-back-N): the receiver
 re-ACKs the last in-order offset and the sender resends from there.
 
+**Silence and refusal are different evidence (defect G).** The budget above —
+8 retransmissions, about 24 s — is the right answer to "we heard nothing back",
+because a path can simply be lossy. It is the wrong answer when the kernel
+returned `EPERM`, `ENETUNREACH` or `EHOSTUNREACH` on every one of those sends:
+that is the local stack saying, synchronously, that the bytes never left the
+machine. So `sf_send_raw()` reports *why* a send failed, and after
+`SF_MAX_HARD_ERRORS` (3) **consecutive** refusals (`sockunreachable()` in
+`utils.h`) the session is declared dead — about 3.5 s instead of 27 s, measured
+in `singleflow-test.sh` PART 2 on a link severed with `iptables -j DROP`.
+Consecutive is the whole point: any send the kernel accepts, and any frame that
+arrives, resets the count, so a route that flaps and comes back is forgiven and
+only an unbroken run of refusals ends the link. A dead session is the defined
+degradation — the reaper terminates the connection, the graph reroutes, and the
+dialler falls back to the next carrier — so the cost of being wrong is one
+redial on the backoff, while the cost of being slow is a graph that keeps
+routing key exchanges into an edge that no longer exists.
+
 ### Cold-start identification
 
 The receiver classifies the **very first** datagram of a new session with no

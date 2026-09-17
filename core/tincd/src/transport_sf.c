@@ -60,6 +60,29 @@
 #define SF_SYN_RETRIES 3        /* dial: 0.5 + 1 + 2 s before falling back to the next carrier */
 #define SF_MAX_RETRIES 8        /* established: ~24 s of silence before the link is declared dead */
 
+/* Silence and refusal are not the same thing. A retransmission budget exists
+   because a path can be lossy, and 24 s of it is the right answer to "we heard
+   nothing back". It is the wrong answer to "the kernel returned EPERM on every
+   one of those sends": that is the local stack saying, synchronously, that
+   these bytes never left the machine. Burning the whole budget then keeps a
+   dead edge in the graph -- measured in singleflow-test.sh PART 2, where a
+   severed A<->B link held its sf meta connection for 27 s while REQ_KEY after
+   REQ_KEY went into it, instead of rerouting through the relay that was up the
+   whole time.
+
+   So: count CONSECUTIVE hard send errors and give up after this many, which at
+   the initial RTO is about 3.5 s. Consecutive, because a route flap that
+   clears must be forgiven -- any send the kernel accepts, and any frame that
+   arrives, resets the count to zero. */
+#define SF_MAX_HARD_ERRORS 3
+
+/* What the kernel did with a frame we handed it. */
+typedef enum {
+	SF_SEND_OK = 0,        /* accepted, or failed in a way that may be transient */
+	SF_SEND_TOOBIG,        /* EMSGSIZE: these bytes can never fit this path */
+	SF_SEND_UNREACHABLE,   /* refused for this destination right now (see above) */
+} sf_send_t;
+
 typedef struct sf_segment_t {
 	uint32_t seq;
 	uint16_t len;
@@ -86,6 +109,7 @@ typedef struct sf_session_t {
 	int rto_ms;
 	int retries;
 	int dupacks;
+	int hard_errors;        /* consecutive SF_SEND_UNREACHABLE sends (see SF_MAX_HARD_ERRORS) */
 } sf_session_t;
 
 static void free_session(sf_session_t *s) {
@@ -120,7 +144,7 @@ static uint32_t get32(const uint8_t *p) {
    does not fit the path (EMSGSIZE). Every other outcome -- sent, would block,
    any other socket error -- is true, so the caller only reacts to the one case
    retransmission can never fix. */
-static bool sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init) {
+static sf_send_t sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init) {
 	uint8_t frame[SF_HDR_LEN + SF_MAX_PAYLOAD];
 
 	memcpy(frame, sf_magic, SF_MAGIC_LEN);
@@ -146,7 +170,7 @@ static bool sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid,
 
 		if(!slen) {
 			logger(DEBUG_TRAFFIC, LOG_WARNING, "Could not obfs-seal a single-flow frame");
-			return true;
+			return SF_SEND_OK;
 		}
 
 		out = sealed;
@@ -161,19 +185,37 @@ static bool sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid,
 			   "Message too long" behind DEBUG_TRAFFIC, which is why a dial that
 			   died here looked like a hang. */
 			logger(DEBUG_ALWAYS, LOG_WARNING, "Single-flow frame of %zu bytes does not fit the path: %s", outlen, sockstrerror(sockerrno));
-			return false;
+			return SF_SEND_TOOBIG;
+		}
+
+		if(sockunreachable(sockerrno)) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "The kernel refused a single-flow frame towards this path: %s", sockstrerror(sockerrno));
+			return SF_SEND_UNREACHABLE;
 		}
 
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Error sending single-flow frame: %s", sockstrerror(sockerrno));
 	}
 
-	return true;
+	return SF_SEND_OK;
 }
 
 static void sf_schedule_reap(void);
 
 static void sf_send_frame(sf_session_t *s, uint8_t type, uint8_t flags, uint32_t seq, const void *payload, size_t len) {
-	if(sf_send_raw(s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established)) {
+	sf_send_t r = sf_send_raw(s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established);
+
+	/* A refusal is evidence about the path and is remembered; anything the
+	   kernel accepted clears it, so only an unbroken run of refusals counts
+	   (sf_rto_handler acts on the count). */
+	if(r == SF_SEND_UNREACHABLE) {
+		if(s->hard_errors < SF_MAX_HARD_ERRORS) {
+			s->hard_errors++;
+		}
+	} else {
+		s->hard_errors = 0;
+	}
+
+	if(r != SF_SEND_TOOBIG) {
 		return;
 	}
 
@@ -225,6 +267,18 @@ static void sf_rto_handler(void *data) {
 
 	if(s->dead || !s->inflight.count) {
 		return; /* not re-armed: the event loop drops the expired timer */
+	}
+
+	/* The kernel has refused every one of the last SF_MAX_HARD_ERRORS sends on
+	   this flow. The remaining retransmissions would hand it the same bytes for
+	   the same destination and get the same answer, while the graph goes on
+	   believing this edge exists and routes REQ_KEY into it. Stop now. */
+	if(s->hard_errors >= SF_MAX_HARD_ERRORS) {
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Single-flow %s to %s (%s): the kernel refused the last %d sends, so the path is gone; not waiting out the retransmission budget",
+		       s->established ? "link" : "dial", s->c->name, s->c->hostname, s->hard_errors);
+		s->dead = true;
+		sf_schedule_reap();
+		return;
 	}
 
 	int limit = s->established ? SF_MAX_RETRIES : SF_SYN_RETRIES;
@@ -349,6 +403,7 @@ static void sf_process_ack(sf_session_t *s, uint32_t ack) {
 		s->retries = 0;
 		s->dupacks = 0;
 		s->rto_ms = SF_RTO_INITIAL_MS;
+		s->hard_errors = 0;   /* the peer answered: whatever the kernel said, this path works */
 
 		while(s->inflight.head) {
 			sf_segment_t *seg = s->inflight.head->data;

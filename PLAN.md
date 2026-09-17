@@ -1,6 +1,17 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-17 (stream AE: **defect E is closed -- two nodes
+**Last Updated:** 2026-09-17 (**defect G is closed: a severed direct path used
+to cost 31-61 s of blackout, and `singleflow-test.sh` PART 2 -- written off as
+flaky for weeks -- was measuring exactly that.** Three causes, none of them a
+flake: sf spent its whole 24 s retransmission budget on a path where every
+`sendto` returned `EPERM`; the REQ_KEY glare tie-break then defended a key
+exchange that had gone out over that dead path; and nothing noticed when the
+route changed under a pending exchange. 4 of 8 runs took 35-61 s before, 61 of
+62 take 2-5 s now (12 of 12 on the shipped build). The proof now prints the
+number and separates "slow" from "never", and the residual (1 run in 62, cause
+not established) is written down rather than papered over. The NAT lab the tie-break was written for is
+unchanged: key after 1 s, 0 seqno errors, 0 restarts.
+Earlier -- stream AE: **defect E is closed -- two nodes
 behind one NAT now form a direct meta connection instead of retrying for
 ever.** Their data path was already direct (that NAT hairpins UDP) while their
 meta connection was relayed abroad and each node logged an ERROR every backoff
@@ -103,9 +114,11 @@ One-sided Fisher exact on 2/18 vs 0/15 is p ≈ 0.29 — **the two are not
 distinguishable**, and this is not evidence that AE is clean, only that 33 runs
 cannot see a difference of this size. Both failures are the already-tracked 🟡
 slow plain-path reconvergence (`MISS: relayed A<->B ping failed`, 5 of 5
-attempts), not a new symptom. Recorded as a watch item: if this proof starts
-failing more than about one run in ten, `setup_outgoing_connection()`'s
-`try_tx()` kick is the first thing to take out. `obfs-confirmed-peer-test.sh`
+attempts), not a new symptom. **Followed up the same day and it was not a
+flake at all — it was three defects, now fixed; see the PART 2 entry under
+Known Issues.** The `try_tx()` watch item stands but is no longer the leading
+suspect: with the reconvergence fixed the proof is 2-5 s in 61 of 62 runs on
+the merged tree. `obfs-confirmed-peer-test.sh`
 was measured the same way after it failed once in the batch run: 3/3 on `:ae`
 and 3/3 on `:epoch2`, i.e. that failure was the harness's own retry logic (it
 needs the acceptor to hold `udp_confirmed` through the dial), not AE.
@@ -2837,6 +2850,104 @@ Defects identified during the source audit, to fix as their milestone is reached
   *How much churn is quic's own and how much was the loaded host* (several other
   streams' labs were running) was not separated; the 1500-byte control run on the
   same host was clean, which is the reason for reporting it at all.
+- ~~🟠 **Defect G — a severed direct path costs 31-61 s of blackout, and the
+  "flaky" proof was measuring it.**~~ **Closed 2026-09-17.** `singleflow-test.sh`
+  PART 2 (three nodes A-R-B; A and B get a direct link, then `iptables DROP`
+  severs it and the pair must reroute through R) failed intermittently for
+  weeks and was written off as a flake. It was not. Measured with 1-second
+  granularity instead of the test's five 11-second attempts:
+
+  | build | seconds to the relayed path, 8 runs |
+  |---|---|
+  | before (`tincstack/core:ae`) | 2, 2, 2, **37**, **36**, 2, **61**, **35** |
+
+  Four runs in eight took 35-61 s. The old proof's budget was ~55 s, so it
+  passed three of those four and failed the fourth — a defect with a
+  probability attached, presented as noise. **Three independent causes, each
+  found by measuring rather than guessing:**
+
+  1. **sf burned its whole retransmission budget on a path the kernel had
+     already refused.** After the sever, every `sendto` returned `EPERM`
+     (`iptables -j DROP` on OUTPUT) — synchronous, local, unambiguous — and
+     `transport_sf.c` logged it at `DEBUG_TRAFFIC` and carried on: 8
+     retransmissions at RTO 0.5/1/2/4/4/4/4/4 = **27 s** during which the graph
+     still believed the edge existed and routed `REQ_KEY` into it. Silence and
+     refusal are not the same evidence. New `sockunreachable()` (`utils.h`:
+     EPERM, EACCES, ENETUNREACH, EHOSTUNREACH, ENETDOWN, EADDRNOTAVAIL, and the
+     WSA* equivalents); `sf_send_raw()` now returns *why* it failed, and after
+     `SF_MAX_HARD_ERRORS` (3) **consecutive** refusals the session is declared
+     dead — about 3.5 s. Consecutive on purpose: any send the kernel accepts
+     and any frame that arrives resets the count, so a route that flaps and
+     comes back is forgiven. Measured: the link now dies **1 s** after the
+     sever instead of 27 s.
+  2. **The REQ_KEY glare tie-break defended a session that had gone out over
+     the dead path.** With (1) fixed the pair still took 31-35 s, and the log
+     said why: `Got REQ_KEY from nodeb while our SPTPS session is pending;
+     keeping ours (glare tie-break: we win)` — while B's request had arrived
+     over the relay, which worked. The tie-break (stream K, patch 5) is correct
+     for genuine glare and is unchanged for it; what was missing is that it
+     assumed both sessions were equally viable. `SPTPS_GLARE_WINDOW` (5 s) now
+     bounds it to real simultaneity.
+  3. **Nothing noticed when the route changed under a pending key exchange** —
+     and this, not age, was the real discriminator: both sides really did start
+     within the same second, so (2)'s window did not fire. A key exchange rides
+     the meta channel, i.e. whatever `nexthop` was when it started; when that
+     route disappears the records went nowhere and no one retransmits them.
+     `sssp_bfs()` now snapshots `nexthop` and, for a node still waiting for a
+     key whose route changed, sets `status.sptps_route_stale`. The flag states
+     one fact and nothing more; two places act on it and both clear it:
+     `try_sptps()` restarts the exchange at once instead of waiting out the
+     24-36 s cooldown, and the tie-break stops defending it. One mark per graph
+     run, so a flapping edge costs one restart per flap, not a storm.
+
+  **Result, same lab, same host:**
+
+  | build | runs | 2-5 s | one cooldown (~31 s) |
+  |---|---|---|---|
+  | before (`:ae`) | 8 | 4 | **4** |
+  | + fix 1 (`:sf2`) | 8 | 6 | 2 |
+  | + fixes 2 and 3 (`:sf3`) | 62 | 61 | 1 |
+  | shipped (`:sf4`) | 12 | **12** | 0 |
+
+  `:sf4` is `:sf3` plus a memory-safety correction to fix 3 that I found while
+  reviewing my own diff: `prev_nexthop` could name a node `net.c` had already
+  deleted (`node_del` reaps unreachable nodes between graph runs), and the log
+  line followed it. The snapshot is now taken only for nodes reachable as of
+  the previous run, the pointer is compared and never dereferenced, and the
+  field is cleared after use. Everything measured on `:sf3` was re-measured on
+  `:sf4` rather than carried over.
+
+  **The residual is real and is not being hidden.** One run in 62 on `:sf3`
+  still spent one SPTPS cooldown, and I could not reproduce it on demand (32
+  probe runs and 20 further test runs after the one that caught it were all
+  2-5 s), so its cause is not established. `:sf4`'s own 12 runs were all fast,
+  which is not enough to claim it is gone -- 12 runs cannot see a 1-in-60 event. PART 2 therefore now *measures* the time, prints it
+  on success, and distinguishes the two failures: "came up, but only after Ns"
+  names this residual and says what to grep for, while "never reached B" is the
+  relay path itself being broken. A budget of 20 s with a 120 s hard limit;
+  both are env-overridable. This makes the proof honest at the cost of failing
+  roughly 1 run in 62 — which is a test correctly catching a defect that still
+  exists, not flakiness.
+
+  **Regression** on `tincstack/core:sf3`: the NAT lab the tie-break was written
+  for, `lab.sh glare --rtt 50` and `--rtt 1`, core arm **PASS key after 1 s, 0
+  `Invalid packet seqno`, 0 SPTPS restarts, tie-break logged on both sides** —
+  byte-for-byte the numbers stream K recorded, so (2) and (3) did not weaken
+  it. (The `baseline` arm of that lab fails at `--rtt 1` and passes at
+  `--rtt 50`; it is upstream 1.1pre18 with no tie-break at all and has nothing
+  to do with this change — `lab.sh glare` exits non-zero whenever the control
+  arm fails, which is what it is for.) Plus `singleflow-test` x3, `obfs-test`,
+  `obfs-mtu-test`, `obfs-confirmed-peer-test`, `carrier-switch-test`,
+  `invitee-mesh-test`, `plain-refuse-test`, `same-nat-meta-test`,
+  `obfs-restart-test`, `smoke`, `make lint`.
+
+  **`obfs-confirmed-peer-test.sh` failed once in that suite and it is not this
+  change**, measured rather than assumed: 3 of 4 PASS on `:sf4` and 3 of 4 on
+  `:ae` (the build before any of these fixes). It is the harness's own
+  precondition -- it needs the acceptor to hold `udp_confirmed` through the
+  dial and says so itself ("this attempt proves nothing, retrying") -- at a
+  rate of roughly 1 run in 4. Worth tightening in that harness one day; it is
+  not a daemon defect.
 - **Field re-test of defects E and F on the same four real hosts, 2026-09-17**,
   every node redeployed on `tincstack/node:aef` built from master 926d346
   (defect F's epoch fix + stream AE merged). **The router's image was refreshed

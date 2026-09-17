@@ -194,30 +194,55 @@ docker exec "$LAB-a" iptables -A INPUT  -s "$B_IP" -j DROP
 docker exec "$LAB-a" iptables -A OUTPUT -d "$B_IP" -j DROP
 docker exec "$LAB-b" iptables -A INPUT  -s "$A_IP" -j DROP
 docker exec "$LAB-b" iptables -A OUTPUT -d "$A_IP" -j DROP
-# The first packets trigger the relayed SPTPS key exchange through R; give it
-# up to ~25 s to establish, then require a clean run.
+# How long does the pair take to reroute through R? This used to be five
+# attempts of "sleep 5, ping four times", i.e. a pass/fail with a budget of
+# roughly 55 s and no number written down -- so a reconvergence that crept from
+# 3 s to 50 s still passed, and the day it crossed 55 s the proof looked flaky
+# rather than broken. It WAS broken: measured 35-61 s in 4 of 8 runs, from
+# three defects now fixed (a severed sf link burned its full 24 s
+# retransmission budget although the kernel returned EPERM on every send; the
+# REQ_KEY glare tie-break defended a session that had gone out over that dead
+# path; and nothing noticed when the route changed under a pending key
+# exchange). After the fixes: 2-5 s in 61 of 62 runs.
+#
+# So measure it, print it, and separate the two ways it can go wrong. A slow
+# reconvergence and no reconvergence are different findings and deserve
+# different lines: the first is the residual of the defects above (1 run in 62
+# still takes one SPTPS cooldown, ~31 s -- see PLAN.md), the second means the
+# relay path is broken, which is what this part of the proof is really about.
+RELAY_BUDGET=${RELAY_BUDGET:-20}
+RELAY_LIMIT=${RELAY_LIMIT:-120}
 relay_ok=0
-i=0
-while [ "$i" -lt 5 ]; do
-	i=$((i + 1))
-	sleep 5
-	ping2=$(docker exec "$LAB-a" ping -c4 -W3 "$B_VPN" 2>&1 | tail -2)
-	recv=$(echo "$ping2" | grep -oE '[0-9]+ received' | grep -oE '[0-9]+')
-	echo "relay attempt $i: $(echo "$ping2" | head -1)"
+t0=$(date +%s)
+elapsed=0
 
-	if [ "${recv:-0}" -ge 3 ]; then
+while [ "$elapsed" -le "$RELAY_LIMIT" ]; do
+	if docker exec "$LAB-a" ping -c1 -W1 "$B_VPN" >/dev/null 2>&1; then
 		relay_ok=1
 		break
 	fi
+
+	sleep 1
+	elapsed=$(( $(date +%s) - t0 ))
 done
 
+elapsed=$(( $(date +%s) - t0 ))
+ping2=$(docker exec "$LAB-a" ping -c4 -W3 "$B_VPN" 2>&1 | tail -2)
 echo "$ping2"
 
-if [ "$relay_ok" = 1 ]; then
-	echo "relay A<->B reachable through R"
-else
-	echo "MISS: relayed A<->B ping failed"
+if [ "$relay_ok" = 0 ]; then
+	echo "MISS: A never reached B through the relay within ${RELAY_LIMIT}s -- the relayed path is broken"
 	fail=1
+elif [ "$elapsed" -gt "$RELAY_BUDGET" ]; then
+	echo "MISS: the relayed path came up, but only after ${elapsed}s (budget ${RELAY_BUDGET}s)."
+	echo "      The path works; what is slow is noticing the direct one died. Look for"
+	echo "      'No key from ... after N seconds, restarting SPTPS' in nodea's log: that is"
+	echo "      the documented residual, ~31s, measured at 1 run in 62. If it is now more"
+	echo "      frequent than that, something reintroduced a stalled key exchange."
+	fail=1
+else
+	echo "relay A<->B reachable through R after ${elapsed}s (budget ${RELAY_BUDGET}s)"
+	echo "$ping2" | grep -q "0% packet loss" || { echo "MISS: the relayed path came up but is lossy"; fail=1; }
 fi
 
 if [ "$fail" = 0 ]; then

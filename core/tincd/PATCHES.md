@@ -149,6 +149,29 @@ stock does, both end up responders as before, and the (now jittered) timer
 recovers — never worse than stock. Fully fixed only when both ends carry the
 patch.
 
+**Amended 2026-09-17 (defect G): the tie-break must not defend a session that
+cannot be answered.** "Keep ours" is right when both sessions are equally
+viable, which is what genuine glare means. It is wrong when ours went out over
+a meta route that has since disappeared — measured in `singleflow-test.sh`
+PART 2, where a node kept a key exchange sent over a direct link that was
+severed one second later and discarded the peer's fresh `REQ_KEY`, which had
+arrived over a relay that worked, then sat out the full 24–36 s cooldown. Two
+conditions now make a pending session yield instead:
+
+- `status.sptps_route_stale` — `sssp_bfs()` (`graph.c`) snapshots `nexthop`
+  before recomputing and marks any node still waiting for a key whose route
+  changed. This is the discriminator that matters: in the measured case both
+  sessions really did start in the same second, so age said nothing.
+  `try_sptps()` also acts on the flag, restarting the exchange at once rather
+  than waiting out the cooldown. Both readers clear it; one mark per graph run.
+- `SPTPS_GLARE_WINDOW` (5 s) — a session older than one relayed round trip is
+  not glare any more, so a peer's request is newer information than our silence.
+
+Real glare is decided in milliseconds and is unaffected: the lab this patch was
+written for (`lab.sh glare`, `--rtt 50` and `--rtt 1`) still reports key after
+1 s, 0 `Invalid packet seqno`, 0 SPTPS restarts, tie-break logged on both
+sides. Still no new message and SPTPS still untouched.
+
 ## 6. Front: let a node refuse cleartext tinc meta connections — `AllowPlainMeta` (tincstack, stream Z)
 
 **Problem.** PLAN.md Known Issues, "a node cannot refuse cleartext tinc on its
