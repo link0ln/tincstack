@@ -1,7 +1,17 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-17 (stream AD: **obfs can finally be switched on in
-a network that is already running.** `obfs_udp_try()` skipped its keyed check
+**Last Updated:** 2026-09-17 (**defect F is fully closed: obfs can finally be
+switched on in a network that is already running, and a peer that restarts can
+still dial it.** It had two independent causes. The second was mine to find:
+the obfs replay window is anchored to the *bootstrap* keyset, which is derived
+from the two public keys and outlives both daemons, while the sender's counter
+is re-randomised on every start -- so a restarted peer began below the
+acceptor's high-water mark more often than not and every frame of its dial was
+dropped **with no log line at any debug level**. Measured 1 of 6 restarts
+recovering obfs before, **6 of 6 after** (`testing/transports/obfs-restart-test.sh`,
+new); the drop is now logged, and stream AD's own test -- which was still
+FAILing on the merged tree -- passes. Stream AD's half, the first cause:
+`obfs_udp_try()` skipped its keyed check
 for any source address bound to a node with `udp_confirmed`, so an obfs dial
 between two peers that had ever exchanged UDP data was dropped on the acceptor
 as `unknown source and/or destination ID` and timed out in authentication --
@@ -2783,8 +2793,10 @@ Defects identified during the source audit, to fix as their milestone is reached
     now says `Dial to X (host) via <carrier> abandoned before the connection
     was activated`, which is how defects E and F were read off the logs in
     minutes rather than guessed at.
-- 🟠 **Defect F — obfs can never be turned on for a pair that already has a
-  working UDP path.** Found 2026-09-17 on the four-node stand while re-testing
+- ~~🟠 **Defect F — obfs can never be turned on for a pair that already has a
+  working UDP path.**~~ **Closed 2026-09-17**, and it had TWO independent
+  causes; fixing the first one alone left the dial still hanging. Found on the
+  four-node stand while re-testing
   streams AA/AB/AC in the field, and traced to the line that causes it.
   `obfs_udp_try()` (obfs.c) skips its keyed check when the datagram's source
   address belongs to a node that already has `udp_confirmed`:
@@ -2818,7 +2830,66 @@ Defects identified during the source audit, to fix as their milestone is reached
   stream AB said it could not find ("if your pair had junk at 0, the dial hang
   has a second cause I have not found") — it was right to flag it: AB's fix
   removed the EMSGSIZE symptom, and the dial still hung. **Dispatched as
-  stream AD.**
+  stream AD** (merged c36599a): the skip is now qualified by
+  `sptps_udp_addresses_known_nodes()` — it only stands when the datagram's
+  SPTPS header actually names nodes we know, which a sealed obfs frame never
+  does. New test `testing/transports/obfs-confirmed-peer-test.sh`.
+
+  **Second cause — the replay window outlives the daemon. Found and fixed by
+  me, 2026-09-17,** because AD's own new test still failed on the merged tree
+  (`MISS: the obfs dial still ran into 1 authentication timeout(s)`) and I do
+  not accept "flaky" as a diagnosis. An instrumented build (`tincstack/core:dbg`)
+  printed the decisive line on the acceptor:
+
+      DBG obfs replay-window rejected seq 79590043557285 (window max 173021181478996, started 1)
+
+  `keyset_build()` (obfs.c) starts each sender counter at a **random 48-bit
+  value**, while the **bootstrap** keyset is derived from the two nodes'
+  Ed25519 public keys and therefore **outlives both daemons**. A peer that
+  restarts draws a fresh start; it lands below the acceptor's remembered
+  high-water mark with probability `mark / 2^48`, and the mark only ever moves
+  up — here 1.7e14 of 2.8e14. Every frame of that peer's dial then decrypts
+  correctly, is counted as classified, and is **dropped with no log line at
+  any debug level**. The daemon's own comment in `keyset_build()` claimed the
+  random start prevented exactly this; it was wrong, and the comment is now
+  corrected in place rather than deleted.
+
+  Fix: `obfs_epoch_restart()` — a frame that opens a **new single-flow
+  session** (`SF_TYPE_DATA` + `SF_FLAG_SYN`, `seq == 0`) under the *bootstrap*
+  key may start a new key epoch, resetting that window to its counter, at most
+  once per 5 s per link (`OBFS_EPOCH_MIN_INTERVAL`); the *session* keyset's
+  window is never restarted this way. Plus a `DEBUG_TRAFFIC` line on every
+  out-of-window drop, so this class of failure can never again be silent.
+  **Trade-off, stated rather than buried:** a recorded old SYN can be replayed
+  to reset the bootstrap window once per 5 s and feed stale frames from around
+  that counter. It buys the attacker nothing — those frames land in a *new*
+  single-flow session whose tinc ID exchange runs under SPTPS and fails closed
+  without the peer's private key, `sf_accept()`'s `max_connection_burst` bounds
+  how many such sessions a flood can create, and the live session's window is
+  untouched. M5-4 (a replay must not re-point the link's address) and M5-5 are
+  unaffected and still asserted green.
+
+  **Measurement, same stand, two builds differing only in this patch**
+  (`testing/transports/obfs-restart-test.sh`, new):
+  `tincstack/core:abcd` → `RESULT: obfs re-established after 1 of 6 restarts`;
+  `tincstack/core:epoch` → `RESULT: obfs re-established after 6 of 6
+  restarts`, with the acceptor logging `Restarting the obfs replay window for
+  nodeb at counter 71709580590509 ...` → `Connection from 10.62.7.11 port 656
+  (obfuscated single-flow UDP)` → `activated`. The new harness also asserts
+  the *pre-fix* behaviour (`--expect-defect`), and its header records that a
+  broken build passes that arm by luck with p ≈ 0.38^6 ≈ 0.3 %.
+
+  **Why no existing test caught it, which is the part worth keeping:** every
+  obfs lab dials from containers that have never spoken obfs, so the window is
+  unstarted and the first dial always works. `carrier-switch-test.sh` and
+  `obfs-confirmed-peer-test.sh` switch a *running* node, which also works the
+  first time; the latter restarts the dialler only on a retry, which is why it
+  looked flaky (1 run in 4 for its author, 3 of 3 for the reviewer) rather
+  than broken. **Flakiness that tracks a coin flip is a defect with a
+  probability attached, not noise.** Regression on the fixed build, all green:
+  obfs (incl. M5-2/M5-4/M5-5/M5-6), obfs-mtu, obfs-confirmed-peer (which was
+  FAILing before this fix), carrier-switch, invitee-mesh, singleflow, smoke,
+  lint.
 - 🟠 **Defect E — two nodes behind the same NAT never form a meta connection,
   and retry forever.** Same stand: `router` (the LAN gateway, 10.170.0.4) and
   `laptop` (a container on a machine inside that LAN, 10.170.0.2) both know

@@ -67,6 +67,16 @@ uint32_t obfs_transport_magic = 0;
 /* Replay window width (bits) over the per-direction counter. */
 #define OBFS_REPLAY_BITS 64
 
+/* A peer that restarts derives the same bootstrap key (it comes from the two
+   public keys) but picks a FRESH RANDOM 48-bit send counter, which lands below
+   our replay window's high-water mark about three times in five. Every frame of
+   its first dial is then "too old to prove non-replay" and is dropped in
+   silence. A replay window is only meaningful inside one key epoch, so a frame
+   that opens a new single-flow session under the bootstrap key is allowed to
+   start a new one -- at most once per OBFS_EPOCH_MIN_INTERVAL seconds per
+   link. */
+#define OBFS_EPOCH_MIN_INTERVAL 5
+
 /* Re-derive the session key at least this often even if KeyExpire is huge. */
 #define OBFS_REKEY_TICK 30
 
@@ -127,6 +137,10 @@ struct obfs_link_t {
 	time_t path_time;
 	bool have_budget;          /* path_budget/path_time hold a real answer */
 	time_t last_toobig;        /* rate limit for the "does not fit" log line */
+
+	/* Last time the bootstrap replay window was restarted for a new key epoch
+	   (see obfs_epoch_restart), and the rate limit on doing so. */
+	time_t last_epoch;
 };
 
 static list_t obfs_links = {
@@ -167,9 +181,16 @@ static void keyset_free(obfs_keyset_t *ks) {
 
 /* Build a direction-separated keyset from a 64-byte base secret. `kctx'/`ictx'
    are the context strings for the key and the nonce mask. The tx counter starts
-   at a random 48-bit value so a peer that restarts mid-link picks counters
-   above the other side's replay window (no black-out) and the wire nonce never
-   looks like a plaintext counter. */
+   at a random 48-bit value so the wire nonce never looks like a plaintext
+   counter.
+
+   This comment used to claim the random start also kept a restarted peer ABOVE
+   the other side's replay window. It does not: a fresh draw lands below the
+   previous epoch's high-water mark with probability mark/2^48, and the mark
+   only ever moves up, so in the field it was below more often than not. Under
+   the bootstrap key -- which outlives both daemons -- that meant a silent
+   black-out on most restarts. See obfs_epoch_restart for the measurement and
+   the fix. */
 static bool keyset_build(obfs_keyset_t *ks, const uint8_t base[64], const char *kctx, const char *ictx, bool i_am_lo) {
 	keyset_free(ks);
 
@@ -994,13 +1015,80 @@ static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerl
 	return true;
 }
 
+/* Does this unsealed frame open a new single-flow session (the SYN that
+   sf_accept() answers)? Only such a frame may restart a replay window: it is
+   the first frame of a dial, so a peer that has just restarted always sends
+   one, and a data frame -- which is what a replay attack would carry -- never
+   does. */
+static bool obfs_opens_session(const uint8_t *inner, size_t innerlen) {
+	if(innerlen < SF_HDR_LEN || memcmp(inner, sf_magic, SF_MAGIC_LEN)) {
+		return false;
+	}
+
+	if(inner[6] != SF_TYPE_DATA || !(inner[7] & SF_FLAG_SYN)) {
+		return false;
+	}
+
+	uint32_t seq = ((uint32_t)inner[16] << 24) | ((uint32_t)inner[17] << 16)
+	               | ((uint32_t)inner[18] << 8) | (uint32_t)inner[19];
+	return seq == 0;
+}
+
+/* A counter below the replay window is usually a replay -- but not always. The
+   bootstrap keyset is derived from the two nodes' public keys and therefore
+   outlives both daemons, while the counter under it is re-randomised on every
+   start (keyset_build). A peer that restarts, or a container that is recreated,
+   thus begins below our mark with probability (max / 2^48) -- measured on this
+   stand at 1.7e14 / 2.8e14, i.e. three dials in five -- and every frame of its
+   dial was dropped with no log line at any debug level (stream AD, second
+   cause; the first was obfs_udp_try's skip for a confirmed peer).
+
+   So a frame that opens a new single-flow session is allowed to start a new
+   epoch. What that concedes, stated plainly: someone who recorded an old SYN
+   can replay it to reset this window once per OBFS_EPOCH_MIN_INTERVAL and then
+   feed us stale frames from around that counter. They buy nothing with it --
+   the frames go into a NEW single-flow session, whose tinc ID exchange runs
+   under SPTPS and fails closed without the peer's private key, and the burst
+   limiter in sf_accept() bounds the sessions such a flood can create. The live
+   session's own keyset has its own window, which is untouched. */
+static bool obfs_epoch_restart(obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, const uint8_t *inner, size_t innerlen) {
+	if(ks != &l->boot || !obfs_opens_session(inner, innerlen)) {
+		return false;
+	}
+
+	if(l->last_epoch && now.tv_sec - l->last_epoch < OBFS_EPOCH_MIN_INTERVAL) {
+		return false;
+	}
+
+	l->last_epoch = now.tv_sec;
+	ks->rw.started = true;
+	ks->rw.max = seq;
+	ks->rw.bits = 1;
+
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Restarting the obfs replay window for %s at counter %llu: this frame opens a new single-flow session under the bootstrap key, so the peer has restarted",
+	       l->node ? l->node->name : "(unknown)", (unsigned long long)seq);
+	return true;
+}
+
 /* On a verified, fresh datagram: move the remembered peer address, then
    re-inject. Returns true (the datagram was claimed by obfs). */
 static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, const uint8_t *inner, size_t innerlen, const sockaddr_t *addr) {
-	if(!obfs_replay_ok(&ks->rw, seq)) {
+	if(!obfs_replay_ok(&ks->rw, seq) && !obfs_epoch_restart(l, ks, seq, inner, innerlen)) {
 		/* Replayed or too-old datagram: drop it and, crucially, do NOT move the
 		   link's remembered address (finding M5-4). It is still an obfs frame,
-		   so claim it (the SPTPS path must not see the sealed bytes). */
+		   so claim it (the SPTPS path must not see the sealed bytes).
+
+		   Say so. This drop used to be completely silent, which is why the
+		   restarted-peer case above went unnoticed through every obfs lab and
+		   two field sessions: the frames arrived, decrypted, were counted as
+		   classified -- and vanished here without a line at any debug level. */
+		if(debug_level >= DEBUG_TRAFFIC) {
+			char *hostname = sockaddr2hostname(addr);
+			logger(DEBUG_TRAFFIC, LOG_DEBUG, "Dropping an obfs datagram from %s: counter %llu is outside the replay window (high-water mark %llu)",
+			       hostname, (unsigned long long)seq, (unsigned long long)ks->rw.max);
+			free(hostname);
+		}
+
 		return true;
 	}
 

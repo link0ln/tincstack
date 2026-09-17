@@ -618,9 +618,10 @@ The ChaCha20-Poly1305 nonce is a **strict per-direction 64-bit counter**, so it
 never repeats under a given key — no keystream reuse, no Poly1305 forgery. On
 the wire the counter is whitened (`counter XOR mask_dir`) so it does not read as
 a plaintext sequence number; the receiver recovers it by XORing the same mask.
-The counter starts at a random 48-bit value per keyset, so a node that restarts
-mid-link picks counters above the peer's current replay window (no black-out)
-and the leading wire bytes never look like a low counter. A configured **magic
+The counter starts at a random 48-bit value per keyset, so the leading wire
+bytes never look like a low counter. (That random start does **not** keep a
+restarted node above the peer's window — see "Key epochs" below, which is what
+actually prevents the black-out.) A configured **magic
 header is a separate plaintext prefix and consumes no nonce entropy** — the v1
 defect where the magic overwrote nonce bytes and left only 32 random bits is
 gone.
@@ -630,7 +631,35 @@ recovered counter. A datagram that fails the window (a replay, or one too old to
 prove fresh) is dropped. Crucially, the remembered peer UDP address is moved
 **only after** a datagram both verifies (Poly1305) and is fresh (replay
 window), so a replayed sealed datagram from any source address can no longer
-re-point the link before SF/SPTPS checks run (finding M5-4).
+re-point the link before SF/SPTPS checks run (finding M5-4). A frame dropped by
+the window is logged at `DEBUG_TRAFFIC` — the drop used to be entirely silent,
+which is how the black-out below hid through every lab and two field sessions.
+
+### Key epochs: a peer that restarts (defect F, second cause)
+
+A replay window is only meaningful **inside one key epoch**. The session keyset
+lives exactly one link, so its window is unambiguous. The **bootstrap** keyset
+is not: it is derived from the two nodes' public keys and therefore outlives
+both daemons, while the counter under it is re-randomised on every start. A peer
+that restarts (or a container that is recreated) thus begins below the
+acceptor's remembered high-water mark with probability `mark / 2^48`, and the
+mark only ever moves up. Measured on a two-node stand: **1 of 6 restarts**
+recovered obfs before the fix. Every frame of the dial decrypted correctly, was
+counted as classified, and was dropped by the window without a log line.
+
+So a frame that **opens a new single-flow session** (an `SF_TYPE_DATA` with
+`SF_FLAG_SYN` and `seq == 0`) under the *bootstrap* key may start a new epoch:
+the window is reset to that counter. It is rate-limited to once per 5 s per
+link, and the session keyset's window is never restarted this way.
+
+What that concedes, stated plainly: someone who recorded an old SYN can replay
+it to reset the bootstrap window once per 5 s and then feed stale frames from
+around that counter. They gain nothing — those frames land in a *new* single-flow
+session whose tinc ID exchange runs under SPTPS and fails closed without the
+peer's private key, `sf_accept`'s `max_connection_burst` bounds how many such
+sessions a flood can create, and the live session's own window is untouched.
+After the fix: **6 of 6 restarts** recovered obfs
+(`testing/transports/obfs-restart-test.sh`).
 
 ### Junk schedule (defect 2: around the handshake, never per data packet)
 
