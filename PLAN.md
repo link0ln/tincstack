@@ -7,9 +7,12 @@ flake: sf spent its whole 24 s retransmission budget on a path where every
 `sendto` returned `EPERM`; the REQ_KEY glare tie-break then defended a key
 exchange that had gone out over that dead path; and nothing noticed when the
 route changed under a pending exchange. 4 of 8 runs took 35-61 s before, 61 of
-62 take 2-5 s now (12 of 12 on each of the last two builds). The proof now prints the
-number and separates "slow" from "never", and the residual (1 run in 62, cause
-not established) is written down rather than papered over. The NAT lab the tie-break was written for is
+62 took 2-5 s after the fixes, and the residual is now closed too: **250
+sequential runs on the shipped build, 0 slow, worst case 9 s** against a 31 s
+signature, which rejects the old 1-in-62 rate at ~98 % (95 % upper bound
+1.19 %). No slow run occurred, so the closure is statistical and no cause was
+named; that is written down rather than dressed up. The proof prints the number
+and separates "slow" from "never". The NAT lab the tie-break was written for is
 unchanged: key after 1 s, 0 seqno errors, 0 restarts.
 Earlier -- stream AE: **defect E is closed -- two nodes
 behind one NAT now form a direct meta connection instead of retrying for
@@ -118,7 +121,7 @@ attempts), not a new symptom. **Followed up the same day and it was not a
 flake at all — it was three defects, now fixed; see the PART 2 entry under
 Known Issues.** The `try_tx()` watch item stands but is no longer the leading
 suspect: with the reconvergence fixed the proof is 2-5 s in 61 of 62 runs on
-the merged tree. `obfs-confirmed-peer-test.sh`
+the merged tree, and 250 of 250 within 9 s on the shipped build. `obfs-confirmed-peer-test.sh`
 was measured the same way after it failed once in the batch run: 3/3 on `:ae`
 and 3/3 on `:epoch2`, i.e. that failure was the harness's own retry logic (it
 needs the acceptor to hold `udp_confirmed` through the dial), not AE.
@@ -2927,18 +2930,50 @@ Defects identified during the source audit, to fix as their milestone is reached
 
   Everything was re-measured on each build rather than carried over.
 
-  **The residual is real and is not being hidden.** One run in 62 on `:sf3`
-  still spent one SPTPS cooldown, and I could not reproduce it on demand (32
-  probe runs and 20 further test runs after the one that caught it were all
-  2-5 s), so its cause is not established. `:sf4` and `:sf5` were 12 of 12 fast
-  each, which is not enough to claim it is gone -- 12 runs cannot see a
-  1-in-60 event. PART 2 therefore now *measures* the time, prints it
-  on success, and distinguishes the two failures: "came up, but only after Ns"
-  names this residual and says what to grep for, while "never reached B" is the
-  relay path itself being broken. A budget of 20 s with a 120 s hard limit;
-  both are env-overridable. This makes the proof honest at the cost of failing
-  roughly 1 run in 62 — which is a test correctly catching a defect that still
-  exists, not flakiness.
+  **The residual was real and is now closed on the shipped build, 2026-09-17.**
+  One run in 62 on `:sf3` still spent one SPTPS cooldown, and it could not be
+  reproduced on demand (32 probe runs and 20 further test runs after the one
+  that caught it were all 2-5 s), so its cause was never named. `:sf4` and
+  `:sf5` were 12 of 12 fast each, which was **not** enough to claim it was gone
+  -- 12 runs cannot see a 1-in-60 event -- so it stayed open.
+
+  It was then measured properly: **250 sequential runs of PART 2 on
+  `tincstack/core:sf5` (master e497541), zero slow runs.**
+
+  | elapsed | 2 s | 3 s | 4 s | 5 s | 8 s | 9 s | >10 s |
+  |---|---|---|---|---|---|---|---|
+  | runs | 105 | 15 | 107 | 20 | 1 | 2 | **0** |
+
+  250 of 250 PASS, worst case 9 s against a 31 s signature. Sequential on
+  purpose (the quantity measured is a timing stall, so parallel labs must not
+  contend for CPU) and at the harness's own `-d2`, the level the 62-run
+  baseline was taken at; raising it would change the timing, which had already
+  produced one wrong answer in this defect's history.
+
+  **What that does and does not prove.** Zero events in 250 trials puts the 95 %
+  upper bound on the rate at **1.19 %**, below the 1.61 % (1 in 62) that was
+  observed; if the residual were still occurring at its old rate, the chance of
+  250 clean runs is **1.7 %**. So the rate is rejected at roughly the 98 %
+  level. It is *not* a named cause: no slow run occurred, so there was nothing
+  to dissect. The closure is statistical, and it is recorded as such.
+
+  **The most likely mechanism, stated as a hypothesis and not as a finding.**
+  The residual was seen on `:sf3`, which carried a use-after-free in this
+  change's own `graph.c` snapshot: `prev_nexthop` could name a node `net.c` had
+  already reaped. A stale read there makes the route-change detection miss,
+  and a miss is exactly a fall-through to the 24-36 s cooldown -- the ~31 s
+  that was measured. `:sf4` fixed that read, and nothing has been seen since,
+  over 274 runs on the two builds after it. Consistent with every measurement,
+  and still only a hypothesis.
+
+  PART 2 keeps the shape this investigation gave it: it *measures* the time,
+  prints it on success, and distinguishes the two failures -- "came up, but
+  only after Ns" from "never reached B", which is the relay path itself being
+  broken. A budget of 20 s with a 120 s hard limit; both env-overridable. With
+  the residual gone the budget no longer costs a failure per ~62 runs.
+  `KEEP_LOGS` was added to the harness (d42a069) so that a future slow run is
+  diagnosable: its advice was to read nodea's log, and cleanup used to delete
+  the container first.
 
   **Regression** on `tincstack/core:sf3`: the NAT lab the tie-break was written
   for, `lab.sh glare --rtt 50` and `--rtt 1`, core arm **PASS key after 1 s, 0

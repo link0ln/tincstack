@@ -213,13 +213,14 @@ docker exec "$LAB-b" iptables -A OUTPUT -d "$A_IP" -j DROP
 # retransmission budget although the kernel returned EPERM on every send; the
 # REQ_KEY glare tie-break defended a session that had gone out over that dead
 # path; and nothing noticed when the route changed under a pending key
-# exchange). After the fixes: 2-5 s in 61 of 62 runs.
+# exchange). After the fixes: 250 of 250 runs within 9 s, most of them 2-5 s.
 #
 # So measure it, print it, and separate the two ways it can go wrong. A slow
 # reconvergence and no reconvergence are different findings and deserve
-# different lines: the first is the residual of the defects above (1 run in 62
-# still takes one SPTPS cooldown, ~31 s -- see PLAN.md), the second means the
-# relay path is broken, which is what this part of the proof is really about.
+# different lines: the first means something reintroduced a stalled key
+# exchange -- one SPTPS cooldown is ~31 s and used to show up in 1 run in 62
+# before the last fix -- the second means the relay path is broken, which is
+# what this part of the proof is really about.
 RELAY_BUDGET=${RELAY_BUDGET:-20}
 RELAY_LIMIT=${RELAY_LIMIT:-120}
 relay_ok=0
@@ -245,10 +246,10 @@ if [ "$relay_ok" = 0 ]; then
 	fail=1
 elif [ "$elapsed" -gt "$RELAY_BUDGET" ]; then
 	echo "MISS: the relayed path came up, but only after ${elapsed}s (budget ${RELAY_BUDGET}s)."
-	echo "      The path works; what is slow is noticing the direct one died. Look for"
-	echo "      'No key from ... after N seconds, restarting SPTPS' in nodea's log: that is"
-	echo "      the documented residual, ~31s, measured at 1 run in 62. If it is now more"
-	echo "      frequent than that, something reintroduced a stalled key exchange."
+	echo "      The path works; what is slow is noticing the direct one died. Run with"
+	echo "      KEEP_LOGS=<dir> and look for 'No key from ... after N seconds, restarting"
+	echo "      SPTPS' in nodea's log: one cooldown is ~31s. The shipped build did this in"
+	echo "      0 of 250 runs, so a hit here is a regression, not the old residual."
 	fail=1
 else
 	echo "relay A<->B reachable through R after ${elapsed}s (budget ${RELAY_BUDGET}s)"
