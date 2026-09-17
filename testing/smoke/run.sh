@@ -99,7 +99,15 @@ if ! docker image inspect "$CORE_IMAGE" >/dev/null 2>&1; then
     exit 1
 fi
 
-compose up -d >/dev/null 2>&1 || { compose logs; exit 1; }
+# Keep compose's own stderr: when `up` fails before any container exists -- a
+# subnet clash with an unrelated docker network is the usual one, and
+# SMOKE_SUBNET is the knob for it -- `compose logs` has nothing to print and the
+# failure used to be a blank line.
+if ! compose up -d >/dev/null 2>"$RUN/compose-up.err"; then
+    sed 's/^/smoke: /' "$RUN/compose-up.err" >&2
+    compose logs
+    exit 1
+fi
 ok=0
 for _ in $(seq 1 30); do
     if compose exec -T node1 ping -c 1 -W 1 10.79.0.2 >/dev/null 2>&1 \

@@ -47,11 +47,29 @@ if [ -z "${SUBNET:-}" ]; then
 			--format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null \
 		| awk -v self="$LAB" '
 			index($1, self) == 1 && substr($1, length(self) + 1, 1) !~ /^[0-9]$/ { next }
-			{ for(i = 2; i <= NF; i++) if(sub(/\.[0-9]+\/[0-9]+$/, "", $i)) { print $i } }')
+			{ for(i = 2; i <= NF; i++) if($i ~ /\/[0-9]+$/) { print $i } }')
 
-	lab_env_free() { # prefix -> 0 when no other lab holds that /24
-		printf '%s\n' "$lab_env_taken" | grep -qx "$1" && return 1
-		return 0
+	# A candidate /24 is free when no other network OVERLAPS it -- not merely
+	# when none is spelled the same. The earlier test compared the first three
+	# octets as text, so a wider network swallowing our candidate (a docker
+	# compose stack on 172.31.0.0/16 against the smoke lab's 172.31.77.0/24) was
+	# invisible: the lab kept its documented /24, docker refused the pool, and
+	# the self-healing walk below never ran, which is the whole point of it.
+	# Compare the first min(len, 24) bits instead. No shifts: mawk has no
+	# rshift(), so divide by a power of two and truncate.
+	lab_env_free() { # prefix -> 0 when no other network overlaps that /24
+		printf '%s\n' "$lab_env_taken" | awk -v cand="$1.0" '
+			function ip2int(s,   p) { split(s, p, "."); return ((p[1] * 256 + p[2]) * 256 + p[3]) * 256 + p[4] }
+			BEGIN { c = ip2int(cand); clash = 0 }
+			NF == 0 { next }
+			{
+				n = index($1, "/")
+				len = substr($1, n + 1) + 0
+				t = ip2int(substr($1, 1, n - 1))
+				m = (len < 24 ? len : 24)
+				if(int(c / 2 ^ (32 - m)) == int(t / 2 ^ (32 - m))) { clash = 1; exit }
+			}
+			END { exit(clash ? 1 : 0) }'
 	}
 
 	lab_env_base=${DEFAULT_SUBNET%.*}
@@ -63,17 +81,25 @@ if [ -z "${SUBNET:-}" ]; then
 
 	SUBNET=$lab_env_first
 	if ! lab_env_free "$SUBNET"; then
-		lab_env_n=20
-		while [ "$lab_env_n" -le 219 ]; do
-			SUBNET=$lab_env_base.$lab_env_n
-			lab_env_free "$SUBNET" && break
-			lab_env_n=$(( lab_env_n + 1 ))
+		# The walk may have to leave the documented base entirely: one compose
+		# stack on a /16 covers every /24 inside it, so staying in
+		# $lab_env_base would be a guaranteed dead end. LAB_BASES overrides the
+		# fallback list.
+		lab_env_found=
+		for lab_env_b in $lab_env_base ${LAB_BASES:-10.244 10.245 172.27}; do
+			lab_env_n=20
+			while [ "$lab_env_n" -le 219 ]; do
+				SUBNET=$lab_env_b.$lab_env_n
+				if lab_env_free "$SUBNET"; then lab_env_found=1; break; fi
+				lab_env_n=$(( lab_env_n + 1 ))
+			done
+			[ -n "$lab_env_found" ] && break
 		done
-		if [ "$lab_env_n" -gt 219 ]; then
-			echo "lab-env: every /24 in $lab_env_base.20-219 is in use; set SUBNET explicitly" >&2
+		if [ -z "$lab_env_found" ]; then
+			echo "lab-env: no free /24 in $lab_env_base or ${LAB_BASES:-10.244 10.245 172.27} (.20-.219); set SUBNET explicitly" >&2
 			exit 2
 		fi
-		echo "lab: $lab_env_first.0/24 is held by another lab, taking $SUBNET.0/24" >&2
+		echo "lab: $lab_env_first.0/24 is held by another network, taking $SUBNET.0/24" >&2
 	fi
 fi
 echo "lab: LAB=$LAB SUBNET=$SUBNET.0/24" >&2
