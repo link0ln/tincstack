@@ -89,6 +89,27 @@ proves little; read them together with the attempt count / "relay up after N s"
 line. The first cut of AE's `try_tx()` kick was a genuine regression here and
 was narrowed because of these numbers -- see defect E point (2).
 
+**Reviewer's own count, 2026-09-17, because 3 runs cannot separate a 0 % rate
+from a 20 % one.** `singleflow-test.sh` on the merged tree (`tincstack/core:ae`)
+vs the same tree without AE (`tincstack/core:epoch2`), same host, sequential,
+no other lab running:
+
+| build | runs | PART 2 failures |
+|---|---|---|
+| master + AE (`:ae`) | 18 | **2** (11 %) |
+| master without AE (`:epoch2`) | 15 | **0** |
+
+One-sided Fisher exact on 2/18 vs 0/15 is p ≈ 0.29 — **the two are not
+distinguishable**, and this is not evidence that AE is clean, only that 33 runs
+cannot see a difference of this size. Both failures are the already-tracked 🟡
+slow plain-path reconvergence (`MISS: relayed A<->B ping failed`, 5 of 5
+attempts), not a new symptom. Recorded as a watch item: if this proof starts
+failing more than about one run in ten, `setup_outgoing_connection()`'s
+`try_tx()` kick is the first thing to take out. `obfs-confirmed-peer-test.sh`
+was measured the same way after it failed once in the batch run: 3/3 on `:ae`
+and 3/3 on `:epoch2`, i.e. that failure was the harness's own retry logic (it
+needs the acceptor to hold `udp_confirmed` through the dial), not AE.
+
 **Stream AD re-verification**, 2026-09-17, on `tincstack/core:ad` (master +
 the obfs guard fix), each exit 0: the new `obfs-confirmed-peer-test` (`PASS`;
 `PASS(repro)` on `tincstack/core:ad-pre` with `--expect-defect`), the same
@@ -3112,6 +3133,18 @@ Defects identified during the source audit, to fix as their milestone is reached
     unreachable peer remains, on purpose (see (1)).
   - **`send_req_transports()` costs one relayed request per minute per peer whose
     list is still unknown and never answers.** Bounded, not zero.
+
+  **Reviewer's note on (3), found while merging and not a blocker.** Recording
+  `plain` for an `ANS_PUBKEY` that carries no carrier token makes the
+  plain-only verdict *sticky*: a relay in the middle that strips the token now
+  pins the peer as plain-only for the node's lifetime, where before it stayed
+  "unknown" and could be re-asked. This grants an attacker nothing new — the
+  re-ask travels through that same relay, so re-asking buys nothing, and
+  `ack_h()` overwrites `n->transports` unconditionally from the ACK of any
+  direct meta connection, which is the moment the mask actually matters. It is
+  a carrier downgrade, never a crypto one: SPTPS is unchanged and the acceptor
+  enforces its own accept list. Worth knowing when reading a node that
+  stubbornly shows `transports plain` for one peer.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`
