@@ -2959,6 +2959,24 @@ Defects identified during the source audit, to fix as their milestone is reached
   dial and says so itself ("this attempt proves nothing, retrying") -- at a
   rate of roughly 1 run in 4. Worth tightening in that harness one day; it is
   not a daemon defect.
+- **The shipped commit is what the field runs, 2026-09-17.** All four real hosts
+  were moved onto `tincstack/node:sf5`, built from master f5c6856 (defect G's
+  three fixes plus the route-stale flag clearing); the router onto
+  `tincstack/node:sf5-arm64`, again refreshed with the 968 KB in-place rebuild
+  `FROM tincstack/node:abc-arm64` rather than a 130 MB `docker load` onto its USB
+  flash. The mesh came back full: every node reports the other three at
+  `distance 1`, and the ping matrix is clean --
+
+      router -> ruvds2 10.170.0.1  0% loss  30.6 ms
+      router -> laptop 10.170.0.2  0% loss   0.8 ms
+      router -> euvds  10.170.0.3  0% loss  45.5 ms
+      laptop -> ruvds2 10.170.0.1  0% loss  22.7 ms
+      laptop -> euvds  10.170.0.3  0% loss  47.8 ms
+      laptop -> router 10.170.0.4  0% loss   0.7 ms
+
+  The flag-clearing fix is visible too: node statuses across the stand are
+  `00da` / `08da` / `0858` / `0058`, none carrying the `sptps_route_stale` bit
+  that was found stuck as `20da` on the router on `:sf4`.
 - **Field re-test of defects E and F on the same four real hosts, 2026-09-17**,
   every node redeployed on `tincstack/node:aef` built from master 926d346
   (defect F's epoch fix + stream AE merged). **The router's image was refreshed
