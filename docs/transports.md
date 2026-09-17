@@ -741,7 +741,7 @@ SF and QUIC pattern tests:
    most two Poly1305 verifications (session key then bootstrap key). On failure
    it falls through to SPTPS (so a still-plain datagram during the brief setup
    window, or junk, is handled correctly).
-2. **Cold path** — an unknown, not-yet-confirmed source, obfs accepted: a
+2. **Cold path** — a source with no active obfs link, obfs accepted: a
    **per-peer round-robin scan** over the node keys. A persistent cursor
    resumes where the previous datagram left off, so no peer is starved and, in a
    mesh larger than the per-second floor, the last node is still reached within
@@ -749,6 +749,23 @@ SF and QUIC pattern tests:
    count** (floor 25/s, capped at 512/s) so a junk flood cannot exhaust it and
    the > 25th node is still classified. The first key that verifies identifies
    the peer.
+
+   The scan is skipped for a source address that is bound to a node with
+   `udp_confirmed` **only when the datagram would actually be claimed by the
+   SPTPS path** — `sptps_udp_addresses_known_nodes()` (net_packet.c) runs the
+   same identification `process_sptps_udp()` runs: an all-zero destination id
+   (a direct datagram) or two ids that resolve to known nodes. Skipping it
+   unconditionally, which is what the code did before stream AD, made obfs
+   undialable on any network that was already carrying traffic: the sealed
+   handshake frames arrive from exactly such an address, and they were dropped
+   as `unknown source and/or destination ID` while the dialler timed out in
+   authentication. An obfs frame opens with its whitened nonce, so its
+   destination id is neither zero nor a known node and it reaches the keyed
+   check. The cost in the steady state is one six-byte `memcmp` per direct
+   datagram from a confirmed plain peer, plus two node-id lookups for a
+   relayed one. `sf` and `quic` need no such test: their classifier keys on a
+   magic prefix, a version word or a live connection id and never looks the
+   source address up.
 
 On a verified frame the **replay window** is checked before anything else moves:
 a replay (or a too-old counter) is dropped and the link's remembered address is

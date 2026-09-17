@@ -207,6 +207,7 @@ extern char *scriptextension;
 extern void retry_outgoing(outgoing_t *outgoing);
 extern void handle_incoming_vpn_data(void *data, int flags);
 extern void handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr);
+extern bool sptps_udp_addresses_known_nodes(const struct node_t *n, const uint8_t *buf, size_t len);
 extern void finish_connecting(struct connection_t *c);
 extern bool do_outgoing_connection(struct outgoing_t *outgoing);
 extern void handle_new_meta_connection(void *data, int flags);

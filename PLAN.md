@@ -1,6 +1,17 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-16 (stream AC: **defects C and D are closed** -- two
+**Last Updated:** 2026-09-17 (stream AD: **obfs can finally be switched on in
+a network that is already running.** `obfs_udp_try()` skipped its keyed check
+for any source address bound to a node with `udp_confirmed`, so an obfs dial
+between two peers that had ever exchanged UDP data was dropped on the acceptor
+as `unknown source and/or destination ID` and timed out in authentication --
+obfs worked only between nodes that had never talked, i.e. never in the field.
+Found on the stand 2026-09-17, reproduced in a three-node lab
+(`testing/transports/obfs-confirmed-peer-test.sh`, `--expect-defect`), fixed by
+asking whether the SPTPS path would actually claim the datagram before leaving
+it to it. `sf` and `quic` were measured with the same harness on the pre-fix
+image and are **not** shadowed. See the Known Issues entry.
+Earlier -- stream AC: **defects C and D are closed** -- two
 nodes invited by the same third node now peer directly instead of being
 relayed through their inviter forever, and a node's carrier accept mask now
 travels over the meta graph. Measured against upstream tinc 1.1pre18 and
@@ -15,6 +26,18 @@ stale stream image. Stream Z **merged**: `AllowPlainMeta` — a node can finally
 refuse cleartext tinc on its listening port; default `yes`, so nothing changes
 until an operator asks for it. See the struck Known Issues entry. The first
 release tag is cut from this tree.)
+
+**Stream AD re-verification**, 2026-09-17, on `tincstack/core:ad` (master +
+the obfs guard fix), each exit 0: the new `obfs-confirmed-peer-test` (`PASS`;
+`PASS(repro)` on `tincstack/core:ad-pre` with `--expect-defect`), the same
+harness with `CARRIER=sf` and `CARRIER=quic` on **both** images, `obfs-test`,
+`obfs-mtu-test`, `carrier-switch-test`, `invitee-mesh-test`,
+`plain-refuse-test`, `matrix-test` (on a `-Dtransport_test=true` image),
+`quic-carrier-test` (with a `QUIC=disabled` second image), `testing/smoke/run.sh`
+under bash, and `make lint` (25 scripts). **Not run:** `classify-test.sh` --
+it `apt-get install`s a compiler inside a throwaway container and this host has
+no DNS in plain `docker run` (`Temporary failure resolving 'deb.debian.org'`);
+it compiles `transport_table.c`, which stream AD does not touch.
 
 **Regression state of `master`**, all 2026-09-16, each exit 0. On
 `tincstack/core:w` (the merged tree: streams X, Y and W): `obfs-test` **three
@@ -1918,6 +1941,112 @@ hardening), K, L, G3, S, T, N, O. No stream running.
 
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
+
+- 🟠 **An already-running network could never be switched to obfs**
+  (stream AD, found on the real stand 2026-09-17, **fixed** in the same
+  stream). Two nodes with a confirmed UDP data path could not bring up an
+  obfs link in either direction: the dial timed out in authentication and
+  fell back to plain. Field log, `laptop` (NATed) dialling `euvds` (public
+  VPS), both on the then-current master *with* stream AB's MTU fix, and with
+  no `Message too long` anywhere, so this is **not** the EMSGSIZE defect —
+  dialler:
+
+      00:14:48 INFO  Dialling euvds (88.218.122.166 port 655) via obfuscated single-flow UDP
+      00:14:48 INFO  Connected to euvds (88.218.122.166 port 655)
+      00:14:53 WARNING Timeout from euvds (88.218.122.166 port 655) during authentication
+      00:14:53 INFO  Dial to euvds ... via obfs abandoned before the connection was activated
+      00:14:53 INFO  Carrier obfs failed for euvds before activation (1/3) but worked before, retrying it
+
+  acceptor, at `-d5`, at exactly those seconds:
+
+      00:14:59 WARNING Received UDP packet from laptop (79.139.184.85 port 1181) with unknown source and/or destination ID
+      00:15:00 WARNING Received UDP packet from laptop (79.139.184.85 port 1181) with unknown source and/or destination ID
+      00:15:13 WARNING Received UDP packet from laptop (79.139.184.85 port 1181) with unknown source and/or destination ID
+
+  **Cause.** `obfs_udp_try()` (obfs.c), cold-start branch:
+
+      node_t *known = lookup_node_udp(&addr);
+      if(known && known->status.udp_confirmed) {
+              return false; /* an established plain peer: leave it to the SPTPS path */
+      }
+
+  The dialler's source address is already bound to a node with
+  `udp_confirmed` — the normal state of any pair that has been carrying
+  traffic — so the keyed check was skipped exactly when an existing network
+  switched to obfs. The sealed frames fell through to `process_sptps_udp()`,
+  which found the whitened nonce where a node id should be and dropped them.
+  Blast radius: obfs was unusable in the one scenario it exists for.
+
+  **Why every lab passed.** They dial obfs from cold containers, before any
+  UDP path is confirmed. `carrier-switch-test.sh` does wait for
+  `udp_confirmed` and still passes, because it has only **two** nodes: `tinc
+  disconnect nodea` removes the last edge to the dialler, so on the acceptor
+  the dialler becomes unreachable and `graph.c`'s reachability block clears
+  `udp_confirmed` before the obfs frames arrive. A real network has a third
+  node, and nothing clears it.
+
+  **Reproduction** (new, `testing/transports/obfs-confirmed-peer-test.sh`,
+  in `SHELL_SCRIPTS`): three nodes, `nodea` founder/acceptor at `-d5`,
+  `nodeb` dialler, `nodec` keeping `nodeb` reachable through the mesh; come
+  up on plain, wait for `udp_confirmed` **on the acceptor**, then
+  `set PreferredTransports obfs` + `reload` + `disconnect nodea` on the
+  running dialler. The acceptor's `udp_confirmed` for `nodeb` is asserted in
+  six consecutive samples from the instant of the disconnect — that is the
+  precondition the two-node test destroys, and a run that loses it to mesh
+  reconvergence retries instead of reporting. PART 4 is the control: remove
+  `nodec`, restart the dialler with the same configuration, and obfs comes up
+  **even on the pre-fix image**. Against `tincstack/core:ad-pre`
+  (`--expect-defect`): link stayed on `plain`, acceptor dropped 8 datagrams
+  as `unknown source and/or destination ID`, dialler hit 1 authentication
+  timeout, control reached `obfs` — `PASS(repro)`. Against the fixed build:
+  `obfs`, 0 dropped, 0 timeouts — `PASS`.
+
+  **Fix.** Ask whether the SPTPS path would actually claim the datagram
+  before leaving it alone, instead of assuming it would. New
+  `sptps_udp_addresses_known_nodes()` (net_packet.c, declared in net.h) runs
+  exactly the identification `process_sptps_udp()` runs and nothing else: for
+  a relay-capable peer (protocol option version ≥ 4 — every build that can
+  speak obfs), an all-zero destination id means a direct datagram, otherwise
+  both ids must resolve to known nodes. An obfs frame starts with its
+  whitened nonce, so its destination id is neither zero nor a node we know
+  and it falls through to the keyed check. `obfs_udp_try()`'s guard becomes
+  `known && known->status.udp_confirmed && sptps_udp_addresses_known_nodes(...)`.
+  **Steady-state cost, per datagram from a confirmed plain peer:** one
+  six-byte `memcmp` for a direct datagram (the overwhelming majority), plus
+  two O(log N) node-id splay lookups for a relayed one. No crypto, no
+  per-node keyed trial, no change to the unknown-source path. The rejected
+  alternative — keying the skip on an obfs dial being in flight — does not
+  work, because the side that drops the frames is the **acceptor**, which has
+  no dial of its own to key on. Residual: one frame in 2^48 whose first six
+  bytes are zero is still handed to the SPTPS path and dropped; the handshake
+  retries. Mis-claiming is not a hazard here — the keyed check is
+  authenticated, so a real data packet cannot be taken for an obfs frame.
+
+  **Neighbouring carriers, measured not argued.** The same harness with
+  `CARRIER=sf` and `CARRIER=quic` passes on the **pre-fix** image
+  (`tincstack/core:ad-pre`), so neither is shadowed by a confirmed plain
+  peer: `transport_classify_udp()` claims an sf frame on its magic prefix and
+  a quic packet on its version word or a live connection id, and neither ever
+  calls `lookup_node_udp()`. `grep -rn udp_confirmed core/tincd/src` finds
+  exactly one carrier-side use, the one fixed here.
+
+- 🟡 **Rebuilding a plain path right after a single-flow link was torn down
+  can take minutes** (stream AD, observed while building the harness above,
+  **not investigated, not fixed**). With the link on obfs, `set
+  PreferredTransports plain` + `reload` + restart of the dialler left the two
+  nodes reconverging for **over three minutes** (measured once, at `-d5`):
+  the acceptor kept sealing data to the restarted peer (`Cold-classified an
+  obfs datagram from <acceptor> as nodea` on the dialler right after its
+  restart), the dialler logged `Got ADD_EDGE from nodea for ourself which
+  does not match existing entry`, and `udp_confirmed` did not come back on
+  either side until the meta connection was re-established 3 min later. The
+  reverse direction (plain → obfs) is fast. `carrier-switch-test.sh` does the
+  same transition and passes inside its 90 s, so this is not a hard failure
+  and may be a narrower race; it is recorded here because the new harness had
+  to route around it (PART 4 restarts into the carrier rather than dancing
+  back through plain). **Not proven:** whether the acceptor's obfs link state
+  survives a peer restart when it should not, and whether the delay is
+  bounded.
 
 - ~~🟠 **Two names for the interface address in the schema.**~~ Stream A's core
   writes `InterfaceAddress`/`InterfaceRoute` into the joined node's `options:`
