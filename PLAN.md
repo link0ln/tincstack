@@ -2994,6 +2994,38 @@ Defects identified during the source audit, to fix as their milestone is reached
   dial and says so itself ("this attempt proves nothing, retrying") -- at a
   rate of roughly 1 run in 4. Worth tightening in that harness one day; it is
   not a daemon defect.
+- **Full regression on the shipped build, 2026-09-17** (`tincstack/core:sf5` /
+  `tincstack/node:sf5`, master 3bff008) -- wider than the batch run that closed
+  defect G, which covered 12 proofs and skipped five. **29 of 29 PASS:**
+
+      classify matrix singleflow x3 tls-front https-carrier quic-carrier
+      obfs obfs-mtu obfs-restart plain-refuse carrier-switch invitee-mesh
+      same-nat-meta confirmed-peer x4 two-nodes yaml-scripts obfs-rekey
+      reload smoke glare(--rtt 50) glare(--rtt 1) nat-quick dpi-baseline
+      lint secrets
+
+  `confirmed-peer` was 4 of 4 this time, the first clean sweep of the four; its
+  own precondition flake (roughly 1 run in 4, the harness's, not the daemon's)
+  stays on the list because four clean runs do not retire it.
+
+  **Three arms failed on the first pass and none of them was the daemon**, which
+  is worth writing down because two were my own mistakes and one was a real
+  defect in the stand:
+  - `nat-quick` and `dpi-baseline` were invoked with arguments those scripts do
+    not take (`lab.sh quick` instead of `lab.sh matrix --quick --image core`,
+    `dpi-proof/run.sh` with none instead of `baseline`). Both printed their
+    usage and exited non-zero. Re-run correctly: PASS.
+  - `smoke` could not create its network and said nothing useful. Two defects
+    behind it, both now fixed (c91ac1a): `run.sh` sent compose's stderr to
+    /dev/null and then printed `compose logs`, which is empty when the failure
+    happens before any container exists -- so the whole diagnosis was one blank
+    line. And `lab-env.sh`'s free-subnet check compared the first three octets
+    **as text**, so a network that *encloses* the candidate /24 did not count
+    as taken: an unrelated compose stack on `172.31.0.0/16` left the smoke lab
+    on its documented `172.31.77.0/24`, docker refused the pool, and the
+    self-healing walk never ran. It now compares the first min(len, 24) bits and
+    can leave a base that is entirely covered. This would have hit any host
+    whose docker has a /16 overlapping a lab default, silently, forever.
 - **The shipped commit is what the field runs, 2026-09-17.** All four real hosts
   were moved onto `tincstack/node:sf5`, built from master f5c6856 (defect G's
   three fixes plus the route-stale flag clearing); the router onto
