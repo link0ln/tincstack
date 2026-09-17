@@ -2625,6 +2625,108 @@ Defects identified during the source audit, to fix as their milestone is reached
   *How much churn is quic's own and how much was the loaded host* (several other
   streams' labs were running) was not separated; the 1500-byte control run on the
   same host was clean, which is the reason for reporting it at all.
+- **Field re-test of streams AA, AB and AC, 2026-09-17, four real hosts**
+  (`ruvds2` hub / `laptop` NATed workstation / `euvds` public VPS / `router`
+  aarch64 home gateway, all redeployed on a locally built `tincstack/node:abc`
+  from master a48d0ca; the router on its own cross-built arm64 image):
+  - **Defect C is fixed in the field, and proven the hard way.** `laptop` and
+    `euvds` now show each other at `distance 1` with the other leaf as
+    `nexthop`, and the pair keeps working **with the hub's container stopped**:
+    8 packets, 0 % loss, 46.0 ms, while `dump nodes` shows `ruvds2` and
+    `router` at `distance -1`. Before the fix the same pair was
+    `nexthop ruvds2 … distance 2`.
+  - **Latency is not the win, and saying so would be dishonest.** The direct
+    path measures 46.1 ms against 45.7 ms relayed: these two hosts are far
+    apart either way, and the relay hop through the hub was almost free. What
+    changed is that the hub no longer carries their traffic and no longer takes
+    them down with it.
+  - **The first-burst packet loss is gone for this pair** (10/10 both ways,
+    where the relayed pair lost its first two), exactly as stream AC's
+    three-build measurement predicted: the keys are up before any traffic.
+  - **Defect D works where its request fires and not otherwise:** `laptop` and
+    `euvds` now list each other as `plain,sf,obfs,https,quic`, but `router` and
+    `laptop` still list each other as `plain` — see defect E, point 3.
+  - **Stream AB's fix removed the field EMSGSIZE**: no `Message too long` in
+    any log on the stand, on any host, in any of the obfs dials attempted.
+    **The obfs dial still fails**, for a different reason that this re-test
+    found and traced — defect F below.
+  - **Stream AA's diagnostic earns its keep**: every failed dial on the stand
+    now says `Dial to X (host) via <carrier> abandoned before the connection
+    was activated`, which is how defects E and F were read off the logs in
+    minutes rather than guessed at.
+- 🟠 **Defect F — obfs can never be turned on for a pair that already has a
+  working UDP path.** Found 2026-09-17 on the four-node stand while re-testing
+  streams AA/AB/AC in the field, and traced to the line that causes it.
+  `obfs_udp_try()` (obfs.c) skips its keyed check when the datagram's source
+  address belongs to a node that already has `udp_confirmed`:
+
+      node_t *known = lookup_node_udp(&addr);
+
+      if(known && known->status.udp_confirmed) {
+              return false; /* an established plain peer: leave it to the SPTPS path */
+      }
+
+  That is the normal state of every working pair, so the sealed handshake
+  frames fall through to `process_sptps_udp()` and are dropped as unparseable.
+  Measured, dialler (`laptop` → `euvds`, both on master with stream AB's MTU
+  fix, so there is **no** `Message too long` anywhere in this trace):
+
+      00:14:48 INFO    Dialling euvds (88.218.122.166 port 655) via obfuscated single-flow UDP
+      00:14:48 INFO    Connected to euvds (88.218.122.166 port 655)
+      00:14:53 WARNING Timeout from euvds (88.218.122.166 port 655) during authentication
+      00:14:53 INFO    Carrier obfs failed for euvds before activation (1/3) but worked before, retrying it
+
+  acceptor at `-d5`, same seconds:
+
+      00:14:59 WARNING Received UDP packet from laptop (79.139.184.85 port 1181) with unknown source and/or destination ID
+      00:15:00 WARNING Received UDP packet from laptop (79.139.184.85 port 1181) with unknown source and/or destination ID
+
+  Every obfs lab passes because every lab dials obfs from fresh containers,
+  before any UDP path is confirmed — the one state in which the guard lets the
+  scan run. Impact: obfs is unusable in exactly the scenario it exists for, an
+  already-running network turning covert under censorship; a node can only get
+  an obfs link by never having had a plain one. This is also the second cause
+  stream AB said it could not find ("if your pair had junk at 0, the dial hang
+  has a second cause I have not found") — it was right to flag it: AB's fix
+  removed the EMSGSIZE symptom, and the dial still hung. **Dispatched as
+  stream AD.**
+- 🟠 **Defect E — two nodes behind the same NAT never form a meta connection,
+  and retry forever.** Same stand: `router` (the LAN gateway, 10.170.0.4) and
+  `laptop` (a container on a machine inside that LAN, 10.170.0.2) both know
+  each other and both dial — stream AC's fix works, the dials happen — but
+  each dials the *shared public address*, 79.139.184.85, because that is the
+  only address either advertises. TCP hairpin on this NAT does not work, so
+  both sides log, every backoff round, for ever:
+
+      00:11:52 INFO    Trying to connect to router (79.139.184.85 port 655) via plain
+      00:11:57 WARNING Timeout while connecting to router (79.139.184.85 port 655)
+      00:11:57 INFO    Dial to router (79.139.184.85 port 655) via plain abandoned before the connection was activated
+      00:11:57 ERROR   Could not set up a meta connection to router
+
+  and symmetrically on the router (dialling `laptop` at port 6552, the
+  invitee's *internal* port, for which no forward exists). Meanwhile their
+  **data** path is direct and fine — UDP hairpin does work here: `laptop → router`
+  10 packets, 0 % loss, 5.7 ms, and the router's own table shows
+  `laptop … rtt 5.040`. So the pair is in a half-state: packets take the short
+  path, the meta connection is relayed through a VPS abroad
+  (`nexthop euvds … distance 2`), and the journal gets an ERROR every ~45 s.
+  Three separate things are missing, and only the first is cheap:
+  1. the retry has no notion of "this address cannot work"; it never widens the
+     backoff beyond the 30 s cap and never stops;
+  2. neither node advertises a LAN address, so there is nothing else to dial.
+     tinc's `LocalDiscovery` is a UDP mechanism and cannot help the meta
+     connection, and a node in a docker bridge namespace has no LAN address to
+     advertise in the first place — on this stand the laptop node's only
+     address is 10.16.8.2/24 inside the bridge;
+  3. the pair is also the case where defect D's fix does not fire: both already
+     had each other's Ed25519 key, so no REQ_PUBKEY/ANS_PUBKEY round trip
+     happens and the accept mask never travels — each still sees the other as
+     `transports plain`. Worth recording against defect D as a measured limit
+     of that design: the mask rides on a request that only a key-less node
+     makes.
+  Not yet dispatched. The honest framing for the owner: a home router node plus
+  LAN machines is a common shape, and today it works by accident (UDP hairpin)
+  rather than by design.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`
