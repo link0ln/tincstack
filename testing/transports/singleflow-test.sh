@@ -43,7 +43,17 @@ A_VPN=10.181.0.1
 R_VPN=10.181.0.2
 B_VPN=10.181.0.3
 
+# When PART 2 reconverges slowly it tells you to go and read nodea's log -- but
+# the containers are torn down on exit, so that advice used to be impossible to
+# follow. Set KEEP_LOGS to a directory and the three daemon logs are saved there
+# first, which is what makes a slow run diagnosable rather than merely counted.
 cleanup() {
+	if [ -n "${KEEP_LOGS:-}" ]; then
+		mkdir -p "$KEEP_LOGS"
+		for n in a r b; do
+			docker logs "$LAB-$n" > "$KEEP_LOGS/$LAB-$n.log" 2>&1 || true
+		done
+	fi
 	docker rm -f "$LAB-a" "$LAB-r" "$LAB-b" "$LAB-cap" >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 }
