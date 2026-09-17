@@ -64,6 +64,12 @@ Two deliberately separate lists (decision 2, 2026-09-16):
   advertised to peers (host record and ACK) and enforced by the TCP front.
   What it does and does not buy you is §2.1.
 
+- **`UdpMetaFallback` — may a meta connection fall back onto the peer's
+  confirmed direct UDP flow** when every address we know for that peer has just
+  refused a meta connection? **Default: `yes`** (defect E, §2.2). `no` restores
+  the pre-fix behaviour, in which such a pair stays relayed through a third
+  node for ever.
+
 `SingleFlow = yes` (default **no**) is sugar for putting `sf` at the head of
 `PreferredTransports`. The default is `no` because single-flow trades tinc's
 separate, independently-recovering TCP meta channel for one UDP flow; it is opt-in
@@ -151,6 +157,54 @@ a running daemon (proof: `testing/transports/plain-refuse-test.sh` PART 3).
 It is **not** `VAR_SAFE` and **not** in `PROPAGATED_OPTIONS`: an inviter must
 not be able to switch a per-node listener policy on the invitee's machine
 (`invitation.c`, security review R).
+
+### 2.2 `UdpMetaFallback`: a meta connection on the data path
+
+**The case.** Two nodes behind one NAT. Neither has an address for the other
+except the shared public one, because that is the only address either
+advertises: `router` is itself behind its ISP's NAT and advertises `192.168.0.2`
+as its local address, `laptop` lives in a docker bridge and advertises
+`10.16.8.2` — neither is dialable by the other, so "advertise your LAN address"
+does not help this pair. The NAT hairpins UDP and not TCP (measured on the field
+NAT: `laptop → router` 10 packets, 0 % loss, 5.7 ms each way, while every TCP
+connect times out). The result is a half-state: the **data** path is direct and
+healthy, the **meta** connection is relayed through a VPS abroad
+(`nexthop euvds … distance 2`), and each node logs an ERROR every backoff round
+for ever.
+
+**What the daemon does now.** When `do_outgoing_connection()` has walked every
+address the graph and the config know for a peer and every one of them refused
+a meta connection, it asks `transport_udp_meta_fallback()` for one more address:
+the one the peer's **confirmed direct UDP flow** already uses. If it gets one,
+the meta connection is dialled there over the `sf` carrier — the same path, the
+same 5-tuple, the same NAT mapping that the data packets are already using.
+
+Every condition has to hold, and none of them is a guess:
+
+| condition | why |
+|---|---|
+| `UdpMetaFallback` is on | the operator can turn the whole thing off |
+| `sf` is compiled, dialable, and in **our** `Transports` | an operator who removed `sf` does not want it dialled |
+| `sf` is in the **peer's** advertised accept list | never dial a carrier the peer has not said it takes |
+| the peer is reachable and `status.udp_confirmed` | there is a UDP path, and we measured it, not assumed it |
+| `n->via == n` | the UDP path goes to the peer, not through a relay |
+| once per reconnect cycle | the backoff, not a loop, bounds the attempt rate |
+
+Nothing about authentication changes: the `sf` carrier hands the same ID
+exchange and the same SPTPS session to the same code, and the acceptor still
+enforces its own `Transports`/`AllowPlainMeta`. The fallback is an **address**
+of last resort, not a preference: it sits outside the `PreferredTransports`
+walk, which has already been exhausted over the known addresses by the time it
+fires.
+
+Because the fallback needs a *confirmed* UDP path and confirmation is normally
+driven by traffic, `setup_outgoing_connection()` also calls `try_tx()` for a
+reachable peer with no confirmed path — the same call ordinary traffic makes,
+rate-limited by `try_udp`/`try_sptps` and by the growing reconnect backoff. A
+pair with nothing to say to each other would otherwise never qualify.
+
+Proof: `testing/transports/same-nat-meta-test.sh` (and the same script with
+`SET_OPTS='UdpMetaFallback no' --expect-relayed` as the negative control).
 
 ### Selection algorithm (outbound), per connection
 

@@ -1,6 +1,22 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-17 (stream AD: **obfs can finally be switched on in
+**Last Updated:** 2026-09-17 (stream AE: **defect E is closed -- two nodes
+behind one NAT now form a direct meta connection instead of retrying for
+ever.** Their data path was already direct (that NAT hairpins UDP) while their
+meta connection was relayed abroad and each node logged an ERROR every backoff
+round. Three separable fixes: the give-up ERROR is quieted after three rounds
+instead of repeating for ever; a meta connection may now fall back onto the
+peer's **confirmed direct UDP flow** over the `sf` carrier when every address
+the graph knows has refused (`UdpMetaFallback`, default `yes`,
+`docs/transports.md` §2.2); and a peer's accept mask now reaches a node that
+already holds its key, by re-asking the same REQ_PUBKEY an upstream tinc
+already answers. New harness `testing/transports/same-nat-meta-test.sh` (four
+containers, three networks, a hairpinning-UDP/TCP-deaf NAT) reproduces the
+defect (`--expect-defect`), asserts the fix by default, and carries a negative
+control (`SET_OPTS='UdpMetaFallback no' --expect-relayed`). "Advertise your LAN
+address" was deliberately **not** implemented: it does not fix this pair and
+the lab asserts why. See the Known Issues entry.
+Earlier -- stream AD: **obfs can finally be switched on in
 a network that is already running.** `obfs_udp_try()` skipped its keyed check
 for any source address bound to a node with `udp_confirmed`, so an obfs dial
 between two peers that had ever exchanged UDP data was dropped on the acceptor
@@ -26,6 +42,42 @@ stale stream image. Stream Z **merged**: `AllowPlainMeta` — a node can finally
 refuse cleartext tinc on its listening port; default `yes`, so nothing changes
 until an operator asks for it. See the struck Known Issues entry. The first
 release tag is cut from this tree.)
+
+**Stream AE re-verification**, 2026-09-17, on `tincstack/core:ae` (master +
+the defect-E fixes), each exit 0: the new `same-nat-meta-test` (`PASS`;
+`PASS(repro)` on `tincstack/core:ae-pre` with `--expect-defect`;
+`PASS(control)` with `SET_OPTS='UdpMetaFallback no' --expect-relayed`),
+`obfs-test` (PART 2 is flaky -- see the note below: it failed once in the batch
+run and passed twice on each image afterwards), `obfs-mtu-test`,
+`obfs-confirmed-peer-test` (precondition held, 6 of 6 samples),
+`carrier-switch-test`, `invitee-mesh-test`,
+`plain-refuse-test`, `matrix-test` (on `:ae-test`, `-Dtransport_test=true`),
+`quic-carrier-test` (second image `:ae-noquic`, `-Dquic=disabled`),
+`singleflow-test`, `testing/smoke/run.sh` under bash, and `make lint`
+(26 scripts). **Not run:** `classify-test.sh`, `tls-front-test.sh`,
+`https-carrier-test.sh` -- the first for the same reason stream AD gave (it
+`apt-get install`s a compiler in a throwaway container and this host has no DNS
+in plain `docker run`), the other two because nothing in this stream touches the
+TCP front or the https carrier.
+
+**The two "sever a live link, require the relay" proofs are flaky, and this
+stream measured both rather than assuming.** `singleflow-test.sh` PART 2 severs
+a *fresh* A<->B link and gives the pair ~40 s to fall back to the relay, which
+is close to both recovery paths' own timers (one `sf` retransmission round is
+~36 s, `udp_discovery_timeout` is 30 s); `obfs-test.sh` PART 2 is the same
+scenario with a 120 s window. Measured:
+
+| proof | `:ae-pre` | first cut of AE | shipped AE |
+|---|---|---|---|
+| `singleflow-test` PART 2 | 3/3 (always the 4th of 5 attempts) | **1/3** | 3/3 (attempts 4, 4, 1) |
+| `obfs-test` PART 2 | 2/2 (relay up after 38 s, 38 s) | -- | 2/2 (39 s, 9 s), plus one failure in the batch run above |
+
+The `obfs-test` failure in the batch run happened while an unrelated pytest
+suite was saturating the host; re-run twice on each image afterwards it passed
+every time, with `:ae-pre` taking the same 38 s. A single green run of either
+proves little; read them together with the attempt count / "relay up after N s"
+line. The first cut of AE's `try_tx()` kick was a genuine regression here and
+was narrowed because of these numbers -- see defect E point (2).
 
 **Stream AD re-verification**, 2026-09-17, on `tincstack/core:ad` (master +
 the obfs guard fix), each exit 0: the new `obfs-confirmed-peer-test` (`PASS`;
@@ -2820,12 +2872,12 @@ Defects identified during the source audit, to fix as their milestone is reached
   removed the EMSGSIZE symptom, and the dial still hung. **Dispatched as
   stream AD.**
 - 🟠 **Defect E — two nodes behind the same NAT never form a meta connection,
-  and retry forever.** Same stand: `router` (the LAN gateway, 10.170.0.4) and
-  `laptop` (a container on a machine inside that LAN, 10.170.0.2) both know
-  each other and both dial — stream AC's fix works, the dials happen — but
-  each dials the *shared public address*, 79.139.184.85, because that is the
-  only address either advertises. TCP hairpin on this NAT does not work, so
-  both sides log, every backoff round, for ever:
+  and retry forever** (found on the four-node stand 2026-09-17; reproduced in a
+  four-container lab and **fixed** in stream AE). `router` (the LAN gateway) and
+  `laptop` (a node in a docker bridge on a machine inside that LAN) both know
+  each other and both dial -- stream AC's fix made the dials happen -- and both
+  fail for ever, because each dials the only address the other advertises, the
+  shared public one, and that NAT's TCP hairpin does not work:
 
       00:11:52 INFO    Trying to connect to router (79.139.184.85 port 655) via plain
       00:11:57 WARNING Timeout while connecting to router (79.139.184.85 port 655)
@@ -2833,29 +2885,162 @@ Defects identified during the source audit, to fix as their milestone is reached
       00:11:57 ERROR   Could not set up a meta connection to router
 
   and symmetrically on the router (dialling `laptop` at port 6552, the
-  invitee's *internal* port, for which no forward exists). Meanwhile their
-  **data** path is direct and fine — UDP hairpin does work here: `laptop → router`
-  10 packets, 0 % loss, 5.7 ms, and the router's own table shows
-  `laptop … rtt 5.040`. So the pair is in a half-state: packets take the short
-  path, the meta connection is relayed through a VPS abroad
-  (`nexthop euvds … distance 2`), and the journal gets an ERROR every ~45 s.
-  Three separate things are missing, and only the first is cheap:
-  1. the retry has no notion of "this address cannot work"; it never widens the
-     backoff beyond the 30 s cap and never stops;
-  2. neither node advertises a LAN address, so there is nothing else to dial.
-     tinc's `LocalDiscovery` is a UDP mechanism and cannot help the meta
-     connection, and a node in a docker bridge namespace has no LAN address to
-     advertise in the first place — on this stand the laptop node's only
-     address is 10.16.8.2/24 inside the bridge;
-  3. the pair is also the case where defect D's fix does not fire: both already
-     had each other's Ed25519 key, so no REQ_PUBKEY/ANS_PUBKEY round trip
-     happens and the accept mask never travels — each still sees the other as
-     `transports plain`. Worth recording against defect D as a measured limit
-     of that design: the mask rides on a request that only a key-less node
-     makes.
-  Not yet dispatched. The honest framing for the owner: a home router node plus
-  LAN machines is a common shape, and today it works by accident (UDP hairpin)
-  rather than by design.
+  invitee's *internal* port, for which no forward exists). Their **data** path
+  meanwhile is direct and healthy -- UDP hairpin *does* work on this NAT: 10
+  packets, 0 % loss, 5.7 ms each way. So the pair sat in a half-state: packets
+  took the short path, the meta connection was relayed through a VPS abroad
+  (`nexthop euvds … distance 2`), and each node logged an ERROR every backoff
+  round.
+
+  **The lab** (`testing/transports/same-nat-meta-test.sh`, in `SHELL_SCRIPTS`,
+  `make lint` clean). Four containers on three docker networks: `relay` (public
+  founder), `natgw`, and `nodea`/`nodeb` each in its **own** inside segment. The
+  separate segments are the point and they are what makes this defect E rather
+  than "advertise your LAN address": the gateway does not route between them, so
+  -- exactly as in the field, where `laptop` is at `10.16.8.2` inside a docker
+  bridge and `router` advertises its own upstream side `192.168.0.2` -- the only
+  address either node has for the other is the shared public one. The gateway is
+  a port-preserving cone NAT for UDP *including hairpin* and a black hole (DROP,
+  not REJECT, so the dialler times out rather than being refused) for TCP to the
+  public address in either direction. The relay stays up for the whole run: a
+  two-node lab does not reproduce mesh-dependent behaviour (stream AD paid for
+  that lesson). Five preconditions are asserted, none of them through tinc:
+  TCP `nodea → relay:655` connects, TCP `nodea → public:6552` times out, UDP
+  `nodea → public:7552` reaches a listener in nodeb's namespace, *neither*
+  protocol reaches nodeb's private address, and both nodes already hold the
+  other's Ed25519 key. Docker 28+ installs a `! -i br-X -o br-X -j DROP` rule per
+  bridge that black-holes exactly this lab's traffic, so the networks are created
+  with `gateway_mode_ipv4=nat-unprotected`; the relaxation lives and dies with
+  them.
+
+  Pre-fix image, `--expect-defect`, both nodes, after the keys are on disk and
+  the daemons restarted (which is what stops AC's mask propagation from firing,
+  see (3) below):
+
+      nodeb … nexthop relay via nodeb distance 2 … transports plain rtt 0.113
+      01:27:24 ERROR   Could not set up a meta connection to nodeb      [every round]
+      PASS(repro): the pair's data path is direct, its meta path is relayed for ever
+
+  Fixed image, same lab, same settle time:
+
+      nodeb … nexthop nodeb via nodeb distance 1 … transports plain,sf,obfs,https,quic rtt 0.100
+      dump connections:  nodeb at 10.34.9.66 port 6552 … transport sf
+      ERROR lines about the peer: nodea 1, nodeb 0
+      PASS: two nodes behind one NAT peer directly over a UDP carrier, with no ERROR loop
+
+  Three things were wrong and all three are now fixed, in this order:
+
+  1. **The give-up ERROR repeated for ever at the default `-d1`.** Corrected
+     measurement, against the first field write-up: the backoff *does* widen --
+     the lab shows `Trying to re-establish outgoing connection in 10 seconds`,
+     then 15, then 25 -- up to `MaxTimeout` (900 s). So the steady state was one
+     `ERROR Could not set up a meta connection to X` per peer per 15 minutes,
+     not one every 45 s; the 45 s in the field report was a snapshot of a
+     still-growing backoff, not a cap. It was still an ERROR, for ever, for a
+     condition the operator cannot act on. `net_socket.c` now counts consecutive
+     give-ups per `outgoing_t`: the first three are as loud as before, the fourth
+     says where the rest went, and the rest go to `-d3`. The counter is reset
+     the moment *any* link to that peer activates, so a peer that goes away and
+     comes back is loud again. Deliberately **quieted, not stopped**: a NAT
+     mapping or a route can start working at any time, so the dial keeps
+     happening on the same backoff.
+  2. **A meta connection can now use the peer's confirmed UDP path**
+     (`UdpMetaFallback`, default `yes`; `docs/transports.md` §2.2). When
+     `do_outgoing_connection()` has walked every address the graph and the config
+     know for a peer and every one of them refused, it asks
+     `transport_udp_meta_fallback()` for one more address: the one the peer's
+     **confirmed direct UDP flow** already uses, and dials there over `sf`. Same
+     path, same 5-tuple, same NAT mapping the data packets are already using.
+     Conditions, none of them a guess: the option is on; `sf` is compiled,
+     dialable and in *our* `Transports`; `sf` is in the *peer's advertised*
+     accept list; the peer is reachable and `status.udp_confirmed`; `n->via == n`
+     (the UDP path goes to the peer, not through a relay); once per reconnect
+     cycle. Where it lives is a deliberate answer to "carrier walk or
+     outgoing-connection logic": the walk decides *which wrapper goes around
+     SPTPS* over a given address, and what is different here is the **address** --
+     the only reachable endpoint for this peer is a UDP flow, and only a UDP
+     carrier can use it. So it sits outside the walk, at the exact point where
+     the code used to give up. Nothing is weakened: `sf` hands the same ID
+     exchange and the same SPTPS session to the same code, and the acceptor still
+     enforces its own `Transports`/`AllowPlainMeta`. `n->address` is only ever
+     updated from an authenticated UDP probe reply (`net_packet.c`, "It's a valid
+     reply"), so the fallback cannot be pointed at an attacker-chosen address,
+     and a wrong one would simply fail the ID exchange.
+     Because the fallback needs a *confirmed* path and confirmation is normally
+     driven by traffic, `setup_outgoing_connection()` also calls `try_tx()` for a
+     reachable peer that has none -- the same call ordinary traffic makes, rate
+     limited by `try_udp`/`try_sptps` and by the growing backoff. Without it a
+     pair with nothing to say to each other would never qualify.
+     **Only for a peer we have already failed to dial at least once**, and that
+     restriction is measured, not cosmetic. Kicking `try_tx()` on the *first*
+     dial as well confirms the UDP path of a peer that is about to connect
+     normally -- and a node whose **confirmed** path is then black-holed falls
+     back to the relay only after `udp_discovery_timeout`, where a node that
+     never confirmed it notices in one `sf` retransmission round (~36 s).
+     `singleflow-test.sh` PART 2 (sever a fresh A<->B link, require the relayed
+     path inside ~40 s) measured the difference: **1 of 3 passes** with the
+     unconditional kick, against **3 of 3** both on the pre-fix image and with
+     the kick narrowed. A's log showed exactly the mechanism -- `Caching recent
+     address for nodeb` three seconds after activation (UDP confirmed) and then
+     nothing, instead of `Single-flow link to nodeb: no acknowledgement after 8
+     retransmissions`.
+  3. **The accept mask now reaches a peer whose key we already have.** Stream
+     AC's mask rides on `ANS_PUBKEY`, and `ANS_PUBKEY` only ever answers a node
+     that does not have the key yet -- and a key is cached for ever. The field
+     pair had each other's keys, so the mask never travelled and each still saw
+     `transports plain`, which is exactly the pair that needs a non-plain carrier.
+     `send_req_transports()` (protocol_key.c) asks again over the graph, using
+     **the same REQ_PUBKEY request as before** rather than a new one: an upstream
+     tinc answers it whether or not it has our key, and answers with a plain
+     `ANS_PUBKEY` we already parse, so nothing new goes on the wire that an
+     upstream peer could choke on. It is called from
+     `setup_outgoing_connection()` only while the list is unknown, rate limited
+     to one per node per 60 s, and an answer *without* the extra token now records
+     `plain` -- so a peer that does not speak the extension is asked once, not
+     once a minute for ever.
+
+  **Negative control**, which also isolates (3) from (2): the same lab with
+  `SET_OPTS='UdpMetaFallback no' --expect-relayed` on the **fixed** image puts
+  the pair straight back into the half-state --
+  `nodeb … nexthop relay via nodeb distance 2` -- while now showing
+  `transports plain,sf,obfs,https,quic`, i.e. (3) works on its own and (2) is
+  what closes the distance. `PASS(control): with the UDP meta fallback off the
+  pair stays in the half-state`.
+
+  **Regression, all against `tincstack/core:ae` unless noted** (2026-09-17):
+  `same-nat-meta-test.sh` (fixed, defect on `:ae-pre`, control), `obfs-test.sh`,
+  `obfs-mtu-test.sh`, `obfs-confirmed-peer-test.sh` (its flaky precondition
+  **held**: "acceptor still reports udp_confirmed for nodeb in 6 of 6 samples
+  during the dial" -- a run where it does not hold proves nothing and must be
+  repeated), `carrier-switch-test.sh`, `invitee-mesh-test.sh`,
+  `plain-refuse-test.sh`, `matrix-test.sh` (`:ae-test`, built with
+  `-Dtransport_test=true`), `quic-carrier-test.sh` (second image `:ae-noquic`,
+  `-Dquic=disabled`, exercised: "B built without QUIC"), `testing/smoke/run.sh`
+  (run with **bash**), `make lint`. All PASS.
+
+  **Deliberately left undone, and why:**
+  - **"Use the graph's `local_address` when it is on our own subnet" is not
+    implemented.** It would be correct in general and it does **not** fix this
+    pair: neither node's advertised local address is reachable by the other
+    (`router` advertises its upstream `192.168.0.2`, `laptop` a docker-bridge
+    `10.16.8.2`). The lab asserts that property explicitly -- "neither UDP nor
+    TCP reaches nodeb's private address" -- so a future change of this kind
+    cannot quietly be credited with closing defect E.
+  - **The fallback is not remembered across reconnects.** When an `sf` link that
+    the fallback dialled drops, `transport_candidate_activated()` has cleared the
+    walk and the next cycle dials `plain` first, wasting one `pingtimeout` (5 s)
+    before falling back again. Remembering it would mean putting the fallback
+    into `last_ok_mask`, whose contract today is "a candidate at a *known*
+    address"; conflating the two would let a stale UDP address outrank a working
+    TCP one. Cost measured: one 5 s dial per reconnect.
+  - **Only `sf` is used as the fallback carrier.** `obfs` would additionally need
+    that peer's obfs key material to be right, and `quic` a TLS handshake over a
+    path we have confirmed in one direction. Neither is blocked; neither was
+    done.
+  - **The retry is quieted, not bounded.** One dial per `MaxTimeout` per
+    unreachable peer remains, on purpose (see (1)).
+  - **`send_req_transports()` costs one relayed request per minute per peer whose
+    list is still unknown and never answers.** Bounded, not zero.
 - 🟢 **Family-B repos committed secrets** (keys, a real LE cert, an invite token).
   None carried over; ensure none re-enter (M6 proof).
 - 🟢 **One private-key blob is in the tree by design**: `core/tincd/test/integration/cmd_sign_verify.py`

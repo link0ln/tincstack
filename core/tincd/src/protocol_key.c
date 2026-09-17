@@ -146,6 +146,44 @@ bool send_req_pubkey(node_t *to) {
 	return send_request(to->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, to->name, REQ_PUBKEY);
 }
 
+/* Defect E, point 3. Stream AC made a node's accept list travel as an extra
+   token on ANS_PUBKEY -- but ANS_PUBKEY only ever answers a node that does not
+   have the key yet, and a key is cached for ever. Two nodes that have met
+   before therefore never learn each other's carriers and each keeps assuming
+   the other is upstream tinc, i.e. plain-only. That is measured: the field
+   pair behind one NAT still shows `transports plain' for each other after
+   hours.
+
+   The refresh asks the same question again over the graph. Deliberately the
+   SAME request as before rather than a new one: an upstream tinc answers
+   REQ_PUBKEY whether or not it has our key, and answers with a plain
+   ANS_PUBKEY that we already parse. Nothing new goes on the wire that an
+   upstream peer could choke on -- which a new request type would.
+
+   Rate limited per node, and only ever sent while the list is still unknown
+   (ANS_PUBKEY sets it, and an answer without the extra token sets it to
+   `plain', so a peer that does not speak the extension is asked once, not
+   once a minute for ever). */
+#define REQ_TRANSPORTS_INTERVAL 60
+
+bool send_req_transports(node_t *to) {
+	if(!to || to == myself || to->transports) {
+		return false;
+	}
+
+	if(!to->status.reachable || !to->nexthop || !to->nexthop->connection) {
+		return false;
+	}
+
+	if(to->last_req_transports && now.tv_sec - to->last_req_transports < REQ_TRANSPORTS_INTERVAL) {
+		return false;
+	}
+
+	to->last_req_transports = now.tv_sec;
+	logger(DEBUG_PROTOCOL, LOG_DEBUG, "Asking %s (%s) for its carrier list over the meta graph", to->name, to->hostname);
+	return send_request(to->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, to->name, REQ_PUBKEY);
+}
+
 bool send_req_key(node_t *to) {
 	if(to->status.sptps) {
 		if(!node_read_ecdsa_public_key(to)) {
@@ -273,6 +311,11 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			} else {
 				logger(DEBUG_PROTOCOL, LOG_WARNING, "Ignoring Transports of %s in ANS_PUBKEY: unknown carrier `%s'", from->name, bad);
 			}
+		} else if(fields >= 1 && !from->transports) {
+			/* An answer with no carrier token is an upstream tinc, or a
+			   tincstack older than stream AC: it is plain-only and saying so
+			   is what stops send_req_transports() asking again for ever. */
+			from->transports = TRANSPORT_MASK_PLAIN;
 		}
 
 		if(node_read_ecdsa_public_key(from)) {

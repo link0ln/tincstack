@@ -165,6 +165,7 @@ extern transport_id_t transport_pref[TRANSPORT_MAX]; /* PreferredTransports (eff
 extern int transport_pref_count;
 extern bool single_flow;                           /* SingleFlow option */
 extern bool allow_plain_meta;                      /* AllowPlainMeta option (default yes) */
+extern bool udp_meta_fallback;                     /* UdpMetaFallback option (default yes) */
 
 const transport_t *transport_get(transport_id_t id);
 
@@ -210,6 +211,25 @@ void transport_candidate_activated(struct outgoing_t *outgoing, const struct con
    identically, so only one of the two nodes can ever want to re-dial and the
    surviving link only ever moves *up* the order: the rule terminates. */
 bool transport_outranks_connection(struct outgoing_t *outgoing, const struct connection_t *c);
+
+/* Defect E. True when every address we know for this peer has just refused a
+   meta connection AND the data path to it is a confirmed *direct* UDP flow:
+   then `sa' is filled with the address that flow uses and the meta connection
+   is dialled there over the single-flow carrier. Two nodes behind one NAT are
+   the case this exists for -- the NAT hairpins UDP but not TCP, so the short
+   path is reachable for data and unreachable for the meta connection, and the
+   pair stays relayed through a third node for ever.
+
+   Conditions, all of them: the option is on; `sf' is compiled, dialable and in
+   OUR accept list (an operator who removed it does not want it dialled); the
+   PEER's advertised accept list contains it (never a guess); the peer is
+   reachable, its UDP path is confirmed and goes to the peer itself rather than
+   through a relay. Once per dial cycle: retry_outgoing() re-arms it.
+
+   Nothing about authentication changes -- the sf carrier hands the same ID
+   exchange and the same SPTPS session to the same code -- and the acceptor
+   still enforces its own Transports/AllowPlainMeta. */
+bool transport_udp_meta_fallback(struct outgoing_t *outgoing, sockaddr_t *sa);
 
 /* Meta-channel plumbing. */
 void transport_meta_flush(struct connection_t *c);           /* c->outbuf has new bytes */

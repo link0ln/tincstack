@@ -45,6 +45,7 @@ transport_id_t transport_pref[TRANSPORT_MAX];
 int transport_pref_count;
 bool single_flow;
 bool allow_plain_meta = true;
+bool udp_meta_fallback = true;
 
 #ifdef HAVE_TRANSPORT_TEST
 /* The stub carrier exists to prove that fallback happens: it is selectable
@@ -180,6 +181,13 @@ bool transport_read_config(void) {
 	   transport_front_dispatch, TCP_CLASS_TINC). */
 	allow_plain_meta = true;
 	get_config_bool(lookup_config(&config_tree, "AllowPlainMeta"), &allow_plain_meta);
+
+	/* UdpMetaFallback: may a meta connection fall back onto the peer's
+	   confirmed direct UDP flow when every address we know for it refused a
+	   meta connection? Default yes (defect E). `no' restores the pre-fix
+	   behaviour: such a pair stays relayed. */
+	udp_meta_fallback = true;
+	get_config_bool(lookup_config(&config_tree, "UdpMetaFallback"), &udp_meta_fallback);
 
 	/* Transports: accept list. Default: everything compiled in. */
 
@@ -444,6 +452,13 @@ void transport_candidate_activated(outgoing_t *outgoing, const connection_t *c) 
 
 	outgoing->ncandidates = 0;
 	outgoing->transport_idx = 0;
+
+	/* Defect E: a link to this peer came up, whichever side dialled it and
+	   over whichever carrier, so the give-up counter that quiets the "Could
+	   not set up a meta connection" ERROR starts again from zero. A peer that
+	   goes unreachable later is loud again, exactly once. */
+	outgoing->failures = 0;
+	outgoing->udp_fallback_used = false;
 }
 
 static void build_candidates(outgoing_t *outgoing) {
@@ -535,6 +550,38 @@ bool transport_next_candidate(outgoing_t *outgoing) {
 	outgoing->ncandidates = 0;
 	outgoing->transport_idx = 0;
 	return false;
+}
+
+bool transport_udp_meta_fallback(outgoing_t *outgoing, sockaddr_t *sa) {
+	if(!udp_meta_fallback || !outgoing || outgoing->udp_fallback_used) {
+		return false;
+	}
+
+	if(!(transport_accept_mask & TRANSPORT_BIT(TRANSPORT_SF)) || !transports[TRANSPORT_SF].dial) {
+		return false;
+	}
+
+	node_t *n = outgoing->node;
+
+	if(!n || n == myself || !n->status.reachable || !n->status.udp_confirmed) {
+		return false;
+	}
+
+	/* The UDP path must go to the peer itself. `via' is the node the data
+	   actually travels through, so `via != n' means the "direct" path is a
+	   relay and dialling a meta connection at that address would talk to the
+	   wrong node. */
+	if(n->via != n || n->address.sa.sa_family == AF_UNKNOWN || !n->address.sa.sa_family) {
+		return false;
+	}
+
+	if(!(transport_node_mask(n) & TRANSPORT_BIT(TRANSPORT_SF))) {
+		return false;
+	}
+
+	outgoing->udp_fallback_used = true;
+	*sa = n->address;
+	return true;
 }
 
 /* Global carrier ranking for the acceptor-side rule. The transport_id_t order

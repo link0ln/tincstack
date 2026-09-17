@@ -475,6 +475,10 @@ void retry_outgoing(outgoing_t *outgoing) {
 		reset_address_cache(outgoing->node->address_cache);
 	}
 
+	/* Defect E: the UDP fallback is spent once per cycle, and a new cycle
+	   starts here. */
+	outgoing->udp_fallback_used = false;
+
 	timeout_add(&outgoing->ev, retry_outgoing_handler, outgoing, &(struct timeval) {
 		outgoing->timeout, jitter()
 	});
@@ -721,19 +725,74 @@ bool transport_plain_dial(connection_t *c) {
 	return true;
 }
 
+/* Defect E, first symptom. A dial to an address that has never once worked
+   repeated "Could not set up a meta connection to X" at LOG_ERR on every
+   backoff round, for ever, at the default -d1. Measured on the four-node stand
+   and reproduced in testing/transports/same-nat-meta-test.sh: two nodes behind
+   one NAT whose TCP hairpin does not work log it until one of them is
+   restarted. The backoff does widen (5, 10, 15 ... MaxTimeout, contrary to the
+   first field write-up), so the steady rate is one line per peer per 15 min --
+   but it is still an ERROR, for ever, for a condition the operator can do
+   nothing about, and it is what makes a node with a handful of unreachable
+   peers look broken.
+
+   So: the first OUTGOING_LOUD_FAILURES give-ups are as loud as before, then
+   one line says where the rest went, and the rest go to -d3. Nothing is
+   *stopped*: the dial keeps happening on the same backoff, because a NAT
+   mapping or a route can start working at any time, and `failures' is reset
+   the moment a connection to this peer activates -- so a peer that goes away
+   and comes back is loud again. */
+#define OUTGOING_LOUD_FAILURES 3
+
+static void log_outgoing_failure(outgoing_t *outgoing) {
+	const char *name = outgoing->node->name;
+
+	if(outgoing->failures < OUTGOING_LOUD_FAILURES) {
+		logger(DEBUG_CONNECTIONS, LOG_ERR, "Could not set up a meta connection to %s", name);
+	} else if(outgoing->failures == OUTGOING_LOUD_FAILURES) {
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Could not set up a meta connection to %s (%d times in a row; further attempts are logged at -d3 until one succeeds)", name, outgoing->failures + 1);
+	} else {
+		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Could not set up a meta connection to %s (%d times in a row)", name, outgoing->failures + 1);
+	}
+
+	if(outgoing->failures < INT_MAX) {
+		outgoing->failures++;
+	}
+}
+
 bool do_outgoing_connection(outgoing_t *outgoing) {
 	const sockaddr_t *sa;
+	sockaddr_t udpsa;
+	const transport_t *t;
+	bool fallback;
 
 begin:
 	sa = get_recent_address(outgoing->node->address_cache);
+	t = NULL;
+	fallback = false;
 
 	if(!sa) {
-		logger(DEBUG_CONNECTIONS, LOG_ERR, "Could not set up a meta connection to %s", outgoing->node->name);
-		retry_outgoing(outgoing);
-		return false;
+		/* Defect E, second symptom. Every address the graph and the config
+		   know for this peer has just refused a meta connection -- but the
+		   DATA path to it may be a confirmed direct UDP flow (a NAT that
+		   hairpins UDP and not TCP is exactly that shape). Dial the meta
+		   connection over that flow with the single-flow carrier, which is
+		   the same path the packets already take. SPTPS and the ID exchange
+		   are untouched; the acceptor still enforces its own accept list. */
+		if(transport_udp_meta_fallback(outgoing, &udpsa)) {
+			sa = &udpsa;
+			t = transport_get(TRANSPORT_SF);
+			fallback = true;
+		} else {
+			log_outgoing_failure(outgoing);
+			retry_outgoing(outgoing);
+			return false;
+		}
 	}
 
-	const transport_t *t = transport_current(outgoing);
+	if(!t) {
+		t = transport_current(outgoing);
+	}
 
 	connection_t *c = new_connection();
 	c->outgoing = outgoing;
@@ -744,15 +803,20 @@ begin:
 	c->last_ping_time = now.tv_sec;
 	c->transport = t;
 
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Trying to connect to %s (%s) via %s", outgoing->node->name, c->hostname, t->name);
+	if(fallback) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "No address of %s accepts a meta connection, but its UDP data path is direct: dialling %s (%s) via %s", outgoing->node->name, outgoing->node->name, c->hostname, t->name);
+	} else {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Trying to connect to %s (%s) via %s", outgoing->node->name, c->hostname, t->name);
+	}
 
 	if(!t->dial || !t->dial(c)) {
 		free_connection(c);
 
 		/* This carrier did not even get a socket up. Fall back to the next
 		   carrier in the preference list, retrying the same set of addresses
-		   from the top. */
-		if(transport_next_candidate(outgoing)) {
+		   from the top. The UDP fallback is not part of that walk: it is an
+		   address of last resort, already spent for this cycle. */
+		if(!fallback && transport_next_candidate(outgoing)) {
 			reset_address_cache(outgoing->node->address_cache);
 		}
 
@@ -792,6 +856,35 @@ void setup_outgoing_connection(outgoing_t *outgoing, bool verbose) {
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "Deferring the dial to %s until its Ed25519 key arrives over the graph", n->name);
 		retry_outgoing(outgoing);
 		return;
+	}
+
+	/* Defect E, point 3. A peer whose key we already have never answers an
+	   ANS_PUBKEY, so stream AC's accept-mask propagation never reaches it and
+	   we would keep assuming it is plain-only -- which is exactly the pair
+	   that needs a non-plain carrier. Ask over the graph; the answer takes one
+	   relay round trip, so the carrier walk of the next cycle has it.
+	   send_req_transports() is a no-op once the list is known and is rate
+	   limited per node. */
+	send_req_transports(n);
+
+	/* Defect E, second symptom. The UDP meta fallback can only fire if the
+	   data path to this peer has been confirmed direct, and that confirmation
+	   is normally driven by *traffic*: a pair that has nothing to say to each
+	   other would stay relayed for ever with no way out. try_tx() is what
+	   traffic would call; it rate-limits itself (try_sptps/try_udp) and the
+	   growing reconnect backoff bounds it further.
+
+	   Only for a peer we have ALREADY failed to dial at least once, which is
+	   the whole population this fix is for. Kicking it on the first dial too
+	   was measured to be actively harmful: it confirms the UDP path of a peer
+	   that is about to connect normally, and a node whose *confirmed* path is
+	   then black-holed takes udp_discovery_timeout to fall back to the relay,
+	   where a node that never confirmed it notices in one sf retransmission
+	   round. testing/transports/singleflow-test.sh PART 2 (sever a fresh
+	   A<->B link, require the relayed path within ~40 s) went from 3/3 to 1/3
+	   because of it. */
+	if(udp_meta_fallback && outgoing->failures && n->status.reachable && !n->status.udp_confirmed) {
+		try_tx(n, true);
 	}
 
 	if(n->connection && !transport_outranks_connection(outgoing, n->connection)) {

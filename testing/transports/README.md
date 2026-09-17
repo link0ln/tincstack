@@ -226,3 +226,46 @@ never looks the source address up).
 Expect: `PASS: a running network with a confirmed UDP path can be switched to obfs`
 (or `PASS(repro): a peer whose UDP path the acceptor has confirmed cannot be
 dialled over obfs`).
+
+## same-nat-meta-test.sh — defect E (two nodes behind one NAT)
+
+The proof for PLAN.md's Known Issue "two nodes behind the same NAT never form a
+meta connection, and retry forever". On the field stand, `router` and `laptop`
+sit behind one home NAT, both know each other, both dial, and both fail for
+ever — while their **data** path is direct and healthy, because that NAT
+hairpins UDP and not TCP. The pair ends up half-connected: packets take the
+short path, the meta connection is relayed through a VPS abroad, and each node
+logs an ERROR every backoff round.
+
+    sh testing/transports/same-nat-meta-test.sh [image] [--expect-defect]
+    SET_OPTS='UdpMetaFallback no' \
+        sh testing/transports/same-nat-meta-test.sh [image] --expect-relayed
+
+Four containers on three docker networks: `relay` (the public founder),
+`natgw` (the NAT, routing between all three), and `nodea`/`nodeb`, each in its
+**own** inside segment. Separate segments are the point: the gateway does not
+route between them, so — exactly as in the field — the only address either node
+has for the other is the shared public one, and "advertise your LAN address"
+cannot help. The gateway is a port-preserving cone NAT for UDP *including
+hairpin*, and a black hole (DROP, not REJECT) for TCP to the public address in
+either direction.
+
+Five preconditions are asserted before the script believes anything, none of
+them through tinc: TCP `nodea → relay` connects, TCP `nodea → public:6552`
+times out, UDP `nodea → public:7552` reaches a listener in nodeb's namespace,
+neither protocol reaches nodeb's private address, and both nodes already hold
+the other's Ed25519 key. The last one is what makes this defect E and not
+defect C: the accept mask rides on ANS_PUBKEY, which only a key-less node ever
+asks for, so the pair is left believing each other plain-only. The relay stays
+up for the whole run — a two-node lab does not reproduce mesh-dependent
+behaviour (see `obfs-confirmed-peer-test.sh`).
+
+Docker 28+ installs a `! -i br-X -o br-X -j DROP` rule per bridge, which
+black-holes exactly the traffic this lab is made of, so the three networks are
+created with `gateway_mode_ipv4=nat-unprotected`; the relaxation lives and dies
+with them. On an older daemon the option does not exist and is not needed.
+
+Expect: `PASS: two nodes behind one NAT peer directly over a UDP carrier, with
+no ERROR loop` (or `PASS(repro): the pair's data path is direct, its meta path
+is relayed for ever, and both log ERRORs`, or `PASS(control): with the UDP meta
+fallback off the pair stays in the half-state`).
