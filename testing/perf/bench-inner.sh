@@ -33,7 +33,7 @@
 #     be checked against the work actually done.
 set -eu
 
-ARM=$1          # baseline | baseline-o3 | plain | sf | obfs
+ARM=$1          # baseline | baseline-o3 | plain | sf | obfs | quic | https
 SECONDS_RUN=${SECONDS_RUN:-30}
 RATE=${RATE:-100M}
 PORT=655
@@ -58,6 +58,15 @@ esac
 log() { echo "[$ARM] $*" >&2; }
 
 cleanup() {
+	# KEEP_LOGS=<dir> saves the two daemon logs before teardown: a run whose
+	# carrier column says something other than the arm asked for can then be
+	# explained instead of only noticed.
+	if [ -n "${KEEP_LOGS:-}" ]; then
+		mkdir -p "$KEEP_LOGS"
+		for n in a b; do
+			[ -f "$RUN/$n.log" ] && cp "$RUN/$n.log" "$KEEP_LOGS/$ARM-$n.log"
+		done
+	fi
 	for n in a b; do
 		[ -f "$RUN/$n.pid" ] && kill -TERM "$(awk '{print $1}' "$RUN/$n.pid")" 2>/dev/null || true
 	done
@@ -98,11 +107,24 @@ write_node() {
 		echo "AddressFamily = ipv4"
 		echo "PingInterval = 10"
 		echo "PingTimeout = 5"
+		# One dialler, one acceptor. With AutoConnect left at its default both
+		# nodes dial each other, both carrier dials succeed, and the connection
+		# that survives the id_h dedup reports `plain' in dump connections -- so
+		# an arm would silently measure the plain data path while claiming to
+		# measure its own carrier. The carrier tests use the same rendezvous
+		# shape for the same reason.
+		echo "AutoConnect = no"
 		[ -n "$extra" ] && printf '%s\n' "$extra"
 	} > "$d/tinc.conf"
 	{
 		printf 'Subnet = %s/32\n' "$vpn"
 		printf 'Address = %s\nPort = %s\n' "$addr" "$PORT"
+		# The peer's accept mask. Without it a cold dialler knows nothing about
+		# what the other end accepts, assumes `plain', and every arm silently
+		# measures the plain path: "Carrier candidates for b: plain (peer
+		# accepts plain)". In the field this arrives over ANS_PUBKEY/ACK, but
+		# that is after the first connection is already up.
+		printf 'Transports = plain,sf,obfs,https,quic\n'
 	} > "$d/hosts/$name"
 	# shellcheck disable=SC2016  # $INTERFACE is expanded by tincd, not here
 	printf '#!/bin/sh\nip link set "$INTERFACE" up\nip addr add %s/24 dev "$INTERFACE"\n' "$vpn" > "$d/tinc-up"
@@ -116,6 +138,8 @@ case "$ARM" in
 	sf)       EXTRA="PreferredTransports = sf
 SingleFlow = yes" ;;
 	obfs)     EXTRA="PreferredTransports = obfs" ;;
+	quic)     EXTRA="PreferredTransports = quic" ;;
+	https)    EXTRA="PreferredTransports = https" ;;
 	*) echo "unknown arm $ARM" >&2; exit 2 ;;
 esac
 
@@ -127,20 +151,45 @@ cp "$NODES/b/hosts/b" "$NODES/a/hosts/b"
 
 # --------------------------------------------------------------------- start
 for n in a b; do
-	ip netns exec "$n" "$TINCD" -D -d0 -c "$NODES/$n" --pidfile "$RUN/$n.pid" \
+	# -d0 for measurement: logging is not free. DEBUG_LEVEL raises it for
+	# diagnosis only -- never for a row that ends up in a result table.
+	ip netns exec "$n" "$TINCD" -D -d"${DEBUG_LEVEL:-0}" -c "$NODES/$n" --pidfile "$RUN/$n.pid" \
 		>> "$RUN/$n.log" 2>&1 &
 done
 
-# Wait for a direct UDP data path, which is what the transfer will use.
+# Wait for the data path this arm is supposed to measure.
+#
+# The https carrier is deliberately not a UDP path: become_established() marks
+# the link TCPONLY|INDIRECT so that one TLS flow carries meta and data, which is
+# the whole point (bare UDP next to a connection pretending to be HTTPS would
+# give the cover away). So https is ready when the tunnel passes a ping; every
+# other arm must reach "directly with UDP", because for them anything else
+# would mean the measurement had quietly moved to the meta channel.
+case "$ARM" in
+	https) WANT=meta ;;
+	*)     WANT=udp ;;
+esac
+
 t0=$(date +%s)
 while :; do
 	r=$("$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" info b 2>/dev/null \
 		| awk -F': *' '/^Reachability:/{print $2}')
-	[ "$r" = "directly with UDP" ] && break
-	[ $(( $(date +%s) - t0 )) -gt "${UP_TIMEOUT:-90}" ] && { log "tunnel never came up (last: ${r:-none})"; exit 1; }
+
+	if [ "$WANT" = meta ]; then
+		ip netns exec a ping -c1 -W1 "$B_VPN" >/dev/null 2>&1 && break
+	fi
+
+	[ "$WANT" = udp ] && [ "$r" = "directly with UDP" ] && break
+	if [ $(( $(date +%s) - t0 )) -gt "${UP_TIMEOUT:-90}" ]; then
+		log "tunnel never came up (last: ${r:-none})"
+		"$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" info b 2>&1 | sed 's/^/[info] /' >&2
+		"$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" dump nodes 2>&1 | sed 's/^/[nodes] /' >&2
+		exit 1
+	fi
 	sleep 1
 done
-log "tunnel up after $(( $(date +%s) - t0 ))s"
+log "tunnel up after $(( $(date +%s) - t0 ))s (path: ${r:-unknown})"
+path=$(printf '%s' "${r:-unknown}" | tr ' ' '-')
 
 # The tun device, found by the address tinc-up put on it.
 tun_dev() { ip netns exec "$1" ip -o -4 addr show | awk -v ip="$2" '$0 ~ ip {print $2; exit}'; }
@@ -150,6 +199,15 @@ TUN_A=$(tun_dev a "$A_VPN")
 
 pmtu=$("$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" dump nodes 2>/dev/null \
 	| awk '/^b /{for(i=1;i<=NF;i++) if($i=="pmtu") print $(i+1)}')
+
+# The carrier actually negotiated, recorded per run. Without it a silent
+# fallback -- a carrier that could not be dialled, or a datagram that did not
+# fit a carrier's ceiling -- would be measured as if it were the arm asked for,
+# and the row would quietly be a duplicate of the plain one.
+carrier=$("$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" dump connections 2>/dev/null \
+	| awk '/^b /{for(i=1;i<=NF;i++) if($i=="transport") print $(i+1)}' | head -1)
+[ -n "$carrier" ] || carrier=unknown
+log "carrier in use: $carrier (pmtu ${pmtu:-?})"
 
 # -------------------------------------------------------------------- sample
 # tinc's pidfile is not just a pid: it is "<pid> <key> <address> <port>".
@@ -208,13 +266,14 @@ retr=$(awk -F'[:,]' '/"retransmits"/{v=$2} END{print v+0}' "$RUN/iperf.json")
 awk -v arm="$ARM" -v hz="$hz" -v a0="$a0" -v a1="$a1" -v b0="$b0" -v b1="$b1" \
     -v w0="$w0" -v w1="$w1" -v bits="$bits" -v bytes="$bytes" -v retr="$retr" \
     -v ha="$(hwm_kb a)" -v hb="$(hwm_kb b)" -v pmtu="${pmtu:-0}" \
-    -v pa0="$pa0" -v pa1="$pa1" -v mode="${MODE:-udp}" -v cal="$CAL" 'BEGIN{
+    -v pa0="$pa0" -v pa1="$pa1" -v mode="${MODE:-udp}" -v cal="$CAL" \
+    -v carrier="$carrier" -v path="$path" 'BEGIN{
 	wall = w1 - w0
 	ca = (a1 - a0) / hz; cb = (b1 - b0) / hz
 	gb = bytes / 1e9
 	mp = (pa1 - pa0) / 1e6
-	printf "%s,%s,%.1f,%.3f,%.3f,%.2f,%.2f,%.1f,%.1f,%.2f,%.2f,%d,%d,%d,%.1f,%.3f,%.2f,%.2f\n",
-	       arm, mode, bits/1e6, gb, mp, ca, cb, 100*ca/wall, 100*cb/wall,
+	printf "%s,%s,%s,%s,%.1f,%.3f,%.3f,%.2f,%.2f,%.1f,%.1f,%.2f,%.2f,%d,%d,%d,%.1f,%.3f,%.2f,%.2f\n",
+	       arm, carrier, path, mode, bits/1e6, gb, mp, ca, cb, 100*ca/wall, 100*cb/wall,
 	       (mp>0 ? ca/mp : 0), (mp>0 ? cb/mp : 0), ha, hb, pmtu, wall,
 	       cal, (cal>0 && mp>0 ? ca/cal/mp : 0), (cal>0 && mp>0 ? cb/cal/mp : 0)
 }'

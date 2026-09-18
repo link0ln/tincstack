@@ -20,6 +20,15 @@ from math import comb
 
 def main(path: str) -> int:
     rows = list(csv.DictReader(open(path)))
+    # A row whose carrier is not the one the arm asked for measured something
+    # else -- an arm that silently fell back to plain would otherwise be
+    # averaged in as if it were its own carrier.
+    for r in rows:
+        want = "plain" if r["arm"].startswith("baseline") else r["arm"]
+        if r.get("carrier") not in (want, None):
+            print(f"WARNING: {r['arm']} run ran on carrier {r['carrier']}, not {want}",
+                  file=sys.stderr)
+
     arms: list[str] = []
     for r in rows:
         if r["arm"] not in arms:
