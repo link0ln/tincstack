@@ -1,6 +1,11 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-18 (**the dead-peer detection window
+**Last Updated:** 2026-09-18 (**`PingInterval 20` measured on the real stand:
+worst-case detection 25 s instead of 65 s, blackout ceiling 24.7 s instead of
+61.5 s, applied to three running daemons without a restart. The router was not
+updated -- the in-place rebuild wedged its dockerd and it rebooted; keep off
+that host.**
+Earlier -- **the dead-peer detection window
 (`PingInterval`/`PingTimeout`) is documented, re-read on reload, and no longer
 substitutes values in silence** -- the follow-up to measuring 21/45/46 s
 failover in the field; see the entry in Known Issues.
@@ -3126,6 +3131,86 @@ Defects identified during the source audit, to fix as their milestone is reached
   spends 23.7 % of a core at 100 Mbit/s but only 35.2 % at four times the rate.
   The ladder answers capacity questions and the fixed-rate bench answers
   cost-per-packet ones; neither substitutes for the other.
+
+- **PingInterval 20 measured on the real stand, 2026-09-18** -- three of the
+  four hosts (`laptop`, `ruvds2`, `euvds`) on `tincstack/node:pi20`, built from
+  master 3308e1c. **The router was NOT updated and the attempt cost it an
+  outage; see the entry below.**
+
+  **The window was changed on running daemons.** `tinc set PingInterval 20` +
+  `tinc set PingTimeout 5` + reload on each node, and the container `StartedAt`
+  is identical before and after on all three -- no restart, which is the whole
+  point of making the parsing reloadable:
+
+      17:26:41 INFO Dead-peer detection window changed on reload: PingInterval 60 -> 20, PingTimeout 5 -> 5 seconds.
+
+  **The first measurement method was wrong and is discarded, not reported.** A
+  sever built from `iptables -I OUTPUT -d <peer> -j DROP` makes the local
+  `sendto()` return EPERM, so the daemon learns the path is dead immediately and
+  the ping window is never exercised -- the node's own log says so, and it is
+  defect G's fix firing:
+
+      Single-flow dial to euvds: the kernel refused the last 3 sends, so the
+      path is gone; not waiting out the retransmission budget
+
+  Detection read 10.8 s and 11.7 s that way with `PingInterval 20`, which would
+  have been a flattering number measuring the wrong mechanism.
+
+  **The method that measures the window**: one `iptables -I INPUT -s <peer>`
+  rule on *each* side, so both kernels keep accepting the sends and neither peer
+  ever hears the other again -- a silently dead path, which only the ping window
+  can notice. `euvds` stays reachable through `ruvds2`, so the tunnel has
+  somewhere to fail over to. Three trials each, tunnel pinged at 5 Hz
+  throughout, and a settle check (direct meta connection present, tunnel clean)
+  before every trial:
+
+  | window | detect (s) | blackout (s) | reconverge (s) |
+  |---|---|---|---|
+  | `PingInterval 20`, `PingTimeout 5` | 18.1 / 19.9 / 14.6 | 24.7 / 23.3 / 22.3 | 6.6 / 3.3 / 7.6 |
+  | control, defaults 60 / 5 | 14.7 / 58.1 / 53.5 | 27.6 / 59.7 / 61.5 | 12.9 / 1.5 / 8.0 |
+
+  `detect` = sever to `Closing connection with euvds`; `blackout` = the largest
+  gap between consecutive tunnel ping replies; `reconverge` = blackout - detect,
+  i.e. what the routing takes once the death is known.
+
+  **What the numbers say.** Detection is a uniform draw in
+  `[PingTimeout, PingInterval + PingTimeout]`, so a single trial proves nothing
+  -- the control drew 14.7 s at the defaults, faster than two of the three
+  20 s trials. What changes is the **bound**: worst case 25 s instead of 65 s,
+  and the measured blackout ceiling fell from 61.5 s to 24.7 s. Reconvergence
+  after detection is 1.5-12.9 s in both rows and is not governed by this knob.
+  The control row also re-measures the earlier field figure (21/45/46 s) with a
+  method that is now written down, so the two rows are comparable to each other
+  and the old number is not.
+
+  **Cleanup verified**: 0 `DROP` rules left in either container, both nodes
+  re-checked; the three nodes were left at `PingInterval 20` (revert with
+  `tincstack-cli set PingInterval 60` + reload).
+
+- **The router was taken out by an in-place image rebuild, 2026-09-18** --
+  🟠 operational, not a daemon defect, and the owner has told me to keep off that
+  host. The same 968 KB context + `FROM tincstack/node:sf5-arm64` + plain
+  `docker build` that worked on 2026-09-17 wedged its dockerd this time. What was
+  observed, in order: `docker build` running for 15 min with no output; load
+  average 18 -> 30 with **75 % iowait and 0 % idle**; `dockerd` and both `tincd`
+  processes (the tincstack node *and* the owner's unrelated `gnet` tinc) in
+  uninterruptible D state; two of the box's own `docker-compose up -d`
+  watchdog runs queued behind mine; then sshd refusing connections. The house
+  gateway kept forwarding (ping and both VPN tunnels stayed at 0 % loss) but its
+  DNS relay was down, so name resolution in the house failed for several
+  minutes. Killing the build client did not drain the queue. The box came back
+  on its own -- almost certainly a reboot -- and the router node is in the mesh
+  again at distance 1 with 0 % tunnel loss, still on `tincstack/node:sf5`.
+  No EXT4 errors were logged and the flash had 106 GB free, so this reads as
+  write amplification on a slow USB flash (BuildKit is unavailable there, and
+  the classic builder commits a layer per `COPY`), not as a failing disk.
+  **Consequences**: the stand is now mixed -- three nodes on pi20, the router on
+  sf5. That is harmless on the wire (no protocol change in this commit) but it
+  means the router is the one node whose `PingInterval` cannot be changed
+  without a restart. **Before anyone touches that box again**: the only safe
+  shape is to build the arm64 image elsewhere and `docker load` it, or to stop
+  doing image work on the flash at all -- and the long-standing `e2fsck -f`
+  decision is now overdue, since the box rebooted uncleanly.
 
 - **The failover window is a YAML option, and a loud one, 2026-09-18**
   (`core/tincd/src/net_setup.c` `setup_ping_timers()`, `net.c`
