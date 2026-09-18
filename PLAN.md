@@ -5,9 +5,11 @@
 egress NAT, ruvds2 .2, a Windows invitation reserving .3, and the existing
 3proxy now actually enforcing its ACL for both VPN subnets -- it had no `auth`
 line, so its allow/deny list had never been evaluated. The Windows client of
-that network does not start: onboarding never writes `DeviceType: wintun`, so
-a joined node looks for a TAP-Win32 driver we do not ship -- see Known
-Issues.** Earlier the same
+that network did not start: onboarding never wrote `DeviceType: wintun`, so a
+joined node looked for a TAP-Win32 driver we do not ship. Fixed in the core the
+same day -- Windows now defaults to Wintun whenever `wintun.dll` is usable and
+addresses the adapter from the node's own Subnet, so a joined node needs no
+hand-written option; awaiting confirmation on a real Windows host.** Earlier the same
 day -- **full regression on the PingInterval build: 31 of
 31 PASS after the glare arm was taught to grade each image against what it
 should do -- the upstream control is now asserted to SHOW the defect the
@@ -3129,10 +3131,21 @@ Defects identified during the source audit, to fix as their milestone is reached
 
   Reproduction: join from Windows with any invitation, start tincd. Impact:
   every Windows onboarding, i.e. the whole point of the one-line join on that
-  platform. Not fixed yet — the two candidate fixes are (a) default to Wintun
-  on Windows when `wintun.dll` loads, falling back to TAP only if it does not,
-  and (b) derive the adapter address from the node's own `Subnet` when
-  `WintunAddress` is unset, which also removes the duplicated address.
+  platform.
+
+  **Fixed the same day** (PATCHES.md §8), both layers, because either one alone
+  still leaves a hand-written option: with `DeviceType` unset the dispatcher
+  now probes `wintun_available()` — loads `wintun.dll` and checks its entry
+  points, touching no adapter — and takes Wintun when that succeeds, TAP-Win32
+  when it does not; `DeviceType` still decides outright when set, so an
+  existing TAP deployment is untouched. `configure_ip()` falls back to
+  `autoif_own_address()` (the former `own_interface_address()` of `autoif.c`,
+  now shared), i.e. the node's own `/32` Subnet at the `AddressPool` prefix —
+  the same answer the Linux built-in tinc-up computes. Proof: the Windows
+  cross-build is clean (`platforms/windows/build-core-win.sh`, tincd.exe
+  sha256 `5fffadeb8747…`), the Linux core rebuilds and `testing/smoke/run.sh`
+  passes on `tincstack/core:winfix`. **Not yet confirmed on real Windows** —
+  no Windows host in the lab; the owner's next join is the test.
 
   Second finding from the same session, cause not established: after three such
   starts the client's config became unparsable —

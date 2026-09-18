@@ -30,6 +30,7 @@
 #include <iphlpapi.h>
 #include <netioapi.h>
 
+#include "../autoif.h"
 #include "../conf.h"
 #include "../device.h"
 #include "../logger.h"
@@ -85,7 +86,9 @@ static io_t device_read_io;
    extern in device.h); we reuse them so both backends can be linked together. */
 static const char *device_info = "Wintun device";
 
-static bool load_wintun(void) {
+/* quiet: probing whether Wintun is usable at all (the dispatcher's backend
+   choice), where a missing DLL is a normal outcome, not an error. */
+static bool load_wintun(bool quiet) {
 	if(wintun_dll) {
 		return true;
 	}
@@ -97,13 +100,13 @@ static bool load_wintun(void) {
 	}
 
 	if(!wintun_dll) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "Could not load wintun.dll: %s", winerror(GetLastError()));
+		logger(DEBUG_ALWAYS, quiet ? LOG_DEBUG : LOG_ERR, "Could not load wintun.dll: %s", winerror(GetLastError()));
 		return false;
 	}
 
 #define LOAD(sym) do { \
 		FARPROC proc_ = GetProcAddress(wintun_dll, #sym); \
-		if(!proc_) { logger(DEBUG_ALWAYS, LOG_ERR, "wintun.dll missing %s", #sym); return false; } \
+		if(!proc_) { logger(DEBUG_ALWAYS, quiet ? LOG_DEBUG : LOG_ERR, "wintun.dll missing %s", #sym); return false; } \
 		memcpy(&sym, &proc_, sizeof(sym)); \
 	} while(0)
 
@@ -121,6 +124,13 @@ static bool load_wintun(void) {
 #undef LOAD
 
 	return true;
+}
+
+/* Whether this installation can use Wintun at all: wintun.dll loads and
+   exports every entry point we call. The dispatcher asks before either
+   backend touches an adapter, so the choice never leaves half-built state. */
+bool wintun_available(void) {
+	return load_wintun(true);
 }
 
 /* Build the adapter name. We prefer the network name over Interface: Interface
@@ -148,15 +158,29 @@ static void adapter_name_w(WCHAR *out, size_t cch) {
 
 /* Programmatically assign the adapter's IP from the `WintunAddress` option
    (e.g. "10.210.0.1/24"), via iphlpapi using the adapter LUID — no netsh and
-   no manual step. If the option is absent, addressing is left to a tinc-up
-   script (classic behaviour). */
+   no manual step. A node that joined a YAML network already knows its address
+   (its /32 Subnet) and the prefix (AddressPool), so when the option is absent
+   we use that instead of asking for a tinc-up script: onboarding by
+   invitation has to produce a working adapter without a second step. */
 static void configure_ip(void) {
 	char *spec = NULL;
+	bool from_pool = false;
 
 	if(!get_config_string(lookup_config(&config_tree, "WintunAddress"), &spec) || !spec) {
+		spec = autoif_own_address();
+		from_pool = spec != NULL;
+	}
+
+	if(!spec) {
 		logger(DEBUG_ALWAYS, LOG_INFO,
-		       "No WintunAddress set; configure the adapter IP via a tinc-up script.");
+		       "No WintunAddress and no Subnet/AddressPool to derive one from; "
+		       "configure the adapter IP via a tinc-up script.");
 		return;
+	}
+
+	if(from_pool) {
+		logger(DEBUG_ALWAYS, LOG_INFO,
+		       "No WintunAddress set; using this node's own address %s", spec);
 	}
 
 	int prefix = -1;
@@ -214,7 +238,7 @@ static bool setup_device(void) {
 		iface = xstrdup(netname ? netname : "tinc");
 	}
 
-	if(!load_wintun()) {
+	if(!load_wintun(false)) {
 		return false;
 	}
 

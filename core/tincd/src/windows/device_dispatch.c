@@ -4,14 +4,20 @@
     tinc on Windows can now use either the classic TAP-Win32 backend (layer 2,
     device.c -> tap_devops) or the Wintun backend (layer 3, wintun_device.c ->
     wintun_devops). This file provides the single `os_devops` the rest of tinc
-    links against and forwards every call to the backend selected by the
-    `DeviceType` option:
+    links against and forwards every call to the backend:
 
         DeviceType = wintun   -> Wintun (WireGuard tunnel adapter, L3)
-        (anything else)       -> TAP-Win32 (default, L2)
+        DeviceType = anything -> TAP-Win32 (L2)
+        DeviceType unset      -> Wintun if wintun.dll is usable, else TAP-Win32
 
-    Keeping the choice at runtime means one tincd.exe supports both, so
-    existing TAP setups keep working while new ones can opt into Wintun.
+    The default used to be TAP-Win32, which meant a node that joined by
+    invitation looked for a driver this distribution does not ship (we ship
+    wintun.dll) and died with "No Windows tap device found!". Wintun needs no
+    pre-installed adapter — it creates one on connect — so it is the right
+    default; a host that really has a TAP adapter and no wintun.dll still
+    lands on TAP, and `DeviceType` still decides outright when it is set.
+
+    Keeping the choice at runtime means one tincd.exe supports both.
 
     GPL-2.0-or-later.
 */
@@ -27,28 +33,34 @@
 
 extern const devops_t tap_devops;
 extern const devops_t wintun_devops;
+extern bool wintun_available(void);
 
 static const devops_t *active = NULL;
 
-static const devops_t *select_backend(void) {
+static const devops_t *select_backend(const char **why) {
 	char *type = NULL;
-	const devops_t *sel = &tap_devops;
 
 	if(get_config_string(lookup_config(&config_tree, "DeviceType"), &type)) {
-		if(type && !strcasecmp(type, "wintun")) {
-			sel = &wintun_devops;
-		}
-
+		bool wintun = type && !strcasecmp(type, "wintun");
 		free(type);
+		*why = "DeviceType";
+		return wintun ? &wintun_devops : &tap_devops;
 	}
 
-	return sel;
+	if(wintun_available()) {
+		*why = "no DeviceType set, wintun.dll is usable";
+		return &wintun_devops;
+	}
+
+	*why = "no DeviceType set and no usable wintun.dll";
+	return &tap_devops;
 }
 
 static bool d_setup(void) {
-	active = select_backend();
-	logger(DEBUG_ALWAYS, LOG_INFO, "Using %s device backend",
-	       active == &wintun_devops ? "Wintun (L3)" : "TAP-Win32 (L2)");
+	const char *why = "";
+	active = select_backend(&why);
+	logger(DEBUG_ALWAYS, LOG_INFO, "Using %s device backend (%s)",
+	       active == &wintun_devops ? "Wintun (L3)" : "TAP-Win32 (L2)", why);
 	return active->setup();
 }
 

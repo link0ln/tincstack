@@ -276,6 +276,43 @@ detection".
 
 ---
 
+## 8. Windows: a joined node brings its own adapter up (tincstack, 2026-09-18)
+
+Files: `src/windows/device_dispatch.c`, `src/windows/wintun_device.c`,
+`src/autoif.c`, `src/autoif.h`.
+
+Two defaults made the one-line join unusable on Windows. `select_backend()`
+chose TAP-Win32 unless `DeviceType` was spelled `wintun`, and the invitation
+path writes no `DeviceType` — so a node that had just joined looked for a
+TAP-Win32 driver this distribution does not ship (it ships `wintun.dll`) and
+died at startup:
+
+    Using TAP-Win32 (L2) device backend
+    ERROR   No Windows tap device found!
+    Terminating
+
+One layer down, `configure_ip()` assigned the adapter address only from
+`WintunAddress`, although the daemon already knows its address (its `/32`
+Subnet) and the prefix (`AddressPool`) — the same pair the Linux built-in
+tinc-up uses. A joined node therefore needed two hand-written options before
+it could run at all.
+
+Now: with `DeviceType` unset the dispatcher asks `wintun_available()` — a
+quiet probe that only loads `wintun.dll` and checks its entry points, without
+either backend touching an adapter — and picks Wintun when it succeeds,
+TAP-Win32 when it does not. `DeviceType` still decides outright when set, so
+an existing TAP deployment is unaffected. `own_interface_address()` is now
+`autoif_own_address()` (non-static, declared in `autoif.h`) and
+`configure_ip()` falls back to it, logging `No WintunAddress set; using this
+node's own address 10.200.250.3/24`. The backend line now says why:
+`Using Wintun (L3) device backend (no DeviceType set, wintun.dll is usable)`.
+
+Proof: `platforms/windows/build-core-win.sh` cross-builds clean; the Linux
+core builds and `testing/smoke/run.sh` passes with the shared `autoif.c`
+change (`tincstack/core:winfix`).
+
+---
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):

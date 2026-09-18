@@ -25,8 +25,10 @@
 #include "xalloc.h"
 
 /* The address to configure: InterfaceAddress if set, else our first IPv4
-   /32 Subnet with the AddressPool's prefix. Caller frees; NULL if unknown. */
-static char *own_interface_address(void) {
+   /32 Subnet with the AddressPool's prefix. Caller frees; NULL if unknown.
+   Not static: the Wintun backend assigns the adapter address from the same
+   two sources, so both platforms answer "what is my address" identically. */
+char *autoif_own_address(void) {
 	char *addr = NULL;
 
 	if(get_config_string(lookup_config(&config_tree, "InterfaceAddress"), &addr)) {
@@ -107,7 +109,7 @@ bool autoif_up(void) {
 		return false;
 	}
 
-	char *addr = own_interface_address();
+	char *addr = autoif_own_address();
 
 	if(!addr) {
 		logger(DEBUG_ALWAYS, LOG_WARNING, "No tinc-up script and no address to configure on %s (set InterfaceAddress or AddressPool + Subnet)", iface);

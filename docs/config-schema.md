@@ -33,7 +33,9 @@ networks:
 
       # device backend (per platform; the daemon picks a sane default)
       DeviceType: wintun       # wintun (Windows) | tun (Linux) | tap | fd (Android)
+                               # unset on Windows = wintun when wintun.dll loads
       WintunAddress: 10.210.0.1/24   # Windows: adapter IP, set without netsh
+                                     # unset = own Subnet at the pool's prefix
       WintunInterface: gnet          # Windows: adapter name (collision-safe)
 
       # ── NAT-traversal resilience (Family-A; safe defaults, keep on) ────────
@@ -391,9 +393,14 @@ ip link set $INTERFACE up
 ip route replace <InterfaceRoute> dev $INTERFACE      # one per InterfaceRoute
 ```
 
-itself (`core/tincd/src/autoif.c`). Windows sets the address through
-`WintunAddress`; Android hands the daemon a pre-configured fd; neither uses
-this path. **Precedence:** a `scripts.tinc-up` in the YAML always wins — it is
+itself (`core/tincd/src/autoif.c`). Windows does the same thing through the
+Wintun driver instead of `ip`: the adapter is created on connect and given
+`WintunAddress`, or — when that option is absent — the node's own address from
+exactly the same pair the built-in tinc-up uses (its `/32` Subnet at the
+`AddressPool` prefix, `autoif_own_address()`), so a node that joined by
+invitation comes up addressed with nothing written by hand. Android hands the
+daemon a pre-configured fd. Neither Windows nor Android runs the `ip`
+commands above. **Precedence:** a `scripts.tinc-up` in the YAML always wins — it is
 on disk before `device_enable()` looks, so the built-in is *skipped* entirely
 (the log then shows `Executing script tinc-up` and no `built-in tinc-up`
 line); the same holds for a hand-made side file. With neither, the built-in
