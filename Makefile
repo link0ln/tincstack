@@ -52,6 +52,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/transports/obfs-restart-test.sh \
                  testing/transports/obfs-confirmed-peer-test.sh \
                  testing/transports/same-nat-meta-test.sh \
+                 testing/perf/bench.sh testing/perf/bench-inner.sh \
                  platforms/windows/build-core-win.sh platforms/windows/build-exe.sh \
                  platforms/windows/pyinstaller-in-wine.sh \
                  platforms/android/docker/emulator.sh \
