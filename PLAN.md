@@ -3047,6 +3047,46 @@ Defects identified during the source audit, to fix as their milestone is reached
   and is recorded as a measurement, not a claim. The first guess, batched
   `recvmmsg`, is wrong: it is in both binaries, because it is upstream's code.
 
+- **Field check of the shipped build on the four real hosts, 2026-09-18.**
+  **Nothing was deployed, and that is the finding**: `git diff f5c6856..HEAD --
+  core/ platforms/` is empty. The eleven commits since the field rollout are
+  PLAN entries and testing harnesses; the stand already carries exactly the
+  daemon in master, so a "rollout" would have rebuilt the same binary and proved
+  nothing. Verified, not assumed, before deciding not to act.
+
+  **Mesh health**: all four nodes on `node:sf5` / `node:sf5-arm64`, every node
+  seeing the other three at `distance 1`, ping matrix 0 % loss from both the
+  laptop and the router, and no node carrying the `sptps_route_stale` bit
+  (statuses `00da` / `08da` / `0858` across the stand).
+
+  **Defect G measured in the field for the first time**, by blackholing a peer's
+  address and timing the recovery. Only the laptop container was touched: **the
+  router runs with `network_mode: host`, so its firewall is the house's** and
+  must not be used as a lab.
+
+  A first cut reported 33 / 48 / 46 s and looked like a threefold regression
+  against the lab's 2-5 s. It was not: the two numbers measure different things
+  and the split proves it. The daemon's own log gave it away -- consecutive
+  `Closing connection with ruvds2` lines 66 s apart, i.e. the default
+  `PingInterval 60` + `PingTimeout 5`. Re-measured as two phases:
+
+  | run | detect (PingInterval) | reconverge | route taken |
+  |---|---|---|---|
+  | 1 | 21 s | **5 s** | via router |
+  | 2 | 45 s | **0 s** | via router |
+  | 3 | 46 s | **0 s** | via router |
+
+  Detection is a uniform draw inside the 65 s ping window -- configuration, not
+  a defect, and the number to change if a deployment wants faster failover.
+  **Reconvergence, which is the part defect G's three fixes act on, is 0-5 s in
+  the field, matching the lab's 2-5 s in 250 of 250 runs.**
+
+  Note what this does *not* reproduce: `singleflow-test.sh` PART 2 severs a
+  direct **data** path between two nodes whose meta is relayed, while every pair
+  on this stand is meta-connected, so the field version necessarily starts with
+  a meta connection dying. The lab proof is not replaced by this, it is
+  complemented by it.
+
 - **Saturation: where one core runs out, 2026-09-18** (`testing/perf/ladder.sh`,
   `saturation.py`, result in `testing/perf/results/2026-09-18-saturation.csv`).
   Same lab and load as the fixed-rate bench, offered rate stepped up until each
