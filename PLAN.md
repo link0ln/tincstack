@@ -3104,6 +3104,46 @@ Defects identified during the source audit, to fix as their milestone is reached
   and is recorded as a measurement, not a claim. The first guess, batched
   `recvmmsg`, is wrong: it is in both binaries, because it is upstream's code.
 
+- 🟠 **The Windows GUI and the daemon disagreed on how a YAML list is
+  written, so every config the GUI saved with a list in it became
+  unreadable.** Found 2026-09-19 on the owner's Windows host, and it is the
+  same `Could not parse YAML config` that was filed the day before as an
+  unreproduced report — it was not a hand edit:
+
+      ERROR   Could not parse YAML config `C:\soft\tincstack\tinc.yaml'
+      ERROR   Refusing to overwrite unparsable YAML config `...'
+
+  The file was valid YAML. PyYAML (`platforms/windows/backend/yaml_config.py`,
+  `yaml.dump`) writes block sequences *indentless* — the dashes at the
+  indentation of their own key:
+
+      PreferredTransports:
+      - quic
+
+  `yamlconf.c parse_map()` only looked for a value on a **more** indented
+  line; the `- quic` line then reached the next loop iteration, had no colon,
+  and the whole document was refused. Our own emitter indents sequences, and
+  the property tests only ever fed the parser the emitter's output, so the
+  round trip was green while the only other writer in the project produced
+  files the daemon could not read. Reproduced in one command:
+  `tinc get PreferredTransports` on the flat form → `Could not parse`, on the
+  indented form → `quic`.
+
+  Fixed on both sides. Parser: a block sequence at the key's own indentation
+  is accepted (it is what the YAML spec says, and `parse_seq` was already
+  there — it just was not reachable from that branch). Writer: `_Dumper`
+  overrides `increase_indent(..., indentless=False)` so the GUI emits the
+  same shape as the C emitter. A dash after a key that already has a scalar
+  value stays refused — the parser still never guesses. Proof: new property
+  11 in `yamlconf_props.c` (flat and indented forms normalise to the same
+  document; the unplaceable dash still fails), `test/fuzz/run.sh check`
+  **yamlconf_props ok + all 6 harnesses ok**, `make smoke` PASS on
+  `tincstack/core:yamlfix`, `pytest platforms/windows/tests` 30 passed (the
+  fixture that hard-coded the indentless output was updated). Note for the
+  next time: `run.sh check` links the objects from the last `run.sh build`,
+  so a source change needs `build` first — the first run of the new property
+  failed against a stale `yamlconf.o`.
+
 - 🟠 **A joined Windows node cannot start: onboarding never writes the device
   backend.** Found 2026-09-18 by the owner joining `gnetnew` from Windows with
   the invitation issued on ruvds. The join itself worked (the client's
@@ -3153,10 +3193,9 @@ Defects identified during the source audit, to fix as their milestone is reached
       ERROR   Could not parse YAML config `C:\Users\link0ln\Downloads\tinc.yaml'
       ERROR   Refusing to overwrite unparsable YAML config `...'
 
-  R-3's guard did its job (nothing was overwritten), but it is unknown whether
-  the file was hand-edited or written broken. The file was not captured before
-  it was replaced by a fresh join, so this stays open as an unreproduced
-  report, not a diagnosed defect.
+  R-3's guard did its job (nothing was overwritten). **Diagnosed the next day**
+  once the owner sent the file: not a hand edit — the GUI's own writer and the
+  daemon's parser disagreed about block sequences. See the entry above.
 
 - **Second production network `gnetnew` deployed on the two VPS, 2026-09-18**
   (owner request: one node on euvds, ruvds joined to it, an invitation for a

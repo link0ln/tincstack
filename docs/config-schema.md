@@ -520,6 +520,26 @@ Rules:
   passphrase feature (encrypted `*.priv` files + unlock dialog) does not apply
   and was removed.
 
+## Lists: both block styles are read
+
+A list may be written inline (`ConnectTo: [a, b]`) or as a block sequence, and
+in a block sequence the dashes may sit at the key's own indentation or deeper:
+
+```yaml
+      PreferredTransports:        PreferredTransports:
+      - quic                        - quic
+      - https                       - https
+```
+
+Both parse to the same list. The left-hand form is what PyYAML emits by
+default and therefore what the Windows GUI used to write; the daemon refused
+it until 2026-09-19, which bricked every config the GUI saved with a list in
+it (`Could not parse YAML config` on the next start). The emitter writes the
+right-hand form, and so does the GUI now — one house style, both accepted.
+
+A `-` line that follows a key which already has a scalar value is still an
+unplaceable line and is still refused: the parser never guesses.
+
 ## Write-back behaviour (must be preserved cross-platform)
 
 - The daemon persists **learned peer keys** (`Ed25519PublicKey`) into

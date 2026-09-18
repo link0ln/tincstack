@@ -3,7 +3,8 @@
 
     A small, dependency-free parser/emitter for the canonical block-YAML that
     tincmgr (and this module) produce. Not a general YAML implementation: it
-    handles block mappings, block sequences, flow sequences ([a, b]), literal
+    handles block mappings, block sequences (dashes at or below the key's
+    indentation), flow sequences ([a, b]), literal
     block scalars (key: |) and plain scalars -- which is exactly our schema.
     See yamlconf.h for the schema and public API.
 */
@@ -212,6 +213,7 @@ static yval_t *parse_block_scalar(parser_t *p, int parent_indent) {
 }
 
 static yval_t *parse_node(parser_t *p, int min_indent);
+static yval_t *parse_seq(parser_t *p, int indent);
 
 static int hexval(char c) {
 	if(c >= '0' && c <= '9') return c - '0';
@@ -359,8 +361,19 @@ static yval_t *parse_map(parser_t *p, int indent) {
 		yval_t *val;
 		if(rest[0] == 0) {
 			size_t k = next_sig(p, p->i);
+			const char *kl = k < p->n ? p->lines[k].raw + indent : NULL;
 			if(k < p->n && p->lines[k].indent > indent)
 				val = parse_node(p, indent + 1);
+			else if(k < p->n && p->lines[k].indent == indent
+			        && kl[0] == '-' && (kl[1] == ' ' || kl[1] == 0)) {
+				/* A block sequence whose dashes sit at the key's own
+				   indentation. Valid YAML and what PyYAML emits by
+				   default, so the Windows GUI wrote configs this
+				   daemon then refused to read; our own emitter
+				   indents them, which is why nothing caught it. */
+				p->i = k;
+				val = parse_seq(p, indent);
+			}
 			else { val = yval_new(Y_SCALAR); val->scalar = strdup(""); }
 		} else if(rest[0] == '|') {
 			val = parse_block_scalar(p, indent);

@@ -23,7 +23,11 @@
          a trailing-space line is listed by yamlconf_script_names(), read
          back byte-for-byte by yamlconf_script_text(), survives
          emit -> parse unchanged, and a `scripts:` map with a non-scalar
-         entry lists only the scalar ones.
+         entry lists only the scalar ones;
+     11. a block sequence whose dashes sit at the key's own indentation
+         (valid YAML, PyYAML's default output, so what the Windows GUI
+         wrote) parses and means the same as the indented form, while a
+         dash after a key that already has a scalar value stays refused.
 
     Built and run by `make props` / run.sh check (plain C, ASan+UBSan).
 
@@ -263,6 +267,29 @@ int main(void) {
 			free(e);
 			yamlconf_free(yc3);
 		}
+	}
+
+	/* 11. A block sequence written with its dashes at the key's own
+	      indentation -- valid YAML, and what PyYAML (the Windows GUI)
+	      emits by default -- parses, and means exactly what the indented
+	      form means. Before this, every config the GUI saved with a list
+	      in it was refused by the daemon at the next start. A dash that
+	      follows a key which already has a scalar value is still an
+	      unplaceable line and must stay refused. */
+	{
+		const char *flat =
+		        "networks:\n  net:\n    options:\n      PreferredTransports:\n"
+		        "      - quic\n      - https\n      Mode: router\n";
+		const char *nested =
+		        "networks:\n  net:\n    options:\n      PreferredTransports:\n"
+		        "        - quic\n        - https\n      Mode: router\n";
+		char *ef = normalise(flat);
+		char *en = normalise(nested);
+		CHECK(ef && en && !strcmp(ef, en));
+		free(ef);
+		free(en);
+
+		CHECK(!parses("networks:\n  net:\n    options:\n      Mode: router\n      - quic\n"));
 	}
 
 	if(failures) {

@@ -243,7 +243,12 @@ def atomic_write_text(path: str, text: str, mode: int = 0o600) -> None:
 
 # literal block style for multi-line strings (keys, host files) -> readable YAML
 class _Dumper(yaml.SafeDumper):
-    pass
+    # PyYAML writes block sequences "indentless": the dashes sit at the
+    # indentation of their own key. That is valid YAML and the daemon reads
+    # it, but the daemon's emitter indents them, so without this every save
+    # from here reshuffled the file. Match the C emitter and keep one style.
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
 
 
 def _str_representer(dumper: yaml.SafeDumper, data: str):

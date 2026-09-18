@@ -181,8 +181,8 @@ def test_concurrent_writer_merge(tmp_path):
               Port: 655
               AddressPool: 10.99.0.0/24
               PreferredTransports:
-              - quic
-              - plain
+                - quic
+                - plain
             hosts:
               demobook: |
                 Ed25519PublicKey = AAAA
