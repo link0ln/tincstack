@@ -4,7 +4,10 @@
 (10.200.250.0/24), is live on euvds and ruvds2 on port 656: euvds .1 with
 egress NAT, ruvds2 .2, a Windows invitation reserving .3, and the existing
 3proxy now actually enforcing its ACL for both VPN subnets -- it had no `auth`
-line, so its allow/deny list had never been evaluated.** Earlier the same
+line, so its allow/deny list had never been evaluated. The Windows client of
+that network does not start: onboarding never writes `DeviceType: wintun`, so
+a joined node looks for a TAP-Win32 driver we do not ship -- see Known
+Issues.** Earlier the same
 day -- **full regression on the PingInterval build: 31 of
 31 PASS after the glare arm was taught to grade each image against what it
 should do -- the upstream control is now asserted to SHOW the defect the
@@ -3098,6 +3101,49 @@ Defects identified during the source audit, to fix as their milestone is reached
   **The ~8 % `plain` wins against upstream still has no established mechanism**
   and is recorded as a measurement, not a claim. The first guess, batched
   `recvmmsg`, is wrong: it is in both binaries, because it is upstream's code.
+
+- 🟠 **A joined Windows node cannot start: onboarding never writes the device
+  backend.** Found 2026-09-18 by the owner joining `gnetnew` from Windows with
+  the invitation issued on ruvds. The join itself worked (the client's
+  `tinc.yaml` carries `AddressPool 10.200.250.0/24`, the inviter reserved
+  `10.200.250.3/32` for `win1`), but every start ended:
+
+      Using TAP-Win32 (L2) device backend
+      ERROR   No Windows tap device found!
+      Disabling Windows tap device
+      Terminating
+
+  Cause, `windows/device_dispatch.c select_backend()`: the backend is TAP-Win32
+  unless `DeviceType` is exactly `wintun`, and nothing in the invitation or the
+  join path sets it. We ship `wintun.dll` and no TAP-Win32 driver, so the
+  default is a driver that is never installed. `WintunAddress` has the same
+  problem one layer down (`wintun_device.c` assigns the adapter IP only from
+  that option — the daemon knows its own `Subnet` from the pool but does not
+  use it), so a joined Windows node needs **two** hand-written keys before it
+  can run:
+
+      options:
+        DeviceType: wintun
+        WintunAddress: 10.200.250.3/24
+        WintunInterface: gnetnew
+
+  Reproduction: join from Windows with any invitation, start tincd. Impact:
+  every Windows onboarding, i.e. the whole point of the one-line join on that
+  platform. Not fixed yet — the two candidate fixes are (a) default to Wintun
+  on Windows when `wintun.dll` loads, falling back to TAP only if it does not,
+  and (b) derive the adapter address from the node's own `Subnet` when
+  `WintunAddress` is unset, which also removes the duplicated address.
+
+  Second finding from the same session, cause not established: after three such
+  starts the client's config became unparsable —
+
+      ERROR   Could not parse YAML config `C:\Users\link0ln\Downloads\tinc.yaml'
+      ERROR   Refusing to overwrite unparsable YAML config `...'
+
+  R-3's guard did its job (nothing was overwritten), but it is unknown whether
+  the file was hand-edited or written broken. The file was not captured before
+  it was replaced by a fresh join, so this stays open as an unreproduced
+  report, not a diagnosed defect.
 
 - **Second production network `gnetnew` deployed on the two VPS, 2026-09-18**
   (owner request: one node on euvds, ruvds joined to it, an invitation for a
