@@ -1,9 +1,9 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-18 (**full regression on the PingInterval build: 31
-arms, 30 PASS; the one non-zero exit is upstream tinc failing the glare control,
-which the harness grades by the core's rule -- the core itself is 1 s / 0 errors
-in 4 of 4 runs.**
+**Last Updated:** 2026-09-18 (**full regression on the PingInterval build: 31 of
+31 PASS after the glare arm was taught to grade each image against what it
+should do -- the upstream control is now asserted to SHOW the defect the
+tie-break fixes, instead of being required to clear the core's bar.**
 Earlier the same day -- **`PingInterval 20` measured on the real stand:
 worst-case detection 25 s instead of 65 s, blackout ceiling 24.7 s instead of
 61.5 s, applied to three running daemons without a restart and reverted to the
@@ -3197,6 +3197,13 @@ Defects identified during the source audit, to fix as their milestone is reached
   it is supposed to do, and the arm is green again with the control
   demonstrating the defect instead of failing to dodge it. Rules and the ten
   runs behind them: the Known Issues entry above.
+
+  **Re-run end to end after the fix: 31 of 31 PASS**, same images, same
+  invocations, nothing else changed. Both glare arms are green on their own
+  terms -- core `clean` at 1 s with 0 restarts and 0 seqno errors in both, the
+  baseline control `defect` at 12 s / 1 restart (`--rtt 50`) and 69 s / 11
+  restarts (`--rtt 1`). This run also completed in one pass: no low-memory kill,
+  no arm re-run by hand.
 
   `glare_run()` (`testing/nat-sim/natlab.sh:497`) calls a run PASS iff the key
   exchange completes within `WAIT` (90 s), and `glare()` ORs the two verdicts
