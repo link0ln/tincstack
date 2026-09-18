@@ -2994,6 +2994,47 @@ Defects identified during the source audit, to fix as their milestone is reached
   dial and says so itself ("this attempt proves nothing, retrying") -- at a
   rate of roughly 1 run in 4. Worth tightening in that harness one day; it is
   not a daemon defect.
+- **CPU and memory at 100 Mbit/s, against upstream tinc 1.1pre18, 2026-09-18**
+  (`testing/perf/`, results committed under `testing/perf/results/`). Both
+  daemons in one image, two netns on a veth pair, UDP load with a fixed datagram
+  size, 0.433 Mpkt per 45 s run, `-d0`, cpuset 0-3, i9-10900K. Per node:
+
+  | arm | CPU, % of one core | peak RSS | vs upstream, 26 paired repeats |
+  |---|---|---|---|
+  | upstream 1.1pre18 (-O2) | 23.3 | 6.8 MB | reference |
+  | upstream 1.1pre18 (-O3) | 23.3 | 6.8 MB | -0.1 %, not significant |
+  | tincstack `plain` | 22.0 | 11.9 MB | **-12.0 %** [-15.1, -4.0], p = 0.009 |
+  | tincstack `sf` | 21.8 | 11.8 MB | **-8.9 %** [-15.8, -4.9], p = 0.003 |
+  | tincstack `obfs` | 26.4 | 11.8 MB | **+11.9 %** [+5.6, +19.1], p = 0.029 |
+
+  **Memory is the firm number: +5 MB per node**, in all 118 runs, the two groups
+  never overlapping. The CPU figures come from a *paired* comparison -- arms are
+  interleaved inside each repeat, so the repeat index pairs them -- because an
+  unpaired read of the same data resolves nothing: the same arm varies by 83 %
+  of its median between repeats.
+
+  **Three measurement mistakes are recorded because each produced a confident
+  wrong answer first.** (a) The first cut measured under a TCP load and had
+  tincstack *cheaper than* and then *dearer than* upstream on successive runs:
+  TCP does not hold the packet count still, the tun device coalesces segments,
+  and the daemon sees half as many, twice as large reads on one run as on the
+  next (23.7 %, 10.6 %, 23.9 % of a core for the same arm). The load is now UDP
+  with a fixed datagram size and **the packet count is printed with every row**,
+  so a CPU figure can always be checked against the work that produced it.
+  (b) With the packet count nailed down, CPU still ranged 7-26 % for provably
+  identical work. Raw CPU seconds are not a unit of work on this host: the
+  governor is `intel_pstate`/`powersave` and a boosted core does the same work
+  in a third of the CPU-seconds. Every run is now calibrated against a fixed
+  busy loop that reports its own CPU time. (c) The obvious explanation for
+  "our build is cheaper" was that meson builds release at -O3 while upstream's
+  autotools default is -g -O2. An upstream arm rebuilt at -O3 was added to test
+  exactly that, and it killed the hypothesis: -0.1 %, indistinguishable.
+
+  **The ~12 % the plain path wins has no established mechanism** and is recorded
+  as a measurement, not a claim. The first guess, batched `recvmmsg`, is wrong:
+  it is in both binaries, because it is upstream's code. Worth understanding
+  before it is quoted anywhere, since an unexplained win is as likely to be an
+  uncontrolled variable as a real one.
 - **Full regression on the shipped build, 2026-09-17** (`tincstack/core:sf5` /
   `tincstack/node:sf5`, master 3bff008) -- wider than the batch run that closed
   defect G, which covered 12 proofs and skipped five. **29 of 29 PASS:**
