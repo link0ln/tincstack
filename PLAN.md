@@ -1,10 +1,15 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-18 (**full regression on the PingInterval build: 31 of
+**Last Updated:** 2026-09-18 (**a second production network, `gnetnew`
+(10.200.250.0/24), is live on euvds and ruvds2 on port 656: euvds .1 with
+egress NAT, ruvds2 .2, a Windows invitation reserving .3, and the existing
+3proxy now actually enforcing its ACL for both VPN subnets -- it had no `auth`
+line, so its allow/deny list had never been evaluated.** Earlier the same
+day -- **full regression on the PingInterval build: 31 of
 31 PASS after the glare arm was taught to grade each image against what it
 should do -- the upstream control is now asserted to SHOW the defect the
 tie-break fixes, instead of being required to clear the core's bar.**
-Earlier the same day -- **`PingInterval 20` measured on the real stand:
+Earlier -- **`PingInterval 20` measured on the real stand:
 worst-case detection 25 s instead of 65 s, blackout ceiling 24.7 s instead of
 61.5 s, applied to three running daemons without a restart and reverted to the
 defaults the same way once measured. The router was not
@@ -3093,6 +3098,70 @@ Defects identified during the source audit, to fix as their milestone is reached
   **The ~8 % `plain` wins against upstream still has no established mechanism**
   and is recorded as a measurement, not a claim. The first guess, batched
   `recvmmsg`, is wrong: it is in both binaries, because it is upstream's code.
+
+- **Second production network `gnetnew` deployed on the two VPS, 2026-09-18**
+  (owner request: one node on euvds, ruvds joined to it, an invitation for a
+  Windows client issued on ruvds, `10.200.250.0/24`, NAT egress on euvds,
+  3proxy serving both VPN subnets and nothing else, everything in Docker).
+  It runs beside the existing `gnet` network, it does not touch it, and the
+  router was not involved.
+
+  **Port survey first, because both hosts are crowded.** euvds: 22, 53, 443
+  (the old gnet tincd, tcp+udp), 655 (the `tincstack-node-1` docker-proxy),
+  4330, 5736/5737 (3proxy), 44321-44323. ruvds2: 22, 53, 80, 443 (angie),
+  655, 993 (the old gnet tincd), 5001-5005, 8443, 18011. **656/tcp+udp was
+  free on both** and is what `gnetnew` listens on; verified reachable from a
+  third host afterwards (`80.87.200.39:656` and `88.218.122.166:656` both
+  accept).
+
+  Shape: `/opt/gnetnew/compose.yml` on each host, `tincstack/node:pi20`,
+  `network_mode: host`. Host netns is deliberate, not laziness: the egress
+  NAT and the 3proxy container (also host netns) have to see the tun
+  interface, exactly like the older gnet relay next to it. euvds was
+  pre-seeded with `/opt/gnetnew/data/tinc.yaml` carrying `Name: euvds`,
+  `Mode: router`, `Port: 656`, `AddressPool: 10.200.250.0/24`, so zeroconf
+  gave it the first host of the pool; ruvds joined by invitation and got
+  `.2`; the Windows invitation issued on ruvds reserves `.3`.
+
+      euvds: Interface gnetnew configured with 10.200.250.1/24
+      ruvds: Interface gnetnew configured with 10.200.250.2/24, Connected to
+             euvds (88.218.122.166 port 656) via plain, pmtu 1439
+      ping both ways 0% loss, rtt 40.5 ms, dump nodes rtt 40.088
+
+  **Routing needed one thing the request did not mention.** With only
+  `10.200.250.1/32` announced, a packet for the internet reached ruvds's tun
+  and died there: in router mode tinc drops a destination no peer owns, so
+  the NAT on euvds was never reached (first egress test: 100 % loss with the
+  masquerade rule already in place). Fixed by announcing the gateway on the
+  gateway: `tinc -n gnetnew add Subnet 0.0.0.0/0` on euvds. This is safe for
+  the peers' own routing tables — `autoif.c` installs system routes only
+  from explicit `InterfaceRoute` options, never from a peer's announced
+  subnet — so a node uses euvds as its default gateway only if its operator
+  routes it there. Egress after that, from 10.200.250.2 over a temporary
+  `/32` route: `ip=88.218.122.166`, ping 0 % loss, 41.9 ms.
+
+  euvds firewall (INPUT policy DROP, FORWARD policy DROP), appended and
+  saved with netfilter-persistent: ACCEPT tcp/udp 656; ACCEPT 5736,5737 from
+  `10.200.250.0/24`; ACCEPT anything from `10.200.250.0/24` arriving on
+  `gnetnew`; FORWARD ACCEPT for `-s` and `-d 10.200.250.0/24`; nat
+  POSTROUTING `-s 10.200.250.0/24 -j MASQUERADE`. ruvds2 needs nothing (INPUT
+  policy ACCEPT, and it forwards nothing).
+
+  **Defect found in the existing 3proxy, 🟠, fixed in the same pass:**
+  `/opt/tinc-gnet/3proxy/3proxy.cfg` had `allow * 10.200.240.0/24` + `deny *`
+  and **no `auth` line**. 3proxy evaluates ACLs only under an authentication
+  type; with the default `auth none` the list was decorative and the only
+  gate was the host firewall. The config now sets `auth iponly`, lists both
+  subnets (`allow * 10.200.240.0/24,10.200.250.0/24`), and keeps `deny *`
+  **above** the `socks -p5736` / `proxy -p5737` lines, because each service
+  inherits the ACL set in effect when it starts. Old file kept as
+  `3proxy.cfg.bak-<timestamp>`. Proof, all four directions measured after
+  the restart: from `10.200.240.61` → `ip=88.218.122.166`; from
+  `10.200.250.2` over socks and over http → `ip=88.218.122.166` each; from
+  euvds itself (127.0.0.1, in neither subnet) → socks `curl: (97) Can't
+  complete SOCKS5 connection` and http `403 Access Denied — Access control
+  list denies you to access this resource`. On the old config that last one
+  would have been proxied.
 
 - **Field check of the shipped build on the four real hosts, 2026-09-18.**
   **Nothing was deployed, and that is the finding**: `git diff f5c6856..HEAD --
