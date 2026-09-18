@@ -42,6 +42,17 @@ networks:
                                # daemon default is *no*; invitees get *yes* (M2)
       LocalDiscovery: yes
 
+      # ── dead-peer detection / failover window (see the section below) ─────
+      PingInterval: 60         # seconds of silence from a peer before it is
+                               # pinged. Default 60.
+      PingTimeout: 5           # seconds to wait for the PONG before the link is
+                               # dropped. Default 5, must be 1..PingInterval.
+                               # A silently dead peer is noticed somewhere in
+                               # [PingInterval, PingInterval + PingTimeout]:
+                               # measured 64 s at the defaults, 13 s at 10 / 3.
+                               # Server-scoped, re-read on `tinc reload' (no
+                               # restart), NOT carried by invitations.
+
       # ── address pool (point 8) ────────────────────────────────────────────
       AddressPool: 10.210.0.0/24   # network the inviter assigns invitee IPs from
                                    # default when starting a NEW network: 10.<rnd>.0.0/24
@@ -192,6 +203,86 @@ networks:
         QuicPort = 443                    # optional: dial this peer's quic carrier
                                           # here instead of Port
 ```
+
+## Dead-peer detection (`PingInterval`, `PingTimeout`)
+
+These two options are the failover window, and they are the reason a node that
+has to fail over fast needs anything more than the defaults.
+
+**Mechanism** (`core/tincd/src/net.c`, `timeout_handler()`; the values are
+parsed in `net_setup.c`, `setup_ping_timers()`):
+
+- a meta connection that has been silent for `PingInterval` seconds gets a
+  `PING`;
+- if no `PONG` arrives within `PingTimeout` seconds, the connection is closed,
+  the edge is withdrawn and the routing table reconverges.
+
+A peer that dies *silently* — power cut, frozen VM, a path that starts dropping
+everything — dies at a moment uncorrelated with the ping cadence, so detection
+is a uniform draw over `[PingInterval, PingInterval + PingTimeout]`. A peer that
+dies *loudly* (process exit, TCP RST, interface down) is noticed at once; the
+window is irrelevant to it.
+
+**Measured** (`testing/config/ping-interval-test.sh`, one node frozen with
+`docker pause` so the kernel still ACKs and only the daemon goes quiet):
+
+| window | detection (two runs) |
+|---|---|
+| defaults, 60 / 5 | 64 s, 65 s |
+| 10 / 3, set at startup in the YAML | 13 s, 12 s |
+| 10 / 3, applied by `tinc reload` on the running daemon | 10 s, 10 s |
+
+The field stand ran the defaults and reconverged in 21 / 45 / 46 s over three
+trials (PLAN.md, defect G in the field) — three draws from the same 60–65 s
+window, not a regression.
+
+**Costs of a short window**, in the order they bite:
+
+- a false disconnect on a link that merely stalls. `PingTimeout` is a hard
+  deadline on a single round trip over a meta connection that may be running on
+  `https` or `quic` (TLS records, head-of-line blocking) through a congested
+  path. A 1 s timeout on a satellite or a loaded mobile link will tear down a
+  perfectly good tunnel and, on reconnect, cost more than the failover it was
+  meant to shorten;
+- meta traffic and wakeups scale with `1 / PingInterval` per connection —
+  irrelevant on a server, measurable on a battery-powered Android node;
+- PMTU re-probing uses `PingInterval` as its idle cadence
+  (`net_packet.c`), so shortening it also re-probes more often.
+
+Start at `PingInterval: 20`, `PingTimeout: 5` for a stand that wants sub-30 s
+failover, and only go lower with a measurement of the actual round-trip
+distribution of that path.
+
+**Scope and lifetime:**
+
+- server-scoped (they live under `options:`, not in a host record), and
+  **not** in the invitation allow-list — each node keeps its own window, so
+  shortening it on the node that must notice a failure does not push the cost
+  onto every invitee;
+- re-read on every reload, including the implicit one that `tinc set` performs,
+  so `tinc -c tinc.yaml set PingInterval 10` changes the window of a running
+  daemon. The daemon logs the change (`Dead-peer detection window changed on
+  reload: PingInterval 60 -> 10, PingTimeout 5 -> 3 seconds.`) and says nothing
+  when a reload does not move them;
+- an established QUIC carrier keeps the handshake and idle timeouts it derived
+  from `PingTimeout` when it was created (`transport_quic.c`: handshake
+  `PingTimeout`, idle `3 × PingTimeout`); the new value applies to QUIC
+  connections made after the reload.
+
+**Out-of-range values are substituted, and the substitution is logged.** The
+substitutions are upstream's (configs that rely on them keep working), the
+logging is not:
+
+| written | used | logged |
+|---|---|---|
+| `PingInterval: 0` (or any value < 1) | 86400 s | `PingInterval 0 is out of range (minimum 1), using 86400 seconds instead: a peer that stops answering stays reachable in the routing table for up to a day.` |
+| `PingTimeout` < 1 or > `PingInterval` | `PingInterval` | `PingTimeout 99 is out of range (1..PingInterval = 10), using 10 seconds instead.` |
+| `PingInterval` below the default timeout, no `PingTimeout` | `PingInterval` | `The default PingTimeout of 5 seconds is longer than PingInterval 2, using 2 seconds instead.` |
+| a non-integer value | the default | `Integer expected for configuration variable PingInterval in …` |
+
+`PingInterval: 0` reads like "stop pinging" and means "ping once a day", i.e. a
+day-long blind spot in which a dead peer stays in the routing table. That is the
+one every operator gets wrong; it now says so out loud at startup and on reload.
 
 ## Zero-config materialisation (first run)
 

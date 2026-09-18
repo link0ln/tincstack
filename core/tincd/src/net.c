@@ -401,6 +401,10 @@ int reload_configuration(void) {
 
 	setup_myself_reloadable();
 
+	/* The dead-peer detection window is re-read here too: a deployment that
+	   needs faster failover can shorten it without restarting the daemon. */
+	setup_ping_timers(true);
+
 	/* If StrictSubnet is set, expire deleted Subnets and read new ones in */
 
 	if(strictsubnets) {

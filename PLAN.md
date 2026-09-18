@@ -1,6 +1,10 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-17 (**defect G is closed: a severed direct path used
+**Last Updated:** 2026-09-18 (**the dead-peer detection window
+(`PingInterval`/`PingTimeout`) is documented, re-read on reload, and no longer
+substitutes values in silence** -- the follow-up to measuring 21/45/46 s
+failover in the field; see the entry in Known Issues.
+Earlier -- **defect G is closed: a severed direct path used
 to cost 31-61 s of blackout, and `singleflow-test.sh` PART 2 -- written off as
 flaky for weeks -- was measuring exactly that.** Three causes, none of them a
 flake: sf spent its whole 24 s retransmission budget on a path where every
@@ -3122,6 +3126,58 @@ Defects identified during the source audit, to fix as their milestone is reached
   spends 23.7 % of a core at 100 Mbit/s but only 35.2 % at four times the rate.
   The ladder answers capacity questions and the fixed-rate bench answers
   cost-per-packet ones; neither substitutes for the other.
+
+- **The failover window is a YAML option, and a loud one, 2026-09-18**
+  (`core/tincd/src/net_setup.c` `setup_ping_timers()`, `net.c`
+  `reload_configuration()`, `docs/config-schema.md` "Dead-peer detection",
+  proof `testing/config/ping-interval-test.sh`). Follows directly from the field
+  measurement above: detection of a dead peer was 21/45/46 s because
+  `PingInterval 60` + `PingTimeout 5` is the window, and the window was the one
+  number a deployment could not find in any document of this repo.
+
+  **What was already true and is now written down instead of discovered:**
+  `options:` has no whitelist -- `yamlconf_options_text()` emits every key
+  verbatim as `Key = Value` -- so `PingInterval: 10` already reached the daemon
+  before this change. Claiming to have "made it configurable" would have been a
+  lie; what was missing was documentation, reload, and honesty about the
+  substitutions.
+
+  **What actually changed:**
+  1. the parsing moved out of `setup_network()` into `setup_ping_timers()`,
+     which `reload_configuration()` now calls too -- the window can be shortened
+     on a **running** daemon (`tinc set PingInterval 10`), where before it took
+     a restart, i.e. exactly the outage the shorter window is meant to avoid;
+  2. the two silent substitutions are logged with what was asked for and what is
+     used. `PingInterval: 0` reads like "stop pinging" and means 86400 s -- a
+     day-long blind spot with a dead peer still in the routing table -- and it
+     said nothing at all;
+  3. a reload that moves the window says so once (`Dead-peer detection window
+     changed on reload: PingInterval 60 -> 10, PingTimeout 5 -> 3 seconds.`) and
+     is silent when it does not.
+
+  **Proof** (`testing/config/ping-interval-test.sh`, PASS on the rebuilt core;
+  one node frozen with `docker pause`, so the kernel keeps ACKing and only the
+  daemon goes quiet -- what a silently dead peer looks like, without a firewall
+  rule):
+
+  | window | how it was set | detection (two runs) |
+  |---|---|---|
+  | 60 / 5 (defaults) | nothing configured | 64 s, 65 s |
+  | 10 / 3 | YAML `options:` at startup | 13 s, 12 s |
+  | 10 / 3 | `tinc set` + reload, daemon never restarted | 10 s, 10 s |
+
+  and the three substitution warnings asserted by their exact text, plus a
+  negative control (a valid pair logs nothing). `make lint` covers the new
+  script.
+
+  **Not done, deliberately:** the substitutions were kept as upstream wrote them
+  (`< 1` -> 86400, out-of-range timeout -> interval) rather than turned into a
+  startup refusal. A config that a previous version accepted must not stop a
+  daemon from booting on an upgrade; the warning carries the same information at
+  the cost of one log line. The lower bound is not enforced either -- the docs
+  name the cost of a short `PingTimeout` (a stalled but healthy meta connection
+  is torn down) and leave the number to the deployment, because the right value
+  depends on the path's round-trip distribution, which this repo cannot know.
 
 - **Full regression on the shipped build, 2026-09-17** (`tincstack/core:sf5` /
   `tincstack/node:sf5`, master 3bff008) -- wider than the batch run that closed

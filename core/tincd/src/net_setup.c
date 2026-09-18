@@ -1330,6 +1330,70 @@ static bool setup_myself(void) {
 	return true;
 }
 
+/* PingInterval and PingTimeout together are the dead-peer detection window.
+   A meta connection is pinged once PingInterval seconds have passed without
+   traffic from the peer, and dropped when no PONG arrives within PingTimeout
+   (net.c timeout_handler()), so a peer that dies silently is noticed somewhere
+   in [PingInterval, PingInterval + PingTimeout] -- uniformly, because the
+   death is uncorrelated with the ping cadence. Defaults 60 and 5. They are the
+   knob a deployment turns when it needs faster failover; docs/config-schema.md
+   carries the field measurement and the costs.
+
+   Called at startup and again from reload_configuration() (net.c), so the
+   window can be changed on a running daemon. The next one-second tick already
+   uses the new values; an established QUIC carrier keeps the handshake and
+   idle timeouts it derived from PingTimeout when it was created
+   (transport_quic.c), and PMTU re-probing picks up the new PingInterval on its
+   next round (net_packet.c).
+
+   Out-of-range values are substituted, as upstream did, but no longer in
+   silence: `PingInterval = 0' reads like "stop pinging" and means "once a
+   day", which is a day-long blind spot nobody asked for. */
+void setup_ping_timers(bool reloading) {
+	int interval, timeout;
+
+	if(get_config_int(lookup_config(&config_tree, "PingInterval"), &interval)) {
+		if(interval < 1) {
+			logger(DEBUG_ALWAYS, LOG_WARNING,
+			       "PingInterval %d is out of range (minimum 1), using %d seconds instead: "
+			       "a peer that stops answering stays reachable in the routing table for up to a day.",
+			       interval, 86400);
+			interval = 86400;
+		}
+	} else {
+		interval = 60;
+	}
+
+	bool timeout_configured = get_config_int(lookup_config(&config_tree, "PingTimeout"), &timeout);
+
+	if(!timeout_configured) {
+		timeout = 5;
+	}
+
+	if(timeout < 1 || timeout > interval) {
+		if(timeout_configured) {
+			logger(DEBUG_ALWAYS, LOG_WARNING,
+			       "PingTimeout %d is out of range (1..PingInterval = %d), using %d seconds instead.",
+			       timeout, interval, interval);
+		} else {
+			logger(DEBUG_ALWAYS, LOG_WARNING,
+			       "The default PingTimeout of %d seconds is longer than PingInterval %d, using %d seconds instead.",
+			       timeout, interval, interval);
+		}
+
+		timeout = interval;
+	}
+
+	if(reloading && (interval != pinginterval || timeout != pingtimeout)) {
+		logger(DEBUG_ALWAYS, LOG_INFO,
+		       "Dead-peer detection window changed on reload: PingInterval %d -> %d, PingTimeout %d -> %d seconds.",
+		       pinginterval, interval, pingtimeout, timeout);
+	}
+
+	pinginterval = interval;
+	pingtimeout = timeout;
+}
+
 /*
   initialize network
 */
@@ -1337,21 +1401,7 @@ bool setup_network(void) {
 	init_connections();
 	init_subnets();
 
-	if(get_config_int(lookup_config(&config_tree, "PingInterval"), &pinginterval)) {
-		if(pinginterval < 1) {
-			pinginterval = 86400;
-		}
-	} else {
-		pinginterval = 60;
-	}
-
-	if(!get_config_int(lookup_config(&config_tree, "PingTimeout"), &pingtimeout)) {
-		pingtimeout = 5;
-	}
-
-	if(pingtimeout < 1 || pingtimeout > pinginterval) {
-		pingtimeout = pinginterval;
-	}
+	setup_ping_timers(false);
 
 	if(!get_config_int(lookup_config(&config_tree, "MaxOutputBufferSize"), &maxoutbufsize)) {
 		maxoutbufsize = 10 * MTU;

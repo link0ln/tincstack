@@ -234,6 +234,7 @@ extern char *get_name(void) ATTR_MALLOC;
 extern void device_enable(void);
 extern void device_disable(void);
 extern bool setup_myself_reloadable(void);
+extern void setup_ping_timers(bool reloading);
 extern bool setup_network(void);
 extern void setup_outgoing_connection(struct outgoing_t *outgoing, bool verbose);
 extern void try_outgoing_connections(void);

@@ -229,6 +229,53 @@ No regression on the defaults: `two-nodes.sh`, `testing/smoke/run.sh`,
 
 ---
 
+## 7. net: the dead-peer detection window is reloadable, and its substitutions are logged (tincstack, 2026-09-18)
+
+**Problem.** `PingInterval` (60) and `PingTimeout` (5) decide how long a
+silently dead peer stays in the routing table — measured on the field stand as
+21/45/46 s of failover, a uniform draw over `[60, 65]`. Two things made that
+number hard to act on:
+
+1. both were parsed once, in `setup_network()`, and `reload_configuration()`
+   never looked at them again — shortening the window took a **restart**, i.e.
+   the outage the shorter window exists to avoid;
+2. out-of-range values were substituted in silence. `PingInterval = 0` reads
+   like "stop pinging" and means 86400 s; a `PingTimeout` above the interval, or
+   the default 5 under an interval of 2, was replaced with no log line at any
+   debug level.
+
+**Fix.** The parsing moved into `setup_ping_timers(bool reloading)`
+(`net_setup.c`), called from `setup_network()` and now from
+`reload_configuration()` (`net.c`) as well. The substitutions are upstream's,
+unchanged — a config an older build accepted must not stop a daemon from
+booting — but each one now logs what was asked for and what is used, and a
+reload that moves the window logs `Dead-peer detection window changed on reload:
+PingInterval 60 -> 10, PingTimeout 5 -> 3 seconds.` (nothing when it does not
+move).
+
+**Scope of the runtime change.** The next one-second tick of
+`timeout_handler()` uses the new values, for existing connections too. An
+already-established QUIC carrier keeps the handshake and idle timeouts it
+derived from `PingTimeout` at creation (`transport_quic.c`); PMTU re-probing
+picks up the new `PingInterval` on its next round (`net_packet.c`).
+
+**Wire compatibility.** None affected: no new option, no new message, no
+changed encoding, SPTPS untouched. The defaults are upstream's, so an unchanged
+config behaves exactly as before, log lines included (a valid pair logs
+nothing).
+
+**Proof.** `testing/config/ping-interval-test.sh` — one peer frozen with
+`docker pause` (the kernel keeps ACKing, only the daemon goes quiet): 64 s
+detection at the defaults, 13 s with `PingInterval: 10` / `PingTimeout: 3` in
+the YAML at startup, 10 s with the same pair applied by `tinc set` + reload on a
+daemon that was never restarted, plus the three substitution warnings asserted
+by their exact text. No regression on the defaults: `testing/smoke/run.sh` and
+`platforms/linux/docker/reload-test.sh` pass on the rebuilt core. Deployment
+guidance and the costs of a short window: `docs/config-schema.md`, "Dead-peer
+detection".
+
+---
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):
