@@ -2,7 +2,8 @@
 
 **Last Updated:** 2026-09-18 (**`PingInterval 20` measured on the real stand:
 worst-case detection 25 s instead of 65 s, blackout ceiling 24.7 s instead of
-61.5 s, applied to three running daemons without a restart. The router was not
+61.5 s, applied to three running daemons without a restart and reverted to the
+defaults the same way once measured. The router was not
 updated -- the in-place rebuild wedged its dockerd and it rebooted; keep off
 that host.**
 Earlier -- **the dead-peer detection window
@@ -3184,8 +3185,13 @@ Defects identified during the source audit, to fix as their milestone is reached
   and the old number is not.
 
   **Cleanup verified**: 0 `DROP` rules left in either container, both nodes
-  re-checked; the three nodes were left at `PingInterval 20` (revert with
-  `tincstack-cli set PingInterval 60` + reload).
+  re-checked. **The stand is back on the defaults**: at the owner's instruction
+  the three nodes were returned to `PingInterval 60` right after the
+  measurement, again by `tinc set` + reload with no restart (`PingInterval 20 ->
+  60` in each node's log), full mesh at distance 1 and 0 % loss to all three
+  peers afterwards. An explicit `PingTimeout: 5` line is left in each YAML; it
+  is the default value, so it changes nothing, and `tinc del PingTimeout` drops
+  it if the file should read exactly as before.
 
 - **The router was taken out by an in-place image rebuild, 2026-09-18** --
   🟠 operational, not a daemon defect, and the owner has told me to keep off that
