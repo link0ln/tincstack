@@ -214,6 +214,35 @@ nodeb on the other binary for the mixed pairs (`--image core --image-b
 baseline` = patched initiator against a stock responder). Evidence:
 `results/2026-09-16/glare-fix/`.
 
+### Grading: each image is judged against what it should do
+
+Until 2026-09-18 both images were graded by one rule — "a key within `--wait`
+(90 s)" — so the arm exited non-zero whenever the **unpatched control behaved
+exactly as the defect predicts**. That happened in the regression of that day:
+core 1 s / 0 restarts (PASS), baseline 90 s / 14 restarts (FAIL), arm red, no
+regression anywhere. Three more baseline runs at the same RTT took 46 / 12 / 35 s,
+so the previous green arm had been luck rather than a different outcome.
+
+Each image now carries an expectation, printed in the summary table:
+
+| expectation | who gets it by default | PASS means |
+|---|---|---|
+| `clean` | `core` | key within `--clean-max` (default 10 s), **0** SPTPS restarts, **0** `Invalid packet seqno` |
+| `defect` | `baseline` | the collision happened (glare lines > 0) **and** cost something: ≥ 1 SPTPS restart, ≥ 1 seqno error, or no key within `--wait` |
+| `any` | mixed pairs (`--image-b`) | a key was established within `--wait` |
+
+So a control that quietly recovers now **fails** — it is no longer the control
+the patch is compared against — and a patched binary that needs a restart fails
+too. Mixed pairs are not graded by default because which side keeps its session
+depends on the node names (the tie-break is lexicographic): `core x baseline` is
+clean, `baseline x core` pays the stock 10 s timer. Assert one deliberately with
+`--expect clean|defect|any`.
+
+A `defect` run in which the two sides never collided is **INCONCLUSIVE**, not a
+failure of the binary: it is retried once, and if it still does not collide the
+arm exits 2 and says so, because a run that never provoked the race proves
+nothing about it.
+
 ## Files
 
 - `lab.sh` — host wrapper (build the lab image, run one command in it).

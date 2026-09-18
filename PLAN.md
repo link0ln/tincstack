@@ -3008,15 +3008,39 @@ Defects identified during the source audit, to fix as their milestone is reached
   dial and says so itself ("this attempt proves nothing, retrying") -- at a
   rate of roughly 1 run in 4. Worth tightening in that harness one day; it is
   not a daemon defect.
-- 🟡 **`lab.sh glare` grades its negative control by the core's rule**, so the
+- ~~🟡 **`lab.sh glare` grades its negative control by the core's rule**, so the
   arm exits non-zero when upstream tinc behaves exactly as the defect the patch
-  fixes predicts. `glare_run()` (`testing/nat-sim/natlab.sh:497`) is PASS iff the
-  key exchange completes within `WAIT` (90 s) and `glare()` ORs both images'
-  verdicts into its exit code. Measured at `--rtt 50`: baseline 90 s (deadline),
-  46 s, 12 s, 35 s over four runs against the core's 1 s every time. Until the
-  baseline row is asserted to be *bad* instead of required to be good, a red
-  `glare` arm has to be read per image, and a green one does not mean upstream
-  behaved -- only that its random walk finished in time.
+  fixes predicts. Measured at `--rtt 50`: baseline 90 s (deadline), 46 s, 12 s,
+  35 s over four runs against the core's 1 s every time.~~ **Fixed 2026-09-18**
+  (`testing/nat-sim/natlab.sh`, `glare_expect()`): every image now carries an
+  expectation and is graded against it.
+
+  | expectation | default for | PASS means |
+  |---|---|---|
+  | `clean` | `core` | key within `--clean-max` (10 s), 0 SPTPS restarts, 0 `Invalid packet seqno` |
+  | `defect` | `baseline` | the collision happened (glare lines > 0) **and** cost something: a restart, a seqno error, or no key within `--wait` |
+  | `any` | mixed pairs (`--image-b`) | a key was established within `--wait` |
+
+  Mixed pairs stay ungraded by default on purpose: which side keeps its session
+  depends on the node *names*, so `core x baseline` is clean while
+  `baseline x core` pays the stock 10 s timer -- `--expect` asserts one
+  deliberately. A `defect` run that never collided is **INCONCLUSIVE**, retried
+  once, and only then fails with exit 2, because a run that did not provoke the
+  race says nothing about it.
+
+  **Proof, 10 runs on `tincstack/core:pi20` vs `tincstack/baseline:ws-f`:**
+  the arm as the regression invokes it is green again -- `--rtt 50` exit 0 (core
+  1 s / 0 / 0, baseline 12 s with 1 restart and 2 seqno errors) and `--rtt 1`
+  exit 0 twice (baseline 12 s / 46 s). The grading discriminates in both
+  directions, which is the part that matters: `--image core --expect defect`
+  **fails** ("this binary recovered from a real glare with no restart and no
+  seqno error"), at `--rtt 50` and at `--rtt 0`, and `--image baseline --expect
+  clean` **fails** (58 s, 9 restarts, 10 seqno errors). Two more baseline runs
+  at `--rtt 0` reproduced the defect at 24 s and 35 s.
+  **Not exercised:** the INCONCLUSIVE branch never fired -- the collision
+  happened in 10 of 10 runs, including at `--rtt 0` and with `--wait 1` -- so
+  that path is code-reviewed and lint-clean but unproven in the lab, and it is
+  written down here rather than counted as tested.
 - **CPU and memory at 100 Mbit/s, against upstream tinc 1.1pre18, 2026-09-18**
   (`testing/perf/`, result in `testing/perf/results/2026-09-18-100mbit.csv`).
   Both daemons in one image, two netns on a veth pair, UDP load with a fixed
@@ -3168,6 +3192,11 @@ Defects identified during the source audit, to fix as their milestone is reached
 
       glare [core]:     PASS  key after  1s, seqno-errors=0  glare-lines=2  sptps-restarts=0
       glare [baseline]: FAIL  key after 90s, seqno-errors=16 glare-lines=16 sptps-restarts=14
+
+  **The grading was fixed the same day**: each image is now graded against what
+  it is supposed to do, and the arm is green again with the control
+  demonstrating the defect instead of failing to dodge it. Rules and the ten
+  runs behind them: the Known Issues entry above.
 
   `glare_run()` (`testing/nat-sim/natlab.sh:497`) calls a run PASS iff the key
   exchange completes within `WAIT` (90 s), and `glare()` ORs the two verdicts

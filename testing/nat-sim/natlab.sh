@@ -12,7 +12,7 @@
 #   natlab glare [opts]            (--image-b IMG: nodeb runs the other binary)
 #
 # opts: --image core|baseline|both  --image-b core|baseline  --out DIR  --rtt MS
-#       --wait S  --recover S
+#       --wait S  --recover S  --expect clean|defect|any  --clean-max S
 #       --pause S  --cgnat-udp-timeout S  --cgnat-udp-stream-timeout S
 set -euo pipefail
 
@@ -32,6 +32,8 @@ TINC_PORT=655
 MAP_A=40655; MAP_B=41655            # static external ports of the cone profiles
 
 IMAGE_SEL=""; IMAGE_B=""; OUT=/lab/results; RTT=0; WAIT=90; RECOVER=60; PAUSE=70; QUICK=0
+# glare grading: what a run must look like, and how fast "clean" has to be.
+EXPECT=""; CLEAN_MAX=10
 CGNAT_UDP_TO=10; CGNAT_UDP_STO=30
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -45,6 +47,8 @@ parse_opts() {
             --out) OUT="$2"; shift 2 ;;
             --rtt) RTT="$2"; shift 2 ;;
             --wait) WAIT="$2"; shift 2 ;;
+            --expect) EXPECT="$2"; shift 2 ;;
+            --clean-max) CLEAN_MAX="$2"; shift 2 ;;
             --recover) RECOVER="$2"; shift 2 ;;
             --pause) PAUSE="$2"; shift 2 ;;
             --cgnat-udp-timeout) CGNAT_UDP_TO="$2"; shift 2 ;;
@@ -494,6 +498,26 @@ laptop() {
 # exchange succeeds and counts the "Invalid packet seqno" / "REQ_KEY ... while
 # we already started" rounds. Informative for the core-vs-baseline delta of the
 # 30 s cooldown; the verdict is PASS when a key is established within --wait.
+# What a glare run is supposed to look like, per image. The point of the
+# baseline arm is to SHOW the defect the tie-break fixes, so it is asserted to
+# be bad rather than required to clear the core's bar -- grading both by the
+# core's rule made a correct control turn the arm red (PLAN.md, 2026-09-18).
+# Measured at --rtt 50: core 1 s with 0 restarts and 0 seqno errors (4 of 4),
+# baseline 12-90 s with 1-14 SPTPS restarts.
+# A mixed pair is NOT graded by default: which side keeps its session depends on
+# the node names (the tie-break is lexicographic), so `core x baseline' is clean
+# while `baseline x core' pays a stock 10 s timer. Assert one with --expect.
+glare_expect() { # label -> clean|defect|any
+    if [ -n "$EXPECT" ]; then printf '%s\n' "$EXPECT"; return; fi
+    if [ -n "$IMAGE_B" ]; then echo any; return; fi
+
+    case "$1" in
+        core) echo clean ;;
+        baseline) echo defect ;;
+        *) echo any ;;
+    esac
+}
+
 glare_run() { # IMAGE OUTDIR   (nodeb runs $IMAGE_B when set: mixed pair)
     local img="$1" d="$2" label="$1"
     CUR_IMG="$img"; mkdir -p "$d"
@@ -527,36 +551,102 @@ glare_run() { # IMAGE OUTDIR   (nodeb runs $IMAGE_B when set: mixed pair)
     # glare lines: the stock "already started" message and the core's tie-break message (patch 5)
     reqkey="$(cat "$d"/nodea.log "$d"/nodeb.log | grep -c "while we already started a SPTPS session\|glare tie-break" || true)"
     restarts="$(cat "$d"/nodea.log "$d"/nodeb.log | grep -c "restarting SPTPS" || true)"
-    local verdict=FAIL; [ "$ok" -eq 1 ] && verdict=PASS
-    printf '{"image":"%s","verdict":"%s","t_key":%s,"seqno_lines":%s,"reqkey_lines":%s,"sptps_restarts":%s}\n' \
-        "$label" "$verdict" "$t" "$seqno" "$reqkey" "$restarts" > "$d/result.json"
+    local expect verdict why rc
+    expect="$(glare_expect "$img")"
+
+    case "$expect" in
+        clean)
+            # The patched binary must win the tie-break: one key, at once, with
+            # nothing torn down on the way.
+            if [ "$ok" -eq 1 ] && [ "$t" -le "$CLEAN_MAX" ] && [ "$restarts" -eq 0 ] && [ "$seqno" -eq 0 ]; then
+                verdict=PASS; rc=0
+                why="key in ${t}s (limit ${CLEAN_MAX}s), no SPTPS restart, no seqno error"
+            else
+                verdict=FAIL; rc=1
+                why="expected a clean tie-break (key within ${CLEAN_MAX}s, 0 restarts, 0 seqno errors), got ${t}s / $restarts / $seqno"
+                [ "$ok" -eq 1 ] || why="$why, and no key at all within ${WAIT}s"
+            fi
+            ;;
+        defect)
+            # The unpatched control must SHOW the defect. Requiring it to pass
+            # the core's bar made a correct control fail the arm (PLAN.md).
+            if [ "$reqkey" -eq 0 ]; then
+                verdict=INCONCLUSIVE; rc=2
+                why="the two sides never collided (0 glare lines), so this run says nothing about the defect; --rtt 50 makes the collision near-certain"
+            elif [ "$ok" -eq 0 ] || [ "$restarts" -ge 1 ] || [ "$seqno" -ge 1 ]; then
+                verdict=PASS; rc=0
+                why="the defect reproduced: $restarts SPTPS restart(s), $seqno seqno error(s), key after ${t}s"
+            else
+                verdict=FAIL; rc=1
+                why="this binary recovered from a real glare with no restart and no seqno error, so it does not show the defect the control exists to show"
+            fi
+            ;;
+        *)
+            if [ "$ok" -eq 1 ]; then verdict=PASS; rc=0; else verdict=FAIL; rc=1; fi
+            why="no expectation for this pair, graded only on whether a key was established within ${WAIT}s"
+            ;;
+    esac
+
+    printf '{"image":"%s","expected":"%s","verdict":"%s","t_key":%s,"seqno_lines":%s,"reqkey_lines":%s,"sptps_restarts":%s,"why":"%s"}\n' \
+        "$label" "$expect" "$verdict" "$t" "$seqno" "$reqkey" "$restarts" "$why" > "$d/result.json"
     unset NODE_IMG_nodeb
-    log "glare [$label]: $verdict key after ${t}s, seqno-errors=$seqno glare-lines=$reqkey sptps-restarts=$restarts"
+    log "glare [$label]: $verdict (expected $expect) key after ${t}s, seqno-errors=$seqno glare-lines=$reqkey sptps-restarts=$restarts -- $why"
     teardown
-    [ "$ok" -eq 1 ]
+    return "$rc"
 }
 glare() {
     parse_opts "$@"
-    local imgs fail=0 i d="$OUT/glare"
+    local imgs worst=0 rc i d="$OUT/glare" jsons=()
     case "${IMAGE_SEL:-both}" in both) imgs="core baseline" ;; *) imgs="$IMAGE_SEL" ;; esac
     local sub=""; [ -z "$IMAGE_B" ] || sub="-x-$IMAGE_B"
     mkdir -p "$d"
-    for i in $imgs; do glare_run "$i" "$d/$i$sub" || fail=1; done
+
+    for i in $imgs; do
+        rc=0; glare_run "$i" "$d/$i$sub" || rc=$?
+
+        # INCONCLUSIVE means the collision this scenario is built to provoke did
+        # not happen, so the run measured nothing. One retry: a red arm should
+        # mean a changed binary, not an unlucky lab.
+        if [ "$rc" -eq 2 ]; then
+            log "glare [$i]: the first attempt did not collide, retrying once"
+            rc=0; glare_run "$i" "$d/$i$sub-retry" || rc=$?
+            jsons+=("$d/$i$sub-retry/result.json")
+        else
+            jsons+=("$d/$i$sub/result.json")
+        fi
+
+        [ "$rc" -le "$worst" ] || worst=$rc
+    done
+
     {
         echo "## REQ_KEY glare (both sides initiate at once; full-cone x full-cone)"
         echo
-        echo "| image | key established after | \`Invalid packet seqno\` | glare lines | SPTPS restarts | verdict |"
-        echo "|---|---|---|---|---|---|"
-        for i in $imgs; do
-            python3 - "$d/$i$sub/result.json" <<'PY'
+        echo "Each image is graded against what it is SUPPOSED to do: \`clean\` = the"
+        echo "tie-break holds (key within ${CLEAN_MAX}s, no SPTPS restart, no seqno error),"
+        echo "\`defect\` = the unpatched control still demonstrates the glare it is there"
+        echo "to demonstrate. A control that recovers cleanly fails this table, and so"
+        echo "does a patched binary that does not."
+        echo
+        echo "| image | expected | key established after | \`Invalid packet seqno\` | glare lines | SPTPS restarts | verdict |"
+        echo "|---|---|---|---|---|---|---|"
+        for j in "${jsons[@]}"; do
+            python3 - "$j" <<'PY'
 import json,sys
 r=json.load(open(sys.argv[1]))
-print(f"| {r['image']} | {r['t_key']}s | {r['seqno_lines']} | {r['reqkey_lines']} | {r['sptps_restarts']} | {r['verdict']} |")
+print(f"| {r['image']} | {r.get('expected','any')} | {r['t_key']}s | {r['seqno_lines']} | {r['reqkey_lines']} | {r['sptps_restarts']} | {r['verdict']} |")
+PY
+        done
+        echo
+        for j in "${jsons[@]}"; do
+            python3 - "$j" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1]))
+print(f"- {r['image']}: {r['verdict']} -- {r.get('why','')}")
 PY
         done
     } > "$d/summary.md"
     cat "$d/summary.md"
-    return "$fail"
+    return "$worst"
 }
 
 # ---------------------------------------------------------------- main

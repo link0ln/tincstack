@@ -11,7 +11,9 @@
 #   lab.sh scenario A_TYPE B_TYPE      one pair, exit 0 = PASS
 #   lab.sh matrix [--quick]            all pairs (core and baseline)
 #   lab.sh laptop                      the CGNAT / sleep-resume regression
-#   lab.sh glare [--image-b IMG]       simultaneous REQ_KEY (both sides start; --image-b: mixed pair)
+#   lab.sh glare [--image-b IMG]       simultaneous REQ_KEY (both sides start; --image-b: mixed pair).
+#                                      core is graded `clean', the baseline control
+#                                      `defect' (--expect / --clean-max override)
 #   lab.sh shell                       interactive shell in the lab container
 #   lab.sh clean                       remove leftover wsf-* containers
 #   lab.sh promote SRC [DEST]          copy the curated evidence subset of a run
@@ -19,7 +21,8 @@
 #                                      (default DEST results/<YYYY-MM-DD>)
 #
 # Options are passed through to natlab (--image, --rtt, --wait, --recover,
-# --pause, --cgnat-udp-timeout, --cgnat-udp-stream-timeout). --out DIR sets the
+# --pause, --expect, --clean-max, --cgnat-udp-timeout,
+# --cgnat-udp-stream-timeout). --out DIR sets the
 # host results directory (default results/run/$WSF_RUN, WSF_RUN defaulting to
 # <YYYY-MM-DD>-<HHMMSS>-<pid>; `make check` exports one WSF_RUN for all its
 # lab steps so they share a directory).
