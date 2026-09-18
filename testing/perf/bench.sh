@@ -42,7 +42,7 @@ docker build -q -t "$BENCH_IMAGE" --build-arg "LAB_IMAGE=$LAB_IMAGE" \
 	--build-arg "BASELINE_O3_IMAGE=$BASELINE_O3_IMAGE" \
 	-f "$HERE/Dockerfile" "$HERE" >/dev/null
 
-echo "arm,carrier,path,mode,mbits,gb,mpkts,cpu_s_a,cpu_s_b,cpu_pct_a,cpu_pct_b,cpu_s_per_mpkt_a,cpu_s_per_mpkt_b,hwm_kb_a,hwm_kb_b,pmtu,wall_s,calib_s,norm_a,norm_b"
+echo "arm,carrier,path,mode,offered,mbits,loss_pct,gb,mpkts,cpu_s_a,cpu_s_b,cpu_pct_a,cpu_pct_b,cpu_s_per_mpkt_a,cpu_s_per_mpkt_b,hwm_kb_a,hwm_kb_b,pmtu,wall_s,calib_s,norm_a,norm_b"
 i=0
 while [ "$i" -lt "$REPEATS" ]; do
 	i=$((i + 1))

@@ -82,3 +82,45 @@ indistinguishable from upstream at -O2. And the ~12 % the `plain` path wins has
 **no established mechanism**: `recvmmsg` was the first guess and it is in both
 binaries (it is upstream's, not ours). An unexplained win is not a claim; it is
 a measurement waiting for one.
+
+## Saturation, 2026-09-18 — where one core runs out
+
+`results/2026-09-18-saturation.csv`, produced by `ladder.sh` (two passes, coarse
+then refined around the knee), read by `saturation.py`. Same lab, UDP load,
+1300-byte datagrams, 20 s per rung, 2 repeats, cpuset 0-7 — wider than the
+fixed-rate bench because near the ceiling iperf3 needs a core at each end, and a
+harness starving the daemon it measures would report its own limit as the
+daemon's.
+
+**The `none` arm is the control**: no daemon, iperf3 straight down the veth. It
+carried 2400 Mbit/s at 0.1 % loss, so nothing below that is the lab's limit and
+every ceiling here belongs to a daemon.
+
+Highest offered rate carried with under 1 % loss, and the CPU it took:
+
+| arm | ceiling | CPU there | vs upstream |
+|---|---|---|---|
+| upstream 1.1pre18 | 1200 Mbit/s | 80 % of a core | reference |
+| tincstack `plain` | 1400 Mbit/s | 81 % | +17 % |
+| tincstack `sf` | 1400 Mbit/s | 82 % | +17 % |
+| tincstack `obfs` | 1000 Mbit/s | 85 % | -17 % |
+| tincstack `https` | 1000 Mbit/s | 95 % | -17 % |
+| tincstack `quic` | 700 Mbit/s | 83 % | **-42 %** |
+
+The rungs are 100 Mbit/s apart through the knee, so each ceiling is that rung
+plus at most one: `quic` was at 1.3 % loss at 800 and 4.0 % at 900, `obfs` at
+1.1 % at 1100, `plain` and `sf` at 2.1 % and 1.4 % at 1600.
+
+`https` is the odd one: it never drives a core past ~95 % and still loses
+packets, so what limits it is not CPU but the TCP flow underneath — an inner UDP
+stream has no congestion control to back off with, and the carrier's socket
+absorbs the difference until it cannot.
+
+**A light-load measurement does not predict a ceiling.** From the 100 Mbit/s
+numbers this was extrapolated at ~470 Mbit/s for upstream and ~340 for `quic`;
+the measured ceilings are 1200 and 700, i.e. the extrapolation was wrong by
+2.2-2.6x in the pessimistic direction. At 100 Mbit/s a fixed cost that does not
+scale with traffic (event loop, timers, pings, UDP discovery) dominates: upstream
+spends 23.7 % of a core there but only 35.2 % at four times the rate. Quote the
+ladder for capacity questions and the fixed-rate bench for cost-per-packet ones;
+neither substitutes for the other.

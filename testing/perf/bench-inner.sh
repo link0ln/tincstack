@@ -33,7 +33,12 @@
 #     be checked against the work actually done.
 set -eu
 
-ARM=$1          # baseline | baseline-o3 | plain | sf | obfs | quic | https
+ARM=$1          # none | baseline | baseline-o3 | plain | sf | obfs | quic | https
+#
+# `none' runs no daemon at all and pushes iperf3 straight down the veth. It is
+# the control: near the ceiling it says whether the limit being measured belongs
+# to tincd or to this lab (veth, the kernel, iperf3 itself). Without it a
+# saturation number cannot be attributed to anything.
 SECONDS_RUN=${SECONDS_RUN:-30}
 RATE=${RATE:-100M}
 PORT=655
@@ -50,6 +55,7 @@ BASE_TINCD=/opt/baseline/sbin/tincd
 BASE_O3_TINCD=/opt/baseline-o3/sbin/tincd
 
 case "$ARM" in
+	none)        TINCD= ;;
 	baseline)    TINCD=$BASE_TINCD ;;
 	baseline-o3) TINCD=$BASE_O3_TINCD ;;
 	*)           TINCD=$CORE_TINCD ;;
@@ -133,7 +139,7 @@ write_node() {
 }
 
 case "$ARM" in
-	baseline|baseline-o3) EXTRA="" ;;
+	none|baseline|baseline-o3) EXTRA="" ;;
 	plain)    EXTRA="PreferredTransports = plain" ;;
 	sf)       EXTRA="PreferredTransports = sf
 SingleFlow = yes" ;;
@@ -150,7 +156,18 @@ cp "$NODES/a/hosts/a" "$NODES/b/hosts/a"
 cp "$NODES/b/hosts/b" "$NODES/a/hosts/b"
 
 # --------------------------------------------------------------------- start
+if [ "$ARM" = none ]; then
+	TARGET=$B_IP
+	carrier=none
+	path=no-tunnel
+	pmtu=1500
+	log "control arm: no daemon, iperf3 straight down the veth"
+else
+	TARGET=$B_VPN
+fi
+
 for n in a b; do
+	[ "$ARM" = none ] && break
 	# -d0 for measurement: logging is not free. DEBUG_LEVEL raises it for
 	# diagnosis only -- never for a row that ends up in a result table.
 	ip netns exec "$n" "$TINCD" -D -d"${DEBUG_LEVEL:-0}" -c "$NODES/$n" --pidfile "$RUN/$n.pid" \
@@ -171,7 +188,7 @@ case "$ARM" in
 esac
 
 t0=$(date +%s)
-while :; do
+while [ "$ARM" != none ]; do
 	r=$("$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" info b 2>/dev/null \
 		| awk -F': *' '/^Reachability:/{print $2}')
 
@@ -188,8 +205,10 @@ while :; do
 	fi
 	sleep 1
 done
-log "tunnel up after $(( $(date +%s) - t0 ))s (path: ${r:-unknown})"
-path=$(printf '%s' "${r:-unknown}" | tr ' ' '-')
+if [ "$ARM" != none ]; then
+	log "tunnel up after $(( $(date +%s) - t0 ))s (path: ${r:-unknown})"
+	path=$(printf '%s' "${r:-unknown}" | tr ' ' '-')
+fi
 
 # The tun device, found by the address tinc-up put on it.
 tun_dev() { ip netns exec "$1" ip -o -4 addr show | awk -v ip="$2" '$0 ~ ip {print $2; exit}'; }
@@ -197,23 +216,28 @@ tun_dev() { ip netns exec "$1" ip -o -4 addr show | awk -v ip="$2" '$0 ~ ip {pri
 # that is certainly the sender's is a better unit than a sum that hides a loss.
 TUN_A=$(tun_dev a "$A_VPN")
 
-pmtu=$("$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" dump nodes 2>/dev/null \
+[ "$ARM" = none ] || pmtu=$("$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" dump nodes 2>/dev/null \
 	| awk '/^b /{for(i=1;i<=NF;i++) if($i=="pmtu") print $(i+1)}')
 
 # The carrier actually negotiated, recorded per run. Without it a silent
 # fallback -- a carrier that could not be dialled, or a datagram that did not
 # fit a carrier's ceiling -- would be measured as if it were the arm asked for,
 # and the row would quietly be a duplicate of the plain one.
-carrier=$("$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" dump connections 2>/dev/null \
+[ "$ARM" = none ] || carrier=$("$CORE_TINC" -c "$NODES/a" --pidfile "$RUN/a.pid" dump connections 2>/dev/null \
 	| awk '/^b /{for(i=1;i<=NF;i++) if($i=="transport") print $(i+1)}' | head -1)
-[ -n "$carrier" ] || carrier=unknown
+[ -n "${carrier:-}" ] || carrier=unknown
 log "carrier in use: $carrier (pmtu ${pmtu:-?})"
 
 # -------------------------------------------------------------------- sample
 # tinc's pidfile is not just a pid: it is "<pid> <key> <address> <port>".
 pid_of() { awk '{print $1}' "$RUN/$1.pid"; }
 cpu_ticks() { awk '{print $14+$15}' "/proc/$(pid_of "$1")/stat"; }
-hwm_kb() { awk '/VmHWM/{print $2}' "/proc/$(pid_of "$1")/status"; }
+hwm_kb() {
+	# The control arm has no daemon to read: 0 rather than an error, and the
+	# row is identified as the control by its carrier column anyway.
+	if [ "$ARM" = none ]; then echo 0; return; fi
+	awk '/VmHWM/{print $2}' "/proc/$(pid_of "$1")/status"
+}
 # Packets crossing the tunnel device: the unit the daemon's per-packet work is
 # actually proportional to. Without this a CPU number cannot be checked.
 # A fixed amount of pure arithmetic that reports its OWN CPU time, used as a
@@ -237,6 +261,7 @@ pkts() { ip netns exec "$1" cat "/sys/class/net/$2/statistics/rx_packets" "/sys/
 # PMTU probing happen right after the tunnel comes up and are not steady-state
 # forwarding cost. SETTLE=0 to measure from the first second instead.
 sleep "${SETTLE:-5}"
+mkdir -p "$RUN"
 ip netns exec b iperf3 -s -1 -D --logfile "$RUN/iperf-server.log"
 sleep 2
 
@@ -246,34 +271,64 @@ case "${MODE:-udp}" in
 	*) echo "unknown MODE ${MODE:-}" >&2; exit 2 ;;
 esac
 
+if [ "$ARM" = none ]; then
+	# No daemon to sample: the row carries the achieved rate and the loss, which
+	# is all the control is for, and zeros where the daemon columns would be.
+	w0=$(date +%s.%N)
+	# shellcheck disable=SC2086
+	ip netns exec a iperf3 -c "$TARGET" -b "$RATE" -t "$SECONDS_RUN" $IPERF_LOAD -J > "$RUN/iperf.json" 2>&1 \
+		|| { log "iperf3 failed"; tail -5 "$RUN/iperf.json" >&2; exit 1; }
+	w1=$(date +%s.%N)
+	a0=0; a1=0; b0=0; b1=0; pa0=0; pa1=0
+	cal0=$(calibrate)
+	cal1=$cal0
+else
 cal0=$(calibrate)
 a0=$(cpu_ticks a); b0=$(cpu_ticks b); pa0=$(pkts a "$TUN_A"); w0=$(date +%s.%N)
 # shellcheck disable=SC2086  # IPERF_LOAD is a deliberate word-split option list
-ip netns exec a iperf3 -c "$B_VPN" -b "$RATE" -t "$SECONDS_RUN" $IPERF_LOAD -J > "$RUN/iperf.json" 2>&1 || {
+ip netns exec a iperf3 -c "$TARGET" -b "$RATE" -t "$SECONDS_RUN" $IPERF_LOAD -J > "$RUN/iperf.json" 2>&1 || {
 	log "iperf3 failed"; tail -5 "$RUN/iperf.json" >&2; exit 1; }
 w1=$(date +%s.%N); a1=$(cpu_ticks a); b1=$(cpu_ticks b); pa1=$(pkts a "$TUN_A")
 cal1=$(calibrate)
+fi
 CAL=$(awk -v a="$cal0" -v b="$cal1" 'BEGIN{printf "%.3f\n", (a + b) / 2}')
 log "calibration loop: ${cal0}s before, ${cal1}s after"
 
 hz=$(getconf CLK_TCK)
-bits=$(awk -F'[:,]' '/"bits_per_second"/{v=$2} END{print v+0}' "$RUN/iperf.json")
-bytes=$(awk -F'[:,]' '/"bytes"/{v=$2} END{print v+0}' "$RUN/iperf.json")
-retr=$(awk -F'[:,]' '/"retransmits"/{v=$2} END{print v+0}' "$RUN/iperf.json")
+# Parse the JSON as JSON. The previous "last line that looks like the field
+# wins" awk is fine while every run succeeds at the offered rate; at saturation
+# it is not, because what matters there is the RECEIVED rate and the loss, and
+# those live in specific objects rather than wherever the last match happened.
+eval "$(python3 - "$RUN/iperf.json" "${MODE:-udp}" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+end = d["end"]
+if sys.argv[2] == "udp":
+    s = end["sum"]
+    bits, byts = s["bits_per_second"], s["bytes"]
+    loss = s.get("lost_percent", 0.0)
+else:
+    s = end.get("sum_received") or end["sum_sent"]
+    bits, byts = s["bits_per_second"], s["bytes"]
+    loss = 0.0
+print(f"bits={bits:.0f}; bytes={byts:.0f}; loss={loss:.3f}")
+PYEOF
+)"
 
 # One CSV line: arm, achieved Mbit/s, GB moved, tincd CPU seconds on each side,
 # each as a percentage of one core, and peak RSS on each side.
+# shellcheck disable=SC2154  # bits, bytes and loss are set by the eval above
 awk -v arm="$ARM" -v hz="$hz" -v a0="$a0" -v a1="$a1" -v b0="$b0" -v b1="$b1" \
-    -v w0="$w0" -v w1="$w1" -v bits="$bits" -v bytes="$bytes" -v retr="$retr" \
+    -v w0="$w0" -v w1="$w1" -v bits="$bits" -v bytes="$bytes" \
     -v ha="$(hwm_kb a)" -v hb="$(hwm_kb b)" -v pmtu="${pmtu:-0}" \
     -v pa0="$pa0" -v pa1="$pa1" -v mode="${MODE:-udp}" -v cal="$CAL" \
-    -v carrier="$carrier" -v path="$path" 'BEGIN{
+    -v carrier="$carrier" -v path="$path" -v loss="$loss" -v offered="${RATE:-?}" 'BEGIN{
 	wall = w1 - w0
 	ca = (a1 - a0) / hz; cb = (b1 - b0) / hz
 	gb = bytes / 1e9
 	mp = (pa1 - pa0) / 1e6
-	printf "%s,%s,%s,%s,%.1f,%.3f,%.3f,%.2f,%.2f,%.1f,%.1f,%.2f,%.2f,%d,%d,%d,%.1f,%.3f,%.2f,%.2f\n",
-	       arm, carrier, path, mode, bits/1e6, gb, mp, ca, cb, 100*ca/wall, 100*cb/wall,
+	printf "%s,%s,%s,%s,%s,%.1f,%.2f,%.3f,%.3f,%.2f,%.2f,%.1f,%.1f,%.2f,%.2f,%d,%d,%d,%.1f,%.3f,%.2f,%.2f\n",
+	       arm, carrier, path, mode, offered, bits/1e6, loss, gb, mp, ca, cb, 100*ca/wall, 100*cb/wall,
 	       (mp>0 ? ca/mp : 0), (mp>0 ? cb/mp : 0), ha, hb, pmtu, wall,
 	       cal, (cal>0 && mp>0 ? ca/cal/mp : 0), (cal>0 && mp>0 ? cb/cal/mp : 0)
 }'
