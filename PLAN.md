@@ -3245,6 +3245,36 @@ Defects identified during the source audit, to fix as their milestone is reached
   POSTROUTING `-s 10.200.250.0/24 -j MASQUERADE`. ruvds2 needs nothing (INPUT
   policy ACCEPT, and it forwards nothing).
 
+  **Follow-up the next day, owner request: QUIC between the two VPS, and euvds
+  reachable directly only from ruvds.** The meta connection was `plain` (the
+  default `PreferredTransports: [plain]` on both ends); `tinc set
+  PreferredTransports quic` on both plus one `tinc disconnect euvds` on the
+  dialler moved it: `Dialling euvds (88.218.122.166 port 656) via quic` →
+  `transport quic` on both `dump connections`, tunnel 0 % loss, and the MTU
+  cost is visible — pmtu **1439 → 1367**. A preference change alone does not
+  move an already activated link; it is applied on the next dial.
+
+  The isolation needed three rules, not one, and the first two alone would
+  have been a policy that looks right and does nothing:
+
+  1. `! -s 80.87.200.39 -p tcp --dport 656 -j DROP` and the same for udp,
+     inserted **above** the `RELATED,ESTABLISHED` accept. Below it, the
+     already-open connection from the Windows node survived the change (it was
+     still listed 90 s later), and the reply to one of euvds's own UDP probes
+     would have been accepted as ESTABLISHED, re-opening a direct data path.
+  2. `AutoConnect: no` + `ConnectTo: ruvds` on euvds. `AutoConnect` defaults to
+     **yes** (`net_setup.c:629`), so euvds would have dialled the other members
+     itself — an outgoing connection the firewall does not touch, and the link
+     would have been direct again, just opened from the other side.
+
+  Result, measured after the change: euvds's connection list is exactly
+  `ruvds … transport quic`, `dump nodes` shows `win1 … nexthop ruvds …
+  distance 2`, and euvds→win1 still pings 0 % loss with the relay's cost
+  visible — **46.9 ms direct → 60.7 ms through ruvds**. Two consequences worth
+  knowing: all of the Windows client's traffic, including its NAT egress,
+  now crosses ruvds's daemon, and if ruvds is down euvds is cut off from the
+  rest of the mesh by design.
+
   **Defect found in the existing 3proxy, 🟠, fixed in the same pass:**
   `/opt/tinc-gnet/3proxy/3proxy.cfg` had `allow * 10.200.240.0/24` + `deny *`
   and **no `auth` line**. 3proxy evaluates ACLs only under an authentication
