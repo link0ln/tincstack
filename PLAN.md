@@ -3275,6 +3275,25 @@ Defects identified during the source audit, to fix as their milestone is reached
   now crosses ruvds's daemon, and if ruvds is down euvds is cut off from the
   rest of the mesh by design.
 
+  **The same hole existed in the older `gnet` network and was closed on the
+  owner's instruction (2026-09-19).** It surfaced from a measurement the owner
+  questioned: his PC pinged euvds at 44 ms over `gnet` and 68 ms over
+  `gnetnew`, while euvds's own `tinc info` said both were
+  `Reachability: none, forwarded via ruvds2`. The relay is the same in both
+  networks; the difference was the firewall. On `gnet` the allow rule for port
+  443 sits **below** the `RELATED,ESTABLISHED` accept, so euvds's own outbound
+  UDP probe to a member opened a conntrack entry and that member's reply came
+  back through it: the `-s 80.87.200.39` restriction on 443 was decorative and
+  a direct data path formed with anyone euvds probed. Closed the same way as
+  656 -- `! -s 80.87.200.39 -p tcp/udp --dport 443 -j DROP` above the conntrack
+  accept -- plus `AutoConnect = no` and `ConnectTo = ruvds2` in the gnet
+  `tinc.conf` (it was `AutoConnect = yes` with no ConnectTo, so euvds would
+  have dialled members itself). After the change euvds's connection list is
+  `ruvds2` alone and all four busy clients read `forwarded via ruvds2`.
+  **Operational cost, stated plainly:** every gnet client's traffic to euvds
+  now crosses ruvds2's daemon in userspace -- `xbe7000` alone has ~25 GB on
+  the counter -- and the added hop is the same ~24 ms the owner measured.
+
   **Defect found in the existing 3proxy, 🟠, fixed in the same pass:**
   `/opt/tinc-gnet/3proxy/3proxy.cfg` had `allow * 10.200.240.0/24` + `deny *`
   and **no `auth` line**. 3proxy evaluates ACLs only under an authentication
