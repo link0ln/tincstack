@@ -3047,6 +3047,42 @@ Defects identified during the source audit, to fix as their milestone is reached
   and is recorded as a measurement, not a claim. The first guess, batched
   `recvmmsg`, is wrong: it is in both binaries, because it is upstream's code.
 
+- **Saturation: where one core runs out, 2026-09-18** (`testing/perf/ladder.sh`,
+  `saturation.py`, result in `testing/perf/results/2026-09-18-saturation.csv`).
+  Same lab and load as the fixed-rate bench, offered rate stepped up until each
+  arm stops keeping up; two passes, coarse then refined to 100 Mbit/s rungs
+  through the knee; cpuset 0-7, because near the ceiling iperf3 needs a core at
+  each end and a harness starving the daemon it measures would report its own
+  limit as the daemon's.
+
+  **There is a control arm, `none`: no daemon, iperf3 straight down the veth.**
+  It carried 2400 Mbit/s at 0.1 % loss, so nothing below that is the lab's limit
+  and every ceiling here belongs to a daemon. Without it none of these numbers
+  could be attributed to anything.
+
+  | arm | ceiling (< 1 % loss) | CPU there | vs upstream |
+  |---|---|---|---|
+  | upstream 1.1pre18 | 1200 Mbit/s | 80 % of a core | reference |
+  | tincstack `plain` | 1400 Mbit/s | 81 % | +17 % |
+  | tincstack `sf` | 1400 Mbit/s | 82 % | +17 % |
+  | tincstack `obfs` | 1000 Mbit/s | 85 % | -17 % |
+  | tincstack `https` | 1000 Mbit/s | 95 % | -17 % |
+  | tincstack `quic` | 700 Mbit/s | 83 % | **-42 %** |
+
+  **`https` is limited by the TCP flow under it, not by CPU**: it never drives a
+  core past ~95 % and still loses packets, because an inner UDP stream has no
+  congestion control to back off with and the carrier's socket absorbs the
+  difference until it cannot.
+
+  **A light-load measurement does not predict a ceiling, and I predicted wrong.**
+  From the 100 Mbit/s CPU figures I extrapolated ~470 Mbit/s for upstream and
+  ~340 for `quic`; measured, they are 1200 and 700 -- the extrapolation was off
+  by 2.2-2.6x, pessimistically. At 100 Mbit/s a fixed cost that does not scale
+  with traffic (event loop, timers, pings, UDP discovery) dominates: upstream
+  spends 23.7 % of a core at 100 Mbit/s but only 35.2 % at four times the rate.
+  The ladder answers capacity questions and the fixed-rate bench answers
+  cost-per-packet ones; neither substitutes for the other.
+
 - **Full regression on the shipped build, 2026-09-17** (`tincstack/core:sf5` /
   `tincstack/node:sf5`, master 3bff008) -- wider than the batch run that closed
   defect G, which covered 12 proofs and skipped five. **29 of 29 PASS:**
