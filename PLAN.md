@@ -2995,46 +2995,58 @@ Defects identified during the source audit, to fix as their milestone is reached
   rate of roughly 1 run in 4. Worth tightening in that harness one day; it is
   not a daemon defect.
 - **CPU and memory at 100 Mbit/s, against upstream tinc 1.1pre18, 2026-09-18**
-  (`testing/perf/`, results committed under `testing/perf/results/`). Both
-  daemons in one image, two netns on a veth pair, UDP load with a fixed datagram
-  size, 0.433 Mpkt per 45 s run, `-d0`, cpuset 0-3, i9-10900K. Per node:
+  (`testing/perf/`, result in `testing/perf/results/2026-09-18-100mbit.csv`).
+  Both daemons in one image, two netns on a veth pair, UDP load with a fixed
+  datagram size, 0.433 Mpkt per 45 s run, `-d0`, cpuset 0-3, i9-10900K, 14
+  paired repeats. **Every row records the carrier actually negotiated and all
+  84 ran on the carrier their arm asked for.** Per node:
 
-  | arm | CPU, % of one core | peak RSS | vs upstream, 26 paired repeats |
-  |---|---|---|---|
-  | upstream 1.1pre18 (-O2) | 23.3 | 6.8 MB | reference |
-  | upstream 1.1pre18 (-O3) | 23.3 | 6.8 MB | -0.1 %, not significant |
-  | tincstack `plain` | 22.0 | 11.9 MB | **-12.0 %** [-15.1, -4.0], p = 0.009 |
-  | tincstack `sf` | 21.8 | 11.8 MB | **-8.9 %** [-15.8, -4.9], p = 0.003 |
-  | tincstack `obfs` | 26.4 | 11.8 MB | **+11.9 %** [+5.6, +19.1], p = 0.029 |
+  | arm | data path | CPU, % of one core | peak RSS | vs upstream |
+  |---|---|---|---|---|
+  | upstream 1.1pre18 | raw SPTPS/UDP | 23.7 | 6.8 MB | reference |
+  | tincstack `plain` | raw SPTPS/UDP | 21.1 | 11.8 MB | **-8.0 %** [-12.9, -3.2], p = 0.002 |
+  | tincstack `sf` | SPTPS/UDP, meta in the same flow | 21.9 | 11.8 MB | -4.3 %, **not significant** |
+  | tincstack `obfs` | sealed datagrams | 26.7 | 11.9 MB | **+13.6 %** [+9.1, +30.2], p = 0.002 |
+  | tincstack `https` | one TLS/TCP flow carries meta **and** data | 26.6 | 11.7 MB | **+18.0 %** [+6.3, +31.7], p = 0.002 |
+  | tincstack `quic` | data inside QUIC datagrams | 29.6 | 12.3 MB | **+26.3 %** [+18.5, +46.6], p = 0.013 |
 
-  **Memory is the firm number: +5 MB per node**, in all 118 runs, the two groups
-  never overlapping. The CPU figures come from a *paired* comparison -- arms are
-  interleaved inside each repeat, so the repeat index pairs them -- because an
-  unpaired read of the same data resolves nothing: the same arm varies by 83 %
-  of its median between repeats.
+  **Memory is the firm number: +5 MB per node** (`quic` +5.5), in every run,
+  the groups never overlapping. **`quic` is the expensive carrier** -- +26 %
+  against upstream, about +37 % against our own `plain` -- and it is the only
+  carrier with a `send_datagram` hook, so the tunnel's data really rides inside
+  QUIC datagrams rather than beside them. `https` is a different data path
+  again: `become_established()` marks the link `TCPONLY|INDIRECT` so one TLS
+  flow carries meta and data, which is the point (bare UDP beside a connection
+  pretending to be HTTPS would give the cover away).
 
-  **Three measurement mistakes are recorded because each produced a confident
-  wrong answer first.** (a) The first cut measured under a TCP load and had
-  tincstack *cheaper than* and then *dearer than* upstream on successive runs:
-  TCP does not hold the packet count still, the tun device coalesces segments,
-  and the daemon sees half as many, twice as large reads on one run as on the
-  next (23.7 %, 10.6 %, 23.9 % of a core for the same arm). The load is now UDP
-  with a fixed datagram size and **the packet count is printed with every row**,
-  so a CPU figure can always be checked against the work that produced it.
-  (b) With the packet count nailed down, CPU still ranged 7-26 % for provably
-  identical work. Raw CPU seconds are not a unit of work on this host: the
-  governor is `intel_pstate`/`powersave` and a boosted core does the same work
-  in a third of the CPU-seconds. Every run is now calibrated against a fixed
-  busy loop that reports its own CPU time. (c) The obvious explanation for
-  "our build is cheaper" was that meson builds release at -O3 while upstream's
-  autotools default is -g -O2. An upstream arm rebuilt at -O3 was added to test
-  exactly that, and it killed the hypothesis: -0.1 %, indistinguishable.
+  The CPU figures come from a *paired* comparison -- arms are interleaved inside
+  each repeat, so the repeat index pairs them -- because unpaired nothing
+  resolves: the same arm varies by 45 % of its median between repeats.
 
-  **The ~12 % the plain path wins has no established mechanism** and is recorded
-  as a measurement, not a claim. The first guess, batched `recvmmsg`, is wrong:
-  it is in both binaries, because it is upstream's code. Worth understanding
-  before it is quoted anywhere, since an unexplained win is as likely to be an
-  uncontrolled variable as a real one.
+  **Four measurement mistakes are recorded because each produced a confident
+  wrong answer first.** (a) Under a TCP load the same arm came out at 23.7 %,
+  10.6 % and 23.9 % of a core: TCP does not hold the packet count still, the tun
+  device coalesces segments. The load is UDP with a fixed datagram size now, and
+  the packet count is printed with every row. (b) With the packet count nailed
+  down CPU still ranged 7-26 % for provably identical work: raw CPU seconds are
+  not a unit of work under `intel_pstate`/`powersave`, since a boosted core does
+  the same work in a third of them. Every run is calibrated against a fixed busy
+  loop that reports its own CPU time. (c) The obvious explanation for "our build
+  is cheaper" -- meson release at -O3 against autotools' default -g -O2 -- was
+  tested with an upstream arm rebuilt at -O3 and killed: -0.1 %, indistinguishable.
+  (d) **The first published sweep had no `quic` or `https` arm at all, and no way
+  to tell what any arm ran on.** Both nodes dialled each other and no host file
+  carried a `Transports` line, so a cold dialler assumed the peer took `plain`
+  only and the `sf` and `obfs` arms measured the plain data path while reporting
+  themselves as `sf` and `obfs`. Those results were deleted rather than kept with
+  a caveat. The harness now uses one dialler and one acceptor, puts the accept
+  mask in the host file, records the carrier on every row, and both analysers
+  warn when a row's carrier is not its arm's.
+
+  **The ~8 % `plain` wins against upstream still has no established mechanism**
+  and is recorded as a measurement, not a claim. The first guess, batched
+  `recvmmsg`, is wrong: it is in both binaries, because it is upstream's code.
+
 - **Full regression on the shipped build, 2026-09-17** (`tincstack/core:sf5` /
   `tincstack/node:sf5`, master 3bff008) -- wider than the batch run that closed
   defect G, which covered 12 proofs and skipped five. **29 of 29 PASS:**
