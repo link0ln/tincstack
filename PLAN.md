@@ -3190,10 +3190,12 @@ Defects identified during the source audit, to fix as their milestone is reached
   measurement, again by `tinc set` + reload with no restart (`PingInterval 20 ->
   60` in each node's log), full mesh at distance 1 and 0 % loss to all three
   peers afterwards. The explicit `PingTimeout: 5` line the measurement had added
-  was then removed from all three YAMLs (`tinc del PingTimeout` + reload); the
-  reload logged nothing, which is the intended silence -- 60/5 before, 60/5
-  after, nothing moved. Each node's `options:` now carries one leftover key,
-  `PingInterval: 60`, which is the default spelled out.
+  was then removed from all three YAMLs, and `PingInterval` after it (`tinc del`
+  + reload each time); both reloads logged nothing, which is the intended
+  silence -- 60/5 before, 60/5 after, nothing moved. **The stand's configs carry
+  no trace of the experiment**: no `Ping*` key in any node's `options:`, no
+  range warning and no parse error in any log, and the mesh unchanged at
+  distance 1 with 0 % loss to all three peers.
 
 - **The router was taken out by an in-place image rebuild, 2026-09-18** --
   🟠 operational, not a daemon defect, and the owner has told me to keep off that
