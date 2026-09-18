@@ -3189,9 +3189,11 @@ Defects identified during the source audit, to fix as their milestone is reached
   the three nodes were returned to `PingInterval 60` right after the
   measurement, again by `tinc set` + reload with no restart (`PingInterval 20 ->
   60` in each node's log), full mesh at distance 1 and 0 % loss to all three
-  peers afterwards. An explicit `PingTimeout: 5` line is left in each YAML; it
-  is the default value, so it changes nothing, and `tinc del PingTimeout` drops
-  it if the file should read exactly as before.
+  peers afterwards. The explicit `PingTimeout: 5` line the measurement had added
+  was then removed from all three YAMLs (`tinc del PingTimeout` + reload); the
+  reload logged nothing, which is the intended silence -- 60/5 before, 60/5
+  after, nothing moved. Each node's `options:` now carries one leftover key,
+  `PingInterval: 60`, which is the default spelled out.
 
 - **The router was taken out by an in-place image rebuild, 2026-09-18** --
   🟠 operational, not a daemon defect, and the owner has told me to keep off that
