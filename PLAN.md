@@ -1,6 +1,10 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-18 (**`PingInterval 20` measured on the real stand:
+**Last Updated:** 2026-09-18 (**full regression on the PingInterval build: 31
+arms, 30 PASS; the one non-zero exit is upstream tinc failing the glare control,
+which the harness grades by the core's rule -- the core itself is 1 s / 0 errors
+in 4 of 4 runs.**
+Earlier the same day -- **`PingInterval 20` measured on the real stand:
 worst-case detection 25 s instead of 65 s, blackout ceiling 24.7 s instead of
 61.5 s, applied to three running daemons without a restart and reverted to the
 defaults the same way once measured. The router was not
@@ -3004,6 +3008,15 @@ Defects identified during the source audit, to fix as their milestone is reached
   dial and says so itself ("this attempt proves nothing, retrying") -- at a
   rate of roughly 1 run in 4. Worth tightening in that harness one day; it is
   not a daemon defect.
+- 🟡 **`lab.sh glare` grades its negative control by the core's rule**, so the
+  arm exits non-zero when upstream tinc behaves exactly as the defect the patch
+  fixes predicts. `glare_run()` (`testing/nat-sim/natlab.sh:497`) is PASS iff the
+  key exchange completes within `WAIT` (90 s) and `glare()` ORs both images'
+  verdicts into its exit code. Measured at `--rtt 50`: baseline 90 s (deadline),
+  46 s, 12 s, 35 s over four runs against the core's 1 s every time. Until the
+  baseline row is asserted to be *bad* instead of required to be good, a red
+  `glare` arm has to be read per image, and a green one does not mean upstream
+  behaved -- only that its random walk finished in time.
 - **CPU and memory at 100 Mbit/s, against upstream tinc 1.1pre18, 2026-09-18**
   (`testing/perf/`, result in `testing/perf/results/2026-09-18-100mbit.csv`).
   Both daemons in one image, two netns on a veth pair, UDP load with a fixed
@@ -3132,6 +3145,48 @@ Defects identified during the source audit, to fix as their milestone is reached
   spends 23.7 % of a core at 100 Mbit/s but only 35.2 % at four times the rate.
   The ladder answers capacity questions and the fixed-rate bench answers
   cost-per-packet ones; neither substitutes for the other.
+
+- **Full regression on the PingInterval build, 2026-09-18** (`tincstack/core:pi20`
+  / `node:pi20`, master 3308e1c, plus the `-test` and `-noquic` variants built
+  from the same source). **31 arms, 30 PASS**, and the one non-zero exit is the
+  upstream control, not this tree:
+
+      classify matrix singleflow x3 tls-front https-carrier quic-carrier
+      obfs obfs-mtu obfs-restart plain-refuse carrier-switch invitee-mesh
+      same-nat-meta confirmed-peer x4 ping-interval two-nodes yaml-scripts
+      obfs-rekey reload smoke glare(--rtt 1) nat-quick dpi-baseline
+      lint secrets
+
+  New this round: `ping-interval` (the proof added with the change) and the two
+  invocations that were my own mistakes last time -- `lab.sh matrix --quick
+  --image core` and `dpi-proof/run.sh baseline` -- now spelled correctly and
+  PASS. `smoke` passes too, on the `lab-env.sh` subnet fix from c91ac1a that the
+  previous run produced.
+
+  **`glare --rtt 50` exited non-zero because upstream tinc failed it, and the
+  harness grades the negative control by the same rule as the core:**
+
+      glare [core]:     PASS  key after  1s, seqno-errors=0  glare-lines=2  sptps-restarts=0
+      glare [baseline]: FAIL  key after 90s, seqno-errors=16 glare-lines=16 sptps-restarts=14
+
+  `glare_run()` (`testing/nat-sim/natlab.sh:497`) calls a run PASS iff the key
+  exchange completes within `WAIT` (90 s), and `glare()` ORs the two verdicts
+  into its exit code -- so a baseline that behaves exactly as the defect
+  predicts fails the arm. Re-measured afterwards, three more baseline runs at
+  the same RTT took **46 / 12 / 35 s** (7 / 1 / 5 SPTPS restarts), i.e. upstream
+  recovers from glare by a heavy-tailed random walk between 12 s and the 90 s
+  deadline, and the 2026-09-17 entry's "glare PASS" was luck (46 s) rather than
+  a different outcome. **The core is unchanged and deterministic: 1 s, 0 seqno
+  errors, 0 restarts in 4 of 4 runs.** The arm's grading is worth fixing in the
+  harness (a control that is expected to be bad should be asserted to be bad,
+  not required to pass); until then a `glare` failure must be read per image,
+  which is why both rows are quoted here.
+
+  **The runner was killed once by host low memory** (after `glare --rtt 1`, with
+  k3s and the mykube stack on the same box, as in the 250-run sweep) and the
+  remaining four arms -- `nat-quick`, `dpi-baseline`, `lint`, `secrets` -- were
+  re-run to completion, all PASS. One lab container was left behind by the kill
+  and removed by hand.
 
 - **PingInterval 20 measured on the real stand, 2026-09-18** -- three of the
   four hosts (`laptop`, `ruvds2`, `euvds`) on `tincstack/node:pi20`, built from
