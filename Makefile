@@ -37,7 +37,8 @@ GITLEAKS_IMAGE ?= zricethezav/gitleaks:latest
 # list and one severity again.
 SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-sim/natlab.sh \
                  testing/nat-sim/natprofile.sh testing/dpi-proof/run.sh testing/dpi-proof/capture.sh \
-                 testing/smoke/run.sh platforms/linux/docker/two-nodes.sh \
+                 testing/smoke/run.sh testing/acme/run.sh \
+                 platforms/linux/docker/two-nodes.sh \
                  platforms/linux/docker/yaml-scripts.sh \
                  platforms/linux/docker/obfs-rekey-test.sh \
                  platforms/linux/docker/reload-test.sh \

@@ -19,6 +19,7 @@ Status decoding follows node_status_t (union bitfield) in tinc src/node.h:
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
@@ -139,6 +140,25 @@ class CommandResult:
     @property
     def ok(self) -> bool:
         return self.rc == 0
+
+
+# `tinc cert` prints "tinc cert: FAILED (<code>)" followed by one sentence of
+# detail and one of hint. The code is the stable name from acme.h, so the UI can
+# key on it; the two sentences are what the user is told.
+_CERT_FAIL = re.compile(r"^tinc cert: FAILED \((?P<code>[a-z0-9-]+)\)\s*$", re.M)
+
+
+def parse_cert_failure(text: str) -> tuple[str, str, str]:
+    """(code, detail, hint) from `tinc cert` output; ("", "", "") if it did not
+    report a failure. Unknown codes come back verbatim -- a code this build has
+    never heard of is still shown, never swallowed."""
+    m = _CERT_FAIL.search(text or "")
+    if not m:
+        return "", "", ""
+    rest = [ln.strip() for ln in text[m.end():].splitlines() if ln.strip()]
+    detail = rest[0] if rest else ""
+    hint = rest[1] if len(rest) > 1 else ""
+    return m.group("code"), detail, hint
 
 
 # ---- the controller -----------------------------------------------------------
@@ -300,6 +320,31 @@ class TincControl:
         stderr carries the address-discovery warnings; surface it."""
         rc, out, err = self._run(net, "invite", name, timeout=timeout)
         return CommandResult(rc, out.strip(), err.strip())
+
+    # -- TLS certificate (tinc cert; ACME + Cloudflare) --
+
+    def cert(self, net: str, *args: str, timeout: float = 300.0) -> CommandResult:
+        """`tinc -n NET -c tinc.yaml cert ...`. Issuing talks to a CA and to
+        Cloudflare and can take minutes, hence the long default timeout; the
+        GUI runs it on a worker thread. Both streams carry text the user needs:
+        stdout the outcome, stderr the progress and the failure taxonomy."""
+        rc, out, err = self._run(net, "cert", *args, timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def cert_status(self, net: str) -> CommandResult:
+        return self.cert(net, "status", timeout=15.0)
+
+    def cert_check(self, net: str) -> CommandResult:
+        return self.cert(net, "check", timeout=60.0)
+
+    def cert_issue(self, net: str, force: bool = False, staging: bool = False,
+                   renew: bool = False) -> CommandResult:
+        args = ["renew" if renew else "issue"]
+        if force:
+            args.append("--force")
+        if staging:
+            args.append("--staging")
+        return self.cert(net, *args)
 
     def join(self, net: str | None, invitation: str, timeout: float = 120.0) -> CommandResult:
         """`tinc [-n NET] -c tinc.yaml join STRING` → the joined network is

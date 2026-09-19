@@ -1,0 +1,47 @@
+# Lab for `tinc cert`: a real ACME server (Pebble), a real DNS server that
+# answers the challenge (challtestsrv), and a stand-in Cloudflare API. Nothing
+# here talks to the internet, and no account or domain is needed.
+#
+# Brought up by run.sh, which generates ./run/certs first.
+name: ${ACME_PROJECT:-tincstack-acme}
+
+services:
+  challtestsrv:
+    image: ghcr.io/letsencrypt/pebble-challtestsrv:latest
+    # -defaultIPv6 "" keeps Pebble from trying an AAAA it cannot reach.
+    command: -management :8055 -http01 "" -tlsalpn01 "" -https01 "" -defaultIPv4 "" -defaultIPv6 ""
+    networks: [acme]
+
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    command: -config /test/config/pebble-config.json -dnsserver challtestsrv:8053
+    environment:
+      # Validate immediately instead of sleeping a random 0-15s, and never
+      # fail a valid challenge at random: this is a test, not a chaos lab.
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+    depends_on: [challtestsrv]
+    networks: [acme]
+
+  mock-cf:
+    image: python:3.12-slim
+    command: python3 /srv/mock-cf.py
+    environment:
+      CHALLTESTSRV: http://challtestsrv:8055
+      ZONE_NAME: ${ACME_ZONE:-example.test}
+    volumes:
+      - ./mock-cf.py:/srv/mock-cf.py:ro
+      - ./run/certs:/certs:ro
+    depends_on: [challtestsrv]
+    networks: [acme]
+
+  node:
+    image: ${CORE_IMAGE:-tincstack/core:dev}
+    command: sleep infinity
+    volumes:
+      - ./run:/run/acme
+    depends_on: [pebble, mock-cf]
+    networks: [acme]
+
+networks:
+  acme:

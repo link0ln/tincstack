@@ -31,6 +31,10 @@
 
 #include "decoy.h"
 
+#ifdef HAVE_OPENSSL
+#include "tls.h"
+#endif
+
 uint32_t transport_accept_mask;
 
 /* Which carriers have had their `init' hook run, and whether transport_init()
@@ -346,6 +350,22 @@ bool transport_read_config(void) {
 #endif
 
 	logger(DEBUG_ALWAYS, LOG_INFO, "Transports accept=%s prefer=%s%s", transport_mask_to_string(transport_accept_mask, buf), pbuf, single_flow ? " (SingleFlow)" : "");
+
+#ifdef HAVE_OPENSSL
+
+	/* A node certificate replaced by `tinc cert issue' -- or by a hand-edited
+	   TlsCert/TlsKey -- is served without a restart. tls_init() re-reads the
+	   PEMs and rebuilds the contexts only when the fingerprint changed, so
+	   this costs nothing on an ordinary reload; `tls_ready' keeps a node with
+	   no TLS front from building contexts it never uses. The quic branch above
+	   already did this for its own credential; the second call is the cheap
+	   no-op path. */
+	if(tls_ready && !tls_init()) {
+		logger(DEBUG_ALWAYS, LOG_ERR,
+		       "Could not reload the node certificate; keeping the one already in use");
+	}
+
+#endif
 
 	/* Re-read the decoy config so HttpsDecoyRoot/HttpsDecoyUpstream changes take
 	   effect on reload (this runs on every setup_myself_reloadable). */

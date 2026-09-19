@@ -1,6 +1,15 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-18 (**a second production network, `gnetnew`
+**Last Updated:** 2026-09-19 (**`tinc cert` landed: an optional Cloudflare API
+token and a domain now buy a real, publicly trusted certificate for the
+`https`/`quic` front through ACME DNS-01, replacing the self-signed one, with
+every failure mode given a stable code, a sentence of what happened and a
+sentence of what to do -- in the log and in the Windows UI. Proven end to end
+against a real ACME CA (Pebble) with a stand-in Cloudflare API: 28 assertions,
+`testing/acme/run.sh`. Three defects in the new code and one old 🟢 known issue
+(TLS hot-reload) were found and fixed on the way; a running daemon now serves a
+replaced certificate after a reload, no restart.**) Earlier -- (**a second
+production network, `gnetnew`
 (10.200.250.0/24), is live on euvds and ruvds2 on port 656: euvds .1 with
 egress NAT, ruvds2 .2, a Windows invitation reserving .3, and the existing
 3proxy now actually enforcing its ACL for both VPN subnets -- it had no `auth`
@@ -816,6 +825,79 @@ this order (cheapest / most-contained first). Full wire formats go in
     `Dockerfile.build-quic` removed — the compose lab and every default node
     image now carry the carrier, which decision 2 needs; `QUIC=disabled` proves
     the plain build.
+- [x] 🟠 **A real certificate for the `https`/`quic` front — `tinc cert`, ACME
+  DNS-01 + Cloudflare (optional)** (2026-09-19, owner request). The node
+  certificate is self-signed by default; that is fine for peers (they pin the
+  fingerprint) but is exactly what an observer does not expect on a port
+  claiming to be HTTPS, and nothing that validates a chain accepts it. An
+  operator who owns a domain in Cloudflare can now get a real one:
+  `tinc cert status | check | issue [--force] [--staging] | renew`.
+  - New, CLI-only: `acme.c/.h` (RFC 8555 with the DNS-01 challenge, ES256 JWS,
+    RFC 7638 thumbprint, zone discovery by walking the parent labels, a TXT
+    record that is always removed again, a fresh P-256 key + CSR per issuance),
+    `httpc.c/.h` (blocking HTTPS client: system trust store, `SSL_set1_host`,
+    1 MiB cap, dechunking), `json.c/.h` (bounded reader: depth 32, 4096
+    members), `certcmd.c/.h`. They are in `src_tinc`, **not** `src_lib_common`,
+    so the daemon does not link them — a CA takes minutes and the main loop may
+    not block (the same mistake as defect M5-1, one layer up).
+  - Config: `CertDomain`, `CloudflareToken`, `AcmeContact`, `AcmeDirectory`,
+    `AcmeRenewDays`, `AcmePropagation`, `AcmePollTimeout`, plus `AcmeCaFile` /
+    `CloudflareApi` for the test harness only. All `VAR_SERVER`, none
+    `VAR_SAFE`, none in `PROPAGATED_OPTIONS`: the token is a credential and the
+    domain belongs to one node, so an invitation never carries either.
+  - Errors are the deliverable (owner's requirement): 15 outcomes, each with a
+    stable code, one sentence of what happened and one of what to do — a token
+    that is not a token, an inactive token, a token without `Zone:DNS:Edit`, a
+    token whose zones do not contain `CertDomain` (the message lists the zones
+    it *can* see, because that is nearly always the mistake), Cloudflare rate
+    limiting, and the whole ACME side. The Windows GUI shows code, sentence and
+    hint (`platforms/windows/gui/cert_dialog.py`, toolbar *Certificate…*).
+  - The pin moves with the certificate: `cert issue` rewrites `TlsFingerprint`
+    in this node's own host record (`zeroconf.c` only ever writes it when
+    absent) and says, in as many words, that peers holding the old pin are
+    locked out until they learn the new one.
+  - **Proof:** `testing/acme/run.sh` — Pebble as a real ACME CA,
+    pebble-challtestsrv as the DNS that answers the challenge, a stdlib
+    stand-in for the Cloudflare API; 28 assertions: issue → a certificate
+    issued by the CA and valid for the domain, own `TlsFingerprint` rewritten
+    to match, ACME account key kept and reused, `renew` a no-op on a fresh
+    certificate, `renew --force` reissuing, every Cloudflare code, the
+    `acme-challenge` timeout, and a running daemon serving the new certificate
+    after the reload `cert issue` asks for. Nothing leaves the host; no
+    Cloudflare account is needed. Also green: `make lint`,
+    `testing/smoke/run.sh`, `testing/transports/https-carrier-test.sh`,
+    `testing/transports/quic-carrier-test.sh`, 43/43 Windows pytest.
+
+#### Defects found while proving it (all fixed in the same change)
+
+- 🔴 **`fail(c, rc, c->out->detail, hint)` printed a buffer into itself.** The
+  "keep what the transport already said, add a hint" idiom passed
+  `c->out->detail` back into `snprintf(c->out->detail, ..., "%s", detail)` —
+  undefined behaviour, and in practice glibc left the string empty. Every
+  network-level failure therefore reported *nothing at all*: the first real
+  failure in the lab printed `FAILED (network)` with a blank line where the
+  reason should be. Both `fail()` and `failf()` now format through a temporary.
+  Reproduction: any `ACME_ERR_NETWORK` path before the fix.
+- 🟠 **`httpc.c` sent `Host:` without the port.** RFC 7230 requires the port
+  when it is not the default, and every ACME server builds its directory URLs
+  from that header: against a CA on port 14000 the directory came back naming
+  port 443, and the next request went to a closed port
+  (`cannot connect to pebble port 443`). Blast radius before the fix: any ACME
+  directory or Cloudflare endpoint not on 443 — i.e. every test CA, and any
+  future non-443 deployment. Fixed in the request builder.
+- 🟠 **A renewal inside the CA's authorization cache failed.** Let's Encrypt
+  keeps an authorization valid for 30 days; a second issuance in that window
+  gets a challenge that is already `valid`, and re-triggering it is an error
+  (`Cannot update challenge with status valid, only status pending`). So the
+  *renewal* path — the one that runs unattended — was the broken one.
+  `dns_challenge()` now reports an already-valid authorization and the flow
+  goes straight to the CSR. Reproduced by `renew --force` in
+  `testing/acme/run.sh`.
+- 🟡 **`platforms/windows/tests/test_gui.py` still asserted the old list
+  style.** The 2026-09-19 yamlconf fix changed the emitter to indented block
+  sequences and updated `test_yaml_config.py`, but not this fixture — the
+  Windows suite had been failing 1/38 since. Fixture corrected; 43/43 now.
+
 ### Found during M5 (G1)
 
 - 🟢 **`nmap -sV` labels the port `http (nginx)`, not `https`.** The listen port
@@ -830,12 +912,18 @@ this order (cheapest / most-contained first). Full wire formats go in
   down immediately; documented in `docs/transports.md` §8.5. If a busy public
   decoy ever needs it, convert to an async splice. Blast radius: up to 3 s of
   loop latency per unauthenticated TLS prober when `HttpsDecoyUpstream` is set.
-- 🟢 **TLS certificate hot-reload is partial.** A new `TlsCert`/`TlsKey` or an
-  edited `keys.tls_*` is picked up on daemon restart, not on `tinc reload`
-  (`tls_init` runs from the carrier init, not `setup_myself_reloadable`). The
-  decoy config (`HttpsDecoyRoot`/`HttpsDecoyUpstream`) *is* reload-aware. Blast
-  radius: an operator swapping in a real cert must restart the daemon. Fix would
-  be one `tls_init()` call on reload.
+- ✅ ~~**TLS certificate hot-reload is partial.**~~ **Fixed 2026-09-19.** A new
+  `TlsCert`/`TlsKey` or an edited `keys.tls_*` used to be picked up only on a
+  daemon restart, because `tls_init()` ran from the carrier init and not from
+  the reload path (the quic carrier had its own `quic_read_config()` refresh;
+  the https front had none). `transport_read_config()` — which every
+  `setup_myself_reloadable()` runs — now calls `tls_init()` when `tls_ready`;
+  it is idempotent and keeps the existing contexts when the fingerprint is
+  unchanged, so an ordinary reload costs nothing. This is what makes
+  `tinc cert issue` take effect without a restart. Proof: the last case of
+  `testing/acme/run.sh` watches a running daemon's log go from one
+  "TLS certificate ready … fingerprint X" to a second line with the
+  fingerprint the CA just issued.
 - 🟢 Files touched outside the stream-G1 area, all minimal and reported here:
   `node.{c,h}` (the `tls_fingerprint` field + the fingerprint dump token),
   `connection.c` (the carrier dump token), `info.c` (print the fingerprint),

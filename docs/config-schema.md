@@ -540,6 +540,104 @@ right-hand form, and so does the GUI now — one house style, both accepted.
 A `-` line that follows a key which already has a scalar value is still an
 unplaceable line and is still refused: the parser never guesses.
 
+## A real certificate for the `https` and `quic` front (`tinc cert`)
+
+The node certificate that the `https` and `quic` carriers present is
+self-signed by default (`tls.c`, docs/transports.md §8.1). That is enough for
+peers — they pin its fingerprint — but nothing else trusts it, and a
+self-signed certificate on a port pretending to be an HTTPS service is exactly
+what an observer does not expect. An operator who owns a domain in Cloudflare
+can replace it with a publicly trusted one.
+
+All of it is optional: with none of these options set, nothing changes.
+
+```yaml
+networks:
+  gnet:
+    options:
+      CertDomain: vpn.example.com          # what the certificate is for
+      CloudflareToken: <api token>         # Zone:Read + Zone:DNS:Edit on its zone
+      AcmeContact: mailto:you@example.com  # optional, for expiry warnings
+      AcmeRenewDays: 30                    # renew inside this many days (default 30)
+```
+
+| option | meaning |
+|---|---|
+| `CertDomain` | the public DNS name to issue for. Plain name, no scheme, no port, no wildcard. |
+| `CloudflareToken` | a Cloudflare **API token** (not a Global API Key) that can read the zone and edit its DNS records. |
+| `AcmeContact` | `mailto:` address registered with the CA. Optional. |
+| `AcmeDirectory` | ACME directory URL. Defaults to Let's Encrypt production; `tinc cert issue --staging` switches to their staging CA for a dry run. |
+| `AcmeRenewDays` | `tinc cert renew` reissues when fewer than this many days remain (default 30). |
+| `AcmePropagation` | seconds to wait after writing the DNS record before asking the CA to look (default 20). |
+| `AcmePollTimeout` | seconds to wait for the CA's validation (default 120). |
+| `AcmeCaFile` | trust anchor for the CA, **tests only** (testing/acme/). |
+| `CloudflareApi` | Cloudflare API base URL, **tests only**. |
+
+None of these is `VAR_SAFE` and none is in `PROPAGATED_OPTIONS`: the token is a
+credential and the domain belongs to one node, so an invitation never carries
+them. The token is stored in the same file as the private keys, which is mode
+0600 — treat it accordingly.
+
+### The command
+
+```
+tinc -c tinc.yaml -n gnet cert status     # what this node presents today
+tinc -c tinc.yaml -n gnet cert check      # is the token usable for CertDomain?
+tinc -c tinc.yaml -n gnet cert issue      # obtain and store a certificate
+tinc -c tinc.yaml -n gnet cert renew      # issue only if it is about to expire
+```
+
+`issue` runs the ACME **DNS-01** challenge: it finds the Cloudflare zone that
+contains `CertDomain`, writes `_acme-challenge.<domain>` as a TXT record, waits,
+asks the CA to validate, sends a CSR for a fresh P-256 key, stores the
+certificate and the key under `keys.tls_cert` / `keys.tls_key`, and removes the
+TXT record again — on failure too. The ACME account key is kept under
+`keys.acme_account` and reused. A running daemon is asked to reload, so no
+restart is needed.
+
+It runs in the **CLI, never in the daemon**: a certificate authority takes
+seconds to minutes to answer, and the daemon's main loop may not block (defect
+M5-1). The Windows GUI has the same thing behind the *Certificate…* button, on
+a worker thread.
+
+### After issuing: the fingerprint moves
+
+Peers pin this certificate by SHA-256 fingerprint (`TlsFingerprint` in this
+node's host record, docs/transports.md §8.2). Replacing the certificate
+replaces the fingerprint, so `tinc cert issue` rewrites `TlsFingerprint` in the
+node's own host record and says so. **Peers that already hold the old pin will
+refuse an `https` or `quic` connection to this node until they learn the new
+one** — re-issue their invitation, or update that one line in their host record
+for this node. For the certificate to be worth anything to them, their host
+record for this node should also have `Address = <CertDomain>`, because the SNI
+the dialer sends comes from that address.
+
+### When it does not work
+
+Every failure has its own code, one sentence of what happened and one of what
+to do; the code is stable and is what the GUI shows and what a bug report
+should quote.
+
+| code | what it means |
+|---|---|
+| `config` | `CertDomain` or `CloudflareToken` is missing or is not shaped like one. |
+| `cloudflare-token` | Cloudflare rejected the token, or the token is not active. A Global API Key lands here. |
+| `cloudflare-permission` | the token authenticates but lacks `Zone:Read` / `Zone:DNS:Edit`. |
+| `cloudflare-zone` | the token works but reaches no zone containing `CertDomain`. The message lists the zones it *can* see — usually the mistake is a token for a different domain. |
+| `cloudflare-api` | Cloudflare answered something else, rate limiting included. |
+| `acme-directory` | `AcmeDirectory` is not an ACME directory. |
+| `acme-account` | the CA refused to create the account (contact address, terms). |
+| `acme-order` | the CA refused to issue for this name (policy, CAA record). |
+| `acme-challenge` | the CA could not validate the TXT record — most often the zone is served by nameservers other than Cloudflare's, or propagation needs longer than `AcmePropagation`. |
+| `acme-ratelimit` | the CA is rate-limiting this account or domain. Use `--staging` while testing. |
+| `acme-finalize` | the CSR was refused or the order never became valid. |
+| `network` | DNS, connect, TLS or a malformed HTTP response. |
+| `crypto` | a local key, CSR or signature failure. |
+
+Proof: `testing/acme/run.sh` issues a real certificate from a real ACME server
+(Pebble) over DNS-01 against a stand-in Cloudflare API, and walks every
+Cloudflare code plus `acme-challenge` above.
+
 ## Write-back behaviour (must be preserved cross-platform)
 
 - The daemon persists **learned peer keys** (`Ed25519PublicKey`) into

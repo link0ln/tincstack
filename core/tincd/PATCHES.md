@@ -313,6 +313,90 @@ change (`tincstack/core:winfix`).
 
 ---
 
+## 9. `tinc cert`: a real certificate for the https/quic front, via ACME + Cloudflare (tincstack, 2026-09-19)
+
+Files: `src/acme.c`, `src/acme.h`, `src/httpc.c`, `src/httpc.h`, `src/json.c`,
+`src/json.h`, `src/certcmd.c`, `src/certcmd.h`, `src/tincctl.c`,
+`src/transport.c`, `src/meson.build`.
+
+**Problem.** The node certificate the `https` and `quic` carriers present is
+self-signed (`tls.c`). Peers do not care — they pin its fingerprint — but a
+self-signed certificate is exactly what an observer does not expect on a port
+that claims to be an HTTPS service, and nothing that validates a chain accepts
+it. `TlsCert`/`TlsKey` could always point at a real certificate, but getting one
+was the operator's problem.
+
+**What was added.** An optional path from "I own a domain in Cloudflare" to a
+publicly trusted certificate, in one command:
+
+    tinc -c tinc.yaml -n net cert status | check | issue [--force] [--staging] | renew
+
+`acme.c` implements RFC 8555 with the **DNS-01** challenge and Cloudflare as the
+DNS provider: ES256 JWS with an account key it generates and stores
+(`keys.acme_account`), the RFC 7638 JWK thumbprint for the key authorization,
+zone discovery by walking the parent labels of `CertDomain`, a TXT record that
+is always removed again, a fresh P-256 key and CSR per issuance, and the
+certificate stored in `keys.tls_cert` / `keys.tls_key`. `httpc.c` is a small
+blocking HTTPS client (system trust store, `SSL_set1_host`, 1 MiB cap,
+dechunking); `json.c` is a bounded JSON reader (depth 32, 4096 members).
+
+**Where it runs.** In the CLI only — `acme.c`, `httpc.c` and `json.c` are in
+`src_tinc`, not `src_lib_common`, so the daemon does not even link them. A CA
+takes seconds to minutes to answer and the daemon's main loop may not block;
+that is defect M5-1, and this is the same mistake one layer up.
+
+**Errors are the feature.** Fifteen distinct outcomes (`acme_rc_t`), each with a
+stable name, one sentence of what happened and one of what to do: a token that
+is not a token, a token that is not active, a token without `Zone:DNS:Edit`, a
+token whose zones do not contain `CertDomain` (the message lists the zones it
+*can* see, because that is nearly always the mistake), Cloudflare rate limiting,
+a directory that is not a directory, an account the CA refuses, an order it
+refuses, a challenge it cannot validate, its own rate limits, a CSR it rejects,
+and the local network/crypto failures. The Windows GUI shows the code, the
+sentence and the hint (`platforms/windows/gui/cert_dialog.py`).
+
+**The fingerprint moves.** `zeroconf.c` writes `TlsFingerprint` into the node's
+own host record only when it is absent, peers refuse a mismatched pin
+(`https.c`), and `TlsFingerprint` is in `invitation.c`'s `PROPAGATED_OPTIONS` —
+so `cert issue` rewrites that line itself and says, in as many words, that peers
+holding the old pin are locked out until they learn the new one.
+
+Two defects were found while proving it, both in this new code:
+
+* `fail(c, rc, c->out->detail, hint)` — the "keep what the transport said, add a
+  hint" idiom — printed a buffer into itself. Undefined behaviour; in practice
+  glibc left the message empty, so every network failure reported nothing at
+  all. Both `fail()` and `failf()` now format through a temporary.
+* `httpc.c` sent `Host: <host>` without the port. Every ACME server builds its
+  directory URLs from the `Host` header, so against a CA on a non-443 port the
+  directory came back pointing at port 443 and the next request went nowhere.
+  RFC 7230 requires the port; it is now included whenever it is not 443.
+
+A third, older one was in the way: the https front read the certificate only at
+carrier init, so a replaced certificate was served only after a restart (the
+quic carrier already refreshed itself in `quic_read_config()`). `tls_init()` is
+idempotent and keeps its contexts when the fingerprint is unchanged, so
+`transport_read_config()` — which every `setup_myself_reloadable()` runs — now
+calls it when `tls_ready`. That is what makes `cert issue` take effect without
+a restart, and it closes a 🟢 known issue from M5.
+
+And one behavioural bug in the ACME flow: Let's Encrypt caches an authorization
+for 30 days, so a renewal inside that window gets a challenge that is already
+`valid`, and re-triggering it is an error ("Cannot update challenge with status
+valid"). `dns_challenge()` now reports an already-valid authorization and the
+flow goes straight to the CSR.
+
+Proof: `testing/acme/run.sh` — Pebble as a real ACME server, pebble-challtestsrv
+as the DNS that answers the challenge, and a stdlib stand-in for the Cloudflare
+API; 28 assertions covering the happy path (issue → stored cert issued by the CA,
+own `TlsFingerprint` rewritten to match, account key kept, `renew` a no-op,
+`renew --force` reissuing), every Cloudflare code plus `acme-challenge`, and a
+running daemon serving the new certificate after the reload `cert issue` asks
+for.
+Nothing leaves the host and no Cloudflare account is needed.
+
+---
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):
@@ -337,6 +421,9 @@ Windows (mingw-w64 cross-build, for the laptop):
 | `UDPDiscoveryBurst` | 5 | NAT'd endpoints | probes sent per round while not `udp_confirmed` |
 | `UDPRebindOnWake` | no | NAT'd endpoints (not public relays) | rebind UDP to a fresh port on resume-from-sleep |
 | `AllowPlainMeta` | yes | nodes that must not be fingerprintable as tinc | `no` = refuse inbound cleartext tinc meta connections (breaks `tinc join` against that node) |
+| `CertDomain` | unset | nodes offering `https`/`quic` | public DNS name `tinc cert` issues a certificate for |
+| `CloudflareToken` | unset | same | Cloudflare API token with `Zone:Read` + `Zone:DNS:Edit` on that domain's zone |
+| `AcmeContact` / `AcmeDirectory` / `AcmeRenewDays` / `AcmePropagation` / `AcmePollTimeout` | see docs/config-schema.md | same | ACME tuning; all optional |
 
 ## Recommended deployment
 

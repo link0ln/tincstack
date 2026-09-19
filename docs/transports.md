@@ -1018,6 +1018,30 @@ shown in `tinc info`/dump and written as `TlsFingerprint` into the node's own
 host record, so M2 propagation carries it in invitations and an invitee pins the
 inviter's certificate.
 
+### 8.1.1 Replacing the self-signed certificate (`tinc cert`)
+
+A self-signed certificate is the default, not the ceiling. An operator who owns
+a domain in Cloudflare can set `CertDomain` and `CloudflareToken` and run
+`tinc cert issue`, which obtains a publicly trusted certificate through the ACME
+DNS-01 challenge and stores it in the same `keys.tls_cert` / `keys.tls_key`
+slots. Nothing else changes: SPTPS is still the trust root, peers still pin the
+fingerprint, and the carrier code does not know the difference.
+
+What it buys is the decoy. A self-signed certificate for `localhost` on a port
+that claims to be an HTTPS service is a tell; a real certificate for a real name
+is not. It only pays off if the peer's host record for this node carries
+`Address = <CertDomain>`, because that is where §8.2's SNI comes from — a
+certificate for `vpn.example.com` presented to a client that asked for
+`localhost` is worse than the generic one.
+
+The cost: the fingerprint changes, so every peer holding the old pin refuses the
+connection until it learns the new one (§8.2). `tinc cert issue` rewrites this
+node's own `TlsFingerprint` and warns about exactly that.
+
+It runs in the CLI, never in the daemon — issuing blocks for as long as the CA
+takes. See docs/config-schema.md for every option and every failure code, and
+`testing/acme/run.sh` for the proof.
+
 ### 8.2 Dial and certificate pinning
 
 `https_dial` opens a non-blocking TCP connection to the peer's front port and a

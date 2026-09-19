@@ -16,6 +16,8 @@ from PySide6 import QtWidgets  # noqa: E402
 import yaml_config as yc  # noqa: E402
 import main as tincmgr  # noqa: E402
 from gui.dialogs import InviteDialog, JoinDialog  # noqa: E402
+from gui.cert_dialog import CertDialog  # noqa: E402
+from tinc_control import parse_cert_failure  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -74,6 +76,8 @@ class FakeTinc:
             return 0, "", ""
         if sub[0] == "invite":
             return 0, f"203.0.113.9:655/INV_{sub[1]}\n", "Warning: using local address 203.0.113.9\n"
+        if sub[0] == "cert":
+            return self.cert(sub[1:], cmd)
         if sub[0] == "join":
             if not sub[1].startswith("203.0.113.9:655/"):
                 return 1, "", "Error: invalid invitation\n"
@@ -86,6 +90,27 @@ class FakeTinc:
             yc.atomic_write_text(self.yaml_path, text)
             return 0, f"Configuration stored in: {self.yaml_path}\n", "Connected to 203.0.113.9 port 655...\n"
         return 1, "", "unknown"
+
+    def cert(self, args, cmd):
+        """`tinc cert ...` as the real CLI answers it: the failure taxonomy goes
+        to stderr as "FAILED (<code>)" plus a detail and a hint line."""
+        opts = yc.load(self.yaml_path).net(cmd[cmd.index("-n") + 1]).options
+        sub = args[0] if args else "status"
+        if sub == "status":
+            return 0, ("CertDomain     %s\nCloudflare     %s\nCertificate    none stored yet\n"
+                       % (opts.get("CertDomain", "(unset)"),
+                          "token set" if opts.get("CloudflareToken") else "no token set")), ""
+        if not opts.get("CloudflareToken"):
+            return 1, "", ("\ntinc cert: FAILED (config)\n  No CloudflareToken is set.\n"
+                           "  Create an API token with the \"Edit zone DNS\" template.\n")
+        if opts["CloudflareToken"] == "wrong-zone-token-0000000":
+            return 1, "", ("\ntinc cert: FAILED (cloudflare-zone)\n"
+                           "  The Cloudflare token sees no zone that contains %s.\n"
+                           "  Point CertDomain at a name inside one of those zones.\n"
+                           % opts.get("CertDomain", ""))
+        if sub == "check":
+            return 0, "", ""
+        return 0, "Stored the certificate for %s.\nNew TlsFingerprint: abc\n" % opts["CertDomain"], ""
 
 
 @pytest.fixture
@@ -207,8 +232,8 @@ def test_transports_tab_tick_quic_writes_only_changed_keys(window):
               Mode: router
               Port: 655
               PreferredTransports:
-              - quic
-              - plain
+                - quic
+                - plain
             hosts:
               demobook: |
                 Ed25519PublicKey = AAAA
@@ -275,3 +300,72 @@ def test_network_tab_save_uses_merge(window):
     nc = yc.load(w.app.path).net("demo")
     assert nc.autostart is True and "peer1" in nc.hosts and nc.options["Port"] == 655
     assert "peer1" in [w.network.nodes.item(i).data(0x0100) for i in range(w.network.nodes.count())] or True
+
+
+# ---- certificate dialog -------------------------------------------------------
+
+def _cert_dialog(w, monkeypatch):
+    """Open the dialog without entering its modal loop."""
+    monkeypatch.setattr(CertDialog, "exec", lambda self: None)
+    dlg = w.open_cert()
+    assert dlg is not None
+    return dlg
+
+
+def test_cert_dialog_saves_options_and_clearing_removes_them(window, monkeypatch):
+    w = window
+    dlg = _cert_dialog(w, monkeypatch)
+    dlg.edits["CertDomain"].setText("vpn.example.com")
+    dlg.edits["CloudflareToken"].setText("a-token-that-is-long-enough")
+    assert dlg.save()
+    opts = yc.load(w.app.path).net("demo").options
+    assert opts["CertDomain"] == "vpn.example.com"
+    assert opts["CloudflareToken"] == "a-token-that-is-long-enough"
+    # clearing a field must remove the key, not store an empty string
+    dlg.edits["CloudflareToken"].setText("")
+    assert dlg.save()
+    assert "CloudflareToken" not in yc.load(w.app.path).net("demo").options
+    dlg.deleteLater()
+
+
+def test_cert_dialog_token_is_masked_until_asked(window, monkeypatch):
+    dlg = _cert_dialog(window, monkeypatch)
+    ed = dlg.edits["CloudflareToken"]
+    assert ed.echoMode() == QtWidgets.QLineEdit.Password
+    dlg.show_token.setChecked(True)
+    assert ed.echoMode() == QtWidgets.QLineEdit.Normal
+    dlg.deleteLater()
+
+
+def test_cert_dialog_reports_the_failure_code_and_hint(window, monkeypatch):
+    w = window
+    dlg = _cert_dialog(w, monkeypatch)
+    main_thread = threading.get_ident()
+    dlg.edits["CertDomain"].setText("vpn.example.com")
+    dlg.edits["CloudflareToken"].setText("wrong-zone-token-0000000")
+    dlg.issue()
+    assert wait_until(lambda: dlg.last is not None and not dlg.last.ok)
+    assert "cloudflare-zone" in dlg.status_lbl.text()
+    assert "no zone that contains vpn.example.com" in dlg.status_lbl.text()
+    assert "Point CertDomain" in dlg.hint_lbl.text()
+    # the CLI ran off the Qt thread
+    assert w.fake.threads and main_thread not in w.fake.threads
+    dlg.deleteLater()
+
+
+def test_cert_dialog_issue_success_reports_the_new_pin(window, monkeypatch):
+    dlg = _cert_dialog(window, monkeypatch)
+    dlg.edits["CertDomain"].setText("vpn.example.com")
+    dlg.edits["CloudflareToken"].setText("a-token-that-is-long-enough")
+    dlg.issue()
+    # the success message survives the status re-read that follows an issue
+    assert wait_until(lambda: "TlsFingerprint" in dlg.status_lbl.text())
+    assert "Stored the certificate for vpn.example.com" in dlg.log.toPlainText()
+    dlg.deleteLater()
+
+
+def test_parse_cert_failure_keeps_an_unknown_code():
+    code, detail, hint = parse_cert_failure(
+        "  ... step\n\ntinc cert: FAILED (something-new)\n  What happened.\n  What to do.\n")
+    assert (code, detail, hint) == ("something-new", "What happened.", "What to do.")
+    assert parse_cert_failure("Stored the certificate for x.\n") == ("", "", "")

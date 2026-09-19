@@ -139,6 +139,12 @@ src_lib_common = [
 ]
 
 src_tinc = [
+  # ACME/Cloudflare certificate issuance: CLI only, never linked into the
+  # daemon -- httpc.c blocks, and the daemon's main loop may not (defect M5-1).
+  'acme.c',
+  'certcmd.c',
+  'httpc.c',
+  'json.c',
   'fsck.c',
   'ifconfig.c',
   'info.c',

@@ -12,7 +12,8 @@ Tabs:
                       keys, autostart; raw YAML as a fallback.
   * Transports      — accept list / dial preference / obfs / HTTPS front / QUIC
                       (docs/config-schema.md); writes only the keys you change.
-Toolbar: Start / Stop / Restart, Invite…, Join…, run-at-startup, Reload.
+Toolbar: Start / Stop / Restart, Invite…, Join…, Certificate…, run-at-startup,
+Reload.
 
 Every tinc/tincd subprocess runs on a worker thread (gui/workers.py); the Qt
 thread never blocks on the daemon. A malformed tinc.yaml opens the window with
@@ -48,6 +49,7 @@ import pyqtgraph as pg  # noqa: E402
 
 from gui.workers import WorkerPool  # noqa: E402
 from gui.dialogs import InviteDialog, JoinDialog, RawYamlDialog  # noqa: E402
+from gui.cert_dialog import CertDialog  # noqa: E402
 from gui.transports_panel import TransportsPanel  # noqa: E402
 
 REFRESH_MS = 2500
@@ -86,6 +88,12 @@ KNOWN_OPTIONS = [
     ("Compression", "int", None, "Compression level 0-11 (0 = off)"),
     ("PingInterval", "int", None, "Seconds between keepalive pings"),
     ("PingTimeout", "int", None, "Seconds before an unresponsive peer is considered down"),
+    # certificate issuance (tinc cert; see the Certificate… toolbar button)
+    ("CertDomain", "str", None, "Public DNS name this node presents on https/quic, e.g. vpn.example.com"),
+    ("CloudflareToken", "str", None, "Cloudflare API token with Zone:Read + Zone:DNS:Edit on that domain's zone"),
+    ("AcmeContact", "str", None, "mailto: address the CA uses for expiry warnings (optional)"),
+    ("AcmeDirectory", "str", None, "ACME directory URL (default: Let's Encrypt production)"),
+    ("AcmeRenewDays", "int", None, "Renew when fewer than this many days are left (default 30)"),
 ] + [
     (spec.name,
      {"carriers": "str", "int": "int", "port": "int", "bool": "bool", "path": "str",
@@ -863,6 +871,10 @@ class MainWindow(QtWidgets.QMainWindow):
         tb.addSeparator()
         self.invite_act = tb.addAction("✉ Invite…", self.open_invite)
         self.join_act = tb.addAction("⤵ Join…", self.open_join)
+        self.cert_act = tb.addAction("🔐 Certificate…", self.open_cert)
+        self.cert_act.setToolTip("TLS certificate for the https/quic transports: replace the "
+                                 "self-signed one with a real certificate for a domain, using a "
+                                 "Cloudflare API token.")
         tb.addSeparator()
         self.startup_radio = QtWidgets.QRadioButton()
         self.startup_radio.setAutoExclusive(False)   # standalone on/off, not a group
@@ -893,6 +905,32 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg = InviteDialog(self, net, self.tc.invite, self.pool)
         dlg.exec()
         return dlg
+
+    def open_cert(self) -> CertDialog | None:
+        net = self.cur_net()
+        nc = self.cur_netcfg()
+        if not net or not nc:
+            self.status("select a network first")
+            return None
+        dlg = CertDialog(self, net, nc.options, self._save_cert_options,
+                         self.tc.cert_status, self.tc.cert_check, self.tc.cert_issue, self.pool)
+        dlg.saved.connect(self.reload_networks)
+        dlg.exec()
+        return dlg
+
+    def _save_cert_options(self, values: dict) -> bool:
+        """Write the certificate options of the selected network. An empty value
+        removes the key: clearing the token has to actually disable ACME, not
+        leave an empty string that then fails the token sanity check."""
+        nc = self.cur_netcfg()
+        if not nc:
+            return False
+        for key, value in values.items():
+            if value:
+                nc.options[key] = value
+            else:
+                nc.options.pop(key, None)
+        return self.save_config(f"certificate settings saved for '{self.cur_net()}'")
 
     def open_join(self) -> JoinDialog | None:
         dlg = JoinDialog(self, list(self.app.networks), self.tc.join, self.pool)

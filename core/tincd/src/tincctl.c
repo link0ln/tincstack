@@ -37,6 +37,7 @@
 #include "names.h"
 #include "rsagen.h"
 #include "utils.h"
+#include "certcmd.h"
 #include "tincctl.h"
 #include "yamlconf.h"
 #include "top.h"
@@ -199,6 +200,10 @@ static void usage(bool status) {
 		        "  invite NODE [...]          Generate an invitation for NODE\n"
 		        "  join INVITATION            Join a VPN using an INVITATION\n"
 		        "  network [NETNAME]          List all known networks, or switch to the one named NETNAME.\n"
+		        "  cert [status|check|issue|renew]\n"
+		        "                             Show or obtain the TLS certificate used by the\n"
+		        "                             https and quic transports. issue/renew need\n"
+		        "                             CertDomain and CloudflareToken to be set.\n"
 		        "  fsck                       Check the configuration files for problems.\n"
 		        "  sign [FILE]                Generate a signed version of a file.\n"
 		        "  verify NODE [FILE]         Verify that a file was signed by the given NODE.\n"
@@ -1755,6 +1760,18 @@ const var_t variables[] = {
 	{"HttpsSni", VAR_SERVER | VAR_SAFE},
 	{"HttpsDecoyRoot", VAR_SERVER},
 	{"HttpsDecoyUpstream", VAR_SERVER},
+	/* ACME / Cloudflare certificate issuance (tinc cert). Deliberately NOT
+	   VAR_SAFE and not in PROPAGATED_OPTIONS: CloudflareToken is a credential
+	   and CertDomain is per-node, so neither may ride along an invitation. */
+	{"CertDomain", VAR_SERVER},
+	{"CloudflareToken", VAR_SERVER},
+	{"AcmeDirectory", VAR_SERVER},
+	{"AcmeContact", VAR_SERVER},
+	{"AcmeCaFile", VAR_SERVER},
+	{"CloudflareApi", VAR_SERVER},
+	{"AcmePropagation", VAR_SERVER},
+	{"AcmePollTimeout", VAR_SERVER},
+	{"AcmeRenewDays", VAR_SERVER},
 	/* quic carrier (M5, G3) */
 	{"QuicPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"QuicSni", VAR_SERVER | VAR_SAFE},
@@ -3544,6 +3561,7 @@ static const struct {
 	{"get", cmd_config, false},
 	{"set", cmd_config, false},
 	{"obfs", cmd_obfs, false},
+	{"cert", cert_command, false},
 	{"init", cmd_init, false},
 	{"generate-keys", cmd_generate_keys, false},
 #ifndef DISABLE_LEGACY
