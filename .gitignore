@@ -45,6 +45,8 @@ testing/smoke/run/
 testing/smoke/run-*/
 # testing/acme: generated CAs, server certs and per-case configs (keys!)
 testing/acme/run/
+# testing/config lab runtime (generated keys + configs)
+testing/config/run-ifroute/
 # M9 lab runs: every lab.sh / dpi run.sh / `make check` run writes its full
 # output (per-node tincd logs, dumps, pcaps) into results/run/<run-id>/ —
 # never committed. The committed results/<date>/ trees hold only the curated

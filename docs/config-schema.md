@@ -540,6 +540,75 @@ right-hand form, and so does the GUI now — one house style, both accepted.
 A `-` line that follows a key which already has a scalar value is still an
 unplaceable line and is still refused: the parser never guesses.
 
+## Routing a subnet another node announces (`InterfaceRoute`)
+
+A node can announce more than its own address: `Subnet = 192.168.1.0/24` in its
+host record says "I am the way to that LAN". Every other node then knows, in
+tinc's own routing table, that packets for 192.168.1.0/24 go to that peer.
+
+That is only half of it. The operating system still has no reason to hand those
+packets to the tunnel adapter in the first place, and `autoif.c` deliberately
+installs system routes **only** from explicit `InterfaceRoute` entries, never
+from what peers announce — a peer must not be able to change this machine's
+routing table by announcing a subnet.
+
+So the second half is one option:
+
+```yaml
+options:
+  InterfaceRoute:
+    - 192.168.1.0/24 10.200.240.7     # "<prefix> [gateway]" -- what `tinc join`
+    - 10.99.0.0/24 via 10.200.240.7   # writes; the `ip route` spelling also works
+    - 172.16.0.0/12                   # no gateway: on-link through the tunnel
+```
+
+Both spellings are accepted on every platform. The gateway is recorded mostly
+to say *which node* the route is for: on a tun/Wintun interface the kernel just
+hands the packet to the device, and tinc decides where it goes from there.
+
+Where it is installed:
+
+| platform | what installs it |
+|---|---|
+| Linux | the built-in tinc-up, `ip route replace <prefix> [via <gw>] dev $INTERFACE` (`autoif.c`) — only when there is no `scripts.tinc-up`, which takes over completely |
+| Windows | the Wintun backend, `CreateIpForwardEntry2` on the adapter's LUID (`windows/wintun_device.c`) |
+| Android | the tun builder takes the prefix; a tun fd has no next hop, so the gateway is ignored |
+
+On both Linux and Windows the route is attached to the tunnel interface, so it
+disappears with the interface when tinc stops: a route into a peer's LAN never
+outlives the tunnel that was the only way to reach it.
+
+### The Windows GUI writes these for you
+
+In *Peers & Traffic* every peer that announces a routable subnet has a toggle in
+the **Route here** column, one per subnet. Ticking it writes the
+`InterfaceRoute` entry (with that peer's VPN address as the gateway), saves the
+file, and installs the route on the live adapter with `netsh ... store=active`
+so it takes effect without restarting the network. Unticking removes both.
+
+Two things it will not do:
+
+- **A peer's own address gets no toggle.** It is a `/32`; it is already
+  reachable, and a route to it would be meaningless.
+- **`0.0.0.0/0` gets no toggle.** A full tunnel also sends the tunnel's own
+  packets through the tunnel unless the peer's endpoint is pinned to the
+  physical gateway first, and an endpoint that moves — a NAT rebind, an address
+  cache entry, a relayed peer with no direct endpoint at all — then takes the
+  machine off the network entirely. That is a feature with its own failure
+  modes, not a checkbox.
+
+And one thing it will warn about: if the subnet overlaps a network this machine
+is already attached to (`192.168.1.0/24` announced by a peer, on a laptop that
+is itself sitting on `192.168.1.0/24` at home) the route takes those addresses
+away from the adapter that owns them. The GUI says so and asks before writing.
+
+Proof: `testing/config/interface-route-test.sh` — node2 owns a LAN and
+announces it, node1 has the `InterfaceRoute` and no tinc-up script. It asserts
+the route is installed on the tinc interface in both spellings, that the LAN is
+reachable through it, that tinc knew the subnet all along, and — the control
+that makes the rest mean anything — that deleting the route makes the LAN
+unreachable again.
+
 ## A real certificate for the `https` and `quic` front (`tinc cert`)
 
 The node certificate that the `https` and `quic` carriers present is

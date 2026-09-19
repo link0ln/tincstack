@@ -39,6 +39,7 @@
 #include "../route.h"
 #include "../utils.h"
 #include "../xalloc.h"
+#include "wintun_device.h"
 
 /* ---- Wintun API (loaded dynamically from wintun.dll) ----------------------
    Signatures match wintun.h from the official Wintun distribution. We declare
@@ -230,6 +231,115 @@ static void configure_ip(void) {
 	free(spec);
 }
 
+/* Install the `InterfaceRoute` entries on the adapter. Same option, same
+   syntax and the same meaning as the Linux built-in tinc-up (autoif.c):
+   "<prefix>" or "<prefix> via <nexthop>". This is what turns a subnet another
+   node announces -- a peer's LAN, say -- into a route the operating system
+   will actually use; tinc itself already knows how to forward it, it is
+   Windows that has no reason to send the packets to the tunnel.
+
+   The routes are attached to the adapter's LUID, so Windows tears them down
+   together with the adapter when tinc stops: a route into a peer's LAN never
+   outlives the tunnel that was the only way to reach it. That also makes this
+   idempotent across restarts -- there is nothing to clean up by hand. */
+static void add_route(const NET_LUID *luid, const char *spec) {
+	char buf[128];
+	snprintf(buf, sizeof(buf), "%s", spec);
+
+	/* "<prefix> <nexthop>" as `tinc join' writes it from an invitation's Route
+	   line, or "<prefix> via <nexthop>" as anyone who knows `ip route' types;
+	   autoif.c accepts both and so does this. The nexthop is optional, and
+	   without it the route is on-link, which is what a tun adapter wants. */
+	char *nexthop = strchr(buf, ' ');
+
+	if(nexthop) {
+		*nexthop++ = 0;
+		nexthop += strspn(nexthop, " ");
+
+		if(!strncmp(nexthop, "via ", 4)) {
+			nexthop += 4;
+			nexthop += strspn(nexthop, " ");
+		}
+	}
+
+	char *slash = strchr(buf, '/');
+
+	if(!slash) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': no prefix length", spec);
+		return;
+	}
+
+	*slash = 0;
+	int prefix = atoi(slash + 1);
+
+	MIB_IPFORWARD_ROW2 row;
+	InitializeIpForwardEntry(&row);
+	row.InterfaceLuid = *luid;
+
+	struct in_addr v4;
+	struct in6_addr v6;
+
+	if(inet_pton(AF_INET, buf, &v4) == 1) {
+		if(prefix < 0 || prefix > 32) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': bad prefix length", spec);
+			return;
+		}
+
+		row.DestinationPrefix.Prefix.si_family = AF_INET;
+		row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
+		row.DestinationPrefix.Prefix.Ipv4.sin_addr = v4;
+		row.DestinationPrefix.PrefixLength = (UINT8) prefix;
+		row.NextHop.si_family = AF_INET;
+		row.NextHop.Ipv4.sin_family = AF_INET;
+
+		if(nexthop && *nexthop && inet_pton(AF_INET, nexthop, &row.NextHop.Ipv4.sin_addr) != 1) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': bad nexthop", spec);
+			return;
+		}
+	} else if(inet_pton(AF_INET6, buf, &v6) == 1) {
+		if(prefix < 0 || prefix > 128) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': bad prefix length", spec);
+			return;
+		}
+
+		row.DestinationPrefix.Prefix.si_family = AF_INET6;
+		row.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
+		row.DestinationPrefix.Prefix.Ipv6.sin6_addr = v6;
+		row.DestinationPrefix.PrefixLength = (UINT8) prefix;
+		row.NextHop.si_family = AF_INET6;
+		row.NextHop.Ipv6.sin6_family = AF_INET6;
+
+		if(nexthop && *nexthop && inet_pton(AF_INET6, nexthop, &row.NextHop.Ipv6.sin6_addr) != 1) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': bad nexthop", spec);
+			return;
+		}
+	} else {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': not an address", spec);
+		return;
+	}
+
+	/* Documented gotcha, the same one set_interface_mtu() hits: for anything
+	   that is not a site prefix this must be 0, or the call is rejected. */
+	row.SitePrefixLength = 0;
+
+	DWORD r = CreateIpForwardEntry2(&row);
+
+	if(r == NO_ERROR || r == ERROR_OBJECT_ALREADY_EXISTS) {
+		logger(DEBUG_ALWAYS, LOG_INFO, "Route %s is on the tunnel adapter", spec);
+	} else {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Could not add route %s: error %lu", spec, (unsigned long) r);
+	}
+}
+
+static void configure_routes(void) {
+	NET_LUID luid;
+	WintunGetAdapterLUID(adapter, &luid);
+
+	for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
+		add_route(&luid, cfg->value);
+	}
+}
+
 static bool setup_device(void) {
 	get_config_string(lookup_config(&config_tree, "Device"), &device);
 	get_config_string(lookup_config(&config_tree, "Interface"), &iface);
@@ -332,6 +442,7 @@ static void enable_device(void) {
 
 	/* assign the adapter IP automatically (if WintunAddress is configured) */
 	configure_ip();
+	configure_routes();
 
 	read_wait = WintunGetReadWaitEvent(session);
 	io_add_event(&device_read_io, device_handle_read, NULL, read_wait);

@@ -55,10 +55,14 @@ BASE_YAML = textwrap.dedent("""\
 class FakeTinc:
     """Mocked `tinc` runner: records every call and the thread it ran on."""
 
-    def __init__(self, yaml_path: str, running: bool = True, delay: float = 0.0):
+    def __init__(self, yaml_path: str, running: bool = True, delay: float = 0.0,
+                 peer: bool = False):
         self.yaml_path = yaml_path
         self.running = running
         self.delay = delay
+        # `peer`: also report a gateway node that announces a LAN and a default
+        # route, which is what the route toggles are about.
+        self.peer = peer
         self.calls = []
         self.threads = set()
 
@@ -69,9 +73,19 @@ class FakeTinc:
             time.sleep(self.delay)
         sub = cmd[cmd.index("-c") + 2:]
         if sub[:2] == ["dump", "nodes"]:
-            return (0, "demobook id 1 at MYSELF port 655 options c status 0 nexthop demobook via demobook "
-                       "distance 0 pmtu 1518 (min 0 max 1518) rx 0 0 tx 0 0\n", "") if self.running \
-                else (1, "", "Could not open control socket")
+            if not self.running:
+                return 1, "", "Could not open control socket"
+            out = ("demobook id 1 at MYSELF port 655 options c status 0 nexthop demobook via demobook "
+                   "distance 0 pmtu 1518 (min 0 max 1518) rx 0 0 tx 0 0\n")
+            if self.peer:
+                out += ("gw id 2 at 203.0.113.9 port 655 options c status 90 nexthop gw via gw "
+                        "distance 1 pmtu 1400 (min 0 max 1500) rx 5 60 tx 7 80\n")
+            return 0, out, ""
+        if sub[:2] == ["dump", "subnets"] and self.peer:
+            return 0, ("10.79.0.1 owner demobook\n"
+                       "10.79.0.7 owner gw\n"
+                       "192.168.1.0/24 owner gw\n"
+                       "0.0.0.0/0 owner gw\n"), ""
         if sub[0] == "dump":
             return 0, "", ""
         if sub[0] == "invite":
@@ -369,3 +383,101 @@ def test_parse_cert_failure_keeps_an_unknown_code():
         "  ... step\n\ntinc cert: FAILED (something-new)\n  What happened.\n  What to do.\n")
     assert (code, detail, hint) == ("something-new", "What happened.", "What to do.")
     assert parse_cert_failure("Stored the certificate for x.\n") == ("", "", "")
+
+
+# ---- routes to the subnets a peer announces ----------------------------------
+
+@pytest.fixture
+def window_with_peer(qapp, tmp_path, monkeypatch):
+    """A window whose network has a gateway peer announcing 192.168.1.0/24."""
+    monkeypatch.setenv("TINCSTACK_BIN_DIR", str(tmp_path / "nobin"))
+    cfg = tmp_path / "tinc.yaml"
+    cfg.write_text(BASE_YAML)
+    fake = FakeTinc(str(cfg), peer=True)
+    w = tincmgr.MainWindow(str(cfg), runner=fake, autostart=False)
+    w.fake = fake
+    assert wait_until(lambda: "gw" in (w.peers._snaps.get("demo").nodes if
+                                       w.peers._snaps.get("demo") else {}))
+    yield w
+    w.timer.stop()
+    w.pool.wait_all()
+    w.deleteLater()
+    QtWidgets.QApplication.processEvents()
+
+
+def _route_buttons(w, peer_name):
+    """The toggles in the peer's Routes cell, by label."""
+    col = len(tincmgr.PeersTab.COLS) - 1
+    for r in range(w.peers.table.rowCount()):
+        item = w.peers.table.item(r, 0)
+        if item and item.text() == peer_name:
+            cell = w.peers.table.cellWidget(r, col)
+            if cell is None:
+                return {}
+            return {b.text(): b for b in cell.findChildren(QtWidgets.QToolButton)}
+    raise AssertionError(f"no row for {peer_name}")
+
+
+def test_route_toggle_only_for_subnets_worth_routing(window_with_peer):
+    w = window_with_peer
+    btns = _route_buttons(w, "gw")
+    # the announced LAN gets a toggle; the peer's own address and the default
+    # route do not
+    assert set(btns) == {"192.168.1.0/24"}
+    assert not btns["192.168.1.0/24"].isChecked()
+    # ...and this node itself never offers one
+    assert _route_buttons(w, "demobook") == {}
+
+
+def test_route_toggle_writes_and_removes_interfaceroute(window_with_peer, monkeypatch):
+    w = window_with_peer
+    monkeypatch.setattr(tincmgr.routes, "local_ipv4_subnets", lambda: [])
+    applied = []
+    monkeypatch.setattr(tincmgr.routes, "apply_now",
+                        lambda alias, sub, via="": applied.append(("add", alias, sub, via)) or (True, "ok"))
+    monkeypatch.setattr(tincmgr.routes, "remove_now",
+                        lambda alias, sub: applied.append(("del", alias, sub)) or (True, "ok"))
+
+    btns = _route_buttons(w, "gw")
+    btns["192.168.1.0/24"].click()
+
+    opts = yc.load(w.app.path).net("demo").options
+    # the nexthop records which node the route is for
+    assert opts["InterfaceRoute"] == "192.168.1.0/24 10.79.0.7"
+    assert applied == [("add", "demo", "192.168.1.0/24", "10.79.0.7")]
+    # the rebuilt cell shows the route as on
+    w.peers._table(w.peers._snaps.get("demo"))
+    assert _route_buttons(w, "gw")["192.168.1.0/24"].isChecked()
+
+    _route_buttons(w, "gw")["192.168.1.0/24"].click()
+    assert "InterfaceRoute" not in yc.load(w.app.path).net("demo").options
+    assert applied[-1] == ("del", "demo", "192.168.1.0/24")
+
+
+def test_route_toggle_warns_before_stealing_a_local_network(window_with_peer, monkeypatch):
+    w = window_with_peer
+    monkeypatch.setattr(tincmgr.routes, "local_ipv4_subnets", lambda: ["192.168.1.0/24"])
+    monkeypatch.setattr(tincmgr.routes, "apply_now", lambda *a, **k: (True, "ok"))
+    asked = []
+
+    def refuse(*args, **kwargs):
+        asked.append(args[2] if len(args) > 2 else "")
+        return QtWidgets.QMessageBox.No
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(refuse))
+    _route_buttons(w, "gw")["192.168.1.0/24"].click()
+    assert asked and "192.168.1.0/24" in asked[0]
+    # refused: nothing was written, and the toggle went back to off
+    assert "InterfaceRoute" not in yc.load(w.app.path).net("demo").options
+    assert not _route_buttons(w, "gw")["192.168.1.0/24"].isChecked()
+
+
+def test_route_toggle_without_a_running_network_only_writes_the_config(window_with_peer, monkeypatch):
+    w = window_with_peer
+    monkeypatch.setattr(tincmgr.routes, "local_ipv4_subnets", lambda: [])
+    monkeypatch.setattr(tincmgr.routes, "apply_now",
+                        lambda *a, **k: pytest.fail("must not touch the live routing table"))
+    w._running["demo"] = False
+    _route_buttons(w, "gw")["192.168.1.0/24"].click()
+    assert yc.load(w.app.path).net("demo").options["InterfaceRoute"] == "192.168.1.0/24 10.79.0.7"
+    assert "when 'demo' starts" in w.statusBar().currentMessage()

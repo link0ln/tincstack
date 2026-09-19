@@ -1,6 +1,14 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-19 (**`tinc cert` landed: an optional Cloudflare API
+**Last Updated:** 2026-09-19 (**the Windows GUI can now route the subnets peers
+announce: a toggle per announced subnet in the Peers table writes
+`InterfaceRoute` and installs the route live, and the Windows core learned to
+install those routes at all -- `wintun_device.c` set the adapter address and
+stopped there, so a Windows node could never reach a peer's LAN whatever the
+config said. Proving it turned up a 🟠 defect: the `ip route` spelling of
+`InterfaceRoute` had always been dropped with a warning nobody reads. Proof:
+`testing/config/interface-route-test.sh`, 6 assertions including the negative
+control.**) Earlier the same day -- (**`tinc cert` landed: an optional Cloudflare API
 token and a domain now buy a real, publicly trusted certificate for the
 `https`/`quic` front through ACME DNS-01, replacing the self-signed one, with
 every failure mode given a stable code, a sentence of what happened and a
@@ -1265,6 +1273,62 @@ QT_QPA_PLATFORM=offscreen python -m pytest -q tests` → `38 passed`.
 - 🟢 **`Compression`/curses/readline are compiled out of the Windows core**
   (no mingw packages, offline build). `tinc top` and `Compression > 0` are
   unavailable on Windows until the wraps are vendored.
+
+### Routes to the subnets peers announce (2026-09-19, owner request)
+
+- [x] 🟠 **A per-peer route toggle in the Peers table, and the Windows core
+  support it needs.** A node that announces a LAN (`Subnet = 192.168.1.0/24`)
+  tells every peer, in tinc's own routing table, that the LAN is behind it. The
+  operating system is not told, on purpose: `autoif.c` installs system routes
+  only from explicit `InterfaceRoute` entries, so a peer cannot edit this
+  machine's routing table by announcing a subnet. Filling that gap by hand meant
+  editing YAML.
+  - **Core:** `configure_routes()` in `windows/wintun_device.c` installs each
+    `InterfaceRoute` with `CreateIpForwardEntry2` on the adapter's LUID — the
+    Windows half that simply did not exist, so a Windows node could not reach a
+    peer's LAN whatever the config said. Bound to the LUID, so Windows removes
+    the routes with the adapter: a route into a peer's LAN never outlives the
+    tunnel that was the only way to reach it.
+  - **GUI:** a *Route here* column in *Peers & Traffic*, one toggle per routable
+    subnet the peer announces. It writes `InterfaceRoute` with that peer's VPN
+    address as the gateway, saves, and installs the route live
+    (`netsh … store=active`) so no restart is needed; unticking removes both.
+    New `platforms/windows/backend/routes.py` holds the logic, `Node.vpn_address`
+    the peer's own address.
+  - **Two refusals, stated in the UI rather than silently:** a peer's own `/32`
+    gets no toggle (already reachable), and `0.0.0.0/0` gets none — a full
+    tunnel also routes the tunnel's own packets into itself unless the peer's
+    endpoint is pinned to the physical gateway first, and an endpoint that moves
+    (NAT rebind, address cache, a relayed peer with no endpoint at all) then
+    takes the machine off the network. That is a feature with its own failure
+    modes, not a checkbox.
+  - **One warning:** a subnet that overlaps a network this machine is already on
+    — `192.168.1.0/24` announced by a peer, on a laptop sitting on
+    `192.168.1.0/24` at home — takes those addresses away from the adapter that
+    owns them. The GUI asks before writing.
+  - **Proof:** `testing/config/interface-route-test.sh` (6 assertions, PASS):
+    node2 owns and announces 192.168.5.0/24, node1 has the `InterfaceRoute` and
+    no tinc-up script so the built-in path runs. The route reaches the routing
+    table in both spellings, the LAN answers through it, tinc knew the subnet
+    all along, and — the control the rest depends on — deleting the route makes
+    the LAN unreachable again. Plus 65/65 Windows pytest (22 new, `test_routes.py`
+    and four GUI cases), `make lint`, and a clean mingw-w64 cross-build.
+  - **Not proven:** the `CreateIpForwardEntry2` call and the `netsh` path are
+    cross-build/unit-verified only. There is no Windows host in this lab; the
+    Linux test proves the config contract the GUI writes, not the two Win32
+    calls that consume it.
+
+#### Defect found while proving it
+
+- 🟠 **`InterfaceRoute: <prefix> via <gateway>` was silently dropped.**
+  `autoif.c` split the value on the first space and treated the rest as the
+  gateway, so the `ip route` spelling left the keyword attached to it, failed
+  `shell_safe()` on the space, and was refused with `Ignoring InterfaceRoute
+  '…': not a route` — a line in a debug log, and the route simply absent. Only
+  the `"<prefix> <gateway>"` form `tinc join` writes ever worked. Both spellings
+  are now accepted on both platforms. Reproduction: the first run of
+  `testing/config/interface-route-test.sh`, which is why that test writes one
+  route in each spelling.
 
 ---
 

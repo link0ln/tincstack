@@ -19,6 +19,7 @@ Status decoding follows node_status_t (union bitfield) in tinc src/node.h:
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -71,6 +72,20 @@ class Node:
     @property
     def reachable(self) -> bool:
         return bool(self.status.get("reachable"))
+
+    @property
+    def vpn_address(self) -> str:
+        """This node's own address inside the VPN: its host-route Subnet. tinc
+        prints a /32 without the prefix, so a bare address is what we look for.
+        '' when the node announces only networks and no address of its own."""
+        for s in self.subnets:
+            try:
+                net = ipaddress.ip_network(str(s).strip(), strict=False)
+            except ValueError:
+                continue
+            if net.prefixlen == net.max_prefixlen:
+                return str(net.network_address)
+        return ""
 
     @property
     def is_self(self) -> bool:

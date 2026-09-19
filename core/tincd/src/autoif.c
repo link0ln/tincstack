@@ -134,6 +134,17 @@ bool autoif_up(void) {
 		if(via) {
 			*via++ = 0;
 			via += strspn(via, " ");
+
+			/* Two spellings reach this option and both have to work:
+			   "<prefix> <gateway>", which is what `tinc join' writes from an
+			   invitation's Route line, and "<prefix> via <gateway>", which is
+			   what anyone who knows `ip route' types. The second one used to
+			   be dropped with "not a route" -- the gateway kept the keyword,
+			   which then failed shell_safe() on the space. */
+			if(!strncmp(via, "via ", 4)) {
+				via += 4;
+				via += strspn(via, " ");
+			}
 		}
 
 		if(shell_safe(route) && (!via || !*via || shell_safe(via))) {

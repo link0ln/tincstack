@@ -397,6 +397,53 @@ Nothing leaves the host and no Cloudflare account is needed.
 
 ---
 
+## 10. `InterfaceRoute` on Windows, and the spelling that was silently dropped (tincstack, 2026-09-19)
+
+Files: `src/windows/wintun_device.c`, `src/windows/wintun_device.h` (new),
+`src/windows/device_dispatch.c`, `src/autoif.c`.
+
+**Problem.** A node can announce a LAN (`Subnet = 192.168.1.0/24`) and every
+peer then knows, in tinc's own routing table, that the LAN is behind it. The
+operating system does not: `autoif.c` installs system routes only from explicit
+`InterfaceRoute` entries, on purpose — a peer must not be able to edit this
+machine's routing table by announcing a subnet. On Linux `InterfaceRoute` filled
+that gap. On Windows nothing did: `wintun_device.c` set the adapter address and
+stopped there, so a Windows node could never reach a subnet a peer announced,
+whatever the config said.
+
+**What was added.** `configure_routes()` in the Wintun backend, run right after
+`configure_ip()`: each `InterfaceRoute` becomes a `CreateIpForwardEntry2` on the
+adapter's LUID. Binding them to the LUID is the point — Windows removes them
+with the adapter, so a route into a peer's LAN never outlives the tunnel that
+was the only way to reach it, and a restart re-installs them from the config
+with nothing to clean up. `SitePrefixLength = 0` is the same documented gotcha
+`set_interface_mtu()` already hits.
+
+**The defect this uncovered.** `autoif.c` split the option on the first space
+and treated everything after it as the gateway, so `192.168.5.0/24 via
+10.79.0.2` — the spelling anyone who knows `ip route` writes, and the one the
+GUI first emitted — left the keyword attached to the gateway, failed
+`shell_safe()` on the space, and was dropped with `Ignoring InterfaceRoute
+'...': not a route`. A warning in a debug log, and the route silently absent.
+Both spellings are now accepted, on both platforms: `"<prefix> <gateway>"` as
+`tinc join` writes it from an invitation's Route line, and `"<prefix> via
+<gateway>"`.
+
+Also: `wintun_available()` was declared with a bare `extern` in
+`device_dispatch.c` (a missing-prototype warning in the cross-build). It now has
+a header.
+
+Proof: `testing/config/interface-route-test.sh` — two nodes, node2 owning and
+announcing 192.168.5.0/24 as a dummy interface, node1 with the `InterfaceRoute`
+and no tinc-up script so the built-in path is what runs. It asserts the route
+reaches the routing table in both spellings, that the LAN answers through it,
+that tinc knew the subnet the whole time, and that deleting the route makes the
+LAN unreachable again — the control without which the other assertions prove
+nothing. The Windows half is cross-build-verified only; `platforms/windows`
+carries the unit tests for what the GUI writes.
+
+---
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):
@@ -424,6 +471,7 @@ Windows (mingw-w64 cross-build, for the laptop):
 | `CertDomain` | unset | nodes offering `https`/`quic` | public DNS name `tinc cert` issues a certificate for |
 | `CloudflareToken` | unset | same | Cloudflare API token with `Zone:Read` + `Zone:DNS:Edit` on that domain's zone |
 | `AcmeContact` / `AcmeDirectory` / `AcmeRenewDays` / `AcmePropagation` / `AcmePollTimeout` | see docs/config-schema.md | same | ACME tuning; all optional |
+| `InterfaceRoute` | unset | any node that must reach a subnet a peer announces | `"<prefix> [via] [gateway]"`, one per route; installed on the tunnel interface by the built-in tinc-up (Linux) or the Wintun backend (Windows) |
 
 ## Recommended deployment
 

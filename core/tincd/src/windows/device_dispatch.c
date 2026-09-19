@@ -28,12 +28,12 @@
 
 #include "../conf.h"
 #include "../device.h"
+#include "wintun_device.h"
 #include "../logger.h"
 #include "../xalloc.h"
 
 extern const devops_t tap_devops;
 extern const devops_t wintun_devops;
-extern bool wintun_available(void);
 
 static const devops_t *active = NULL;
 

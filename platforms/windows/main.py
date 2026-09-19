@@ -37,6 +37,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import paths  # noqa: E402
+import routes  # noqa: E402
 import transports  # noqa: E402
 import yaml_config  # noqa: E402
 from yaml_config import AppConfig, ConfigError, NetworkCfg, options_to_conf, conf_to_options  # noqa: E402
@@ -79,6 +80,8 @@ KNOWN_OPTIONS = [
     ("WintunAddress", "str", None, "CIDR auto-assigned to the Wintun adapter, e.g. 10.0.0.1/24 (Windows)"),
     ("WintunInterface", "str", None, "Wintun adapter name (collision-safe)"),
     ("wintun_mtu", "int", None, "tincmgr: MTU forced on the Wintun adapter at start via the Win32 API (0 = 1400). Stored in YAML, NOT sent to tinc.conf."),
+    ("InterfaceAddress", "str", None, "Address for the tunnel adapter, e.g. 10.200.240.2/24 (absent = this node's own Subnet)"),
+    ("InterfaceRoute", "str", None, "Route through the tunnel: '<prefix> [gateway]', e.g. 192.168.1.0/24 10.200.240.7. One per route; the Peers tab's Route buttons write these."),
     ("LocalDiscovery", "bool", None, "Find peers on the same LAN and connect directly"),
     ("UDPRebindOnWake", "bool", None, "Re-bind the UDP socket after sleep/resume (core feature)"),
     ("UDPDiscoveryBurst", "int", None, "UDP hole-punching probes per round while unconfirmed (core feature)"),
@@ -117,11 +120,16 @@ def human_bytes(n: int) -> str:
 # ---- Peers + persistent throughput graph -------------------------------------
 
 class PeersTab(QtWidgets.QWidget):
-    COLS = ["Peer", "Link", "Via", "Dist", "RTT ms", "PMTU", "RX", "TX", "Subnets"]
+    COLS = ["Peer", "Link", "Via", "Dist", "RTT ms", "PMTU", "RX", "TX", "Subnets", "Route here"]
 
     def __init__(self, tc: TincControl, nets_fn: Callable[[], list[str]], pool: WorkerPool,
-                 on_running: Callable[[dict[str, bool]], None]) -> None:
+                 on_running: Callable[[dict[str, bool]], None], ctx: Any = None) -> None:
         super().__init__()
+        self.ctx = ctx
+        # peer name -> (signature, widget): the table is rebuilt every tick, and
+        # a button recreated under the pointer is a button that cannot be
+        # clicked. Rebuild a cell only when what it shows actually changed.
+        self._route_cells: dict[str, tuple[tuple, QtWidgets.QWidget]] = {}
         self.tc = tc
         self.nets_fn = nets_fn
         self.pool = pool
@@ -222,14 +230,91 @@ class PeersTab(QtWidgets.QWidget):
                      f"{n.rtt:.0f}" if n.rtt > 0 else "",
                      str(n.pmtu) if n.pmtu else "",
                      human_bytes(n.rx_bytes), human_bytes(n.tx_bytes),
-                     ", ".join(n.subnets)]
+                     ", ".join(n.subnets), ""]
             for c, val in enumerate(cells):
                 it = QtWidgets.QTableWidgetItem(val)
                 if c == 1:
                     it.setForeground(QtGui.QColor(LINK_COLORS.get(link, "#000")))
                     f = it.font(); f.setBold(True); it.setFont(f)
                 self.table.setItem(r, c, it)
+            self._route_cell(r, n)
+        for name in [k for k in self._route_cells if k not in {n.name for n in nodes}]:
+            self._route_cells.pop(name, None)
         self.table.resizeColumnsToContents()
+
+    # -- routes to the subnets a peer announces --------------------------------
+
+    def _options(self) -> dict | None:
+        nc = self.ctx.app.net(self.net) if (self.ctx and self.net) else None
+        return nc.options if nc else None
+
+    def _route_cell(self, row: int, n) -> None:
+        """One toggle per routable subnet this peer announces. Ticked = this
+        machine has a route to it through the tunnel."""
+        col = len(self.COLS) - 1
+        options = self._options()
+        subnets = [] if (n.is_self or options is None) else [s for s in n.subnets if routes.routable(s)]
+        sig = (tuple(subnets), tuple(routes.has(options, s) for s in subnets) if options else ())
+        cached = self._route_cells.get(n.name)
+        if cached and cached[0] == sig:
+            self.table.setCellWidget(row, col, cached[1])
+            return
+        if not subnets:
+            self._route_cells.pop(n.name, None)
+            self.table.removeCellWidget(row, col)
+            return
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QHBoxLayout(w)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(4)
+        for sub in subnets:
+            b = QtWidgets.QToolButton()
+            b.setText(sub)
+            b.setCheckable(True)
+            b.setChecked(routes.has(options, sub))
+            b.setToolTip(f"Send this machine's traffic for {sub} through {n.name} "
+                         f"({n.vpn_address or 'the tunnel'}).\n"
+                         f"Saved as InterfaceRoute, so the daemon restores it every start "
+                         f"and Windows drops it when the network stops.")
+            b.clicked.connect(lambda checked, s=sub, node=n: self._toggle_route(node, s, checked))
+            lay.addWidget(b)
+        lay.addStretch()
+        self._route_cells[n.name] = (sig, w)
+        self.table.setCellWidget(row, col, w)
+
+    def _toggle_route(self, node, subnet: str, on: bool) -> None:
+        options = self._options()
+        if options is None:
+            return
+        ctx, net = self.ctx, self.net
+        if on:
+            clash = routes.conflicts(subnet, routes.local_ipv4_subnets())
+            if clash and QtWidgets.QMessageBox.question(
+                    self, "Route conflict",
+                    f"{subnet} overlaps a network this machine is already on "
+                    f"({', '.join(clash)}).\n\nAdding the route takes those addresses away from "
+                    f"the adapter that owns them — your own LAN would go through the tunnel "
+                    f"instead.\n\nAdd it anyway?") != QtWidgets.QMessageBox.Yes:
+                self._route_cells.pop(node.name, None)
+                self._table(self._snaps.get(net))
+                return
+            routes.add(options, subnet, node.vpn_address)
+        else:
+            routes.remove(options, subnet)
+        if not ctx.save_config():
+            self._route_cells.pop(node.name, None)
+            self._table(self._snaps.get(net))
+            return
+        self._route_cells.pop(node.name, None)
+        verb = "added" if on else "removed"
+        if not ctx._running.get(net, False):
+            ctx.status(f"route to {subnet} {verb} — it is installed when '{net}' starts")
+            return
+        alias = routes.adapter_aliases(options, net)
+        ok, msg = ((routes.apply_now(alias[0], subnet, node.vpn_address) if on
+                    else routes.remove_now(alias[0], subnet)) if alias else (False, "no adapter name"))
+        ctx.status(f"route to {subnet} {verb}" if ok
+                   else f"route to {subnet} {verb} in the config, but not applied live: {msg}")
 
     def _redraw(self) -> None:
         samples = list(self.hist.get(self.net, ()))
@@ -693,7 +778,8 @@ class MainWindow(QtWidgets.QMainWindow):
         h.addLayout(left)
 
         self.tabs = QtWidgets.QTabWidget()
-        self.peers = PeersTab(self.tc, lambda: list(self.app.networks), self.pool, self._on_running)
+        self.peers = PeersTab(self.tc, lambda: list(self.app.networks), self.pool,
+                              self._on_running, ctx=self)
         self.network = NetworkTab(self)
         self.transports = TransportsTab(self)
         self.tabs.addTab(self.peers, "Peers && Traffic")
