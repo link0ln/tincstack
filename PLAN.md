@@ -3104,6 +3104,41 @@ Defects identified during the source audit, to fix as their milestone is reached
   and is recorded as a measurement, not a claim. The first guess, batched
   `recvmmsg`, is wrong: it is in both binaries, because it is upstream's code.
 
+- **Do not tune anything on the owner's home link by comparing ping samples:
+  its UDP latency to ruvds wanders between ~5 and ~67 ms on a timescale of
+  minutes, while ICMP stays at 4 ms.** Measured 2026-09-19 after three
+  successive explanations of a 45-vs-68 ms difference turned out to be
+  noise-fitting. The decisive measurement uses no tinc at all — a stdlib UDP
+  echo on ruvds and a stdlib prober from the owner's LAN:
+
+      ICMP to ruvds                      4.4 ms
+      udp/5999  round 0 / 1 / 2     4.8 / 4.9 / 63.7 ms
+      udp/443   round 0 / 1 / 2     4.8 / 39.7 / 44.2 ms
+      udp/4444  80 packets in a row      39-43 ms, mdev small
+      udp to euvds (same prober)         46-48 ms, vs 45 ms ICMP
+
+  So the penalty is specific to the path to ruvds and to UDP, it is not the
+  port (the same port swings 10x between rounds), and it is not our software:
+  a throwaway Linux node of our own build, joined from the same LAN on the
+  same port, measured **34-47 ms** — worse than the Windows client's 27 ms
+  that was about to be filed as a Windows regression. Twelve hours later the
+  owner's own numbers had inverted: 82 ms to gnetnew and 126 ms to gnet,
+  where the day before they were 68 and 45.
+
+  Three explanations died against this data, and all three had looked
+  reasonable: (1) the conntrack pinhole on euvds — a real hole (3345 packets
+  have since been dropped by the new rule) but never the cause of the
+  latency difference, since both networks were already relayed; (2) "our
+  Windows build adds 22 ms" — killed by the Linux node being slower on the
+  same LAN; (3) "port 656 is shaped, 993 and 443 are not" — killed by the
+  same port measuring 4.8 ms and 63.7 ms minutes apart.
+
+  Consequence for the topology, and this one is real: routing every member
+  through ruvds puts that unstable leg in **every** path, twice. UDP to euvds
+  from the same LAN was stable (46-48 ms against 45 ms ICMP). If latency
+  stability ever matters more than "euvds is reachable only from ruvds", that
+  is the trade to revisit — not the tunnel, the transport or the client.
+
 - 🟠 **The Windows GUI and the daemon disagreed on how a YAML list is
   written, so every config the GUI saved with a list in it became
   unreadable.** Found 2026-09-19 on the owner's Windows host, and it is the
