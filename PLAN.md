@@ -2258,6 +2258,19 @@ Defects identified during the source audit, to fix as their milestone is reached
   APK" section: how to create the keystore in the build container, the four
   secrets, and how to sign an already-published APK with `zipalign`/`apksigner`.
 
+  **Also fixed on the way** (2026-09-20): the APK's own version was the
+  constant `versionCode 1` / `versionName 0.1.0`, so every release would have
+  claimed to be the same build and Android would have refused later upgrades.
+  `app/build.gradle` now reads `-PtincVersionName`/`-PtincVersionCode` (same
+  defaults when absent) and the workflow derives them from the tag
+  (`v0.4.1` -> `0.4.1` / `401`, monotonic while minor and patch stay below 100).
+  Proof, configuration-phase probe in the build container:
+
+      with -PtincVersionName=0.4.1 -PtincVersionCode=401:
+        PROBE versionCode=401 versionName=0.4.1
+      without them:
+        PROBE versionCode=1 versionName=0.1.0
+
   **Not fixed:** no signed APK is published. That needs the owner to add the
   four secrets and cut a new tag -- a `workflow_dispatch` run is a dry run and
   publishes nothing, so re-running `v0.4.0` does not replace its asset. The

@@ -38,6 +38,9 @@ def coreAbis = (project.findProperty('tincAbis') ?: 'arm64-v8a armeabi-v7a x86 x
     .toString().trim().split(/\s+/) as List
 def coreMinSdk = 21
 
+def tincVersionName = project.findProperty('tincVersionName') ?: '0.1.0'
+def tincVersionCode = ((project.findProperty('tincVersionCode') ?: '1') as String) as int
+
 android {
   compileSdkVersion 34
   ndkVersion '26.1.10909125'
@@ -47,8 +50,13 @@ android {
     minSdkVersion coreMinSdk
     targetSdkVersion 34
     multiDexEnabled true
-    versionCode 1
-    versionName '0.1.0'
+    // The published APK takes its version from the release tag: the workflow
+    // passes -PtincVersionName/-PtincVersionCode (release.yml, android job).
+    // A local build keeps the defaults. versionCode must never go down --
+    // Android refuses to install an APK whose code is below the installed one,
+    // so a hardcoded 1 would block every upgrade after the first release.
+    versionCode tincVersionCode
+    versionName tincVersionName
     ndk {
       abiFilters(*coreAbis)
     }

@@ -32,8 +32,9 @@
 #
 # Android signing is optional. With the four ANDROID_* secrets set the APK is
 # signed by gradle's release signingConfig (app/build.gradle reads
-# keystore.properties); without them the job still produces an APK and the
-# asset is named `-unsigned` so nobody installs it thinking it is signed.
+# keystore.properties); without them the job still produces an APK that Android
+# will not install at all, and the asset is named `-UNSIGNED-WILL-NOT-INSTALL`
+# because a suffix nobody reads is what shipped v0.4.0 in that state.
 name: release
 
 on:
@@ -279,9 +280,33 @@ jobs:
             exit 1
           }
 
+      # The APK's own version, from the tag. versionCode is monotonic for any
+      # semver with minor and patch below 100 (v0.4.1 -> 401); a dry run keeps
+      # the gradle defaults. Android blocks an install whose versionCode is
+      # below the installed one, so this must never be a constant.
+      - name: Version for the APK
+        id: apkver
+        run: |
+          set -eu
+          v='${{ needs.meta.outputs.version }}'
+          case "$v" in
+          v[0-9]*.[0-9]*.[0-9]*)
+            n=${v#v}
+            maj=${n%%.*}; rest=${n#*.}; min=${rest%%.*}; pat=${rest##*.}
+            pat=${pat%%[!0-9]*}
+            echo "name=$n" >> "$GITHUB_OUTPUT"
+            echo "code=$(( maj * 10000 + min * 100 + pat ))" >> "$GITHUB_OUTPUT"
+            ;;
+          *)
+            echo "::notice::$v is not a vX.Y.Z tag; keeping the gradle default version"
+            echo "name=" >> "$GITHUB_OUTPUT"
+            echo "code=" >> "$GITHUB_OUTPUT"
+            ;;
+          esac
+
       # keystore.properties is read by platforms/android/app/build.gradle; it is
       # written here from secrets and never committed. Without the secrets the
-      # APK comes out unsigned, which the asset name says.
+      # APK comes out unsigned -- not "less trusted", but uninstallable.
       - name: Signing material (optional)
         id: signing
         env:
@@ -313,6 +338,9 @@ jobs:
       # not the legacy RSA protocol; the release notes say so. Drop the flag
       # once tls.c has a LibreSSL fallback and build-core.sh builds libssl.
       - name: Build the app in the repository's own build container
+        env:
+          APK_NAME: ${{ steps.apkver.outputs.name }}
+          APK_CODE: ${{ steps.apkver.outputs.code }}
         run: |
           docker build -t tincstack/android-build -f platforms/android/docker/Dockerfile.build platforms/android/docker
           set -eo pipefail
@@ -322,7 +350,10 @@ jobs:
             -v /tmp/gradle:/root/.gradle \
             -w /src/platforms/android \
             -e ANDROID_HOME=/opt/android-sdk -e ANDROID_SDK_ROOT=/opt/android-sdk \
-            tincstack/android-build ./gradlew --no-daemon -PtincCrypto=nolegacy assembleRelease \
+            tincstack/android-build ./gradlew --no-daemon -PtincCrypto=nolegacy \
+            ${APK_NAME:+-PtincVersionName="$APK_NAME"} \
+            ${APK_CODE:+-PtincVersionCode="$APK_CODE"} \
+            assembleRelease \
             2>&1 | tee gradle.log || {
               msg=$(tail -n 40 gradle.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
               echo "::error title=assembleRelease failed::$msg"
