@@ -1,6 +1,12 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-20 (**every APK released so far cannot be installed
+**Last Updated:** 2026-09-20 (**`v0.4.1` is the first release whose APK can be
+installed at all: signed v1/v2/v3 by the release keystore, `versionCode 401`,
+all four ABIs, verified on the downloaded asset. Getting there cost two defects
+-- the signing secrets were never set, and once they were, the signing config
+looked for the keystore in the app module instead of next to its own properties
+file. Both are closed, and the job now fails if `apksigner` cannot verify what
+it built.**) Earlier the same day -- (**every APK released so far cannot be installed
 -- it has no signature at all, which is what the phone's "package is invalid,
 possibly corrupt" actually means; the release workflow's signing step was
 optional and its secrets were never set. The workflow now names the asset
@@ -2299,7 +2305,34 @@ Defects identified during the source audit, to fix as their milestone is reached
       Signer #1 certificate SHA-256 digest: 235f6087...6fb63a93
       package: name='net.tincstack.android' versionCode='401' versionName='0.4.1'
 
-  **Not fixed until a release run proves it:** no signed APK is published. That needs the owner to add the
+  **Closed 2026-09-20 by the `v0.4.1` release** (run `release #8`, every job
+  green, `publish the release` included). The tag was moved onto the fix commit
+  rather than burned, because the first `v0.4.1` run produced no release and no
+  asset. Verified independently of CI, on the asset downloaded from the release
+  page:
+
+      $ apksigner verify --verbose --print-certs tincstack-v0.4.1.apk
+      Verifies
+      Verified using v1 scheme (JAR signing): true
+      Verified using v2 scheme (APK Signature Scheme v2): true
+      Verified using v3 scheme (APK Signature Scheme v3): true
+      Signer #1 certificate DN: CN=tincstack, OU=tincstack, O=link0ln, L=-, ST=-, C=XX
+      Signer #1 certificate SHA-256 digest: 235f608795ecc5417fb2d071160993ca85237b9336528eac3713fe6c6fb63a93
+      $ aapt2 dump badging tincstack-v0.4.1.apk
+      package: name='net.tincstack.android' versionCode='401' versionName='0.4.1'
+      sdkVersion:'21'  targetSdkVersion:'34'
+      lib/{arm64-v8a,armeabi-v7a,x86,x86_64}   all four ABIs
+
+  The asset is `tincstack-v0.4.1.apk`, 4 676 379 B, sha256
+  `31206c3d2555d2078f646e0ff4f7681fbd386413f9995c2ce8baca06ba0bd5ab`.
+
+  **The one thing left is not a code change:** the signing key is now the app's
+  identity. It lives in `/root/tincstack-android-signing/` on gway and nowhere
+  else; if it is lost, no future release can upgrade an installed copy -- users
+  would have to uninstall and lose their config. It needs an off-machine backup.
+  The earlier releases' `-unsigned` assets are still on the release pages and
+  still uninstallable; they are not worth deleting, but nobody should be pointed
+  at them. That needs the owner to add the
   four secrets and cut a new tag -- a `workflow_dispatch` run is a dry run and
   publishes nothing, so re-running `v0.4.0` does not replace its asset. The
   signing key is an identity: once a signed release is installed, every later
