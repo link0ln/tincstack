@@ -94,6 +94,53 @@ docker/join-on-emulator.sh          # KEEP=1 leaves the lab and the emulator up
 Reading the app's private files (the joined `tinc.yaml`) needs a userdebug
 system image, hence `google_apis` and not `google_apis_playstore`.
 
+Signing the release APK
+-----------------------
+
+Android installs nothing that is not signed. An APK built without a keystore
+carries no v1 (JAR) and no v2/v3 signature, and the installer rejects it with
+"package appears to be invalid, possibly corrupt" — a message that names
+corruption but means "no signature". `tincstack-v0.4.0-unsigned.apk` was
+published in exactly that state.
+
+`app/build.gradle` reads `keystore.properties` next to it and only defines a
+`signingConfig` when that file exists; neither the keystore nor the properties
+file is ever committed (`.gitignore`). Create the key once — it is an
+identity, not a password: every later release must be signed with the *same*
+key or Android refuses to upgrade an installed copy, so back it up somewhere
+it will outlive this machine.
+
+```
+docker run --rm -v "$PWD":/w -w /w tincstack/android-build \
+  keytool -genkeypair -v -keystore release.keystore -storetype PKCS12 \
+          -alias tincstack -keyalg RSA -keysize 4096 -validity 10000 \
+          -dname 'CN=tincstack, OU=tincstack, O=<owner>, L=-, ST=-, C=XX' \
+          -storepass "$PASS" -keypass "$PASS"      # PKCS12: both must match
+```
+
+For CI, put it in four repository secrets (Settings → Secrets and variables →
+Actions). `.github/workflows/release.yml` materialises `keystore.properties`
+from them and deletes it again in an `always()` step:
+
+| secret | value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | `base64 -w0 release.keystore` |
+| `ANDROID_KEY_ALIAS` | `tincstack` |
+| `ANDROID_KEY_PASSWORD` | the key password |
+| `ANDROID_STORE_PASSWORD` | the store password |
+
+Only a `v*` tag publishes a release; "Run workflow" from the Actions tab is a
+dry run, so re-running an existing tag does not replace its assets.
+
+To sign an APK that was already built and published:
+
+```
+zipalign -p -f 4 in.apk aligned.apk
+apksigner sign --ks release.keystore --ks-key-alias tincstack \
+                --out signed.apk aligned.apk
+apksigner verify --print-certs signed.apk     # v1, v2 and v3 must all be true
+```
+
 License
 -------
 

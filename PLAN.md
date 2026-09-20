@@ -1,6 +1,13 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-19 (**the Windows GUI can now route the subnets peers
+**Last Updated:** 2026-09-20 (**every APK released so far cannot be installed
+-- it has no signature at all, which is what the phone's "package is invalid,
+possibly corrupt" actually means; the release workflow's signing step was
+optional and its secrets were never set. The workflow now names the asset
+`-UNSIGNED-WILL-NOT-INSTALL`, warns in the job and says so in the release notes,
+and `platforms/android/readme.md` documents the keystore, the four secrets and
+how to sign a published APK. A signed release still needs the owner to add the
+secrets and cut a new tag -- see Known Issues.**) 2026-09-19 -- (**the Windows GUI can now route the subnets peers
 announce: a toggle per announced subnet in the Peers table writes
 `InterfaceRoute` and installs the route live, and the Windows core learned to
 install those routes at all -- `wintun_device.c` set the adapter address and
@@ -1934,7 +1941,9 @@ registry image.
     with the runner's SDK/NDK mounted, `./gradlew assembleRelease`. Signing is
     optional: four `ANDROID_*` repository secrets materialise
     `keystore.properties` (never committed, removed in an `always()` step); with
-    no secrets the asset is named `-unsigned` so nobody mistakes it for signed.
+    no secrets the asset is named `-UNSIGNED-WILL-NOT-INSTALL`, because
+    "optional" was wrong -- an unsigned APK installs nowhere (see Known
+    Issues, 2026-09-20).
   - `release` — `git archive` of the tag as the Linux artefact, then
     `gh release create` with every artefact and notes that spell out the pull
     commands.
@@ -2216,6 +2225,44 @@ hardening), K, L, G3, S, T, N, O. No stream running.
 
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
+
+- 🟠 **Every published APK so far is uninstallable: it carries no signature**
+  (found by the owner 2026-09-20 on the `v0.4.0` release, workflow fixed the
+  same day, the release assets are not fixed). Downloading
+  `tincstack-v0.4.0-unsigned.apk` to a phone and opening it gives *"the current
+  package is invalid, possibly corrupt"*. It is neither: the file is a complete,
+  intact APK with no signature at all. Proof, on the downloaded asset:
+
+      $ unzip -l t.apk | grep -cE 'META-INF/.*\.(RSA|DSA|EC|SF)|META-INF/MANIFEST.MF'
+      0                                  # no v1 (JAR) signature
+      $ LC_ALL=C grep -ac 'APK Sig Block 42' t.apk
+      0                                  # no v2/v3 signing block
+      $ unzip -t t.apk && echo intact    # every CRC checks out: not corrupt
+
+  `minSdkVersion 21` / `targetSdkVersion 34` (`app/build.gradle`), so an OS
+  version mismatch is ruled out, and every CRC in the archive checks out, so a
+  damaged download is ruled out. Android has required a signature since v1; there is no
+  device and no setting on which an unsigned APK installs.
+
+  **Cause, and the real defect.** The signing step in `.github/workflows/release.yml`
+  is conditional on four `ANDROID_*` secrets that were never set, and the plan
+  recorded that as an "open owner decision" and the asset suffix `-unsigned` as
+  sufficient warning. Both were wrong: the consequence is not "a less trusted
+  build", it is "no build", and every release since `v0.1.1` shipped a file that
+  could not be installed by anyone.
+
+  **Fixed in the workflow** (2026-09-20): the unsigned asset is now named
+  `tincstack-<v>-UNSIGNED-WILL-NOT-INSTALL.apk`, the job emits a `::warning`,
+  and the release notes say the installer's "invalid/corrupt" message *is* the
+  missing signature. `platforms/android/readme.md` gained a "Signing the release
+  APK" section: how to create the keystore in the build container, the four
+  secrets, and how to sign an already-published APK with `zipalign`/`apksigner`.
+
+  **Not fixed:** no signed APK is published. That needs the owner to add the
+  four secrets and cut a new tag -- a `workflow_dispatch` run is a dry run and
+  publishes nothing, so re-running `v0.4.0` does not replace its asset. The
+  signing key is an identity: once a signed release is installed, every later
+  release must use the same key or Android refuses the upgrade.
 
 - 🟠 **An already-running network could never be switched to obfs**
   (stream AD, found on the real stand 2026-09-17, **fixed** in the same

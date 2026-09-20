@@ -337,7 +337,12 @@ jobs:
           if [ "${{ steps.signing.outputs.signed }}" = true ]; then
             cp "$apk" "tincstack-${{ needs.meta.outputs.version }}.apk"
           else
-            cp "$apk" "tincstack-${{ needs.meta.outputs.version }}-unsigned.apk"
+            # An unsigned APK is not a lesser APK, it is a file Android refuses
+            # to install at all ("package appears to be invalid"). v0.4.0 was
+            # published this way and the owner hit exactly that. The name has
+            # to say so, because the name is all anyone reads on a release page.
+            cp "$apk" "tincstack-${{ needs.meta.outputs.version }}-UNSIGNED-WILL-NOT-INSTALL.apk"
+            echo "::warning title=unsigned APK::this APK cannot be installed on any Android device; set the four ANDROID_* secrets and cut a new tag"
           fi
           sha256sum tincstack-*.apk
 
@@ -424,8 +429,15 @@ jobs:
 
           ## Android
 
-          The \`.apk\` asset. An asset named \`-unsigned\` was built without a
-          signing key and has to be signed before it will install.
+          The \`.apk\` asset.
+
+          An asset named \`-UNSIGNED-WILL-NOT-INSTALL\` was built without a
+          signing key. **Android will refuse to install it** — it reports
+          "package appears to be invalid" or "possibly corrupt", which is the
+          missing signature and not a damaged download. Sign it locally
+          (\`zipalign\` + \`apksigner sign\`), or set the four \`ANDROID_*\`
+          repository secrets (see \`platforms/android/readme.md\`) and cut a new
+          tag to get an installable one.
 
           It is built \`-PtincCrypto=nolegacy\`: SPTPS/Ed25519 only, **no legacy
           RSA protocol**, so it cannot talk to a tinc 1.0-era peer. That is a
