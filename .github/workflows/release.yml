@@ -328,6 +328,18 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
+
+          # Prove the material before spending ten minutes on a build that
+          # would die in validateSigningRelease: that the base64 decoded to a
+          # keystore, that the password opens it, and that the alias is in it.
+          if ! keytool -list -keystore platforms/android/release.keystore \
+                       -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >keytool.log 2>&1; then
+            msg=$(sed 's/%/%25/g' keytool.log | awk '{printf "%s%%0A", $0}')
+            echo "::error title=the signing material is unusable::$msg"
+            rm -f platforms/android/release.keystore platforms/android/keystore.properties keytool.log
+            exit 1
+          fi
+          rm -f keytool.log
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       # -PtincCrypto=nolegacy is not a preference, it is the only thing that
@@ -366,6 +378,15 @@ jobs:
           apk=$(find platforms/android/app/build/outputs/apk/release -name '*.apk' | head -n1)
           test -n "$apk"
           if [ "${{ steps.signing.outputs.signed }}" = true ]; then
+            # The whole point of the job: an APK nobody can install is worse
+            # than no APK, so the signature is asserted here, not assumed.
+            signer=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort | tail -n1)
+            if ! "$signer" verify --print-certs "$apk" >verify.log 2>&1; then
+              msg=$(tail -n 20 verify.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+              echo "::error title=the built APK is not signed::$msg"
+              exit 1
+            fi
+            grep -E 'Signer #1 certificate SHA-256|^Verified using' verify.log || true
             cp "$apk" "tincstack-${{ needs.meta.outputs.version }}.apk"
           else
             # An unsigned APK is not a lesser APK, it is a file Android refuses

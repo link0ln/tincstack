@@ -2271,7 +2271,35 @@ Defects identified during the source audit, to fix as their milestone is reached
       without them:
         PROBE versionCode=1 versionName=0.1.0
 
-  **Not fixed:** no signed APK is published. That needs the owner to add the
+  **Second defect, found by cutting `v0.4.1` with the secrets in place**
+  (2026-09-20, fixed): the release run failed in `:app:validateSigningRelease`
+  with `Keystore file '/src/platforms/android/app/release.keystore' not found
+  for signing config 'release'`. `keystore.properties` says
+  `storeFile=release.keystore` and sits in `platforms/android/`, but
+  `app/build.gradle` resolved it with `file()`, which is relative to the **app
+  module**. The signing path had never been executed before, so nothing had
+  ever caught it. Fixed with `rootProject.file(...)`, and two guards added so
+  the next failure is immediate and legible:
+
+  - the signing step now runs `keytool -list -alias` against the decoded
+    keystore and fails with the tool's own message if the base64, the password
+    or the alias is wrong, instead of losing ten minutes in a build;
+  - the collect step runs `apksigner verify --print-certs` on the built APK and
+    fails the job if it is not signed. This is the check whose absence let
+    v0.4.0 ship.
+
+  Also `enableV3Signing true`: AGP signs v1+v2 only by default, and v3 carries
+  the signer lineage a future key rotation needs. Proven locally against the
+  real keystore before re-tagging (build in the repository's own container):
+
+      BUILD SUCCESSFUL in 1m 19s
+      Verified using v1 scheme (JAR signing): true
+      Verified using v2 scheme (APK Signature Scheme v2): true
+      Verified using v3 scheme (APK Signature Scheme v3): true
+      Signer #1 certificate SHA-256 digest: 235f6087...6fb63a93
+      package: name='net.tincstack.android' versionCode='401' versionName='0.4.1'
+
+  **Not fixed until a release run proves it:** no signed APK is published. That needs the owner to add the
   four secrets and cut a new tag -- a `workflow_dispatch` run is a dry run and
   publishes nothing, so re-running `v0.4.0` does not replace its asset. The
   signing key is an identity: once a signed release is installed, every later
