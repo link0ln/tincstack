@@ -82,6 +82,11 @@ void tls_exit(void);
    False if the certificate cannot be loaded/generated. */
 bool tls_current_pem(char **cert_pem, char **key_pem);
 
+/* Log once a day while the loaded certificate is within AcmeRenewDays of
+   expiry, and once a day after it has expired. Cheap and offline; called from
+   the daemon's periodic handler. */
+void tls_expiry_warn(void);
+
 #endif /* HAVE_OPENSSL */
 
 #endif /* TINC_TLS_H */

@@ -17,7 +17,7 @@ import yaml_config as yc  # noqa: E402
 import main as tincmgr  # noqa: E402
 from gui.dialogs import InviteDialog, JoinDialog  # noqa: E402
 from gui.cert_dialog import CertDialog  # noqa: E402
-from tinc_control import parse_cert_failure  # noqa: E402
+from tinc_control import parse_cert_failure, parse_cert_expiry  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -56,10 +56,13 @@ class FakeTinc:
     """Mocked `tinc` runner: records every call and the thread it ran on."""
 
     def __init__(self, yaml_path: str, running: bool = True, delay: float = 0.0,
-                 peer: bool = False):
+                 peer: bool = False, cert_days: int | None = None):
         self.yaml_path = yaml_path
         self.running = running
         self.delay = delay
+        # `cert_days`: days until the stored certificate expires (negative =
+        # already expired), None = no certificate stored yet.
+        self.cert_days = cert_days
         # `peer`: also report a gateway node that announces a LAN and a default
         # route, which is what the route toggles are about.
         self.peer = peer
@@ -111,9 +114,15 @@ class FakeTinc:
         opts = yc.load(self.yaml_path).net(cmd[cmd.index("-n") + 1]).options
         sub = args[0] if args else "status"
         if sub == "status":
-            return 0, ("CertDomain     %s\nCloudflare     %s\nCertificate    none stored yet\n"
-                       % (opts.get("CertDomain", "(unset)"),
-                          "token set" if opts.get("CloudflareToken") else "no token set")), ""
+            head = ("CertDomain     %s\nCloudflare     %s\n"
+                    % (opts.get("CertDomain", "(unset)"),
+                       "token set" if opts.get("CloudflareToken") else "no token set"))
+            if self.cert_days is None:
+                return 0, head + "Certificate    none stored yet\n", ""
+            when = ("in %d days" % self.cert_days if self.cert_days >= 0
+                    else "EXPIRED %d days ago" % -self.cert_days)
+            return 0, head + ("Fingerprint    abc\nExpires        %s\nKind           issued by a CA\n"
+                              % when), ""
         if not opts.get("CloudflareToken"):
             return 1, "", ("\ntinc cert: FAILED (config)\n  No CloudflareToken is set.\n"
                            "  Create an API token with the \"Edit zone DNS\" template.\n")
@@ -481,3 +490,56 @@ def test_route_toggle_without_a_running_network_only_writes_the_config(window_wi
     _route_buttons(w, "gw")["192.168.1.0/24"].click()
     assert yc.load(w.app.path).net("demo").options["InterfaceRoute"] == "192.168.1.0/24 10.79.0.7"
     assert "when 'demo' starts" in w.statusBar().currentMessage()
+
+
+# ---- certificate expiry badge -------------------------------------------------
+# Nothing renews the front's certificate by itself, so the manager has to be the
+# one that notices. These pin the three states the toolbar can be in.
+
+def _watch(w, days, threshold=None):
+    """Point the window at a network with ACME configured and `days` left."""
+    nc = w.app.net("demo")
+    nc.options["CertDomain"] = "vpn.example.com"
+    if threshold is not None:
+        nc.options["AcmeRenewDays"] = threshold
+    w.fake.cert_days = days
+    w._cert_watch()
+    wait_until(lambda: not w.pool.busy("cert-watch"), timeout=5.0)
+    QtWidgets.QApplication.processEvents()
+    return w.cert_act.text()
+
+
+def test_cert_badge_warns_while_there_is_still_time(window):
+    assert "5 d left" in _watch(window, 5)
+    assert "expires in 5 days" in window.cert_act.toolTip()
+
+
+def test_cert_badge_says_when_it_has_already_expired(window):
+    assert "EXPIRED (3 d)" in _watch(window, -3)
+    assert "pin the fingerprint" in window.cert_act.toolTip()
+
+
+def test_cert_badge_is_silent_with_time_to_spare(window):
+    assert _watch(window, 60) == "🔐 Certificate…"
+
+
+def test_cert_badge_follows_acmerenewdays(window):
+    """A node told to renew at 45 days must be warned at 40, not at 30."""
+    assert "40 d left" in _watch(window, 40, threshold=45)
+
+
+def test_cert_badge_asks_nothing_without_certdomain(window):
+    w = window
+    w.fake.calls.clear()
+    w._cert_watch()
+    QtWidgets.QApplication.processEvents()
+    assert not any("cert" in c for c in w.fake.calls)
+    assert w.cert_act.text() == "🔐 Certificate…"
+
+
+def test_parse_cert_expiry_reads_both_spellings_and_nothing_else():
+    assert parse_cert_expiry("Expires        in 47 days\n") == 47
+    assert parse_cert_expiry("Expires        EXPIRED 3 days ago\n") == -3
+    assert parse_cert_expiry("Expires        unreadable\n") is None
+    assert parse_cert_expiry("Certificate    none stored yet\n") is None
+    assert parse_cert_expiry("") is None

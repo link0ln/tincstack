@@ -41,6 +41,7 @@ check_headers = [
   'arpa/nameser.h',
   'dirent.h',
   'getopt.h',
+  'ifaddrs.h',
   'inttypes.h',
   'net/ethernet.h',
   'net/if.h',
@@ -257,6 +258,15 @@ foreach f : check_functions
               description: 'function ' + f)
   endif
 endforeach
+
+# getifaddrs needs its own header to be declared; the shared prefix (have.h)
+# does not include <ifaddrs.h>, and without a declaration meson falls through to
+# a builtin check that always fails. zeroconf.c uses it to avoid handing a node
+# an address pool the machine is already on; without it the pool is picked blind
+# (Android before API 24 has no getifaddrs at all).
+if cdata.has('HAVE_IFADDRS_H') and cc.has_function('getifaddrs', prefix: '#include <ifaddrs.h>', args: cc_defs)
+  cdata.set('HAVE_GETIFADDRS', 1, description: 'function getifaddrs')
+endif
 
 if cc.has_function('res_init', prefix: '''
   #include <netinet/in.h>

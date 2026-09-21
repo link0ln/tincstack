@@ -21,6 +21,9 @@
 #   INVITE          invitation string: `tinc join` on the first start only
 #                   (CONNECT_TO is accepted as an alias)
 #   LOG_LEVEL       tincd -d level (default 1)
+#   CERT_RENEW      1 (default): check periodically whether the ACME certificate
+#                   for the https/quic front needs renewing; 0 turns it off
+#   CERT_RENEW_INTERVAL  seconds between those checks (default 43200 = 12 h)
 #
 # PORT: `Port` is a server variable in this core (options.Port, the place
 # zeroconf and join write it); the daemon and `tinc invite` rank it above a
@@ -35,6 +38,8 @@ PUBLIC_ADDRESS=${PUBLIC_ADDRESS:-}
 PORT=${PORT:-}
 INVITE=${INVITE:-${CONNECT_TO:-}}
 LOG_LEVEL=${LOG_LEVEL:-1}
+CERT_RENEW=${CERT_RENEW:-1}
+CERT_RENEW_INTERVAL=${CERT_RENEW_INTERVAL:-43200}
 
 YAML=$CONFIG_DIR/tinc.yaml
 RUNDIR=$CONFIG_DIR/$NETNAME          # the daemon's runtime dir in YAML mode
@@ -152,8 +157,41 @@ if [[ -z $name ]]; then
     set_host_vars
 fi
 
+# --- keep the certificate alive -------------------------------------------
+# `tinc cert` issues and renews, but nothing runs it: a certificate obtained
+# once simply expires ~90 days later, and the https front then presents an
+# expired certificate -- which is more remarkable to an observer than the
+# self-signed one it replaced. So the node renews itself.
+#
+# `cert renew` is a no-op while more than AcmeRenewDays remain (it reads the
+# stored certificate and returns), so this costs one config read per interval
+# until the week it matters. It runs only when ACME is actually configured;
+# without CertDomain and CloudflareToken there is nothing to renew.
+renew_loop() {
+    local domain token out
+    while sleep "$CERT_RENEW_INTERVAL"; do
+        domain=$(cli get CertDomain 2>/dev/null || true)
+        token=$(cli get CloudflareToken 2>/dev/null || true)   # never logged
+        [[ -n $domain && -n $token ]] || continue
+        if out=$(cli cert renew 2>&1); then
+            # The no-op case is the common one; only say something when the
+            # certificate actually changed.
+            [[ $out == *"nothing to do"* ]] || log "cert renew: ${out//$'\n'/ }"
+        else
+            log "cert renew failed: ${out//$'\n'/ }"
+        fi
+    done
+}
+
+if [[ $CERT_RENEW != 0 ]]; then
+    renew_loop &
+    renewer=$!
+    trap 'kill -TERM "$daemon" "$renewer" 2>/dev/null || true' TERM INT
+fi
+
 rc=0
 while kill -0 "$daemon" 2>/dev/null; do
     wait "$daemon" && rc=0 || rc=$?
 done
+[[ -z ${renewer:-} ]] || kill -TERM "$renewer" 2>/dev/null || true
 exit "$rc"

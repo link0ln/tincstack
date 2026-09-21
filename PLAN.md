@@ -1,6 +1,13 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-20 (**`v0.4.1` is the first release whose APK can be
+**Last Updated:** 2026-09-22 (**a code review of everything that is ours turned
+up two defects that break a node weeks after it is installed, and both are
+fixed: nothing renewed the ACME certificate (it simply expired, leaving the
+https front *more* conspicuous than the self-signed one it replaced), and a
+zero-config node picked its address pool blind, so a machine on 10.7.0.0/24
+could route its own LAN into the tunnel. Proven by two new labs, 8/8 and 5/5,
+both with negative controls. The review's remaining findings are listed under
+Known Issues rather than fixed.**) 2026-09-20 -- (**`v0.4.1` is the first release whose APK can be
 installed at all: signed v1/v2/v3 by the release keystore, `versionCode 401`,
 all four ABIs, verified on the downloaded asset. Getting there cost two defects
 -- the signing secrets were never set, and once they were, the signing config
@@ -2231,6 +2238,99 @@ hardening), K, L, G3, S, T, N, O. No stream running.
 
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
+
+- 🟠 **Nothing renewed the certificate `tinc cert issue` obtained**
+  (found in the code review of 2026-09-21, **fixed** 2026-09-22). `tinc cert
+  renew` and `AcmeRenewDays` existed; no cron, no timer, no daemon check and no
+  GUI reminder ever ran them. A Let's Encrypt certificate lasts 90 days, so
+  every node that used the feature would, one quarter after issuing, start
+  presenting an expired certificate. **Impact is the inverse of the feature:**
+  the VPN keeps working (peers pin `TlsFingerprint` and never check dates)
+  while the front becomes *more* conspicuous than the self-signed certificate
+  it replaced -- an expired certificate on a public HTTPS port is an anomaly an
+  observer notices.
+
+  Three layers now cover it: the daemon logs once a day inside `AcmeRenewDays`
+  (`tls_expiry_warn()`, called from `periodic_handler()`), the Linux node image
+  runs `tinc cert renew` every `CERT_RENEW_INTERVAL` (12 h, `CERT_RENEW=0` opts
+  out), and the Windows manager badges its toolbar button (`⚠ Certificate: N d
+  left`) at start, on every network switch and every six hours. Proof --
+  `testing/config/cert-lifecycle-test.sh`, a real daemon handed a three-day
+  certificate, 5/5 including both negative controls:
+
+      PASS a fresh self-signed certificate produces no expiry warning
+      PASS the daemon warns that the certificate is about to expire
+        "The TLS certificate for the https/quic front (TlsCert/TlsKey files)
+         expires in 2 days. Run `tinc cert renew'."
+      PASS CERT_RENEW=0 runs no renewal
+      PASS the node runs 'tinc cert renew' on its own timer
+        "entrypoint: cert renew failed: ... FAILED (network) cannot connect to 127.0.0.1 port 9"
+      PASS a node without CertDomain attempts no renewal
+
+  Still not automatic on Windows: the badge is a reminder, not a scheduler.
+
+- 🟠 **A zero-config node could take the address pool out from under its own
+  LAN** (found in the code review of 2026-09-21, **fixed** 2026-09-22).
+  `zeroconf_default_pool()` was `10.<1 + random_byte % 254>.0.0/24` with no
+  check of anything: a machine whose LAN is `10.7.0.0/24` had a 1-in-254 chance
+  per first start of routing that LAN into the tunnel instead. Reproduction
+  before the fix: give a container `10.7.0.1/24` on a dummy interface, start a
+  fresh node 254 times, and one of them chooses `10.7.0.0/24`.
+
+  It now enumerates the machine's own IPv4 networks (`getifaddrs`,
+  `GetAdaptersAddresses`, nothing below Android API 24 -- there it degrades to
+  the old blind pick) and walks 65 024 `10.x.y.0/24` candidates from a random
+  start, taking the first that overlaps none. Proof --
+  `testing/config/zeroconf-pool-test.sh`, 8/8:
+
+      PASS a fresh node invents a pool (10.132.247.0/24)
+      PASS the pool does not overlap the machine's own LAN (192.168.77.0/24)
+      PASS a node whose first choice is occupied moves to 10.66.243.0/24
+      PASS the replacement pool avoids the occupied one
+      PASS a node on all of 10/8 still starts (pool 10.232.82.0/24)
+      PASS it warns that the pool it had to use is in conflict
+      PASS it names the pools it skipped and why
+      PASS 30 runs, none picked a pool overlapping the four local LANs
+
+  Found while proving it: `cc.has_function('getifaddrs')` in the generic
+  `check_functions` loop **silently fails** -- the shared prefix does not
+  include `<ifaddrs.h>`, so there is no declaration and meson falls through to a
+  builtin check. The first build therefore compiled the do-nothing fallback, and
+  the only visible symptom was that the compiler had dead-code-eliminated the
+  skip logging. `meson.build` now checks it with its own header.
+
+- 🟡 **Code review of 2026-09-21 — the findings not yet acted on.** Whole-repo
+  read of the code that is ours (not upstream tinc): `acme/httpc/json/certcmd`,
+  `yamlconf`, `autoif`, `zeroconf`, the transports, `wintun_device.c`, the
+  Windows GUI, the workflows. Android was not audited (it is almost entirely
+  pacien's upstream). Tools: cppcheck (warning/style/performance/unusedFunction),
+  pyflakes. In priority order, each still open:
+
+  - 🟠 **Windows writes the config with inherited ACLs.** `yamlconf.c`
+    `write_atomic()` opens the temporary `O_NOFOLLOW|O_CLOEXEC, 0600` on POSIX
+    and plain `fopen(tmp, "wb")` on Windows, while that file holds `tls_key`,
+    `acme_account` and `CloudflareToken` in clear. The comment above it promises
+    0600 and delivers it on one of the two platforms.
+  - 🟡 `json_parse(text, len)` can read past `end`: `strtod()` is called on
+    `j->p` and the bound is checked afterwards. Safe today only because every
+    caller passes a NUL-terminated HTTP body -- a contract that exists in a
+    comment, not in the signature.
+  - 🟡 `json_parse` accepts trailing garbage after the top-level value (no
+    `j.p == j.end` check).
+  - 🟡 `httpc` silently accepts a body shorter than `Content-Length`, turning a
+    truncated response into "the server sent bad JSON".
+  - 🟢 `routes.apply_now()` passes `via` to `nexthop=` without checking it is an
+    IP (no shell, so not injection -- just a bad value reaching netsh).
+  - 🟢 `routes.apply_now()`'s fallback (`netsh ... set route`) drops the nexthop.
+  - 🟢 `runtime.py:284` discards the success flag of the MTU clamp; a failed
+    clamp is logged like a successful one.
+  - 🟢 `certcmd.c` shadows three tinc globals (`force`, `myname`, `line`).
+  - 🟢 Dead code, the whole sweep's yield: `json_type()` (used nowhere),
+    `typing.Any` in `routes.py`, and the discarded `ok` above. No orphan
+    modules, no orphan test scripts, no `#if 0`, no leftovers of the rejected
+    `sendmmsg` patch.
+  - 🟢 `README.md` drift: "M0–M9" (M10 exists), a `v0.1.0` example, and the
+    Android signing paragraph still calls an unsigned APK merely "unsigned".
 
 - 🟠 **Every published APK so far is uninstallable: it carries no signature**
   (found by the owner 2026-09-20 on the `v0.4.0` release, workflow fixed the

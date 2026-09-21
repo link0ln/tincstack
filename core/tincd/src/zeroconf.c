@@ -148,10 +148,192 @@ bool zeroconf_pool_first_host(const char *pool, char *out, size_t outlen) {
 	return true;
 }
 
+/* ---- picking a pool that does not collide with this machine -------------- */
+
+/* One IPv4 network this machine is directly attached to, in host order. */
+typedef struct {
+	uint32_t network;
+	int prefix;
+} localnet_t;
+
+#define MAX_LOCALNETS 64
+
+/* Fill `out` with the IPv4 networks of this machine's up interfaces, loopback
+   excluded. Returns how many were written. Zero means "could not tell" as well
+   as "none": the caller treats both the same way -- it just cannot avoid
+   anything. */
+#if defined(HAVE_GETIFADDRS) && defined(HAVE_IFADDRS_H)
+#include <ifaddrs.h>
+
+static size_t local_networks(localnet_t *out, size_t max) {
+	struct ifaddrs *list = NULL;
+
+	if(getifaddrs(&list)) {
+		return 0;
+	}
+
+	size_t n = 0;
+
+	for(struct ifaddrs *ifa = list; ifa && n < max; ifa = ifa->ifa_next) {
+		if(!ifa->ifa_addr || !ifa->ifa_netmask || ifa->ifa_addr->sa_family != AF_INET) {
+			continue;
+		}
+
+		if(!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) {
+			continue;
+		}
+
+		uint32_t addr = ntohl(((const struct sockaddr_in *) ifa->ifa_addr)->sin_addr.s_addr);
+		uint32_t mask = ntohl(((const struct sockaddr_in *) ifa->ifa_netmask)->sin_addr.s_addr);
+
+		int prefix = 0;
+
+		for(uint32_t bit = 0x80000000u; bit && (mask & bit); bit >>= 1) {
+			prefix++;
+		}
+
+		out[n].network = addr & mask;
+		out[n].prefix = prefix;
+		n++;
+	}
+
+	freeifaddrs(list);
+	return n;
+}
+#elif defined(HAVE_WINDOWS)
+#include <iphlpapi.h>
+
+static size_t local_networks(localnet_t *out, size_t max) {
+	ULONG len = 16384;
+	IP_ADAPTER_ADDRESSES *aa = malloc(len);
+
+	if(!aa) {
+		return 0;
+	}
+
+	ULONG rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+	                                GAA_FLAG_SKIP_DNS_SERVER, NULL, aa, &len);
+
+	if(rc == ERROR_BUFFER_OVERFLOW) {
+		IP_ADAPTER_ADDRESSES *bigger = realloc(aa, len);
+
+		if(!bigger) {
+			free(aa);
+			return 0;
+		}
+
+		aa = bigger;
+		rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+		                          GAA_FLAG_SKIP_DNS_SERVER, NULL, aa, &len);
+	}
+
+	if(rc != NO_ERROR) {
+		free(aa);
+		return 0;
+	}
+
+	size_t n = 0;
+
+	for(IP_ADAPTER_ADDRESSES *a = aa; a && n < max; a = a->Next) {
+		if(a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) {
+			continue;
+		}
+
+		for(IP_ADAPTER_UNICAST_ADDRESS *u = a->FirstUnicastAddress; u && n < max; u = u->Next) {
+			if(!u->Address.lpSockaddr || u->Address.lpSockaddr->sa_family != AF_INET) {
+				continue;
+			}
+
+			uint32_t addr = ntohl(((const struct sockaddr_in *) u->Address.lpSockaddr)->sin_addr.s_addr);
+			int prefix = u->OnLinkPrefixLength > 32 ? 32 : u->OnLinkPrefixLength;
+			uint32_t mask = prefix ? (0xffffffffu << (32 - prefix)) : 0;
+
+			out[n].network = addr & mask;
+			out[n].prefix = prefix;
+			n++;
+		}
+	}
+
+	free(aa);
+	return n;
+}
+#else
+
+static size_t local_networks(localnet_t *out, size_t max) {
+	(void) out;
+	(void) max;
+	return 0;
+}
+#endif
+
+static bool overlaps_local(const localnet_t *nets, size_t n, uint32_t network, int prefix) {
+	for(size_t i = 0; i < n; i++) {
+		int shorter = nets[i].prefix < prefix ? nets[i].prefix : prefix;
+		uint32_t mask = shorter ? (0xffffffffu << (32 - shorter)) : 0;
+
+		if((network & mask) == (nets[i].network & mask)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* The pool a node invents for itself when the operator did not pick one.
+   It becomes this network's address space, so a /24 that the machine is
+   already using for something else is the one thing it must not be: the
+   tunnel route would then shadow the LAN the node sits on -- reliably, on
+   every start, for the one user whose office is on 10.7.0.0/24. */
 void zeroconf_default_pool(char *out, size_t outlen) {
-	uint8_t r = 0;
+	localnet_t nets[MAX_LOCALNETS];
+	size_t n = local_networks(nets, MAX_LOCALNETS);
+
+	/* 10.1.0.0/24 through 10.254.255.0/24: 65 024 candidates, entered at a
+	   random point so two nodes rarely invent the same pool, and walked from
+	   there so "the first free one" is defined rather than a retry loop that
+	   might never terminate. */
+	const uint32_t span = 254u * 256u;
+	uint16_t r = 0;
 	randomize(&r, sizeof(r));
-	snprintf(out, outlen, "10.%u.0.0/24", 1 + (r % 254));
+	uint32_t start = (uint32_t) r % span;
+	uint32_t skipped = 0;
+
+	for(uint32_t i = 0; i < span; i++) {
+		uint32_t c = (start + i) % span;
+		unsigned int a = 1 + c / 256, b = c % 256;
+		uint32_t network = (10u << 24) | ((uint32_t) a << 16) | ((uint32_t) b << 8);
+
+		if(overlaps_local(nets, n, network, 24)) {
+			/* Say it for the first few: on a machine with many interfaces the
+			   list is noise, but the first skip is the one that explains why
+			   the pool is not what someone expected. */
+			if(skipped < 4) {
+				logger(DEBUG_ALWAYS, LOG_INFO,
+				       "Not using address pool 10.%u.%u.0/24: this machine is already on an overlapping network",
+				       a, b);
+			}
+
+			skipped++;
+			continue;
+		}
+
+		if(skipped) {
+			logger(DEBUG_ALWAYS, LOG_INFO, "Address pool 10.%u.%u.0/24 chosen after skipping %u in use here",
+			       a, b, skipped);
+		}
+
+		snprintf(out, outlen, "10.%u.%u.0/24", a, b);
+		return;
+	}
+
+	/* 65 024 collisions means the machine claims to be on all of 10/8. Pick
+	   the first candidate anyway -- an unusable pool the operator can see and
+	   override beats refusing to start. */
+	unsigned int a = 1 + start / 256, b = start % 256;
+	logger(DEBUG_ALWAYS, LOG_WARNING,
+	       "Every 10.x.y.0/24 overlaps a network this machine is on; using 10.%u.%u.0/24 anyway. "
+	       "Set AddressPool explicitly.", a, b);
+	snprintf(out, outlen, "10.%u.%u.0/24", a, b);
 }
 
 char *zeroconf_default_name(void) {

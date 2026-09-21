@@ -39,6 +39,7 @@
 #include "yamlconf.h"
 
 #define TINC_TRANSPORT_DAEMON
+#include "tls.h"
 #include "transport.h"
 
 int contradicting_add_edge = 0;
@@ -342,6 +343,13 @@ static void periodic_handler(void *data) {
 	if(autoconnect && node_tree.count > 1) {
 		do_autoconnect();
 	}
+
+#ifdef HAVE_OPENSSL
+	/* Nothing renews the front's certificate by itself; this is where a node
+	   that is running out of certificate gets to say so. Throttled to one line
+	   a day inside tls_expiry_warn(). */
+	tls_expiry_warn();
+#endif
 
 	timeout_set(data, &(struct timeval) {
 		5, jitter()

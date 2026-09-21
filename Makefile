@@ -38,6 +38,7 @@ GITLEAKS_IMAGE ?= zricethezav/gitleaks:latest
 SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-sim/natlab.sh \
                  testing/nat-sim/natprofile.sh testing/dpi-proof/run.sh testing/dpi-proof/capture.sh \
                  testing/smoke/run.sh testing/acme/run.sh \
+                 platforms/linux/docker/entrypoint.sh \
                  platforms/linux/docker/two-nodes.sh \
                  platforms/linux/docker/yaml-scripts.sh \
                  platforms/linux/docker/obfs-rekey-test.sh \
@@ -56,6 +57,8 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/perf/bench.sh testing/perf/bench-inner.sh \
                  testing/config/ping-interval-test.sh \
                  testing/config/interface-route-test.sh \
+                 testing/config/zeroconf-pool-test.sh \
+                 testing/config/cert-lifecycle-test.sh \
                  platforms/windows/build-core-win.sh platforms/windows/build-exe.sh \
                  platforms/windows/pyinstaller-in-wine.sh \
                  platforms/android/docker/emulator.sh \

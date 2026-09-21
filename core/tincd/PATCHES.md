@@ -444,6 +444,61 @@ carries the unit tests for what the GUI writes.
 
 ---
 
+## 11. The node warns before its certificate expires (tincstack, 2026-09-22)
+
+`tls.c`, `tls.h`, `net.c`.
+
+`tinc cert issue` obtains a certificate; nothing ever renewed one. A Let's
+Encrypt certificate lasts 90 days, after which the `https` front presents an
+expired certificate -- which does not break the VPN at all (peers pin
+`TlsFingerprint` and never look at dates) but destroys the property the
+certificate was obtained for: an expired certificate on a public HTTPS port is
+*more* remarkable to an observer than the self-signed one it replaced.
+
+`tls_init()` now records the leaf's `notAfter` (via `ASN1_TIME_diff`, the same
+way `tinc cert status` computes it, so the two can never disagree) and
+`tls_expiry_warn()` logs once a day while fewer than `AcmeRenewDays` remain, and
+once a day as an error after it has expired. It is called from `periodic_handler()`
+in `net.c`, so it costs one comparison every five seconds and nothing else. A
+self-signed certificate is generated with a ten-year life, so the warning stays
+silent on a default node instead of becoming noise.
+
+The Linux node image renews itself (`platforms/linux/docker/entrypoint.sh`,
+`CERT_RENEW` / `CERT_RENEW_INTERVAL`); the Windows manager badges its toolbar
+button. Proof: `testing/config/cert-lifecycle-test.sh` -- a real daemon given a
+three-day certificate, five assertions including both negative controls (no
+warning for a fresh self-signed certificate, no renewal attempt without
+`CertDomain`).
+
+## 12. A zero-config node stops choosing an address pool the machine is on (tincstack, 2026-09-22)
+
+`zeroconf.c`, `src/meson.build`.
+
+`zeroconf_default_pool()` was one random byte: `10.<1..254>.0.0/24`, with no
+check of anything. A node whose LAN is `10.7.0.0/24` had a 1-in-254 chance per
+start of putting its tunnel in front of that LAN -- silently, permanently, and
+only for the user whose network it is.
+
+It now enumerates the machine's own IPv4 networks (`getifaddrs` on POSIX,
+`GetAdaptersAddresses` on Windows, nothing on a platform that has neither --
+Android below API 24, where the check degrades to the old blind pick) and walks
+the 65 024 `10.<x>.<y>.0/24` candidates from a random start, taking the first
+that overlaps none of them. Skipped candidates are logged; a machine that is
+somehow on all of 10/8 gets a warning and its first candidate, because refusing
+to start would be worse than a conflict the operator can see.
+
+`meson.build` gains `ifaddrs.h` and a dedicated `getifaddrs` check: the shared
+`have_prefix` does not include `<ifaddrs.h>`, so the generic `check_functions`
+loop cannot see a declaration and silently fails -- which is exactly what
+happened on the first build here, and the dead-code elimination of the skip
+logging is what exposed it.
+
+Proof: `testing/config/zeroconf-pool-test.sh`, eight assertions -- a node moves
+off an occupied pool, says which it skipped, survives a machine that claims all
+of 10/8, and 30 consecutive runs never pick a pool overlapping four local LANs.
+
+---
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):
@@ -471,6 +526,7 @@ Windows (mingw-w64 cross-build, for the laptop):
 | `CertDomain` | unset | nodes offering `https`/`quic` | public DNS name `tinc cert` issues a certificate for |
 | `CloudflareToken` | unset | same | Cloudflare API token with `Zone:Read` + `Zone:DNS:Edit` on that domain's zone |
 | `AcmeContact` / `AcmeDirectory` / `AcmeRenewDays` / `AcmePropagation` / `AcmePollTimeout` | see docs/config-schema.md | same | ACME tuning; all optional |
+| `CERT_RENEW` / `CERT_RENEW_INTERVAL` | `1` / `43200` | Linux node image (env, not YAML) | run `tinc cert renew` on a timer so the front's certificate does not expire |
 | `InterfaceRoute` | unset | any node that must reach a subnet a peer announces | `"<prefix> [via] [gateway]"`, one per route; installed on the tunnel interface by the built-in tinc-up (Linux) or the Wintun backend (Windows) |
 
 ## Recommended deployment

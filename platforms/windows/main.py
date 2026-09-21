@@ -42,7 +42,7 @@ import transports  # noqa: E402
 import yaml_config  # noqa: E402
 from yaml_config import AppConfig, ConfigError, NetworkCfg, options_to_conf, conf_to_options  # noqa: E402
 from runtime import Runtime  # noqa: E402
-from tinc_control import TincControl, NetworkSnapshot  # noqa: E402
+from tinc_control import TincControl, NetworkSnapshot, parse_cert_expiry  # noqa: E402
 import management  # noqa: E402
 
 from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
@@ -793,6 +793,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer.setInterval(REFRESH_MS)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
+        self.cert_timer = QtCore.QTimer(self)
+        self.cert_timer.setInterval(self.CERT_WATCH_MS)
+        self.cert_timer.timeout.connect(self._cert_watch)
+        self.cert_timer.start()
         self._quitting = False
         self._build_tray()
         self._show_load_error()
@@ -1002,6 +1006,7 @@ class MainWindow(QtWidgets.QMainWindow):
                          self.tc.cert_status, self.tc.cert_check, self.tc.cert_issue, self.pool)
         dlg.saved.connect(self.reload_networks)
         dlg.exec()
+        self._cert_watch()          # a renewal just happened, or did not
         return dlg
 
     def _save_cert_options(self, values: dict) -> bool:
@@ -1065,6 +1070,61 @@ class MainWindow(QtWidgets.QMainWindow):
         self.peers.set_network(net)
         self.network.set_network(net)
         self.transports.set_network(net)
+        self._cert_watch()
+
+    # -- certificate expiry --
+    # Nothing renews the front's certificate on its own: `tinc cert renew` is a
+    # command, and on Windows there is nothing running it. The daemon warns in
+    # its log once a day, which nobody reads; this is the same warning where the
+    # operator is actually looking, with the button that fixes it right there.
+    CERT_WATCH_MS = 6 * 3600 * 1000
+
+    def _cert_threshold(self, nc: NetworkCfg) -> int:
+        try:
+            return max(1, int(str(nc.options.get("AcmeRenewDays", 30)).strip()))
+        except (TypeError, ValueError):
+            return 30
+
+    def _cert_watch(self) -> None:
+        """One `tinc cert status` for the selected network — a local config read,
+        no network — whenever ACME is configured for it."""
+        net, nc = self.cur_net(), self.cur_netcfg()
+        if not net or not nc or not str(nc.options.get("CertDomain", "")).strip():
+            self._cert_badge(None, 30)
+            return
+        threshold = self._cert_threshold(nc)
+        self.pool.run(self.tc.cert_status, net, tag="cert-watch",
+                      on_done=lambda res, n=net, t=threshold: self._cert_seen(n, t, res),
+                      on_error=lambda _msg: None)
+
+    def _cert_seen(self, net: str, threshold: int, res: Any) -> None:
+        if net != self.cur_net():
+            return
+        text = f"{getattr(res, 'stdout', '')}\n{getattr(res, 'stderr', '')}"
+        self._cert_badge(parse_cert_expiry(text), threshold)
+
+    def _cert_badge(self, days: int | None, threshold: int) -> None:
+        """Mark the toolbar action when the certificate is running out. Silent
+        the rest of the time: a badge that is always there is not a badge."""
+        if not hasattr(self, "cert_act"):
+            return
+        base = "TLS certificate for the https/quic transports: replace the self-signed one " \
+               "with a real certificate for a domain, using a Cloudflare API token."
+        if days is None or days > threshold:
+            self.cert_act.setText("🔐 Certificate…")
+            self.cert_act.setToolTip(base)
+            return
+        if days < 0:
+            self.cert_act.setText(f"⚠ Certificate EXPIRED ({-days} d)")
+            note = (f"The certificate expired {-days} days ago. Peers still connect (they pin the "
+                    "fingerprint), but the front now looks broken to anything else. Open this and "
+                    "press “Issue / renew”.")
+        else:
+            self.cert_act.setText(f"⚠ Certificate: {days} d left")
+            note = (f"The certificate expires in {days} days and nothing renews it automatically on "
+                    "Windows. Open this and press “Issue / renew”.")
+        self.cert_act.setToolTip(f"{note}\n\n{base}")
+        self.status(note.split(".")[0] + ".")
 
     # actions
     def _need_admin(self) -> bool:

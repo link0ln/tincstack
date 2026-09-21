@@ -48,6 +48,11 @@ uint8_t tls_own_fp[TLS_FP_LEN];
 char tls_own_fp_hex[TLS_FP_HEX_LEN];
 char *tls_cert_source;
 
+/* When the loaded certificate stops being valid, and when we last said so.
+   Both zero until a certificate is loaded. */
+static time_t tls_cert_expires_at;
+static time_t tls_expiry_warned_at;
+
 /* http/1.1 ALPN wire form: one length-prefixed protocol name. */
 static const uint8_t alpn_http11[] = { 8, 'h', 't', 't', 'p', '/', '1', '.', '1' };
 
@@ -541,6 +546,75 @@ bool tls_current_pem(char **cert_pem, char **key_pem) {
 
 /* ---- init / exit --------------------------------------------------------- */
 
+/* ---- expiry ------------------------------------------------------------- */
+
+/* When the first certificate in `cert_pem` stops being valid, or 0 if that
+   cannot be worked out. ASN1_TIME_diff against "now" rather than a conversion
+   to time_t: it is the portable path, and it is what `tinc cert status` uses,
+   so the two never disagree. */
+static time_t cert_pem_expiry(const char *cert_pem) {
+	X509 *cert = cert_from_pem(cert_pem);
+
+	if(!cert) {
+		return 0;
+	}
+
+	int days = 0, secs = 0;
+	time_t at = 0;
+
+	if(ASN1_TIME_diff(&days, &secs, NULL, X509_get0_notAfter(cert))) {
+		at = time(NULL) + (time_t) days * 86400 + secs;
+	}
+
+	X509_free(cert);
+	return at;
+}
+
+/* Say something while there is still time to act.
+
+   Nothing renews a certificate on its own -- `tinc cert renew` is a command
+   someone or something has to run -- so a node whose certificate quietly
+   expires keeps working (peers pin the fingerprint, they never check dates)
+   while the front it presents becomes *more* remarkable than the self-signed
+   one it replaced. An expired certificate on a public HTTPS port is a thing
+   an observer notices; that is the whole property the certificate was bought
+   to have. This is the daemon's only way to say so.
+
+   Called from the periodic handler, so it throttles itself to one line a day. */
+void tls_expiry_warn(void) {
+	if(!tls_ready || !tls_cert_expires_at) {
+		return;
+	}
+
+	time_t now = time(NULL);
+
+	if(tls_expiry_warned_at && now - tls_expiry_warned_at < 86400) {
+		return;
+	}
+
+	int days = (int)((tls_cert_expires_at - now) / 86400);
+	int threshold = 30;                    /* AcmeRenewDays, same default */
+	get_config_int(lookup_config(&config_tree, "AcmeRenewDays"), &threshold);
+
+	if(threshold < 1) {
+		threshold = 1;
+	}
+
+	if(days < 0) {
+		logger(DEBUG_ALWAYS, LOG_ERR,
+		       "The TLS certificate for the https/quic front (%s) expired %d days ago. "
+		       "Run `tinc cert renew' -- peers still connect (they pin the fingerprint), but the "
+		       "front now looks broken to anything else.",
+		       tls_cert_source ? tls_cert_source : "unknown source", -days);
+		tls_expiry_warned_at = now;
+	} else if(days <= threshold) {
+		logger(DEBUG_ALWAYS, LOG_WARNING,
+		       "The TLS certificate for the https/quic front (%s) expires in %d days. Run `tinc cert renew'.",
+		       tls_cert_source ? tls_cert_source : "unknown source", days);
+		tls_expiry_warned_at = now;
+	}
+}
+
 bool tls_init(void) {
 	char *cert_pem = NULL, *key_pem = NULL;
 	const char *source = "unknown";
@@ -558,6 +632,8 @@ bool tls_init(void) {
 		free(key_pem);
 		return false;
 	}
+
+	tls_cert_expires_at = cert_pem_expiry(cert_pem);
 
 	/* On a reload with an unchanged certificate, keep the existing contexts. */
 	if(tls_ready && !strcmp(fp_hex, tls_own_fp_hex)) {

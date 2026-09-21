@@ -176,6 +176,22 @@ def parse_cert_failure(text: str) -> tuple[str, str, str]:
     return m.group("code"), detail, hint
 
 
+_CERT_EXPIRES = re.compile(r"^Expires\s+(?:in (?P<days>\d+) days|EXPIRED (?P<gone>\d+) days ago)\s*$", re.M)
+
+
+def parse_cert_expiry(text: str) -> int | None:
+    """Days until the stored certificate expires, negative once it has, None if
+    `tinc cert status` did not say (no certificate yet, or an unreadable date).
+
+    Reads the two lines cmd_status() prints -- "Expires        in 47 days" and
+    "Expires        EXPIRED 3 days ago" -- and nothing else, so a status output
+    that gains fields keeps working."""
+    m = _CERT_EXPIRES.search(text or "")
+    if not m:
+        return None
+    return int(m.group("days")) if m.group("days") is not None else -int(m.group("gone"))
+
+
 # ---- the controller -----------------------------------------------------------
 
 def subprocess_runner(cmd: list[str], timeout: float) -> tuple[int, str, str]:

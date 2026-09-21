@@ -299,7 +299,7 @@ atomic temp+rename). Nothing already present is changed.
 | `options.Name` | first label of the hostname, non-`[A-Za-z0-9_]` → `_`; `node_<hex>` if unusable | `$HOST`/`$VAR` forms are honoured if present |
 | `options.Mode` | `router` | |
 | `options.Port` | `655` if no `ConnectTo` (founding node), else `0` | invitees dial out, so a fresh NAT mapping per start beats a stable port |
-| `options.AddressPool` | `10.<random 1–254>.0.0/24` | validated: IPv4, prefix 8–30 |
+| `options.AddressPool` | the first free `10.<x>.<y>.0/24`, from a random start | validated: IPv4, prefix 8–30. "Free" means it overlaps no network this machine is already attached to (`getifaddrs`/`GetAdaptersAddresses`); skipped candidates are logged. A node that is somehow on all of 10/8 warns and uses its first candidate anyway |
 | `hosts.<Name>` `Subnet` | first host of the pool, `/32` | |
 | `keys.ed25519_priv` + `hosts.<Name>` `Ed25519PublicKey` | generated | public line is re-derived if only the private key exists |
 | `keys.rsa_priv` + `hosts.<Name>` RSA public PEM | generated (2048) | unless built with `-Dcrypto=nolegacy` |
@@ -636,7 +636,7 @@ networks:
 | `CloudflareToken` | a Cloudflare **API token** (not a Global API Key) that can read the zone and edit its DNS records. |
 | `AcmeContact` | `mailto:` address registered with the CA. Optional. |
 | `AcmeDirectory` | ACME directory URL. Defaults to Let's Encrypt production; `tinc cert issue --staging` switches to their staging CA for a dry run. |
-| `AcmeRenewDays` | `tinc cert renew` reissues when fewer than this many days remain (default 30). |
+| `AcmeRenewDays` | `tinc cert renew` reissues when fewer than this many days remain (default 30). The daemon uses the same number for its expiry warning. |
 | `AcmePropagation` | seconds to wait after writing the DNS record before asking the CA to look (default 20). |
 | `AcmePollTimeout` | seconds to wait for the CA's validation (default 120). |
 | `AcmeCaFile` | trust anchor for the CA, **tests only** (testing/acme/). |
@@ -655,6 +655,24 @@ tinc -c tinc.yaml -n gnet cert check      # is the token usable for CertDomain?
 tinc -c tinc.yaml -n gnet cert issue      # obtain and store a certificate
 tinc -c tinc.yaml -n gnet cert renew      # issue only if it is about to expire
 ```
+
+### Keeping it alive
+
+A certificate from Let's Encrypt is valid for 90 days, and `renew` is a command,
+not a daemon. Three things now cover the gap, and none of them is automatic
+everywhere:
+
+| where | what happens |
+|---|---|
+| the daemon (every platform) | once a day, while fewer than `AcmeRenewDays` remain, it logs `The TLS certificate for the https/quic front (…) expires in N days. Run 'tinc cert renew'.` — and keeps saying so, as an error, after it has expired |
+| the Linux node image | the entrypoint runs `tinc cert renew` every `CERT_RENEW_INTERVAL` (12 h by default) once `CertDomain` and `CloudflareToken` are set; `CERT_RENEW=0` turns it off |
+| the Windows manager | the toolbar's certificate button turns into `⚠ Certificate: N d left` (and `⚠ Certificate EXPIRED (N d)`), checked at start, on every network switch and every six hours. Renewing is still a click — nothing on Windows runs it unattended |
+
+An expired certificate does not break the VPN: peers pin the fingerprint
+(`TlsFingerprint`) and never look at dates. It breaks the *point* of the
+certificate — an expired certificate on a public HTTPS port is more remarkable
+to an observer than the self-signed one it replaced. Proof that all three work:
+`testing/config/cert-lifecycle-test.sh`.
 
 `issue` runs the ACME **DNS-01** challenge: it finds the Cloudflare zone that
 contains `CertDomain`, writes `_acme-challenge.<domain>` as a TXT record, waits,

@@ -51,6 +51,8 @@ docker compose down -v                             # destroy the node incl. keys
 | `PORT` | listen port and the port published on the host; written to `options.Port` with `tinc set Port` | unset: daemon rule (655 founding node, ephemeral invitee) |
 | `INVITE` | invitation string, `tinc join` on the first start only (`join.sh` sets it) | unset |
 | `LOG_LEVEL` | `tincd -d` | `1` |
+| `CERT_RENEW` | run `tinc cert renew` on a timer when `CertDomain` and `CloudflareToken` are set; `0` turns it off. Without it nothing renews the front's certificate and it simply expires | `1` |
+| `CERT_RENEW_INTERVAL` | seconds between those checks. The command is a no-op while more than `AcmeRenewDays` remain | `43200` (12 h) |
 | `TINCSTACK_TAG` | tag of the `tincstack/core` and `tincstack/node` images | `dev` |
 
 An existing identity in the volume always wins: `NODE_NAME` and `INVITE` are
