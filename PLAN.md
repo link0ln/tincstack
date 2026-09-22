@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-22 (**a code review of everything that is ours turned
+**Last Updated:** 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
 up two defects that break a node weeks after it is installed, and both are
 fixed: nothing renewed the ACME certificate (it simply expired, leaving the
 https front *more* conspicuous than the self-signed one it replaced), and a
@@ -2331,6 +2331,191 @@ Defects identified during the source audit, to fix as their milestone is reached
     `sendmmsg` patch.
   - 🟢 `README.md` drift: "M0–M9" (M10 exists), a `v0.1.0` example, and the
     Android signing paragraph still calls an unsigned APK merely "unsigned".
+
+- 🔴 **Second code review of 2026-09-22 — new findings, none fixed yet.**
+  A second pass over the same code plus what the first skipped (Android, the
+  https/quic fronts end to end, the Windows elevation model, the release
+  artefacts), and three things the first pass never ran: the upstream tinc
+  unit/integration suite (`-Dtests=enabled`, disabled in every build we ship),
+  new libFuzzer harnesses for `json_parse` and `httpc`'s `dechunk()`, and a
+  replay of the committed fuzz corpora (all six still clean). Each item names
+  its proof; "by reading" means no run reproduced it yet.
+
+  - 🔴 **Renewing the certificate locks every peer out of `https`/`quic`, and
+    since 2026-09-22 renewal is automatic.** Peers pin the certificate's
+    SHA-256 (`TlsFingerprint`); `tinc cert issue|renew` makes a fresh P-256 key
+    and certificate, rewrites the pin only in this node's *own* host record,
+    and prints "peers that pinned the old one will refuse an https or quic
+    connection ... until they learn the new one". Nothing ever tells them:
+    the pin travels only inside invitations. So every ~60 days each peer's
+    `verify_server_cert()` logs `certificate fingerprint ... does not match the
+    pinned TlsFingerprint; refusing` and the link falls back to whatever else
+    both sides accept -- on a censored network, nothing. The entrypoint's
+    `renew_loop` (added with the fix for "nothing renewed the certificate"
+    above) turns this from a manual event the operator is warned about into an
+    unattended outage. By reading (`https.c verify_server_cert`, `certcmd.c
+    issue`, `acme.c` key generation) and by our own docs
+    (`docs/config-schema.md` "After issuing: the fingerprint moves").
+    **Until fixed, `CERT_RENEW` should default to 0.** Fix options, cheapest
+    first: (a) on mismatch, treat the pin like a missing one -- proceed, and
+    re-pin only after SPTPS authenticates the peer inside that TLS session
+    (the exact rule `https_learn_pin()` already applies to a first contact,
+    so it is no weaker than TOFU is today); (b) pin the SPKI and keep the TLS
+    key across renewals; (c) propagate the node's own pin over the
+    authenticated meta protocol.
+  - 🟠 **QUIC still pins on first use, before anything is proven** -- review
+    M5-7 was fixed for `https` only. `transport_quic.c cb_handshake_completed()`
+    appends `TlsFingerprint` the moment the QUIC/TLS handshake completes,
+    before the authenticator and before SPTPS. An on-path attacker at first
+    contact pins their own certificate permanently, and because `https` and
+    `quic` share the one `TlsFingerprint` key, that also breaks `https` to the
+    same peer. By reading; the M5-7 lab (`https-carrier-test.sh`, socat TLS
+    bump) is the template for the proof.
+  - 🟠 **The elevated Windows manager runs code any unelevated process can
+    replace** (local privilege escalation; a UAC bypass on the usual
+    admin-user PC, a real LPE for a standard user). The logon task runs
+    `tincmgr.exe` with `/rl highest` and no prompt; it then starts
+    `%LOCALAPPDATA%\tincmgr\bin\tincd.exe` (user-writable), reads the YAML
+    from next to the exe or `%LOCALAPPDATA%` (user-writable; a config can set
+    `ScriptsInterpreter`, and scripts in the runtime dir run elevated), and the
+    task target itself is wherever the user dropped the exe. Any of the three
+    is "write a file as the user, get admin at the next logon". By reading
+    (`backend/runtime.py _ensure_bins`, `backend/management.py
+    set_startup_task`, `backend/paths.py`). Fix: install to `Program Files`
+    (or re-ACL the bin/config dirs to Administrators), verify the staged
+    binaries by hash, and never let the elevated side consume a
+    user-writable path.
+  - 🟠 **A Windows upgrade can keep running the old `tincd.exe`.**
+    `_ensure_bins()` re-copies a bundled binary only when its *size* differs,
+    and PE files are section-aligned, so small changes do not move the size.
+    Measured on our own builds:
+
+        core-win:agent-x  tincd.exe 1816078 bytes  sha256 ba2ccf730fed4247...
+        core-win:rel      tincd.exe 1816078 bytes  sha256 50cc067583c63a06...
+        (tinc.exe: 1703438 bytes in both, different hashes as well)
+
+    An upgrade between those two would have staged nothing and silently run
+    the previous daemon. Compare hashes (or copy unconditionally).
+  - 🟡 **`httpc` `dechunk()` trusts the chunk size: heap overflow.** A chunk
+    header of `ffffffffffffffff` makes `in + chunk` wrap, the bound check
+    passes, and `memmove()` is called with `SIZE_MAX`. ASan, new harness
+    `fuzz_dechunk`, first input tried:
+
+        ERROR: AddressSanitizer: negative-size-param: (size=-1)
+            #0 __asan_memmove
+            #1 dechunk /src/src/httpc.c:262:3
+
+    Reachable only from a server the CLI already trusts over verified TLS (the
+    ACME CA, the Cloudflare API, or whatever `AcmeDirectory`/`CloudflareApi`
+    point at), and only in `tinc cert`, never the daemon -- hence 🟡, not
+    higher. Fix: `if(!chunk || chunk > len - in) break;`.
+  - 🟡 **The Linux renew timer never fires on a node restarted more often than
+    `CERT_RENEW_INTERVAL`** (12 h). `renew_loop` is `while sleep ...; do`, so
+    the first check is one interval after start; a node rebooted nightly
+    never renews. Check once shortly after `Ready`, then every interval.
+    By reading (`platforms/linux/docker/entrypoint.sh:172`); the
+    cert-lifecycle lab passes only because it sets the interval to 2 s.
+  - 🟡 **The upstream tinc test suite has never run on this fork, and it
+    fails.** Every build uses `-Dtests=disabled`, CI included. Run in a
+    `--privileged` build container with cmocka and netbase:
+    `Ok 35, Expected Fail 2, Fail 3, Timeout 9` of 49. Triage so far:
+    most timeouts wait for a `hosts/<peer>-up` that never fires, because in
+    classic (non-YAML) mode `tinc set Port N` now writes `Port` to `tinc.conf`
+    only -- the exported host record carries `Address` and no `Port`, so the
+    importing peer dials 655 and never connects (seen in `net.py`'s work dir:
+    `tinc.conf: Port = 39953`, `hosts/<self>: Address = localhost`, nothing
+    else). `cmd_fsck.py` fails on the same change ("host variable Port
+    found"). `invite.py` fails on a host-record mismatch between inviter and
+    invitee (untriaged; likely our pin/subnet lines). `device_raw_socket.py`
+    untriaged. Consequence: classic-mode `tinc export`/`import` -- the
+    upstream way to connect two nodes -- is broken for any node with a
+    non-default port, and nothing in CI can notice.
+  - 🟡 **A client clock more than 90 s off makes `https`/`quic` fail
+    silently.** The authenticator carries a timestamp checked against
+    `AUTHN_TS_SKEW = 90`; on failure the server serves the decoy (by design)
+    and logs at `DEBUG_CONNECTIONS` only, the client logs "did not accept the
+    carrier (no 101)". Windows machines and phones with a wrong clock are
+    common. The exporter binding already makes a captured authenticator
+    useless, so the window can be minutes, and the client can say "check the
+    clock" when a server it has reached before stops answering 101.
+  - 🟡 **The decoy is fingerprintable.** It sends `Server: nginx` with
+    Apache's "It works!" page, no `Date:` header, and `200` to any method
+    and to garbage that is not HTTP; a real nginx sends a `Date`, its own
+    welcome page and `400` to garbage. Each is a one-request check for a
+    prober that knows what to look for. By reading (`decoy.c build_static`).
+  - 🟡 **The address-pool check only sees the founding machine's own
+    interfaces.** It ignores routes (a corporate VPN routing 10/8 through
+    another adapter is invisible to it) and, more importantly, every node
+    that joins later: the pool is chosen once, on the inviter, and each
+    invitee's LAN is never compared with it. Same class as UX item U4 below.
+  - 🟡 **`tinc join` only works over cleartext tinc meta.** The invitation
+    protocol opens a raw TCP connection with a `0 ?<key>` ID line: on a
+    network that blocks or fingerprints tinc, or against a node with
+    `AllowPlainMeta = no`, nobody can join. Documented as a trade-off in
+    `docs/transports.md`, not tracked as work. The failure also blames the
+    user: "Please make sure the URL you entered is valid".
+  - 🟡 **Android backs up the node's private keys** (`allowBackup="true"`,
+    `data_extraction_rules.xml` includes all of `files/`). Restoring onto a
+    new phone clones the identity; with the old phone still running, two
+    devices share one `Name` and knock each other off the mesh. Exclude
+    `networks/` from backup; a new device should get its own invitation.
+  - 🟡 **On Windows the VPN lives and dies with the GUI.** `tincd` is a child
+    of `tincmgr` (`runtime.py start`): quitting the manager stops every
+    network, nothing runs before logon, and a crashed `tincd` is not
+    restarted. A Windows service is the standard answer.
+  - 🟡 **CI runs none of the labs that cover the risky code**: not
+    `test/fuzz/run.sh check`, not the transports labs (https, quic, obfs,
+    classify), not `testing/acme/run.sh`, not `testing/config/*`, not the 71
+    Windows GUI tests, not the upstream suite above. Only lint, secrets,
+    build, smoke, NAT and DPI baseline run.
+  - 🟢 `tinc cert` ignores `TlsCert`/`TlsKey`: with those set, `cert
+    status` describes `keys.tls_cert` (not what is served), and `cert issue`
+    rewrites the own `TlsFingerprint` to a certificate the daemon never loads
+    -- every later invitation then carries a wrong pin. `tls_expiry_warn()`
+    also says "Run `tinc cert renew'" for operator-managed files.
+  - 🟢 The GUI's read-merge-write save does not take the `.lock` the core
+    uses; a pin or key the daemon writes in that window is lost (residual in
+    `docs/security-review-2026-09.md` §7, still not done).
+  - 🟢 `json.c`: `\u0000` truncates a string (so `"status\u0000x"` matches
+    key `status`); `strtod` accepts `NaN`, `inf` and hex floats. `httpc.c`:
+    `atoi(buf + 9)` on a status line shorter than 9 bytes reads
+    uninitialised heap. `acme.c`: the nonce and account URL go into the JWS
+    header unescaped; `acme_post_retry()`'s final error is unreachable.
+  - 🟢 The generated self-signed certificate has `keyEncipherment` on an EC
+    key -- invalid for EC and a distinguishing feature for a scanner.
+  - 🟢 `tincmgr.exe` and the core `.exe`s are not Authenticode-signed:
+    SmartScreen blocks the first run. The firewall rule is `profile=any`,
+    so the front is open on public Wi-Fi too.
+  - 🟢 Found by the first review and not recorded then: `zeroconf.c:154`
+    prints a signed int with `%u`; `write_atomic()` does not `fsync` the
+    directory after `rename`, so a power cut can leave a zero-length config.
+
+- 🟡 **UX: where the service loses its user** (from both reviews; U1 is done,
+  the rest are open).
+  - U1 ✅ certificate expiry visible and renewed (fixed 2026-09-22, above --
+    but see the 🔴 pin item: the renewal it added needs that fix first).
+  - U2 First start of `tincmgr` is an empty window: no networks means an
+    empty list and three empty tabs. An empty state with the only two things
+    a user can do -- "Join with an invitation" and "Create a network".
+  - U3 "✉ Invite…" on a stopped network opens a dialog that cannot succeed
+    ("start it first"). Offer "Start and invite".
+  - U4 Check the invitation's pool against the invitee's LANs at join time
+    (`routes.conflicts()` already exists on Windows) and say so before
+    anything is written.
+  - U5 One-click diagnostics: daemon log, versions, `tinc dump`, and the
+    config with keys and tokens removed -- which also stops people pasting
+    their whole `tinc.yaml` into a chat.
+  - U6 Old releases (`v0.1.1`, `v0.3.0`, `v0.4.0`) still offer APKs that
+    cannot be installed. Delete or rename those assets.
+  - U7 After a successful join the GUI says "select it and Start": start it
+    and mark it autostart instead -- that is what the user joined for.
+  - U8 An invitation built from a private address (the NAT fallback) works
+    only on the LAN; the CLI warns on stderr, the GUI shows it in small
+    print. Make it the headline of the invite dialog.
+  - U9 "config saved (restart network to apply)": offer the reload, or do
+    it -- `tinc reload` exists.
+  - U10 When `https`/`quic` stops answering 101 from a peer that worked
+    before, tell the user to check the clock (see the 90 s item above).
 
 - 🟠 **Every published APK so far is uninstallable: it carries no signature**
   (found by the owner 2026-09-20 on the `v0.4.0` release, workflow fixed the
