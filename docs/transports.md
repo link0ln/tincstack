@@ -1034,11 +1034,10 @@ is not. It only pays off if the peer's host record for this node carries
 certificate for `vpn.example.com` presented to a client that asked for
 `localhost` is worse than the generic one.
 
-The cost: the fingerprint changes. A peer holding the old pin follows the new
-certificate on its own only when the certificate chains to a CA it trusts and is
-valid for the SNI it dialled (§8.2, "A moved pin"); every other peer refuses the
-connection until it learns the new fingerprint. `tinc cert issue` rewrites this
-node's own `TlsFingerprint` and says which case applies.
+The fingerprint changes with it. Peers holding the old pin follow on their own
+(§8.2, "A moved pin"): they accept the new certificate for the next session and
+re-pin it once SPTPS has authenticated this node. `tinc cert issue` rewrites this
+node's own `TlsFingerprint`.
 
 It runs in the CLI, never in the daemon — issuing blocks for as long as the CA
 takes. See docs/config-schema.md for every option and every failure code, and
@@ -1050,8 +1049,9 @@ takes. See docs/config-schema.md for every option and every failure code, and
 TLS client handshake with a plausible SNI (`HttpsSni`, else the peer's `Address`
 if it is a hostname, else `localhost`). PKI verification is off
 (`SSL_VERIFY_NONE`); instead the peer's certificate is pinned by SHA-256
-fingerprint: if the peer's host record has a `TlsFingerprint`, it must match, or
-the dial fails. If none is pinned, the dial proceeds **without writing anything**
+fingerprint (`TlsFingerprint` in the peer's host record). A match needs nothing
+more; a mismatch is handled like a first contact (below). If none is pinned, the
+dial proceeds **without writing anything**
 (review M5-7): the certificate alone proves nothing, and a pin written on first
 contact would let an on-path attacker pin its own certificate forever. The
 fingerprint of the session is remembered in the dialer's session state and is
@@ -1061,22 +1061,29 @@ Ed25519 identity over the very session the certificate belongs to (the exporter
 in the authenticator, §8.3, binds the two). A malformed existing pin is ignored
 and never overwritten (logged). ALPN offers `http/1.1`.
 
-**A moved pin.** When a pin exists and the presented certificate does not match
-it, the dial is refused — unless that certificate chains to a publicly trusted
-CA (the system trust store, `SSL_CERT_FILE` honoured) and is valid, for the
-TLS server purpose, for the SNI this dial sent, which must be a real name and
-not the `localhost` default (`tls_cert_public_for`, tls.c). That is what an
-ACME renewal of a `CertDomain` certificate looks like, and it is the only way a
-pin moves by itself. The new fingerprint is *not* trusted yet: it is written the
-same way as a first pin — only after SPTPS inside that very session proved the
-peer's Ed25519 identity — and it **replaces** the old `TlsFingerprint` line
-(`replace_config_file`) instead of adding a second one. A self-signed
-replacement, a CA certificate for another name, or any replacement when the SNI
-is `localhost` is refused with `... is not one a CA issued for <sni> (<reason>);
-refusing`. Builds with no usable trust store (mingw, Android) therefore never
-move a pin: there the old rule — update `TlsFingerprint` by hand or re-invite —
-still holds. Proof: `testing/transports/cert-repin-test.sh` (renewal re-pins to
-exactly one new pin; self-signed and wrong-name replacements refused, pin kept).
+**A moved pin.** When the presented certificate does not match the pin, the
+dial carries on exactly like a first contact: the handshake completes as any TLS
+handshake would (no `bad_certificate` alert, no early close — an observer sees an
+ordinary HTTPS session), the new fingerprint is logged, and it **replaces** the
+old `TlsFingerprint` line (`replace_config_file`, no second line) only once SPTPS
+inside that very session has proved the peer's Ed25519 identity. Nothing about
+the certificate is checked — no CA, no name, no dates — because nothing depends
+on it: the authenticator (§8.3) is signed over this session's exporter and the
+fingerprint the client saw, and the server checks it against its own; SPTPS then
+authenticates both ends end to end. A box that terminates TLS with its own
+certificate therefore gets a session that never activates and never becomes the
+pin, whatever CA it holds. That makes renewal, a re-issued self-signed
+certificate and a switch between the two work on every platform, Windows and
+Android included, and for peers that dial by IP address.
+What the pin still buys: a log line when the certificate changes, and nothing a
+client must refuse on. What a TLS-intercepting middlebox does learn, pinned or
+not, before the session dies: the authenticator cookie (node name, nonce,
+timestamp, signature) — it cannot replay it (exporter-bound) or verify it without
+the node's public key.
+Proof: `testing/transports/cert-repin-test.sh`, per carrier: renewal and a
+self-signed replacement both reconnect and leave exactly one new pin; a server
+that cannot prove the expected key — first contact or a moved pin — is neither
+connected to nor pinned.
 
 ### 8.3 Authenticator
 
@@ -1355,12 +1362,10 @@ pattern-based rule safe: the pattern selects, the library confirms.
 - The dialler pins the peer's `TlsFingerprint` (host record). `verify_pin`
   (`transport_quic_tls.c`): DER of the presented leaf -> SHA-256 -> compare
   with the pinned hex. On a match nothing else is checked: no CA, no name, no
-  validity period; the pin *is* the identity. On a mismatch the same "moved
-  pin" rule as `https` (§8.2) applies, with GnuTLS's trust list
-  (`gnutls_x509_trust_list_verify_crt2`, DNS name = the SNI, key purpose TLS
-  server): a CA-issued certificate for the SNI is accepted and marked for
-  re-pinning; anything else => `LOG_ERR` with both fingerprints, TLS alert
-  (bad_certificate), fallback per §9.9.
+  validity period. On a mismatch the handshake completes anyway, with no
+  alert (§8.2, "A moved pin" — the same rule, for the same reason), the new
+  fingerprint is logged and marked for re-pinning after SPTPS; the
+  authenticator (§9.4) and SPTPS decide, not the certificate.
 - **No pin yet**: when the host record has no `TlsFingerprint` the dialler
   accepts the presented certificate for this session and logs
   `quic: no pinned TlsFingerprint for <peer>; will pin <fp> once SPTPS
@@ -1399,7 +1404,7 @@ because the connection dies before it activates:
 | peer does not accept `quic` (config `Transports: [plain]`, or a build without the carrier) | negotiation, §2 | `Carrier candidates for <peer>: plain`; QUIC never dialled (c) |
 | no UDP socket of the peer's address family | `dial` | return `false` immediately |
 | QUIC dropped by the network | ngtcp2 retransmits the Initial with backoff; `handshake_timeout = PingTimeout` expires | `Carrier quic failed for <peer>, falling back to plain`, tunnel comes up on plain (c, UDP DROP'd) |
-| pin mismatch / TLS failure | `NGTCP2_ERR_CRYPTO` | `CONNECTION_CLOSE` with the alert, log both fingerprints, next candidate |
+| TLS failure (a pin mismatch is not one, §9.7) | `NGTCP2_ERR_CRYPTO` | `CONNECTION_CLOSE` with the alert, next candidate |
 | Version Negotiation packet | `decode_version_cid` | v1 only: not claimed, session times out as above |
 | authenticator rejected (acceptor) | §9.4 | generic close, `quic: authenticator from <host> rejected`; the dialler logs `Carrier quic failed ..., falling back to plain` and dials plain, where the wrong key fails SPTPS too (d) |
 | mid-session: idle timeout, peer close, library error | `read_pkt` / `handle_expiry` errors | `terminate_connection` on an *activated* link => the reconnect starts from the first preference again, i.e. quic is re-dialled, and it is abandoned only after three consecutive pre-activation failures (§2 steps 3-5; `quic-carrier-test.sh` (l): reload, UDP black-hole, `kill -9` + restart all come back as quic) |

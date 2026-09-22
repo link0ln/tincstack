@@ -324,28 +324,18 @@ static bool verify_server_cert(https_session_t *s) {
 			return true;
 		}
 
-		/* The pin moved. A renewal does that -- `tinc cert renew' makes a new
-		   certificate every couple of months -- and so does an attacker on
-		   path. What tells them apart is a CA: a renewed certificate is issued
-		   for the name we dialled, an attacker's is not. Such a certificate is
-		   let through *unpinned*, exactly like a first contact, and becomes the
-		   pin only once SPTPS inside this session has authenticated the peer
-		   (https_learn_pin). Anything else is refused as before. */
-		X509 *leaf = SSL_get_peer_certificate(s->ssl);
-		char why[160] = "no certificate";
-		bool public = leaf && tls_cert_public_for(leaf, SSL_get_peer_cert_chain(s->ssl), s->sni, why, sizeof(why));
-		X509_free(leaf);
-
-		if(!public) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "https: certificate fingerprint of %s (%s) does not match the pinned TlsFingerprint %s, "
-			       "and the new certificate is not one a CA issued for %s (%s); refusing. If %s replaced its certificate, "
-			       "update TlsFingerprint in its host record", s->c->name, fp_hex, pinned, s->sni ? s->sni : TLS_DEFAULT_CN, why, s->c->name);
-			free(pinned);
-			return false;
-		}
-
-		logger(DEBUG_ALWAYS, LOG_NOTICE, "https: %s presents a new certificate (%s, was %s), issued by a public CA for %s; "
-		       "will re-pin it once SPTPS authenticates the peer", s->c->name, fp_hex, pinned, s->sni);
+		/* The pin moved: a renewal (`tinc cert renew' makes a new key every
+		   couple of months), a re-issued self-signed certificate, or someone
+		   on path. The certificate cannot tell them apart and does not need
+		   to: the authenticator is signed over this session's exporter and the
+		   fingerprint we saw, and SPTPS inside proves the peer's Ed25519 key,
+		   so a session through anyone else's certificate never activates.
+		   Carry on exactly like a first contact -- a refusal here would be a
+		   TLS alert no ordinary client sends to a site it just talked to --
+		   and replace the pin only once SPTPS has authenticated the peer
+		   (https_learn_pin). */
+		logger(DEBUG_ALWAYS, LOG_NOTICE, "https: %s presents certificate %s, not the pinned %s; "
+		       "it replaces the pin only if SPTPS authenticates the peer over this session", s->c->name, fp_hex, pinned);
 		free(pinned);
 		s->pin_pending = true;
 		return true;

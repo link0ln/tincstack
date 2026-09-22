@@ -1,32 +1,31 @@
 #!/usr/bin/env bash
-# A peer that renews its certificate must not lock everyone out of https/quic.
+# A peer that replaces its certificate must not lock anyone out of https/quic,
+# and nobody else's certificate may ever become the pin.
 #
 # Peers pin a node's front certificate by SHA-256 (TlsFingerprint). `tinc cert
-# renew` replaces that certificate every couple of months, so a pin that never
-# moves turns every renewal into an outage of the https and quic carriers --
-# and since the Linux image can renew on a timer, an unattended one. The rule
-# now (https.c verify_server_cert, transport_quic_tls.c verify_pin):
+# renew` replaces that certificate every couple of months. The rule now
+# (https.c verify_server_cert, transport_quic_tls.c verify_pin):
 #
-#   * a certificate that differs from the pin is let through only when a
-#     publicly trusted CA issued it for the name that was dialled (SNI) --
-#     which a renewal always is and an attacker on path is not;
+#   * a certificate that differs from the pin is treated like a first contact:
+#     the handshake completes as any TLS/QUIC handshake would (no alert), and
+#     the certificate proves nothing by itself -- no CA, no trust store;
 #   * any certificate -- first contact or moved -- is pinned only after SPTPS
-#     inside that very session has authenticated the peer, and the pin
-#     replaces the old one rather than being appended after it.
+#     inside that very session has authenticated the peer's Ed25519 key, and
+#     the pin replaces the old one rather than being appended after it.
 #
 # Per carrier (https, then quic), node A dials node B by name (nodeb.lab.test)
 # with no fallback: B accepts only that carrier and refuses cleartext meta.
-#   1. B holds the wrong Ed25519 key in A's record: TLS completes, SPTPS fails
-#      -> no pin is written (review M5-7; before the fix quic pinned here)
+# A trusts no CA at all.
+#   1. the server does not hold the key A's record expects: TLS completes,
+#      SPTPS fails -> not connected, no pin written (review M5-7)
 #   2. first contact with the right key -> connected, exactly one pin = leaf1
-#   3. B renews: new key, new certificate from the same CA for the same name
+#   3. B renews: new key, new CA certificate for the same name
 #      -> A reconnects, re-pins: exactly one pin = leaf2
-#   4. B switches to a self-signed certificate for the same name -> refused,
-#      pin unchanged
-#   5. B presents a CA certificate for another name -> refused, pin unchanged
-#
-# The "public CA" is a throwaway CA A trusts through SSL_CERT_FILE, which both
-# OpenSSL (https) and our GnuTLS glue (quic) honour. Nothing leaves the host.
+#   4. B switches to a self-signed certificate -> A reconnects, one pin = self
+#      (what a Windows or Android peer, or one dialling by IP, needs: before,
+#      only a CA certificate for the dialled name was followed)
+#   5. an impostor: a new certificate from a server that cannot prove the key
+#      A expects -> not connected, pin still = self
 #
 # Usage: [CORE_IMAGE=...] [ONLY="https quic"] testing/transports/cert-repin-test.sh
 set -euo pipefail
@@ -56,7 +55,7 @@ cleanup
 mkdir -p "$RUN/pki"
 docker network create --subnet "$SUBNET.0/24" "$NET" >/dev/null
 
-# ---- PKI: one CA, four certificates -----------------------------------------
+# ---- certificates: a CA and two leaves (a renewal), a self-signed, another --
 docker run --rm -v "$RUN/pki:/p" -e NAME="$NAME" "$IMG" sh -c '
 	set -e
 	cd /p
@@ -95,7 +94,6 @@ materialise() { # dir name
 materialise a nodea
 materialise b nodeb
 materialise x nodex             # only for its public key: the "wrong key" case
-cp "$RUN/pki/ca.pem" "$RUN/a/ca.pem"
 
 # configure <carrier> <b-key-from: b|x>
 #   A: prefers only <carrier>, knows B by name with B's (or X's) Ed25519 key and
@@ -152,7 +150,7 @@ start_b() {
 start_a() {
 	docker rm -f "$PFX-a" >/dev/null 2>&1 || true
 	docker run -d --name "$PFX-a" --network "$NET" --ip "$A_IP" --cap-add NET_ADMIN --device /dev/net/tun \
-		--add-host "$NAME:$B_IP" -e SSL_CERT_FILE=/c/ca.pem \
+		--add-host "$NAME:$B_IP" \
 		-v "$RUN/a:/c" "$IMG" tincd -c /c/tinc.yaml -n lab -D -d3 >/dev/null
 }
 
@@ -166,6 +164,22 @@ pins() {
 		    l = l.strip()
 		    if l.lower().startswith('tlsfingerprint'):
 		        print(l.split('=', 1)[1].strip())
+	PY
+}
+
+set_a_key() { # <b|x> -- swap the Ed25519 key in A's record for nodeb, keep the pin
+	python3 - "$RUN" "$1" <<-'PY'
+		import re, sys
+		run, keyfrom = sys.argv[1:]
+		src = open('%s/%s/tinc.yaml' % (run, keyfrom)).read()
+		key = re.search(r'^        (Ed25519PublicKey = .*)$', src.split('node%s: |' % keyfrom, 1)[1], re.M).group(1)
+		p = '%s/a/tinc.yaml' % run
+		s = open(p).read()
+		head, rest = s.split('      nodeb: |\n', 1)
+		m = re.match(r'(?:(?:        .*)?\n)*', rest)     # no re.S: stop at the next record
+		block, tail = rest[:m.end()], rest[m.end():]
+		block = re.sub(r'^        Ed25519PublicKey = .*$', '        ' + key, block, flags=re.M)
+		open(p, 'w').write(head + '      nodeb: |\n' + block + tail)
 	PY
 }
 
@@ -237,7 +251,7 @@ run_carrier() {
 	# -- 3. renewal -----------------------------------------------------------
 	serve leaf2
 	start_b
-	if wait_log "$PFX-a" "presents a new certificate ($(fp leaf2)" 60 && wait_connected 40; then
+	if wait_log "$PFX-a" "presents certificate $(fp leaf2)" 60 && wait_connected 40; then
 		ok "$c: after a renewal (new key, same CA, same name) A reconnects"
 	else
 		bad "$c: after a renewal A reconnects"
@@ -246,34 +260,44 @@ run_carrier() {
 	wait_log "$PFX-a" "pinning TlsFingerprint $(fp leaf2)" 20 || true
 	expect_pins "$c: ... and replaces the pin with leaf2, leaving one" "$(fp leaf2)"
 
-	# -- 4. a self-signed replacement is refused ------------------------------
+	# -- 4. a self-signed replacement is followed too --------------------------
 	serve self
 	start_b
-	if wait_log "$PFX-a" "is not one a CA issued for $NAME" 60; then
-		ok "$c: a self-signed replacement is refused"
-		docker logs "$PFX-a" 2>&1 | grep -o "does not match the pinned.*refusing" | tail -1 | cut -c1-170 >&2
+	if wait_log "$PFX-a" "presents certificate $(fp self)" 60 && wait_connected 40; then
+		ok "$c: after a switch to a self-signed certificate A reconnects"
 	else
-		bad "$c: a self-signed replacement is refused"
+		bad "$c: after a switch to a self-signed certificate A reconnects"
+		docker logs "$PFX-a" 2>&1 | grep -iE "$c|pin|certificate|refus" | tail -8 >&2
 	fi
-	sleep 3
-	if connected; then
-		bad "$c: ... A must not be connected to it"
-	else
-		ok "$c: ... A stays disconnected"
-	fi
-	expect_pins "$c: ... and the pin is still leaf2" "$(fp leaf2)"
+	wait_log "$PFX-a" "pinning TlsFingerprint $(fp self)" 20 || true
+	expect_pins "$c: ... and replaces the pin with it, leaving one" "$(fp self)"
 
-	# -- 5. a CA certificate for another name is refused ----------------------
+	# -- 5. an impostor's certificate never becomes the pin ----------------------
+	# A's record now expects X's key; B cannot prove it. From A's side that is
+	# exactly a stranger presenting a new certificate for B's name.
 	docker rm -f "$PFX-a" >/dev/null
+	set_a_key x
 	serve other
 	start_b
 	start_a
-	if wait_log "$PFX-a" "is not one a CA issued for $NAME" 60; then
-		ok "$c: a CA certificate for another name is refused"
+	if wait_log "$PFX-a" "presents certificate $(fp other)" 60; then
+		ok "$c: the impostor's certificate gets as far as a handshake"
 	else
-		bad "$c: a CA certificate for another name is refused"
+		bad "$c: the impostor's certificate gets as far as a handshake"
+		docker logs "$PFX-a" 2>&1 | grep -iE "$c|pin|certificate|refus" | tail -8 >&2
 	fi
-	expect_pins "$c: ... and the pin is still leaf2" "$(fp leaf2)"
+	sleep 8
+	if connected; then
+		bad "$c: ... A must not be connected to it"
+	else
+		ok "$c: ... A is not connected"
+	fi
+	if docker logs "$PFX-a" 2>&1 | grep -q "pinning TlsFingerprint $(fp other)"; then
+		bad "$c: ... A must not pin it"
+	else
+		ok "$c: ... A does not pin it"
+	fi
+	expect_pins "$c: ... and the pin is still the self-signed one" "$(fp self)"
 
 	docker rm -f "$PFX-a" "$PFX-b" >/dev/null
 	# the next carrier starts from an unpinned record again

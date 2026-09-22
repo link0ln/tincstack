@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
+**Last Updated:** 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
 up two defects that break a node weeks after it is installed, and both are
 fixed: nothing renewed the ACME certificate (it simply expired, leaving the
 https front *more* conspicuous than the self-signed one it replaced), and a
@@ -2332,6 +2332,31 @@ Defects identified during the source audit, to fix as their milestone is reached
   - 🟢 `README.md` drift: "M0–M9" (M10 exists), a `v0.1.0` example, and the
     Android signing paragraph still calls an unsigned APK merely "unsigned".
 
+- 🟠 **Standing requirement (owner, 2026-09-23): every carrier looks on the
+  wire exactly like what it declares** -- `quic` like QUIC, `https` like
+  HTTPS/TLS, and so on for every transport, error and refusal paths included
+  (alerts, closes, timeouts, answers to probes). Measure against the real
+  thing, not against "looks encrypted". State today:
+  - [x] a pin mismatch no longer makes the client abort after the server's
+    certificate (removed with the CA check, see the renewal item below)
+  - [ ] 🟠 the decoy answers like no real server (item below)
+  - [ ] 🟠 not audited: the `https` ClientHello (OpenSSL defaults) against a
+    browser's (JA3/JA4, extension order, ALPN, GREASE), and the server
+    side's ServerHello/extensions against a real nginx
+  - [ ] 🟠 not audited: the `quic` Initial of ngtcp2 + GnuTLS (transport
+    parameters, ClientHello inside Initial, packet sizes/padding, ALPN `h3`
+    without ever speaking HTTP/3) against Chrome or curl --http3
+  - [ ] 🟡 not audited: the WebSocket-upgrade request shape and the
+    `Cookie: sid=` authenticator against what browsers send; post-upgrade
+    record sizes/timing
+  - [ ] 🟡 `obfs` declares nothing and should stay uniformly random -- check
+    that its handshake and rekey sizes do not form a pattern
+  - [ ] 🟡 `tinc join` is cleartext tinc meta (item below): it looks like
+    what it is, which is exactly what a censor blocks
+  Method for the audits: capture our carrier and the reference client in
+  the same lab, diff with the same dissector (tshark / ja4), record the
+  deltas here with the capture as proof.
+
 - 🔴 **Second code review of 2026-09-22 — new findings; three fixed 2026-09-23 (renewal lock-out, QUIC pin before SPTPS, renew timer's first check), the rest open.**
   A second pass over the same code plus what the first skipped (Android, the
   https/quic fronts end to end, the Windows elevation model, the release
@@ -2365,48 +2390,56 @@ Defects identified during the source audit, to fix as their milestone is reached
     key across renewals; (c) propagate the node's own pin over the
     authenticated meta protocol.
 
-    **Resolution (2026-09-23): option (a), narrowed.** A mismatching
-    certificate is no longer treated like a missing pin -- that would let any
-    on-path box that can complete TLS reset the pin to its own certificate
-    for the length of a session. It is accepted only if it chains to a
-    publicly trusted CA and is valid for the SNI we dialled (never the
-    `localhost` default): `tls_cert_public_for()` (OpenSSL, `https.c`) and
-    `chain_public_for()` (GnuTLS, `transport_quic_tls.c`). The new
-    fingerprint is then written only after SPTPS authenticated the peer over
-    that session and *replaces* the old line (`replace_config_file()`, shared
-    with `tinc cert` via `host_text_set_var()`). `tinc cert issue` now prints
-    which peers follow and which do not. `CERT_RENEW` defaults to **0**
-    (owner's call, 2026-09-23) -- it could be turned back on for an all-Linux
-    mesh dialling by name, but see the limits.
-    Proof: new lab `testing/transports/cert-repin-test.sh`, 11 assertions per
-    carrier, **https 11/11, quic 11/11**, two consecutive full runs 22/22:
-    wrong-key server neither connected nor pinned; first contact pins once;
-    same-CA same-name renewal reconnects and leaves exactly the new pin
-    (`... presents a new certificate (...), issued by a public CA for
-    nodeb.lab.test; will re-pin it once SPTPS authenticates the peer`);
-    self-signed replacement and CA certificate for another name refused
-    (`... is not one a CA issued for nodeb.lab.test (...); refusing`), pin
-    unchanged. Negative control, the same lab against an image built from
-    bf0380e: the https renewal case fails with the old `does not match the
-    pinned TlsFingerprint; refusing`. Regressions on the fixed image:
-    `https-carrier-test.sh` PASS (its M5-7 case: `pinned exactly B's
-    fingerprint, once, after SPTPS authenticated B`), `quic-carrier-test.sh`
-    PASS, `cert-lifecycle-test.sh` 6/6, `make smoke` PASS, `make lint` clean.
-    **Limits that remain (open):**
-    - [ ] 🟡 Windows (mingw) and Android builds have no usable trust store, so a
-      moved pin is still refused there -- a renewal still locks those peers out
-      until they are re-invited. Fix: ship a CA bundle with them, or option
-      (c) above (propagate the pin over the authenticated meta protocol),
-      which also covers the next point.
-    - [ ] 🟡 A peer that dials this node by IP address (SNI `localhost`), or with
-      an `HttpsSni` other than `CertDomain`, cannot follow a renewal: nothing
-      ties the new certificate to the node it expected.
+    **Resolution, second cut (2026-09-23, later): option (a), plainly.** The
+    first cut (c6d7a91) followed a moved pin only for a certificate a public
+    CA issued for the SNI dialled. The owner asked why Windows and Android
+    would need a CA store for a product whose job is encryption and DPI
+    evasion, and the code agrees: the authenticator is signed over the
+    session's RFC 5705 exporter and the fingerprint the client saw
+    (`https.c:280`, `transport_quic.c:378`), the server checks it against its
+    own, and SPTPS proves both keys -- so a session through anyone else's
+    certificate never activates and never becomes the pin, CA or not. The CA
+    check protected nothing and broke every peer without a trust store. The
+    earlier worry ("any on-path box could reset the pin for a session") was
+    wrong: it can only hold a session that dies.
+    Now: a mismatch is a first contact on both carriers -- handshake completes
+    with no alert (on the wire an ordinary session, not a client hanging up
+    after the certificate), the fingerprint replaces the pin
+    (`replace_config_file()`) only after SPTPS set `c->edge`. CA code
+    removed (`tls_cert_public_for`, `chain_public_for`). `tinc cert issue`
+    says peers follow on their own. `CERT_RENEW` stays **0** (owner's call);
+    nothing about peers needs that any more.
+    What a TLS-intercepting box still learns before the session dies: the
+    authenticator cookie (node name, nonce, time, signature). Pinned or not,
+    the same -- recorded, not new.
+    Proof: `testing/transports/cert-repin-test.sh`, 12 assertions per carrier,
+    **A trusts no CA at all**; three consecutive full runs **24/24**:
+    server without the expected key -- first contact and again with a pin in
+    place and a new certificate -- neither connected nor pinned; first contact
+    pins once; CA renewal and switch to self-signed each reconnect and leave
+    exactly the new pin. Negative controls, same lab: image of c6d7a91 (the CA
+    cut) -- renewal and self-signed switch FAIL, A keeps the old pin and stays
+    locked out (what every Windows/Android peer would have seen); image of
+    bf0380e -- quic pinned the wrong-key server. Regressions on the fixed
+    image: `https-carrier-test.sh` PASS (incl. its M5-7 TLS-bump case),
+    `quic-carrier-test.sh` PASS, `cert-lifecycle-test.sh` 6/6, `make smoke`
+    PASS, `make lint` clean.
+    - [x] 🟡 ~~Windows (mingw) and Android builds have no usable trust store, so a
+      moved pin is still refused there~~ -- gone with the CA check: the lab's
+      A has no trust store and follows both a renewal and a self-signed switch.
+    - [x] 🟡 ~~A peer that dials by IP address cannot follow a renewal~~ -- same
+      proof: nothing depends on the SNI any more.
     - A lab-side trap met on the way, for whoever edits YAML in labs: once the
       daemon rewrites the pin it saves the whole file through `yamlconf_save`,
       which turns flow lists (`[https]`) into block lists; a regex that
       deletes only the key line leaves the `- https` items behind and the next
       start refuses the file (`Refusing to overwrite unparsable YAML config`).
       The lab handles it; an earlier note blaming the old binary was wrong.
+      A second one of the same family: a helper matching a host block with
+      `re.S` swallowed the rest of the file and rewrote *every*
+      `Ed25519PublicKey`, A's own included; the next carrier's B then
+      rejected A's authenticator (`signature check failed for claimed nodea`).
+      Fixed in the lab (match without `re.S`).
   - [x] 🟠 **QUIC still pins on first use, before anything is proven** *(fixed
     2026-09-23)* -- review
     M5-7 was fixed for `https` only. `transport_quic.c cb_handshake_completed()`
@@ -2546,7 +2579,8 @@ Defects identified during the source audit, to fix as their milestone is reached
     common. The exporter binding already makes a captured authenticator
     useless, so the window can be minutes, and the client can say "check the
     clock" when a server it has reached before stops answering 101.
-  - 🟡 **The decoy is fingerprintable.** It sends `Server: nginx` with
+  - 🟠 **The decoy is fingerprintable.** *(raised from 🟡 on 2026-09-23 under
+    the owner's rule below: an `https` front must look like HTTPS to a prober)* It sends `Server: nginx` with
     Apache's "It works!" page, no `Date:` header, and `200` to any method
     and to garbage that is not HTTP; a real nginx sends a `Date`, its own
     welcome page and `400` to garbage. Each is a one-request check for a

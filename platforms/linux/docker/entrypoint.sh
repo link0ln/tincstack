@@ -22,8 +22,8 @@
 #                   (CONNECT_TO is accepted as an alias)
 #   LOG_LEVEL       tincd -d level (default 1)
 #   CERT_RENEW      1: check periodically whether the ACME certificate for the
-#                   https/quic front needs renewing. 0 (default): off -- a renewal
-#                   replaces the certificate peers pin, see PLAN.md Known Issues
+#                   https/quic front needs renewing (peers re-pin a renewed
+#                   certificate after SPTPS on their own). 0 (default): off
 #   CERT_RENEW_INTERVAL  seconds between those checks (default 43200 = 12 h)
 #
 # PORT: `Port` is a server variable in this core (options.Port, the place

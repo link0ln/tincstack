@@ -328,16 +328,13 @@ static int issue(bool staging, bool force, bool renew_only) {
 
 	printf("Stored the certificate for %s.\n", domain);
 	printf("New TlsFingerprint: %s\n", fp);
-	printf("\nTwo things peers need before this helps them:\n"
-	       "  1. TlsFingerprint. A peer that pinned the old one moves to the new one on its\n"
-	       "     own only if it dials this node as %s and trusts the issuing CA (a system\n"
-	       "     trust store; Windows and Android builds have none). Any other peer refuses\n"
-	       "     https and quic to this node until TlsFingerprint in its host record for\n"
-	       "     this node is updated, or its invitation is re-issued.\n"
-	       "  2. Address = %s in this node's host record, so that the SNI they send matches\n"
-	       "     the certificate. An IP address there makes the connection look like a\n"
-	       "     certificate presented to a bare IP, which is exactly what it was before.\n",
-	       domain, domain);
+	printf("\nPeers that pinned the old certificate follow on their own: they accept the new\n"
+	       "one for the next connection and re-pin it once SPTPS has authenticated this node.\n"
+	       "For the certificate to be worth anything to an observer, peers should reach this\n"
+	       "node as Address = %s in its host record, so that the SNI they send matches the\n"
+	       "certificate. An IP address there makes the connection look like a certificate\n"
+	       "presented to a bare IP, which is exactly what it was before.\n",
+	       domain);
 
 	acme_result_free(&res);
 	free(domain);
