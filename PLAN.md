@@ -2407,8 +2407,10 @@ Defects identified during the source audit, to fix as their milestone is reached
     after the certificate), the fingerprint replaces the pin
     (`replace_config_file()`) only after SPTPS set `c->edge`. CA code
     removed (`tls_cert_public_for`, `chain_public_for`). `tinc cert issue`
-    says peers follow on their own. `CERT_RENEW` stays **0** (owner's call);
-    nothing about peers needs that any more.
+    says peers follow on their own. `CERT_RENEW` is back to **1** by default
+    (owner, 2026-09-23): `cert-lifecycle-test.sh` 6/6 with the renewal case
+    now run with `CERT_RENEW` unset (`PASS by default the node runs 'tinc
+    cert renew' on its own timer`).
     What a TLS-intercepting box still learns before the session dies: the
     authenticator cookie (node name, nonce, time, signature). Pinned or not,
     the same -- recorded, not new.

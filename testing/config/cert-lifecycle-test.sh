@@ -10,8 +10,9 @@
 #   1. the daemon says so -- tls_expiry_warn() logs once a day while the loaded
 #      certificate is within AcmeRenewDays of expiry, and after it has expired;
 #   2. the Linux node renews itself -- the entrypoint runs `tinc cert renew` on
-#      a timer when CertDomain and CloudflareToken are set (CERT_RENEW=1), the
-#      first time a minute after start rather than one interval after it.
+#      a timer when CertDomain and CloudflareToken are set (CERT_RENEW=1, the
+#      default), the first time a minute after start rather than one interval
+#      after it.
 #
 # Hermetic: AcmeDirectory and CloudflareApi point at a dead local port, so the
 # renewal attempt fails immediately and nothing outside this machine is touched.
@@ -122,15 +123,16 @@ fi
 
 # ---- the timer fires ---------------------------------------------------------
 # The renewal cannot succeed here (both endpoints are dead ports), and that is
-# the point: what is being proven is that something runs it at all.
-start -e CERT_RENEW=1 -e CERT_RENEW_INTERVAL=2
+# the point: what is being proven is that something runs it at all -- and with
+# CERT_RENEW unset, because on is the default.
+start -e CERT_RENEW_INTERVAL=2
 wait_for "Ready" 60 || { log "the node never became ready"; exit 1; }
 
 if wait_for "entrypoint: cert renew failed" 40; then
-	ok "the node runs 'tinc cert renew' on its own timer"
+	ok "by default the node runs 'tinc cert renew' on its own timer"
 	docker logs "$NAME" 2>&1 | grep -o "entrypoint: cert renew failed:.*" | head -1 | cut -c1-150 >&2
 else
-	bad "the node runs 'tinc cert renew' on its own timer"
+	bad "by default the node runs 'tinc cert renew' on its own timer"
 	docker logs "$NAME" 2>&1 | tail -15 >&2
 fi
 

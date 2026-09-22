@@ -21,9 +21,9 @@
 #   INVITE          invitation string: `tinc join` on the first start only
 #                   (CONNECT_TO is accepted as an alias)
 #   LOG_LEVEL       tincd -d level (default 1)
-#   CERT_RENEW      1: check periodically whether the ACME certificate for the
-#                   https/quic front needs renewing (peers re-pin a renewed
-#                   certificate after SPTPS on their own). 0 (default): off
+#   CERT_RENEW      1 (default): check periodically whether the ACME certificate
+#                   for the https/quic front needs renewing (peers re-pin a
+#                   renewed certificate after SPTPS on their own). 0: off
 #   CERT_RENEW_INTERVAL  seconds between those checks (default 43200 = 12 h)
 #
 # PORT: `Port` is a server variable in this core (options.Port, the place
@@ -39,7 +39,7 @@ PUBLIC_ADDRESS=${PUBLIC_ADDRESS:-}
 PORT=${PORT:-}
 INVITE=${INVITE:-${CONNECT_TO:-}}
 LOG_LEVEL=${LOG_LEVEL:-1}
-CERT_RENEW=${CERT_RENEW:-0}
+CERT_RENEW=${CERT_RENEW:-1}
 CERT_RENEW_INTERVAL=${CERT_RENEW_INTERVAL:-43200}
 
 YAML=$CONFIG_DIR/tinc.yaml

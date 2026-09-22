@@ -524,8 +524,8 @@ an ordinary HTTPS/QUIC session, not a client that hangs up after the server's
 certificate), and the fingerprint is written only after SPTPS set `c->edge`
 over that session, replacing the old line (`replace_config_file()`, which
 `tinc cert` now shares through `host_text_set_var()`) so a host record never
-accumulates pins. The CA code is gone. The Linux image's `CERT_RENEW` still
-defaults to `0` (owner's call); nothing about peers requires that any more.
+accumulates pins. The CA code is gone. The Linux image's `CERT_RENEW` is back
+to defaulting to `1`: nothing about peers requires it off any more.
 The renewal loop's first check now runs a minute after start instead of one
 interval after it.
 
@@ -568,7 +568,7 @@ Windows (mingw-w64 cross-build, for the laptop):
 | `CertDomain` | unset | nodes offering `https`/`quic` | public DNS name `tinc cert` issues a certificate for |
 | `CloudflareToken` | unset | same | Cloudflare API token with `Zone:Read` + `Zone:DNS:Edit` on that domain's zone |
 | `AcmeContact` / `AcmeDirectory` / `AcmeRenewDays` / `AcmePropagation` / `AcmePollTimeout` | see docs/config-schema.md | same | ACME tuning; all optional |
-| `CERT_RENEW` / `CERT_RENEW_INTERVAL` | `0` / `43200` | Linux node image (env, not YAML) | `1`: run `tinc cert renew` on a timer so the front's certificate does not expire. Off by default; peers follow a renewed certificate on their own (§13) |
+| `CERT_RENEW` / `CERT_RENEW_INTERVAL` | `1` / `43200` | Linux node image (env, not YAML) | run `tinc cert renew` on a timer so the front's certificate does not expire; `0` turns it off. Peers follow a renewed certificate on their own (§13) |
 | `InterfaceRoute` | unset | any node that must reach a subnet a peer announces | `"<prefix> [via] [gateway]"`, one per route; installed on the tunnel interface by the built-in tinc-up (Linux) or the Wintun backend (Windows) |
 
 ## Recommended deployment

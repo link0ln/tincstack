@@ -665,7 +665,7 @@ everywhere:
 | where | what happens |
 |---|---|
 | the daemon (every platform) | once a day, while fewer than `AcmeRenewDays` remain, it logs `The TLS certificate for the https/quic front (…) expires in N days. Run 'tinc cert renew'.` — and keeps saying so, as an error, after it has expired |
-| the Linux node image | with `CERT_RENEW=1` the entrypoint runs `tinc cert renew` a minute after start and then every `CERT_RENEW_INTERVAL` (12 h by default) once `CertDomain` and `CloudflareToken` are set. **Off by default** (`CERT_RENEW=0`); peers follow a renewal on their own, see "After issuing" below |
+| the Linux node image | the entrypoint runs `tinc cert renew` a minute after start and then every `CERT_RENEW_INTERVAL` (12 h by default) once `CertDomain` and `CloudflareToken` are set. `CERT_RENEW=0` turns it off; peers follow a renewal on their own, see "After issuing" below |
 | the Windows manager | the toolbar's certificate button turns into `⚠ Certificate: N d left` (and `⚠ Certificate EXPIRED (N d)`), checked at start, on every network switch and every six hours. Renewing is still a click — nothing on Windows runs it unattended |
 
 An expired certificate does not break the VPN: peers pin the fingerprint
