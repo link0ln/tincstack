@@ -665,7 +665,7 @@ everywhere:
 | where | what happens |
 |---|---|
 | the daemon (every platform) | once a day, while fewer than `AcmeRenewDays` remain, it logs `The TLS certificate for the https/quic front (…) expires in N days. Run 'tinc cert renew'.` — and keeps saying so, as an error, after it has expired |
-| the Linux node image | the entrypoint runs `tinc cert renew` every `CERT_RENEW_INTERVAL` (12 h by default) once `CertDomain` and `CloudflareToken` are set; `CERT_RENEW=0` turns it off |
+| the Linux node image | with `CERT_RENEW=1` the entrypoint runs `tinc cert renew` a minute after start and then every `CERT_RENEW_INTERVAL` (12 h by default) once `CertDomain` and `CloudflareToken` are set. **Off by default** (`CERT_RENEW=0`): see "After issuing" below for which peers follow a renewal |
 | the Windows manager | the toolbar's certificate button turns into `⚠ Certificate: N d left` (and `⚠ Certificate EXPIRED (N d)`), checked at start, on every network switch and every six hours. Renewing is still a click — nothing on Windows runs it unattended |
 
 An expired certificate does not break the VPN: peers pin the fingerprint
@@ -692,12 +692,16 @@ a worker thread.
 Peers pin this certificate by SHA-256 fingerprint (`TlsFingerprint` in this
 node's host record, docs/transports.md §8.2). Replacing the certificate
 replaces the fingerprint, so `tinc cert issue` rewrites `TlsFingerprint` in the
-node's own host record and says so. **Peers that already hold the old pin will
-refuse an `https` or `quic` connection to this node until they learn the new
-one** — re-issue their invitation, or update that one line in their host record
-for this node. For the certificate to be worth anything to them, their host
-record for this node should also have `Address = <CertDomain>`, because the SNI
-the dialer sends comes from that address.
+node's own host record and says so. A peer that already holds the old pin
+moves to the new one by itself **only if** it dials this node by `CertDomain`
+(its host record for this node has `Address = <CertDomain>`, or `HttpsSni` set
+to it — the SNI comes from there) **and** it has a trust store that knows the
+CA — Linux, via the system store or `SSL_CERT_FILE`. It writes the new pin only
+after SPTPS has authenticated this node, and replaces the old one
+(docs/transports.md §8.2, "A moved pin"). **Every other peer — Windows and
+Android builds, peers dialling an IP address — refuses `https` and `quic` to
+this node until it learns the new fingerprint**: re-issue its invitation, or
+update that one line in its host record for this node.
 
 ### When it does not work
 

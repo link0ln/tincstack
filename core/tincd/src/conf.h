@@ -60,6 +60,8 @@ extern void read_config_options(splay_tree_t *config_tree, const char *prefix);
 extern bool read_server_config(splay_tree_t *config_tree);
 extern bool read_host_config(splay_tree_t *config_tree, const char *name, bool verbose);
 extern bool append_config_file(const char *name, const char *key, const char *value);
+extern bool replace_config_file(const char *name, const char *key, const char *value);
+extern char *host_text_set_var(const char *text, const char *key, const char *value);
 
 /* Called with the node name after append_config_file() changed a host record
    in YAML mode. Set by the daemon (connection.c) so that a line the daemon

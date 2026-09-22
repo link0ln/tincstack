@@ -519,6 +519,132 @@ bool read_host_config(splay_tree_t *config_tree, const char *name, bool verbose)
 	return read_config_file(config_tree, fname, verbose);
 }
 
+/* `text` (a host record) with every `key = ...` line replaced by one
+   `key = value` line -- in place of the first, or at the end when there was
+   none. Case-insensitive on the variable name, exact on its end, so
+   "TlsFingerprint" does not also catch "TlsFingerprintX". Caller frees. */
+char *host_text_set_var(const char *text, const char *key, const char *value) {
+	size_t keylen = strlen(key);
+	size_t cap = (text ? strlen(text) : 0) + keylen + strlen(value) + 8;
+	char *out = xmalloc(cap);
+	size_t len = 0;
+	bool written = false;
+
+	for(const char *line = text; line && *line;) {
+		const char *eol = strchr(line, '\n');
+		size_t linelen = eol ? (size_t)(eol - line) : strlen(line);
+		const char *p = line + strspn(line, " \t");
+		bool match = (size_t)(p - line) < linelen && !strncasecmp(p, key, keylen) && strchr(" \t=", p[keylen]) && p[keylen];
+
+		if(!match) {
+			memcpy(out + len, line, linelen);
+			len += linelen;
+			out[len++] = '\n';
+		} else if(!written) {
+			len += (size_t) snprintf(out + len, cap - len, "%s = %s\n", key, value);
+			written = true;
+		}
+
+		line = eol ? eol + 1 : NULL;
+	}
+
+	if(!written) {
+		len += (size_t) snprintf(out + len, cap - len, "%s = %s\n", key, value);
+	}
+
+	out[len] = 0;
+	return out;
+}
+
+/* Like append_config_file(), but the host record ends up with exactly one
+   `key` line: for values that are replaced rather than accumulated (a
+   certificate pin that moved). */
+bool replace_config_file(const char *name, const char *key, const char *value) {
+	if(yamlconf_path && netname) {
+		if(!yamlconf_lock(yamlconf_path)) {
+			return false;
+		}
+
+		bool ok = false;
+		yamlconf_t *yc = yamlconf_load(yamlconf_path);
+
+		if(yc) {
+			char *text = yamlconf_host_text(yc, netname, name);
+			char *updated = host_text_set_var(text, key, value);
+			yamlconf_host_set_text(yc, netname, name, updated);
+			ok = yamlconf_save(yc, yamlconf_path);
+
+			if(ok && yamlconf_global) {
+				yamlconf_host_set_text(yamlconf_global, netname, name, updated);
+			}
+
+			free(text);
+			free(updated);
+			yamlconf_free(yc);
+		}
+
+		yamlconf_unlock();
+
+		if(ok && config_host_written_cb) {
+			config_host_written_cb(name);
+		}
+
+		return ok;
+	}
+
+	char fname[PATH_MAX], tmpname[PATH_MAX + 8];
+	snprintf(fname, sizeof(fname), "%s" SLASH "hosts" SLASH "%s", confbase, name);
+	snprintf(tmpname, sizeof(tmpname), "%s.new", fname);
+
+	char *text = NULL;
+	FILE *in = fopen(fname, "rb");
+
+	if(in) {
+		size_t cap = 4096, len = 0, n;
+		text = xmalloc(cap);
+
+		while((n = fread(text + len, 1, cap - len - 1, in)) > 0) {
+			len += n;
+
+			if(len + 1 == cap) {
+				cap *= 2;
+				text = xrealloc(text, cap);
+			}
+		}
+
+		text[len] = 0;
+		fclose(in);
+	}
+
+	char *updated = host_text_set_var(text, key, value);
+	free(text);
+
+	FILE *out = fopen(tmpname, "wb");
+	bool ok = out && fputs(updated, out) >= 0;
+
+	if(out && fclose(out)) {
+		ok = false;
+	}
+
+	free(updated);
+
+#ifdef HAVE_WINDOWS
+	/* rename() does not replace an existing file there. */
+	if(ok) {
+		remove(fname);
+	}
+
+#endif
+
+	if(!ok || rename(tmpname, fname)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Cannot update %s: %s", fname, strerror(errno));
+		remove(tmpname);
+		return false;
+	}
+
+	return true;
+}
+
 bool append_config_file(const char *name, const char *key, const char *value) {
 	if(yamlconf_path && netname) {
 		/* YAML mode: persist the learned line into the host's section, and

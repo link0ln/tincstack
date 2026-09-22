@@ -45,6 +45,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  platforms/linux/docker/reload-test.sh \
                  testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
                  testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
+                 testing/transports/cert-repin-test.sh \
                  testing/transports/obfs-test.sh testing/transports/obfs-mtu-test.sh \
                  testing/transports/matrix-test.sh \
                  testing/transports/classify-test.sh \

@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
+**Last Updated:** 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
 up two defects that break a node weeks after it is installed, and both are
 fixed: nothing renewed the ACME certificate (it simply expired, leaving the
 https front *more* conspicuous than the self-signed one it replaced), and a
@@ -2332,7 +2332,7 @@ Defects identified during the source audit, to fix as their milestone is reached
   - 🟢 `README.md` drift: "M0–M9" (M10 exists), a `v0.1.0` example, and the
     Android signing paragraph still calls an unsigned APK merely "unsigned".
 
-- 🔴 **Second code review of 2026-09-22 — new findings, none fixed yet.**
+- 🔴 **Second code review of 2026-09-22 — new findings; three fixed 2026-09-23 (renewal lock-out, QUIC pin before SPTPS, renew timer's first check), the rest open.**
   A second pass over the same code plus what the first skipped (Android, the
   https/quic fronts end to end, the Windows elevation model, the release
   artefacts), and three things the first pass never ran: the upstream tinc
@@ -2341,8 +2341,9 @@ Defects identified during the source audit, to fix as their milestone is reached
   replay of the committed fuzz corpora (all six still clean). Each item names
   its proof; "by reading" means no run reproduced it yet.
 
-  - 🔴 **Renewing the certificate locks every peer out of `https`/`quic`, and
-    since 2026-09-22 renewal is automatic.** Peers pin the certificate's
+  - [x] 🔴 **Renewing the certificate locks every peer out of `https`/`quic`, and
+    since 2026-09-22 renewal is automatic.** *(Fixed 2026-09-23, with limits —
+    see "Resolution" at the end of this item.)* Peers pin the certificate's
     SHA-256 (`TlsFingerprint`); `tinc cert issue|renew` makes a fresh P-256 key
     and certificate, rewrites the pin only in this node's *own* host record,
     and prints "peers that pinned the old one will refuse an https or quic
@@ -2363,7 +2364,51 @@ Defects identified during the source audit, to fix as their milestone is reached
     so it is no weaker than TOFU is today); (b) pin the SPKI and keep the TLS
     key across renewals; (c) propagate the node's own pin over the
     authenticated meta protocol.
-  - 🟠 **QUIC still pins on first use, before anything is proven** -- review
+
+    **Resolution (2026-09-23): option (a), narrowed.** A mismatching
+    certificate is no longer treated like a missing pin -- that would let any
+    on-path box that can complete TLS reset the pin to its own certificate
+    for the length of a session. It is accepted only if it chains to a
+    publicly trusted CA and is valid for the SNI we dialled (never the
+    `localhost` default): `tls_cert_public_for()` (OpenSSL, `https.c`) and
+    `chain_public_for()` (GnuTLS, `transport_quic_tls.c`). The new
+    fingerprint is then written only after SPTPS authenticated the peer over
+    that session and *replaces* the old line (`replace_config_file()`, shared
+    with `tinc cert` via `host_text_set_var()`). `tinc cert issue` now prints
+    which peers follow and which do not. `CERT_RENEW` defaults to **0**
+    (owner's call, 2026-09-23) -- it could be turned back on for an all-Linux
+    mesh dialling by name, but see the limits.
+    Proof: new lab `testing/transports/cert-repin-test.sh`, 11 assertions per
+    carrier, **https 11/11, quic 11/11**, two consecutive full runs 22/22:
+    wrong-key server neither connected nor pinned; first contact pins once;
+    same-CA same-name renewal reconnects and leaves exactly the new pin
+    (`... presents a new certificate (...), issued by a public CA for
+    nodeb.lab.test; will re-pin it once SPTPS authenticates the peer`);
+    self-signed replacement and CA certificate for another name refused
+    (`... is not one a CA issued for nodeb.lab.test (...); refusing`), pin
+    unchanged. Negative control, the same lab against an image built from
+    bf0380e: the https renewal case fails with the old `does not match the
+    pinned TlsFingerprint; refusing`. Regressions on the fixed image:
+    `https-carrier-test.sh` PASS (its M5-7 case: `pinned exactly B's
+    fingerprint, once, after SPTPS authenticated B`), `quic-carrier-test.sh`
+    PASS, `cert-lifecycle-test.sh` 6/6, `make smoke` PASS, `make lint` clean.
+    **Limits that remain (open):**
+    - [ ] 🟡 Windows (mingw) and Android builds have no usable trust store, so a
+      moved pin is still refused there -- a renewal still locks those peers out
+      until they are re-invited. Fix: ship a CA bundle with them, or option
+      (c) above (propagate the pin over the authenticated meta protocol),
+      which also covers the next point.
+    - [ ] 🟡 A peer that dials this node by IP address (SNI `localhost`), or with
+      an `HttpsSni` other than `CertDomain`, cannot follow a renewal: nothing
+      ties the new certificate to the node it expected.
+    - A lab-side trap met on the way, for whoever edits YAML in labs: once the
+      daemon rewrites the pin it saves the whole file through `yamlconf_save`,
+      which turns flow lists (`[https]`) into block lists; a regex that
+      deletes only the key line leaves the `- https` items behind and the next
+      start refuses the file (`Refusing to overwrite unparsable YAML config`).
+      The lab handles it; an earlier note blaming the old binary was wrong.
+  - [x] 🟠 **QUIC still pins on first use, before anything is proven** *(fixed
+    2026-09-23)* -- review
     M5-7 was fixed for `https` only. `transport_quic.c cb_handshake_completed()`
     appends `TlsFingerprint` the moment the QUIC/TLS handshake completes,
     before the authenticator and before SPTPS. An on-path attacker at first
@@ -2371,6 +2416,16 @@ Defects identified during the source audit, to fix as their milestone is reached
     `quic` share the one `TlsFingerprint` key, that also breaks `https` to the
     same peer. By reading; the M5-7 lab (`https-carrier-test.sh`, socat TLS
     bump) is the template for the proof.
+    **Fixed 2026-09-23:** `cb_handshake_completed()` writes nothing; it marks
+    the session `pin_pending`, and `learn_pin()` (called from
+    `deliver_meta()` once `c->edge` is set) writes the pin, replacing any old
+    line. Proof: `cert-repin-test.sh` quic case 1 -- a server holding the
+    wrong Ed25519 key is not connected to and no pin is written (PASS).
+    Negative control on the bf0380e image, same case: FAIL `(want none, A's
+    record has 1 pin(s): be5eb...)` with the log `quic: no pinned
+    TlsFingerprint for nodeb; accepting be5eb... on first use and pinning
+    it`. (That control was flaky once -- one earlier run on the old image
+    passed case 1, a timing race between the pin write and the teardown.)
   - 🟠 **The elevated Windows manager runs code any unelevated process can
     replace** (local privilege escalation; a UAC bypass on the usual
     admin-user PC, a real LPE for a standard user). The logon task runs
@@ -2409,12 +2464,19 @@ Defects identified during the source audit, to fix as their milestone is reached
     ACME CA, the Cloudflare API, or whatever `AcmeDirectory`/`CloudflareApi`
     point at), and only in `tinc cert`, never the daemon -- hence 🟡, not
     higher. Fix: `if(!chunk || chunk > len - in) break;`.
-  - 🟡 **The Linux renew timer never fires on a node restarted more often than
-    `CERT_RENEW_INTERVAL`** (12 h). `renew_loop` is `while sleep ...; do`, so
+  - [x] 🟡 **The Linux renew timer never fires on a node restarted more often than
+    `CERT_RENEW_INTERVAL`** (12 h). *(Fixed 2026-09-23.)* `renew_loop` is `while sleep ...; do`, so
     the first check is one interval after start; a node rebooted nightly
     never renews. Check once shortly after `Ready`, then every interval.
     By reading (`platforms/linux/docker/entrypoint.sh:172`); the
     cert-lifecycle lab passes only because it sets the interval to 2 s.
+    **Fixed 2026-09-23:** the first check runs `min(60 s, interval)` after
+    start, then every interval. Proof: new case in
+    `cert-lifecycle-test.sh`, `CERT_RENEW=1 CERT_RENEW_INTERVAL=43200`:
+    `PASS with a 12 h interval the first renewal check runs within 90 s of
+    start` (fired 62 s after the node started). No run against the old
+    entrypoint: its `while sleep 43200` cannot fire inside 90 s by
+    construction.
   - 🟡 **The upstream tinc test suite has never run on this fork, and it
     fails.** Every build uses `-Dtests=disabled`, CI included. Run in a
     `--privileged` build container with cmocka and netbase:

@@ -1034,9 +1034,11 @@ is not. It only pays off if the peer's host record for this node carries
 certificate for `vpn.example.com` presented to a client that asked for
 `localhost` is worse than the generic one.
 
-The cost: the fingerprint changes, so every peer holding the old pin refuses the
-connection until it learns the new one (§8.2). `tinc cert issue` rewrites this
-node's own `TlsFingerprint` and warns about exactly that.
+The cost: the fingerprint changes. A peer holding the old pin follows the new
+certificate on its own only when the certificate chains to a CA it trusts and is
+valid for the SNI it dialled (§8.2, "A moved pin"); every other peer refuses the
+connection until it learns the new fingerprint. `tinc cert issue` rewrites this
+node's own `TlsFingerprint` and says which case applies.
 
 It runs in the CLI, never in the daemon — issuing blocks for as long as the CA
 takes. See docs/config-schema.md for every option and every failure code, and
@@ -1058,6 +1060,23 @@ activated the link (`c->edge` set by the ACK), i.e. once the peer proved its
 Ed25519 identity over the very session the certificate belongs to (the exporter
 in the authenticator, §8.3, binds the two). A malformed existing pin is ignored
 and never overwritten (logged). ALPN offers `http/1.1`.
+
+**A moved pin.** When a pin exists and the presented certificate does not match
+it, the dial is refused — unless that certificate chains to a publicly trusted
+CA (the system trust store, `SSL_CERT_FILE` honoured) and is valid, for the
+TLS server purpose, for the SNI this dial sent, which must be a real name and
+not the `localhost` default (`tls_cert_public_for`, tls.c). That is what an
+ACME renewal of a `CertDomain` certificate looks like, and it is the only way a
+pin moves by itself. The new fingerprint is *not* trusted yet: it is written the
+same way as a first pin — only after SPTPS inside that very session proved the
+peer's Ed25519 identity — and it **replaces** the old `TlsFingerprint` line
+(`replace_config_file`) instead of adding a second one. A self-signed
+replacement, a CA certificate for another name, or any replacement when the SNI
+is `localhost` is refused with `... is not one a CA issued for <sni> (<reason>);
+refusing`. Builds with no usable trust store (mingw, Android) therefore never
+move a pin: there the old rule — update `TlsFingerprint` by hand or re-invite —
+still holds. Proof: `testing/transports/cert-repin-test.sh` (renewal re-pins to
+exactly one new pin; self-signed and wrong-name replacements refused, pin kept).
 
 ### 8.3 Authenticator
 
@@ -1335,17 +1354,22 @@ pattern-based rule safe: the pattern selects, the library confirms.
   `tinc reload` when its fingerprint changed.
 - The dialler pins the peer's `TlsFingerprint` (host record). `verify_pin`
   (`transport_quic_tls.c`): DER of the presented leaf -> SHA-256 -> compare
-  with the pinned hex. **Nothing else is checked**: no CA, no name, no
-  validity period; the pin *is* the identity. Mismatch => `LOG_ERR` with both
-  fingerprints, TLS alert (bad_certificate), fallback per §9.9.
-- **Accept-on-first-use**: when the host record has no `TlsFingerprint` the
-  dialler accepts the presented certificate, logs
-  `quic: no pinned TlsFingerprint for <peer>; accepting <fp> on first use and
-  pinning it` and appends `TlsFingerprint = <fp>` to the peer's host record
-  (`append_config_file`), so the second dial is pinned. This is the same
-  trust model as `https` (§8.2) and is bounded by the authenticator + SPTPS
-  handshake that follow: a wrong server can at most be pinned as a peer that
-  then fails to authenticate.
+  with the pinned hex. On a match nothing else is checked: no CA, no name, no
+  validity period; the pin *is* the identity. On a mismatch the same "moved
+  pin" rule as `https` (§8.2) applies, with GnuTLS's trust list
+  (`gnutls_x509_trust_list_verify_crt2`, DNS name = the SNI, key purpose TLS
+  server): a CA-issued certificate for the SNI is accepted and marked for
+  re-pinning; anything else => `LOG_ERR` with both fingerprints, TLS alert
+  (bad_certificate), fallback per §9.9.
+- **No pin yet**: when the host record has no `TlsFingerprint` the dialler
+  accepts the presented certificate for this session and logs
+  `quic: no pinned TlsFingerprint for <peer>; will pin <fp> once SPTPS
+  authenticates the peer`. Nothing is written at TLS time (review M5-7, which
+  until 2026-09-23 was fixed for `https` only: quic appended the pin at the
+  end of the TLS handshake, so a server holding the wrong Ed25519 key got
+  pinned). The pin — first or moved — is written by `learn_pin()` once the
+  SPTPS meta handshake over this stream set `c->edge`, and replaces any
+  existing `TlsFingerprint` line (`replace_config_file`).
 - Identity binding: the pin ties the QUIC session to the certificate recorded
   under the peer's node name; the authenticator (§9.4) ties the session to
   the tinc Ed25519 key of the dialler before any tinc request is parsed; then

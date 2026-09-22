@@ -54,6 +54,13 @@ bool tls_cert_pem_fingerprint(const char *cert_pem, char *hex);
    be NULL. */
 bool tls_x509_fingerprint(X509 *cert, uint8_t *raw, char *hex);
 
+/* A pinned peer certificate changed. Is the new one the kind a renewal
+   produces -- valid today, chaining to a publicly trusted CA, and issued for
+   `host', the name we dialled (SNI)? An attacker on path cannot present that
+   without a CA's help, so such a certificate is let through and re-pinned
+   once SPTPS has authenticated the peer. `why' says why not. */
+bool tls_cert_public_for(X509 *leaf, STACK_OF(X509) *chain, const char *host, char *why, size_t whylen);
+
 /* Whole file as a string (caller frees), or NULL. */
 char *tls_read_file(const char *path);
 

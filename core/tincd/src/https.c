@@ -318,13 +318,36 @@ static bool verify_server_cert(https_session_t *s) {
 
 	if(pinned && tls_fingerprint_valid(pinned)) {
 		bool match = !strcmp(pinned, fp_hex);
-		free(pinned);
 
-		if(!match) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "https: certificate fingerprint of %s does not match the pinned TlsFingerprint; refusing", s->c->name);
+		if(match) {
+			free(pinned);
+			return true;
+		}
+
+		/* The pin moved. A renewal does that -- `tinc cert renew' makes a new
+		   certificate every couple of months -- and so does an attacker on
+		   path. What tells them apart is a CA: a renewed certificate is issued
+		   for the name we dialled, an attacker's is not. Such a certificate is
+		   let through *unpinned*, exactly like a first contact, and becomes the
+		   pin only once SPTPS inside this session has authenticated the peer
+		   (https_learn_pin). Anything else is refused as before. */
+		X509 *leaf = SSL_get_peer_certificate(s->ssl);
+		char why[160] = "no certificate";
+		bool public = leaf && tls_cert_public_for(leaf, SSL_get_peer_cert_chain(s->ssl), s->sni, why, sizeof(why));
+		X509_free(leaf);
+
+		if(!public) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "https: certificate fingerprint of %s (%s) does not match the pinned TlsFingerprint %s, "
+			       "and the new certificate is not one a CA issued for %s (%s); refusing. If %s replaced its certificate, "
+			       "update TlsFingerprint in its host record", s->c->name, fp_hex, pinned, s->sni ? s->sni : TLS_DEFAULT_CN, why, s->c->name);
+			free(pinned);
 			return false;
 		}
 
+		logger(DEBUG_ALWAYS, LOG_NOTICE, "https: %s presents a new certificate (%s, was %s), issued by a public CA for %s; "
+		       "will re-pin it once SPTPS authenticates the peer", s->c->name, fp_hex, pinned, s->sni);
+		free(pinned);
+		s->pin_pending = true;
 		return true;
 	}
 
@@ -349,7 +372,8 @@ static bool verify_server_cert(https_session_t *s) {
 /* Called after every inbound meta byte batch on the client side: once the
    connection is activated (c->edge set by ack_h after the SPTPS handshake
    proved the peer's Ed25519 identity), the certificate this session was
-   dialled through is trustworthy and is pinned. */
+   dialled through is trustworthy and is pinned -- the first one, or the one
+   that replaced a pin (verify_server_cert). */
 static void https_learn_pin(https_session_t *s) {
 	if(!s->pin_pending || s->is_server || !s->c->edge) {
 		return;
@@ -357,7 +381,12 @@ static void https_learn_pin(https_session_t *s) {
 
 	s->pin_pending = false;
 	logger(DEBUG_ALWAYS, LOG_NOTICE, "https: SPTPS authenticated %s over TLS; pinning TlsFingerprint %s", s->c->name, s->server_fp_hex);
-	append_config_file(s->c->name, "TlsFingerprint", s->server_fp_hex);
+
+	/* Replace, not append: a moved pin must not leave the old one first in
+	   the record, where lookup_config() would keep finding it. */
+	if(!replace_config_file(s->c->name, "TlsFingerprint", s->server_fp_hex)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "https: could not store the TlsFingerprint of %s", s->c->name);
+	}
 }
 
 static bool build_client_request(https_session_t *s) {

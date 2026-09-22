@@ -497,6 +497,39 @@ Proof: `testing/config/zeroconf-pool-test.sh`, eight assertions -- a node moves
 off an occupied pool, says which it skipped, survives a machine that claims all
 of 10/8, and 30 consecutive runs never pick a pool overlapping four local LANs.
 
+## 13. A renewed certificate no longer locks peers out; quic pins after SPTPS (tincstack, 2026-09-23)
+
+`tls.c`, `https.c`, `transport_quic.c`, `transport_quic_tls.c`, `conf.c`,
+`certcmd.c`, `platforms/linux/docker/entrypoint.sh`.
+
+Two defects, one mechanism. First: an ACME renewal makes a fresh key, so the
+fingerprint every peer pinned changes, and a pin mismatch was a hard refusal on
+both carriers. With `CERT_RENEW=1` (then the default) a node renewed itself
+every ~60 days and every peer that knew it lost `https` and `quic` to it
+until someone edited their host record. Second (review M5-7, only half fixed):
+`quic` still appended `TlsFingerprint` at the end of the TLS handshake, before
+SPTPS, so a server holding the wrong Ed25519 key was pinned as the peer.
+
+Now a mismatching certificate is accepted only when it chains to a publicly
+trusted CA and is valid for the SNI we dialled -- never for the `localhost`
+default (`tls_cert_public_for()` with OpenSSL's default store,
+`chain_public_for()` with GnuTLS's trust list; `SSL_CERT_FILE` is honoured by
+both). Accepted or first-seen, the fingerprint is written only after SPTPS set
+`c->edge` over that session, for both carriers, and it replaces the old line
+(`replace_config_file()`, which `tinc cert` now shares through
+`host_text_set_var()`) so a host record never accumulates pins. The Linux
+image's `CERT_RENEW` defaults to `0` anyway: a peer on Windows or Android has
+no trust store and still refuses a moved pin, and so does any peer dialling by
+IP address. The renewal loop's first check now runs a minute after start
+instead of one interval after it.
+
+Proof: `testing/transports/cert-repin-test.sh`, eleven assertions per carrier
+-- a wrong-key server is neither connected to nor pinned, first contact pins
+once, a same-CA same-name renewal reconnects and leaves exactly the new pin, a
+self-signed and a wrong-name replacement are refused with the pin untouched.
+Against the image built from the previous commit it fails where it should: the
+`https` renewal is refused, and `quic` pins the wrong-key server's certificate.
+
 ---
 
 ## Building
@@ -526,7 +559,7 @@ Windows (mingw-w64 cross-build, for the laptop):
 | `CertDomain` | unset | nodes offering `https`/`quic` | public DNS name `tinc cert` issues a certificate for |
 | `CloudflareToken` | unset | same | Cloudflare API token with `Zone:Read` + `Zone:DNS:Edit` on that domain's zone |
 | `AcmeContact` / `AcmeDirectory` / `AcmeRenewDays` / `AcmePropagation` / `AcmePollTimeout` | see docs/config-schema.md | same | ACME tuning; all optional |
-| `CERT_RENEW` / `CERT_RENEW_INTERVAL` | `1` / `43200` | Linux node image (env, not YAML) | run `tinc cert renew` on a timer so the front's certificate does not expire |
+| `CERT_RENEW` / `CERT_RENEW_INTERVAL` | `0` / `43200` | Linux node image (env, not YAML) | `1`: run `tinc cert renew` on a timer so the front's certificate does not expire. Off by default: only Linux peers dialling by `CertDomain` follow a renewed certificate (§13) |
 | `InterfaceRoute` | unset | any node that must reach a subnet a peer announces | `"<prefix> [via] [gateway]"`, one per route; installed on the tunnel interface by the built-in tinc-up (Linux) or the Wintun backend (Windows) |
 
 ## Recommended deployment

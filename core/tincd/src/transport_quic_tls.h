@@ -48,6 +48,11 @@ typedef struct quic_tls_t {
 	uint8_t peer_fp[QUIC_FP_LEN];
 	char peer_fp_hex[QUIC_FP_HEX_LEN];
 	bool have_peer_fp;
+
+	/* Client: the SNI we sent, and whether the certificate differed from the
+	   pin but was one a public CA issued for that name (a renewal). */
+	char sni[256];
+	bool repin;
 } quic_tls_t;
 
 /* Process-wide init/deinit. */

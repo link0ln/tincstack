@@ -21,8 +21,9 @@
 #   INVITE          invitation string: `tinc join` on the first start only
 #                   (CONNECT_TO is accepted as an alias)
 #   LOG_LEVEL       tincd -d level (default 1)
-#   CERT_RENEW      1 (default): check periodically whether the ACME certificate
-#                   for the https/quic front needs renewing; 0 turns it off
+#   CERT_RENEW      1: check periodically whether the ACME certificate for the
+#                   https/quic front needs renewing. 0 (default): off -- a renewal
+#                   replaces the certificate peers pin, see PLAN.md Known Issues
 #   CERT_RENEW_INTERVAL  seconds between those checks (default 43200 = 12 h)
 #
 # PORT: `Port` is a server variable in this core (options.Port, the place
@@ -38,7 +39,7 @@ PUBLIC_ADDRESS=${PUBLIC_ADDRESS:-}
 PORT=${PORT:-}
 INVITE=${INVITE:-${CONNECT_TO:-}}
 LOG_LEVEL=${LOG_LEVEL:-1}
-CERT_RENEW=${CERT_RENEW:-1}
+CERT_RENEW=${CERT_RENEW:-0}
 CERT_RENEW_INTERVAL=${CERT_RENEW_INTERVAL:-43200}
 
 YAML=$CONFIG_DIR/tinc.yaml
@@ -167,9 +168,13 @@ fi
 # stored certificate and returns), so this costs one config read per interval
 # until the week it matters. It runs only when ACME is actually configured;
 # without CertDomain and CloudflareToken there is nothing to renew.
+#
+# The first check runs a minute after start, not one interval after it: a node
+# restarted more often than CERT_RENEW_INTERVAL would otherwise never check.
 renew_loop() {
-    local domain token out
-    while sleep "$CERT_RENEW_INTERVAL"; do
+    local domain token out delay=$(( CERT_RENEW_INTERVAL < 60 ? CERT_RENEW_INTERVAL : 60 ))
+    while sleep "$delay"; do
+        delay=$CERT_RENEW_INTERVAL
         domain=$(cli get CertDomain 2>/dev/null || true)
         token=$(cli get CloudflareToken 2>/dev/null || true)   # never logged
         [[ -n $domain && -n $token ]] || continue

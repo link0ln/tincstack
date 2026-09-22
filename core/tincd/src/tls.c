@@ -162,6 +162,56 @@ bool tls_cert_pem_fingerprint(const char *cert_pem, char *hex) {
 	return ok;
 }
 
+/* ---- a pin that moved ---------------------------------------------------- */
+
+/* The system's public trust store, loaded once. X509_STORE_set_default_paths()
+   honours SSL_CERT_FILE / SSL_CERT_DIR, which is how the lab trusts its own
+   CA; a build without a usable store (mingw, Android) simply verifies
+   nothing, so a moved pin is refused there exactly as before. */
+static X509_STORE *public_store;
+
+bool tls_cert_public_for(X509 *leaf, STACK_OF(X509) *chain, const char *host, char *why, size_t whylen) {
+	*why = 0;
+
+	if(!host || !*host || !strcasecmp(host, TLS_DEFAULT_CN)) {
+		snprintf(why, whylen, "it was dialled by no name a CA could vouch for (SNI %.64s)", host && *host ? host : "none");
+		return false;
+	}
+
+	if(!public_store) {
+		public_store = X509_STORE_new();
+
+		if(!public_store || !X509_STORE_set_default_paths(public_store)) {
+			ERR_clear_error();
+		}
+	}
+
+	X509_STORE_CTX *ctx = X509_STORE_CTX_new();
+	bool ok = false;
+
+	if(ctx && public_store && X509_STORE_CTX_init(ctx, public_store, leaf, chain) == 1) {
+		X509_VERIFY_PARAM *param = X509_STORE_CTX_get0_param(ctx);
+		X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+		X509_VERIFY_PARAM_set_purpose(param, X509_PURPOSE_SSL_SERVER);
+
+		if(X509_VERIFY_PARAM_set1_host(param, host, 0) == 1) {
+			ok = X509_verify_cert(ctx) == 1;
+
+			if(!ok) {
+				snprintf(why, whylen, "%s", X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx)));
+			}
+		}
+	}
+
+	if(!ok && !*why) {
+		snprintf(why, whylen, "it could not be checked against the system's CA store");
+	}
+
+	X509_STORE_CTX_free(ctx);
+	ERR_clear_error();
+	return ok;
+}
+
 /* ---- generation ---------------------------------------------------------- */
 
 static EVP_PKEY *generate_ec_key(void) {
@@ -689,6 +739,11 @@ bool tls_init(void) {
 }
 
 void tls_exit(void) {
+	if(public_store) {
+		X509_STORE_free(public_store);
+		public_store = NULL;
+	}
+
 	if(tls_server_ctx) {
 		SSL_CTX_free(tls_server_ctx);
 		tls_server_ctx = NULL;

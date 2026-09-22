@@ -33,6 +33,7 @@
 #include <openssl/x509v3.h>
 
 #include "acme.h"
+#include "conf.h"
 #include "control_common.h"
 #include "names.h"
 #include "tincctl.h"
@@ -185,36 +186,7 @@ static int cmd_status(void) {
 /* Our own host record carries TlsFingerprint, and zeroconf only ever writes it
    when it is absent -- so replacing the certificate without rewriting this
    line would leave every future invitation handing out a pin for a certificate
-   that no longer exists. */
-static char *host_text_with_fingerprint(const char *text, const char *fp) {
-	size_t cap = (text ? strlen(text) : 0) + TLS_FP_HEX_LEN + 32;
-	char *out = xmalloc(cap);
-	size_t len = 0;
-	bool replaced = false;
-
-	for(const char *line = text; line && *line;) {
-		const char *eol = strchr(line, '\n');
-		size_t linelen = eol ? (size_t)(eol - line) : strlen(line);
-
-		if(!strncasecmp(line, "TlsFingerprint", 14)) {
-			len += (size_t) snprintf(out + len, cap - len, "TlsFingerprint = %s\n", fp);
-			replaced = true;
-		} else {
-			memcpy(out + len, line, linelen);
-			len += linelen;
-			out[len++] = '\n';
-		}
-
-		line = eol ? eol + 1 : NULL;
-	}
-
-	if(!replaced) {
-		len += (size_t) snprintf(out + len, cap - len, "TlsFingerprint = %s\n", fp);
-	}
-
-	out[len] = 0;
-	return out;
-}
+   that no longer exists. host_text_set_var() (conf.c) does the rewrite. */
 
 static bool store_result(const acme_result_t *res, const char *fp, char **why) {
 	if(!yamlconf_lock(yamlconf_path)) {
@@ -239,7 +211,7 @@ static bool store_result(const acme_result_t *res, const char *fp, char **why) {
 
 	if(myname && yamlconf_has_host(yamlconf_global, netname, myname)) {
 		char *text = yamlconf_host_text(yamlconf_global, netname, myname);
-		char *updated = host_text_with_fingerprint(text, fp);
+		char *updated = host_text_set_var(text, "TlsFingerprint", fp);
 		yamlconf_host_set_text(yamlconf_global, netname, myname, updated);
 		free(text);
 		free(updated);
@@ -357,13 +329,15 @@ static int issue(bool staging, bool force, bool renew_only) {
 	printf("Stored the certificate for %s.\n", domain);
 	printf("New TlsFingerprint: %s\n", fp);
 	printf("\nTwo things peers need before this helps them:\n"
-	       "  1. TlsFingerprint. Peers that pinned the old one will refuse an https or quic\n"
-	       "     connection to this node until they learn the new one -- re-issue their\n"
-	       "     invitation, or update TlsFingerprint in their host record for this node.\n"
+	       "  1. TlsFingerprint. A peer that pinned the old one moves to the new one on its\n"
+	       "     own only if it dials this node as %s and trusts the issuing CA (a system\n"
+	       "     trust store; Windows and Android builds have none). Any other peer refuses\n"
+	       "     https and quic to this node until TlsFingerprint in its host record for\n"
+	       "     this node is updated, or its invitation is re-issued.\n"
 	       "  2. Address = %s in this node's host record, so that the SNI they send matches\n"
 	       "     the certificate. An IP address there makes the connection look like a\n"
 	       "     certificate presented to a bare IP, which is exactly what it was before.\n",
-	       domain);
+	       domain, domain);
 
 	acme_result_free(&res);
 	free(domain);

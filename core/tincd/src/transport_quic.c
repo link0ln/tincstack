@@ -110,6 +110,7 @@ typedef struct quic_session_t {
 	timeout_t timer;
 	bool reading;                   /* inside read_pkt / handle_expiry: defer flush */
 	bool dead;                      /* failed; the reaper will terminate it */
+	bool pin_pending;               /* client: pin tls.peer_fp once SPTPS authenticates (M5-7) */
 	ngtcp2_ccerr ccerr;
 } quic_session_t;
 
@@ -284,6 +285,22 @@ static int cb_remove_connection_id(ngtcp2_conn *conn, const ngtcp2_cid *cid, voi
 	return 0;
 }
 
+/* Client: the connection is activated (c->edge is set by ack_h once the SPTPS
+   handshake proved the peer's Ed25519 identity), so the certificate this
+   session was dialled through is the peer's: pin it, replacing any old pin. */
+static void learn_pin(quic_session_t *s) {
+	if(!s->pin_pending || s->is_server || !s->c->edge) {
+		return;
+	}
+
+	s->pin_pending = false;
+	logger(DEBUG_ALWAYS, LOG_NOTICE, "quic: SPTPS authenticated %s; pinning TlsFingerprint %s", s->c->name, s->tls.peer_fp_hex);
+
+	if(!replace_config_file(s->c->name, "TlsFingerprint", s->tls.peer_fp_hex)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "quic: could not store the TlsFingerprint of %s", s->c->name);
+	}
+}
+
 /* Deliver received meta bytes to tinc; may terminate the connection, in which
    case we defer the teardown and stop. Returns false if the session died. */
 static bool deliver_meta(quic_session_t *s, const uint8_t *data, size_t len) {
@@ -296,6 +313,7 @@ static bool deliver_meta(quic_session_t *s, const uint8_t *data, size_t len) {
 		return false;
 	}
 
+	learn_pin(s);
 	return true;
 }
 
@@ -492,14 +510,23 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 		return 0;
 	}
 
-	/* Client: pin the server certificate (accept-on-first-use writes it back),
-	   open stream 0, queue the authenticator, then drive the tinc handshake so
-	   the ID line is the second thing on the stream. All appends only -- the
-	   post-read flush in quic_udp_receive sends them (we are in a callback). */
-	if(s->tls.have_peer_fp && !s->tls.pin[0]) {
-		logger(DEBUG_ALWAYS, LOG_NOTICE, "quic: no pinned TlsFingerprint for %s; accepting %s on first use and pinning it",
-		       s->c->name, s->tls.peer_fp_hex);
-		append_config_file(s->c->name, "TlsFingerprint", s->tls.peer_fp_hex);
+	/* Client: open stream 0, queue the authenticator, then drive the tinc
+	   handshake so the ID line is the second thing on the stream. All appends
+	   only -- the post-read flush in quic_udp_receive sends them (we are in a
+	   callback).
+
+	   An unpinned certificate -- or one that replaced the pin (verify_pin) --
+	   is NOT pinned here: a completed TLS handshake proves nothing about who
+	   is on the other end, and pinning it now would let an attacker on path at
+	   first contact lock this peer out for good (review M5-7, which was fixed
+	   for https only). learn_pin() pins it once SPTPS has authenticated. */
+	if(s->tls.have_peer_fp && (!s->tls.pin[0] || s->tls.repin)) {
+		if(!s->tls.pin[0]) {
+			logger(DEBUG_ALWAYS, LOG_NOTICE, "quic: no pinned TlsFingerprint for %s; will pin %s once SPTPS authenticates the peer",
+			       s->c->name, s->tls.peer_fp_hex);
+		}
+
+		s->pin_pending = true;
 	}
 
 	int64_t sid;
