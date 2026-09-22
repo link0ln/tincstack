@@ -68,3 +68,4 @@ testing/dpi-proof/results/**/*.txt
 # the two gateway dumps testing/nat-sim/README.md cites by path
 !testing/nat-sim/results/*/pair-restricted-symmetric/core/gw-gwb.txt
 !testing/nat-sim/results/*/pair-masq-portrestricted/baseline/gw-gwa.txt
+testing/fingerprint/run/
