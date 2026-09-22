@@ -154,34 +154,40 @@ class Runtime:
         self._ensure_bins()
 
     def _ensure_bins(self) -> None:
-        """Windows: copy the bundled tincd/tinc (+ wintun.dll) to a STABLE
-        per-user bin dir and run from there. A onefile exe unpacks to a random
-        %TEMP% path each launch; Windows Firewall keys rules by program path,
-        so a stable path stops the repeated 'allow tincd' prompts (and lets us
-        pre-add a firewall rule that persists). Elsewhere: use the resolved
-        paths as they are (resources/, $TINCSTACK_BIN_DIR or $PATH)."""
+        """Windows: copy the bundled tincd/tinc (+ wintun.dll) to a STABLE bin
+        dir and run from there. A onefile exe unpacks to a random %TEMP% path
+        each launch; Windows Firewall keys rules by program path, so a stable
+        path stops the repeated 'allow tincd' prompts (and lets us pre-add a
+        firewall rule that persists). Elevated, that dir is under Program
+        Files (paths.bin_stage_dir): a daemon run as administrator from a
+        user-writable folder is a privilege escalation. Files are compared by
+        SHA-256 (paths.stage_file), so an upgrade replaces them even when the
+        size did not change. Elsewhere: use the resolved paths as they are
+        (resources/, $TINCSTACK_BIN_DIR or $PATH)."""
         self.tincd = paths.tincd_exe()
         self.tinc = paths.tinc_exe()
         self.bindir = os.path.dirname(self.tincd)
+        self.stage_note = ""
         if sys.platform != "win32":
             return
+        import management
         names = ["tincd.exe", "tinc.exe", "wintun.dll"]
-        bindir = os.path.join(paths.local_appdata_dir(), "bin")
+        bindir = paths.bin_stage_dir(management.is_admin())
         try:
-            os.makedirs(bindir, exist_ok=True)
             for n in names:
                 src = os.path.join(paths.resource_dir(), n)
-                dst = os.path.join(bindir, n)
-                if os.path.isfile(src) and (not os.path.isfile(dst)
-                                            or os.path.getsize(dst) != os.path.getsize(src)):
-                    shutil.copy2(src, dst)
+                if os.path.isfile(src):
+                    paths.stage_file(src, os.path.join(bindir, n))
             if not os.path.isfile(os.path.join(bindir, "tincd.exe")):
                 raise OSError("tincd not staged")
             self.tincd = os.path.join(bindir, "tincd.exe")
             self.tinc = os.path.join(bindir, "tinc.exe")
             self.bindir = bindir
-        except OSError:
-            pass
+        except OSError as e:
+            # Most likely a daemon from the previous version still runs from
+            # bindir and holds the file. Run the bundled copy instead of the
+            # stale staged one, and say so.
+            self.stage_note = f"could not update {bindir} ({e}); running the bundled core"
 
     # -- paths --
     def runtime_dir(self, net: str) -> str:

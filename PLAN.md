@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
+**Last Updated:** 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
 up two defects that break a node weeks after it is installed, and both are
 fixed: nothing renewed the ACME certificate (it simply expired, leaving the
 https front *more* conspicuous than the self-signed one it replaced), and a
@@ -2426,8 +2426,9 @@ Defects identified during the source audit, to fix as their milestone is reached
     TlsFingerprint for nodeb; accepting be5eb... on first use and pinning
     it`. (That control was flaky once -- one earlier run on the old image
     passed case 1, a timing race between the pin write and the teardown.)
-  - 🟠 **The elevated Windows manager runs code any unelevated process can
-    replace** (local privilege escalation; a UAC bypass on the usual
+  - [x] 🟠 **The elevated Windows manager runs code any unelevated process can
+    replace** *(fixed 2026-09-23 for binaries, config and the task target;
+    one path remains open, see below; not run on real Windows)* (local privilege escalation; a UAC bypass on the usual
     admin-user PC, a real LPE for a standard user). The logon task runs
     `tincmgr.exe` with `/rl highest` and no prompt; it then starts
     `%LOCALAPPDATA%\tincmgr\bin\tincd.exe` (user-writable), reads the YAML
@@ -2440,7 +2441,47 @@ Defects identified during the source audit, to fix as their milestone is reached
     (or re-ACL the bin/config dirs to Administrators), verify the staged
     binaries by hash, and never let the elevated side consume a
     user-writable path.
-  - 🟠 **A Windows upgrade can keep running the old `tincd.exe`.**
+    **Fixed 2026-09-23** (`backend/paths.py`, `runtime.py`, `management.py`,
+    `main.py`): elevated on Windows, everything the app executes or obeys
+    lives under `%ProgramFiles%\tincmgr` (resolved with
+    `SHGetFolderPathW`, not the inheritable environment variable; Program
+    Files, unlike ProgramData, lets no user pre-create files there): the
+    core in `bin\`, the autostart copy `tincmgr.exe`, and `tinc.yaml`. A
+    config in the old places is imported **once**; afterwards it is ignored
+    and the status bar says so. The logon task targets the installed copy;
+    each elevated start refreshes that copy and moves a task created by
+    <= 0.4.1 off its user-writable path. Unelevated runs keep the old
+    search (nothing they start is elevated).
+    Proof, all without a Windows kernel: `tests/test_trust.py`, 15 tests --
+    Linux CPython 19 passed/1 skipped (with test_runtime), Windows CPython
+    under Wine 15/15 including the real `SHGetFolderPathW` ignoring a
+    planted `ProgramFiles` variable; the full suite under Wine 83 passed, 1
+    failed, the same single failure as on HEAD (below). The onefile exe
+    built by `build-exe.sh`, Wine selftest: `config=C:\Program
+    Files\tincmgr\tinc.yaml`, `staged_tincd=C:\Program
+    Files\tincmgr\bin\tincd.exe`. **Not verified:** real ACLs, a real
+    `schtasks /query /xml` (the parse is tested against a fake), UAC.
+    What is still open:
+    - [ ] 🟠 **The onefile exe itself unpacks into `%TEMP%\_MEIxxxx`** and
+      loads `python3*.dll` and the Qt DLLs from there. For an admin user the
+      elevated process's `%TEMP%` is the user's own, writable at medium
+      integrity: a race-to-replace before load is a silent elevation, and
+      the logon task still starts that exe at every logon with no prompt.
+      (For a standard user elevated with an admin's password, `%TEMP%` is the
+      admin's, so this does not apply.) Fix: ship the installed copy as a
+      PyInstaller *onedir* build under Program Files, so nothing elevated
+      unpacks anywhere; or set `runtime_tmpdir` to a protected path.
+    - [ ] 🟢 Last run wins: running an older tincmgr elevated with autostart
+      on puts that older copy into Program Files.
+    - [ ] 🟢 `refresh_startup_task()` runs `schtasks` on the Qt thread at start
+      (one `/query`, plus `/create` and PowerShell once when migrating).
+  - [x] 🟠 **A Windows upgrade can keep running the old `tincd.exe`.**
+    *(Fixed 2026-09-23: `paths.stage_file()` compares SHA-256, reads the
+    source once so the hashed bytes are the written bytes, writes `.new` +
+    rename. `test_stage_file_replaces_a_same_size_different_binary` and
+    `test_runtime_stages_elevated_binaries_by_hash` stage over a same-size
+    stale file. If a running daemon locks the old file, the bundled copy runs
+    instead and the status bar says why.)*
     `_ensure_bins()` re-copies a bundled binary only when its *size* differs,
     and PE files are section-aligned, so small changes do not move the size.
     Measured on our own builds:
@@ -2451,6 +2492,11 @@ Defects identified during the source audit, to fix as their milestone is reached
 
     An upgrade between those two would have staged nothing and silently run
     the previous daemon. Compare hashes (or copy unconditionally).
+  - 🟢 **`tests/test_routes.py::test_live_calls_refuse_to_pretend_off_windows`
+    fails under Windows CPython (Wine)**: it asserts the off-Windows refusal
+    but does not skip on win32, where `routes.apply_now()` really runs. Same
+    single failure on HEAD c6d7a91 (68 passed, 1 failed) and with the LPE fix
+    (83 passed, 1 failed). A test bug, not a product one; skip it on win32.
   - 🟡 **`httpc` `dechunk()` trusts the chunk size: heap overflow.** A chunk
     header of `ffffffffffffffff` makes `in + chunk` wrap, the bound check
     passes, and `memmove()` is called with `SIZE_MAX`. ASan, new harness

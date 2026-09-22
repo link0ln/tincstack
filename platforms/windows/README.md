@@ -19,8 +19,32 @@ assigned automatically.
    **✉ Invite…** hands out a one-line invitation; on another machine
    **⤵ Join…** pastes it and the network appears in that machine's `tinc.yaml`.
 
-That's it — two files. Runtime side-files (`<net>/`, `<net>-tincd.log`) are
-written next to the YAML.
+That's it — two files to start with. Where things end up:
+
+* **The config.** The app runs as administrator, so it only obeys a config
+  that only administrators can change: `C:\Program Files\tincmgr\tinc.yaml`.
+  On the first elevated start a `tinc.yaml` found next to the exe, in the
+  current folder or in `%LOCALAPPDATA%\tincmgr` is **copied** there once; after
+  that the old file is not read (the status bar says so) — edit the config in
+  the app (*Raw YAML…*) or in an elevated editor. Reading a user-writable file
+  on every start is what let any unelevated program choose what the elevated
+  one ran (`ScriptsInterpreter`, scripts in the runtime folder): a local
+  privilege escalation, review 2026-09-22.
+* **The core.** `tincd.exe`, `tinc.exe` and `wintun.dll` are staged into
+  `C:\Program Files\tincmgr\bin` and run from there (a stable path, so one
+  firewall rule survives restarts). They are compared by SHA-256 on every
+  start, so an upgrade always replaces them.
+* **Run at startup** registers `C:\Program Files\tincmgr\tincmgr.exe`, a copy
+  of the exe you enabled it from, never the exe in your Downloads — the task
+  starts it elevated without a prompt. Every elevated start refreshes that copy
+  from the exe you ran, and moves a task created by tincmgr 0.4.1 or older off
+  its old path.
+* Runtime side-files (`<net>/`, `<net>-tincd.log`) are written next to the
+  config.
+
+Not elevated (a dev run that declined UAC) the old search is kept: config next
+to the exe, else the working folder, else `%LOCALAPPDATA%\tincmgr`; nothing
+such a run starts can raise its privileges.
 
 ## The config — one YAML for everything
 

@@ -1256,16 +1256,25 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QApplication.quit()
 
 
-def _ensure_config() -> str | None:
-    p = paths.find_config()
-    if p:
-        return p
+def _ensure_config() -> tuple[str | None, str]:
+    """(config path, status note). Elevated on Windows the config lives in the
+    admin-only folder (paths.adopt_config); an unelevated run keeps the old
+    search, because nothing it reads can raise its privileges."""
+    legacy = paths.find_config()
+    prot = paths.protected_dir() if management.is_admin() else None
+    if prot:
+        try:
+            return paths.adopt_config(os.path.join(prot, paths.CONFIG_BASENAMES[0]), legacy)
+        except OSError as e:
+            return None, f"cannot use {prot}: {e}"
+    if legacy:
+        return legacy, ""
     dest = paths.default_config_path()
     try:
         yaml_config.atomic_write_text(dest, "networks: {}\n")
-        return dest
-    except OSError:
-        return None
+        return dest, ""
+    except OSError as e:
+        return None, str(e)
 
 
 def main() -> None:
@@ -1278,15 +1287,21 @@ def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)   # closing the window minimizes to tray
-    cfg = _ensure_config()
+    cfg, note = _ensure_config()
     if not cfg:
-        QtWidgets.QMessageBox.critical(None, "tincmgr", "No tinc.yaml found and could not create one.")
+        QtWidgets.QMessageBox.critical(None, "tincmgr", "No tinc.yaml found and could not create one."
+                                       + (f"\n\n{note}" if note else ""))
         sys.exit(1)
     w = MainWindow(cfg)
     w.show()
+    if sys.platform == "win32" and w.admin and paths.is_frozen():
+        note = "; ".join(n for n in (note, management.refresh_startup_task(sys.executable)) if n)
+    note = "; ".join(n for n in (note, w.rt.stage_note) if n)
     ok, msg = paths.binaries_present()
     if not ok:
         w.status(msg)
+    elif note:
+        w.status(note)
     selftest = os.environ.get("TINCMGR_SELFTEST_MS")
     if selftest:
         import tempfile
@@ -1294,7 +1309,8 @@ def main() -> None:
         lines = ["SELFTEST OK", f"frozen={paths.is_frozen()}", f"admin={w.admin}",
                  f"config={cfg}", f"networks={list(w.app.networks)}",
                  f"load_error={w.load_error!r}", f"tincd={paths.tincd_exe()}",
-                 f"tincd_exists={os.path.isfile(paths.tincd_exe())}"]
+                 f"tincd_exists={os.path.isfile(paths.tincd_exe())}",
+                 f"staged_tincd={w.rt.tincd}", f"note={note!r}"]
         try:
             with open(logp, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")

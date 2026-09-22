@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import subprocess
 import sys
+
+import paths
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -88,15 +91,49 @@ def _clear_task_battery_limits(name: str) -> None:
         pass
 
 
+def installed_exe() -> str | None:
+    """Where the autostart task's copy of tincmgr.exe lives (admin-only)."""
+    prot = paths.protected_dir()
+    return os.path.join(prot, "tincmgr.exe") if prot else None
+
+
+def install_self(exe_path: str) -> str:
+    """Copy the running exe to installed_exe() (by content, paths.stage_file)
+    and return that path. The logon task runs its target elevated with no
+    prompt, so the target must be a file only administrators can replace --
+    not wherever the user happened to drop the download."""
+    dst = installed_exe()
+    if not dst:
+        raise OSError("Program Files could not be resolved")
+    paths.stage_file(exe_path, dst)
+    return dst
+
+
+def startup_task_command() -> str | None:
+    """The program the logon task runs, or None if there is no task (or it
+    cannot be read)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        p = subprocess.run(["schtasks", "/query", "/tn", STARTUP_TASK, "/xml"],
+                           capture_output=True, text=True, creationflags=_NO_WINDOW)
+    except OSError:
+        return None
+    m = re.search(r"<Command>(.*?)</Command>", p.stdout or "", re.S)
+    return m.group(1).strip().strip('"') if p.returncode == 0 and m else None
+
+
 def set_startup_task(enabled: bool, exe_path: str) -> tuple[bool, str]:
-    """Create/remove a logon Scheduled Task that runs `exe_path` with highest
-    privileges (starts elevated at login). Needs admin to create."""
+    """Create/remove a logon Scheduled Task that runs tincmgr with highest
+    privileges (starts elevated at login). Needs admin to create. The task runs
+    the admin-only copy from install_self(), never `exe_path` itself."""
     if sys.platform != "win32":
         return False, "run-at-startup is Windows-only"
     try:
         if enabled:
+            target = install_self(exe_path)
             p = subprocess.run(
-                ["schtasks", "/create", "/tn", STARTUP_TASK, "/tr", f'"{exe_path}"',
+                ["schtasks", "/create", "/tn", STARTUP_TASK, "/tr", f'"{target}"',
                  "/sc", "onlogon", "/rl", "highest", "/f"],
                 capture_output=True, text=True, creationflags=_NO_WINDOW)
             if p.returncode == 0:
@@ -107,6 +144,29 @@ def set_startup_task(enabled: bool, exe_path: str) -> tuple[bool, str]:
         return p.returncode == 0, (p.stdout + p.stderr).strip()
     except OSError as e:
         return False, str(e)
+
+
+def refresh_startup_task(exe_path: str) -> str:
+    """At every elevated start: if run-at-startup is on, bring the installed
+    copy up to this exe (an upgrade must not leave the task on the old
+    version) and move a task created by an older tincmgr -- which points at a
+    user-writable path -- onto the installed copy. Returns a status note."""
+    cmd = startup_task_command()
+    if cmd is None:
+        return ""
+    target = installed_exe()
+    if not target:
+        return "run-at-startup: Program Files could not be resolved; task left as it is"
+    try:
+        if os.path.normcase(cmd) != os.path.normcase(target):
+            ok, msg = set_startup_task(True, exe_path)
+            return (f"run-at-startup now runs {target}" if ok
+                    else f"run-at-startup: could not move the task off {cmd}: {msg[:80]}")
+        if os.path.normcase(os.path.abspath(exe_path)) != os.path.normcase(target):
+            paths.stage_file(exe_path, target)
+        return ""
+    except OSError as e:
+        return f"run-at-startup: could not update {target}: {e}"
 
 
 # ---- firewall (pre-allow tincd so Windows doesn't prompt every launch) --------
