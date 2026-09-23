@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-23, morning (**the quic carrier is HTTP/3 now: control and QPACK streams with SETTINGS, the tinc session as a POST whose DATA frames carry the authenticator and meta, RFC 9297 datagrams, and a decoy page for every other HTTP/3 request -- curl, Chromium and nginx all read it as HTTP/3 (`h3-interop-test.sh` 8/8, 6/8 fail on the previous core). The dialler's Initial now carries curl's stream limits and an empty source connection id. Not fixable in GnuTLS: the QUIC JA4 stays unique; the fix is OpenSSL 3.5 for both carriers, which needs the owner's call. Old and new nodes no longer speak quic to each other (they fall back to plain in 5 s).**) Before that, 2026-09-23, early morning (**the https and quic fronts moved off tinc's port: a listening node binds front-only TCP/UDP 443, advertises it in its own host record so invitations carry it, and the quic dial sends from an ephemeral port -- `front-port-test.sh` and a re-measured fingerprint run show TLS and QUIC to 443 only. Found on the way: the UDP front shared 443 with any other `SO_REUSEADDR` server (fixed), and the Linux compose files published only 655, so a compose node would have advertised an unreachable 443 (fixed: `FRONT_PORT`). QUIC h3 conformance and the decoy are next.**) Before that, 2026-09-23, late night (**`CERT_RENEW=1` is the default again. First wire-fingerprint audit (`testing/fingerprint/run.sh`, against nginx, curl and Chromium): neither carrier passes the owner's rule yet -- the fronts sit on tinc's port 655 and the quic client even sends *from* it (🔴); our QUIC ClientHello says h3 but forbids the streams HTTP/3 needs and has a JA4 no reference client shares; our QUIC server never answers an h3 request; our TLS ClientHello is a 403-byte OpenSSL 3.0 one next to 1.6-2 KB from curl and Chromium; the decoy answers garbage with 200. Our TLS server side is the one part that matches nginx.**) Before that, 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
+**Last Updated:** 2026-09-23, day (**the decoy answers as nginx does: its welcome page and error pages byte for byte, its headers and dates, 404/405/400, keep-alive, close_notify, nginx's 400 to plain bytes on 443, and a silent client closed at 60 s instead of held for ever -- `decoy-conformance-test.sh` 20/20 next to a real nginx, 19/20 fail on the previous core. Found on the way: tinc's accept tarpit and the QUIC per-second budget left the 11th connection of a burst unanswered -- the web fronts now use a 256-client cap instead; the built-in page was Apache's under `Server: nginx`. Still not nginx: no h2, no Alt-Svc.**) Before that, 2026-09-23, morning (**the quic carrier is HTTP/3 now: control and QPACK streams with SETTINGS, the tinc session as a POST whose DATA frames carry the authenticator and meta, RFC 9297 datagrams, and a decoy page for every other HTTP/3 request -- curl, Chromium and nginx all read it as HTTP/3 (`h3-interop-test.sh` 8/8, 6/8 fail on the previous core). The dialler's Initial now carries curl's stream limits and an empty source connection id. Not fixable in GnuTLS: the QUIC JA4 stays unique; the fix is OpenSSL 3.5 for both carriers, which needs the owner's call. Old and new nodes no longer speak quic to each other (they fall back to plain in 5 s).**) Before that, 2026-09-23, early morning (**the https and quic fronts moved off tinc's port: a listening node binds front-only TCP/UDP 443, advertises it in its own host record so invitations carry it, and the quic dial sends from an ephemeral port -- `front-port-test.sh` and a re-measured fingerprint run show TLS and QUIC to 443 only. Found on the way: the UDP front shared 443 with any other `SO_REUSEADDR` server (fixed), and the Linux compose files published only 655, so a compose node would have advertised an unreachable 443 (fixed: `FRONT_PORT`). QUIC h3 conformance and the decoy are next.**) Before that, 2026-09-23, late night (**`CERT_RENEW=1` is the default again. First wire-fingerprint audit (`testing/fingerprint/run.sh`, against nginx, curl and Chromium): neither carrier passes the owner's rule yet -- the fronts sit on tinc's port 655 and the quic client even sends *from* it (🔴); our QUIC ClientHello says h3 but forbids the streams HTTP/3 needs and has a JA4 no reference client shares; our QUIC server never answers an h3 request; our TLS ClientHello is a 403-byte OpenSSL 3.0 one next to 1.6-2 KB from curl and Chromium; the decoy answers garbage with 200. Our TLS server side is the one part that matches nginx.**) Before that, 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
 up two defects that break a node weeks after it is installed, and both are
 fixed: nothing renewed the ACME certificate (it simply expired, leaving the
 https front *more* conspicuous than the self-signed one it replaced), and a
@@ -2339,7 +2339,8 @@ Defects identified during the source audit, to fix as their milestone is reached
   thing, not against "looks encrypted". State today:
   - [x] a pin mismatch no longer makes the client abort after the server's
     certificate (removed with the CA check, see the renewal item below)
-  - [ ] 🟠 the decoy answers like no real server (item below)
+  - [x] 🟠 the decoy answers like no real server (item below) -- **fixed
+    2026-09-23**, see "The decoy (active), confirmed" below
   - [x] **Measured 2026-09-23** — `testing/fingerprint/run.sh`, proof in
     `testing/fingerprint/results/2026-09-23/` (`report.txt`, `probes.txt`,
     pcaps). One certificate, two servers (our tincd B; nginx 1.27 with TLS +
@@ -2390,8 +2391,12 @@ Defects identified during the source audit, to fix as their milestone is reached
         unconditionally), which fails `compose up` on a host running a web
         server until `FRONT_PORT` is changed
       - [ ] 🟡 `tinc join` is still cleartext tinc on the tinc port (item below)
-      - [ ] 🟠 non-TLS bytes on TCP 443 are closed without a word; nginx
-        answers `400` (decoy step, next)
+      - [x] 🟠 non-TLS bytes on TCP 443 are closed without a word; nginx
+        answers `400` (decoy step, next) -- **fixed 2026-09-23**: plain
+        HTTP and a tinc ID line on `HttpsPort` get nginx's two `400` pages
+        byte for byte, a `0x80`+ first byte is closed silently as nginx does
+        (`decoy-conformance-test.sh` "plain"/"tincid"/"non-ASCII" cases;
+        `front-port-test.sh` now expects the `400` instead of silence)
       - [ ] 🟡 Windows: `SO_REUSEADDR` on the TCP listeners lets another
         process bind the same port there (upstream behaviour, unchanged);
         the Windows core was cross-built with this change, not run
@@ -2481,10 +2486,58 @@ Defects identified during the source audit, to fix as their milestone is reached
       compressed certificates). Not shared with any reference client.
       Inside TLS the upgrade request says `User-Agent: Mozilla/5.0` and
       nothing else, which no browser sends (visible to a TLS terminator).
-    - [ ] 🟠 **The decoy (active), confirmed:** B answers garbage over TLS with
+    - [x] 🟠 **The decoy (active), confirmed:** B answers garbage over TLS with
       `200 OK`, nginx with `400 Bad Request`; B has no `Date:` header and
       speaks HTTP/1.1 even when the client offers h2 (nginx picks h2). See
       the decoy item below.
+      **Fixed 2026-09-23** (docs/transports.md §8.5.1, PATCHES.md §16),
+      except h2 (open below). The decoy is nginx 1.27 with `server_tokens
+      off`: nginx's welcome page byte for byte (it was Apache's "It works!"
+      under `Server: nginx`) with the stock `nginx:1.27.5` file's
+      `Last-Modified`/`ETag`, nginx's header order with `Date`, `404` /
+      `405` / `400` with its error pages, keep-alive with pipelining, TLS
+      `close_notify` before the FIN (we sent a bare FIN), nginx's answers
+      to plain bytes on the TLS port, 60 s for a silent client (was: held
+      for ever by the tarpit). Found on the way and fixed: tinc's accept
+      tarpit (`check_tarpit`, 10 connections/s from one address) and the
+      per-second QUIC budget answered the 11th connection of a burst with
+      silence -- a one-line prober check; the web fronts now skip both and
+      cap concurrent unauthenticated clients at 256 instead (the tinc port
+      keeps them). Proof: `testing/transports/decoy-conformance-test.sh`,
+      same probes to a tinc node and to `nginx:1.27`: 20/20 on this core;
+      on the core before it (`core:pre-h3`) 19/20 fail -- only the
+      high-byte case matched (`testing/fingerprint/results/2026-09-23-decoy/`
+      `conformance.txt`, `conformance-pre-h3.txt`; fingerprint re-run in the
+      same directory: garbage over TLS now `400`, ClientHello/ServerHello
+      values unchanged). Also found: the labs' `tcpdump -U` without
+      `--immediate-mode` lost the tail of sparse captures (the nginx side
+      showed 14 packets of ~200) -- all four capture labs use it now; and
+      `h3-interop-test.sh` broke whenever the random Ed25519 key contained
+      `/` (sed delimiter), fixed; and the web-front timeout first counted
+      from the request, which would have cut a slow but progressing
+      download at 60 s -- it now counts from the last byte written, as
+      nginx's `send_timeout` does. `tls-front-test.sh` M5-8 now waits for
+      that 60 s close (it expected tinc's authentication timeout).
+      Regressions, all exit 0: front-port (expects nginx's `400` now),
+      quic-carrier, plain-refuse, classify, cert-repin, carrier-switch,
+      invitee-mesh, obfs, same-nat-meta, matrix (`core:dev-test`), smoke --
+      on the core before the send-timeout change; tls-front, h3-interop,
+      https-carrier and decoy-conformance (20/20) on the final core. `make
+      lint`, `make secrets` clean; mingw cross-build OK. Open:
+      - [ ] 🟡 no ALPN `h2`: an nginx with `http2 on` (most HTTPS sites)
+        selects h2 for curl and browsers, we always answer `http/1.1`
+        (matches nginx's default config, not the typical site)
+      - [ ] 🟡 no `Alt-Svc` on TCP answers although the node serves HTTP/3
+        on 443; sites that serve h3 advertise it (the lab's nginx does)
+      - [ ] 🟡 not imitated: `Range`, `If-Modified-Since` → `304`,
+        directory redirects (`/dir` → `301`), TLS session-ticket size
+      - [ ] 🟡 the HTTP/3 decoy always serves `/` and never proxies to
+        `HttpsDecoyUpstream`; with an upstream the TCP decoy relays its
+        answer and always closes (the forwarded request says
+        `Connection: close`)
+      - [ ] 🟡 the 75 s keep-alive idle close is set, not measured; the
+        256-client cap is by reading, no lab fills it
+      - [ ] 🟡 Windows: the decoy changes were cross-built (mingw), not run
     - [x] 🟢 **What is fine:** our TLS *server* (OpenSSL 3.0) gives the same
       JA3S as nginx to both curl (`15af977c...`) and Chromium (`f4febc55...`).
       B sent only the leaf (nginx: leaf + CA) — a lab config detail; ACME
@@ -2733,7 +2786,9 @@ Defects identified during the source audit, to fix as their milestone is reached
     common. The exporter binding already makes a captured authenticator
     useless, so the window can be minutes, and the client can say "check the
     clock" when a server it has reached before stops answering 101.
-  - 🟠 **The decoy is fingerprintable.** *(raised from 🟡 on 2026-09-23 under
+  - ~~🟠 **The decoy is fingerprintable.**~~ **Resolved 2026-09-23:** the
+    decoy is nginx's, see "The decoy (active), confirmed" under the owner's
+    requirement. *(raised from 🟡 on 2026-09-23 under
     the owner's rule below: an `https` front must look like HTTPS to a prober)* It sends `Server: nginx` with
     Apache's "It works!" page, no `Date:` header, and `200` to any method
     and to garbage that is not HTTP; a real nginx sends a `Date`, its own

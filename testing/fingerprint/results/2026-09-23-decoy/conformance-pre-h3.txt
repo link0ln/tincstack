@@ -1,0 +1,45 @@
+04:50:30 FAIL get: ours 'HTTP/1.1 200 OK' [Server Content-Type Content-Length Connection ] vs nginx 'HTTP/1.1 200 OK' [Server Date Content-Type Content-Length Last-Modified Connection ETag Accept-Ranges ]
+04:50:30 FAIL get_close: ours 'HTTP/1.1 200 OK' [Server Content-Type Content-Length Connection ] vs nginx 'HTTP/1.1 200 OK' [Server Date Content-Type Content-Length Last-Modified Connection ETag Accept-Ranges ]
+04:50:30 FAIL head: ours 'HTTP/1.1 200 OK' [Server Content-Type Content-Length Connection ] vs nginx 'HTTP/1.1 200 OK' [Server Date Content-Type Content-Length Last-Modified Connection ETag Accept-Ranges ]
+04:50:30 FAIL nope: ours 'HTTP/1.1 200 OK' [Server Content-Type Content-Length Connection ] vs nginx 'HTTP/1.1 404 Not Found' [Server Date Content-Type Content-Length Connection ]
+04:50:30 FAIL post: ours 'HTTP/1.1 200 OK' [Server Content-Type Content-Length Connection ] vs nginx 'HTTP/1.1 405 Not Allowed' [Server Date Content-Type Content-Length Connection ]
+04:50:30 FAIL garbage: ours 'HTTP/1.1 200 OK' [Server Content-Type Content-Length Connection ] vs nginx 'HTTP/1.1 400 Bad Request' [Server Date Content-Type Content-Length Connection ]
+04:50:30 FAIL nohost: ours 'HTTP/1.1 200 OK' [Server Content-Type Content-Length Connection ] vs nginx 'HTTP/1.1 400 Bad Request' [Server Date Content-Type Content-Length Connection ]
+04:50:30 FAIL http10: ours 'HTTP/1.1 200 OK' [Server Content-Type Content-Length Connection ] vs nginx 'HTTP/1.1 200 OK' [Server Date Content-Type Content-Length Last-Modified Connection ETag Accept-Ranges ]
+04:50:30 FAIL get_close: the page differs from nginx's
+1,5c1,9
+< <!doctype html>
+< <html lang="en">
+< <head><meta charset="utf-8"><title>Welcome</title>
+< <meta name="viewport" content="width=device-width, initial-scale=1">
+< <style>body{font-family:system-ui,Arial,sans-serif;margin:6em auto;max-width:40em;padding:0 1em;color:#333}h1{font-weight:600}</style>
+04:50:30 FAIL nope: the page differs from nginx's
+1,12c1,7
+< <!doctype html>
+< <html lang="en">
+< <head><meta charset="utf-8"><title>Welcome</title>
+< <meta name="viewport" content="width=device-width, initial-scale=1">
+< <style>body{font-family:system-ui,Arial,sans-serif;margin:6em auto;max-width:40em;padding:0 1em;color:#333}h1{font-weight:600}</style>
+04:50:30 FAIL post: the page differs from nginx's
+1,12c1,7
+< <!doctype html>
+< <html lang="en">
+< <head><meta charset="utf-8"><title>Welcome</title>
+< <meta name="viewport" content="width=device-width, initial-scale=1">
+< <style>body{font-family:system-ui,Arial,sans-serif;margin:6em auto;max-width:40em;padding:0 1em;color:#333}h1{font-weight:600}</style>
+04:50:30 FAIL garbage: the page differs from nginx's
+1,12c1,7
+< <!doctype html>
+< <html lang="en">
+< <head><meta charset="utf-8"><title>Welcome</title>
+< <meta name="viewport" content="width=device-width, initial-scale=1">
+< <style>body{font-family:system-ui,Arial,sans-serif;margin:6em auto;max-width:40em;padding:0 1em;color:#333}h1{font-weight:600}</style>
+04:50:30 FAIL keep-alive: ours 1 answers, nginx 2
+04:50:30 FAIL the built-in page's Last-Modified/ETag: 
+04:50:30 FAIL plain on the TLS port: ours '' vs nginx 'HTTP/1.1 400 Bad Request'
+04:50:30 FAIL tincid on the TLS port: ours '' vs nginx 'HTTP/1.1 400 Bad Request'
+04:50:30 PASS a non-ASCII first byte: closed without an answer by both
+04:50:30 FAIL 30 simultaneous connections from one address: ours answered 0, nginx 30
+04:52:10 FAIL a silent client is closed after 100 s (nginx: 60 s)
+04:52:12 FAIL close_notify before the FIN (ours 0/9 TLS closes, nginx 8/40)
+04:52:12 decoy conformance: FAILURES above

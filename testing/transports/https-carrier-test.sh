@@ -184,7 +184,7 @@ fi
 
 echo "===== prober during the session gets the decoy ====="
 pr=$(docker run --rm --net "container:$PFX-b" "$TOOLS" curl -sk https://127.0.0.1:655/ || true)
-if echo "$pr" | grep -qi "It works"; then
+if echo "$pr" | grep -qi "Welcome to nginx"; then
 	note "a TLS prober during the session got the decoy"
 else
 	miss "prober did not get the decoy"

@@ -102,7 +102,7 @@ tnc l join "$inv" >/dev/null 2>&1
 # Capture from here: `tinc join' itself is cleartext tinc on the tinc port
 # (PLAN.md, known), and is not what is being measured.
 docker run -d --name "$PFX-cap" --network "container:$PFX-f" --cap-add NET_ADMIN --cap-add NET_RAW \
-	-v "$RUN/cap:/cap" "$TOOLS" tcpdump -U -i any -s 0 -w /cap/f.pcap 'tcp or udp' >/dev/null
+	-v "$RUN/cap:/cap" "$TOOLS" tcpdump -U --immediate-mode -i any -s 0 -w /cap/f.pcap 'tcp or udp' >/dev/null
 sleep 2
 
 if [[ $(tnc l get founder.HttpsPort 2>/dev/null) == 443 && $(tnc l get founder.QuicPort 2>/dev/null) == 443 ]]; then
@@ -144,11 +144,13 @@ else
 	bad "TLS on TCP 443 reaches the https front (got '$(cat "$RUN/tls-probe")')"
 fi
 
-probe "exec 3<>/dev/tcp/$F_IP/443; printf '0 prober 17.7\n' >&3; timeout 3 cat <&3 | wc -c" > "$RUN/tinc-probe" 2>/dev/null || true
-if [[ $(tr -d ' \n' < "$RUN/tinc-probe") == 0 ]]; then
-	ok "a tinc ID line on TCP 443 gets no answer"
+# Not tinc: no ID line back, only what nginx answers on its TLS port (the
+# decoy step, docs/transports.md §8.5.1; before it, no answer at all).
+probe "exec 3<>/dev/tcp/$F_IP/443; printf '0 prober 17.7\n' >&3; timeout 3 cat <&3 | head -1" > "$RUN/tinc-probe" 2>/dev/null || true
+if [[ $(tr -d '\r' < "$RUN/tinc-probe") == "HTTP/1.1 400 Bad Request" ]]; then
+	ok "a tinc ID line on TCP 443 gets nginx's 400, not tinc"
 else
-	bad "a tinc ID line on TCP 443 gets no answer (got $(cat "$RUN/tinc-probe") bytes)"
+	bad "a tinc ID line on TCP 443 gets nginx's 400, not tinc (got '$(cat "$RUN/tinc-probe")')"
 fi
 
 probe "head -c 120 /dev/urandom > /dev/udp/$F_IP/443; sleep 2" || true

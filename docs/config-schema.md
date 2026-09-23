@@ -138,8 +138,9 @@ networks:
       HttpsSni: www.example.com               # SNI the `https' DIAL presents; default =
                                               # the peer's Address if it is a hostname,
                                               # else `localhost'
-      HttpsDecoyRoot: /var/www/decoy          # static files served to probers; a
-                                              # generic default page ships if unset
+      HttpsDecoyRoot: /var/www/decoy          # static files served to probers, with
+                                              # nginx's answers (404/405/400, dates,
+                                              # ETag); unset = nginx's welcome page
       HttpsDecoyUpstream: "example.com:80"    # or transparently proxy probers here
                                               # (host:port; Host header rewritten)
 

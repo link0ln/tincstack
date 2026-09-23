@@ -152,7 +152,7 @@ docker run -d --name "$PFX-n" --network "$NET" --ip "$N_IP" \
 # ---- captures ------------------------------------------------------------------
 for s in b n; do
 	docker run -d --name "$PFX-cap$s" --network "container:$PFX-$s" --cap-add NET_ADMIN --cap-add NET_RAW \
-		-v "$OUT:/out" "$TOOLS" tcpdump -U -i any -s 0 -w "/out/$s.pcap" 'tcp or udp' >/dev/null
+		-v "$OUT:/out" "$TOOLS" tcpdump -U --immediate-mode -i any -s 0 -w "/out/$s.pcap" 'tcp or udp' >/dev/null
 done
 sleep 3
 

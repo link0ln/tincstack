@@ -432,8 +432,9 @@ tinc to anyone who looks at the port, however good the TLS is. Now:
 - A node that accepts inbound connections (`Port` unset or non-zero) also
   listens on **TCP `HttpsPort`** and **UDP `QuicPort`**, both **443** by
   default, one socket per address family. These sockets are front-only: TCP
-  `HttpsPort` hands TLS to the `https` carrier and closes anything else
-  (`c->status.front_tls_only`, `transport_front_dispatch`); UDP `QuicPort`
+  `HttpsPort` hands TLS to the `https` carrier and answers anything else as
+  nginx does on its TLS port (§8.5.1; `c->status.front_tls_only`,
+  `transport_front_dispatch`); UDP `QuicPort`
   feeds only `quic_udp_try()` and drops what it does not claim. `plain`,
   `sf` and `obfs` stay on the tinc port, and the tinc port still accepts
   `https` and `quic` for peers that do not know the new port.
@@ -463,13 +464,14 @@ tinc to anyone who looks at the port, however good the TLS is. Now:
 Limits: the advertised port is the port bound, so an operator port-forward that
 maps a different external port is overwritten on every start (publish the
 same port; the Linux compose files do, `FRONT_PORT`). `tinc join` is still
-cleartext tinc on the tinc port. Non-TLS bytes on `HttpsPort` are closed
-without an answer, which a web server would not do (the decoy step).
+cleartext tinc on the tinc port. Non-TLS bytes on `HttpsPort` get nginx's
+answer since the decoy step (§8.5.1); until then they were closed without one.
 
 Proof: `testing/transports/front-port-test.sh` -- listeners and
 advertisement, the invitation carrying the ports, https and quic joins over
 443 (SYN destination ports only 443, QUIC from an ephemeral source port), no
 answer to a tinc ID line on TCP 443 or random bytes on UDP 443, the https dial
+(the decoy step later made that 400 -- see §8.5.1), the https dial
 falling back to the tinc port without an advertisement, a node without
 `CAP_NET_BIND_SERVICE` warning and advertising nothing, and a quic front that
 refuses to share UDP 443 with an `SO_REUSEADDR` DTLS server (on the code
@@ -1220,14 +1222,72 @@ M5-10):
   `Authorization` stripped, so a failed tinc authenticator (e.g. a clock-skewed
   peer) never reaches the upstream in the clear;
 - the plain-HTTP path reads the request head and writes the response on
-  readiness, never busy-waiting on a client that does not read; an exchange that
-  does not finish is reaped by the authentication timeout like any other
-  unauthenticated connection.
+  readiness, never busy-waiting on a client that does not read; an exchange
+  that does not finish is reaped by the web front's timeouts (§8.5.1), on the
+  tinc port as well: 60 s without progress, not tinc's authentication
+  timeout.
 
 The client side also falls back: if the dial cannot pin the cert or the server
 answers anything other than `101`, `https_dial`'s connection dies before it
 activates and the outbound selector advances to the next carrier (ending at
 `plain`, §2).
+
+### 8.5.1 The decoy answers as nginx does (2026-09-23)
+
+The fingerprint audit found a decoy no web server resembles: `200` with the
+same page for every path, for `POST` and for garbage; no `Date`; silence for
+plain bytes on the TLS port; a bare FIN without `close_notify`; and a client
+that sends nothing kept open for ever (tinc's tarpit) -- and `Server: nginx`
+over Apache's "It works!" page. The decoy now imitates nginx 1.27 with
+`server_tokens off`, measured probe by probe against a real one. The
+built-in page is nginx's own welcome page, byte for byte, with the stock
+`nginx:1.27.5` file's `Last-Modified` and `ETag` (`"67ff9c07-267"`), not the
+daemon's start time.
+
+| Probe | Answer (as nginx) |
+| --- | --- |
+| `GET`/`HEAD` of a file that exists (`/`, or under `HttpsDecoyRoot`) | `200`, headers `Server: nginx`, `Date`, `Content-Type` (nginx's `mime.types`), `Content-Length`, `Last-Modified`, `Connection`, `ETag: "<mtime>-<len>"` (hex), `Accept-Ranges: bytes`, in that order; `HEAD` without the body |
+| an unknown path, or one that climbs out of the root (the latter not in the lab) | `404` with nginx's page |
+| any other method | `405 Not Allowed` with nginx's page |
+| a request line nginx cannot parse, or HTTP/1.1 without `Host` | `400` with nginx's page, answered at the first line |
+| HTTP/1.1 without `Connection: close` | keep-alive: the next request on the same connection is answered too, pipelined ones included |
+| `Connection: close`, HTTP/1.0, any error | TLS `close_notify`, then the FIN |
+| plain HTTP (or a tinc ID line) on `HttpsPort` | `400 The plain HTTP request was sent to HTTPS port` / `400 Bad Request`, nginx's pages, and close |
+| a first byte `0x80`+ that is not TLS on `HttpsPort` | closed without an answer |
+| nothing at all | closed after 60 s (`client_header_timeout`); an idle kept-alive connection after 75 s (`keepalive_timeout`; set, not measured by the lab) |
+| 30 connections at once from one address | all answered |
+
+Connections on the fronts (TCP `HttpsPort`, UDP `QuicPort`, TLS on any port
+until the peer authenticates, and the plain-HTTP decoy) carry
+`c->status.web_front`: `timeout_handler` closes them after
+`DECOY_HEADER_TIMEOUT` (60 s) without progress -- no request, or no byte of
+the response taken (nginx's `client_header_timeout` / `send_timeout`) --
+instead of tarpitting them, and the accept
+path skips `check_tarpit()` / the per-second QUIC budget (a prober opening
+eleven connections in a second used to get a socket that never answered).
+They are capped at `DECOY_MAX_WEB_CLIENTS` (256) concurrent unauthenticated
+clients instead -- the equivalent of nginx's `worker_connections`; past it a
+new TCP connection is closed and a new QUIC Initial dropped. The tinc port
+keeps `MaxConnectionBurst` and the tarpit.
+
+With `HttpsDecoyUpstream` set the upstream's own answer is relayed, as before;
+only the first request of a pipelined burst is forwarded.
+
+Proof: `testing/transports/decoy-conformance-test.sh` sends the same probes to
+a tinc node and to `nginx:1.27` side by side and compares status lines, header
+names in order, error pages byte for byte, keep-alive, the TLS-port answers,
+the burst, the silent-client timing and, from decrypted captures,
+`close_notify` before the FIN. All 20 checks pass; on the core before this
+change (`tincstack/core:pre-h3`) 19 fail -- only the high-byte case matched
+(`testing/fingerprint/results/2026-09-23-decoy/conformance*.txt`).
+
+Not imitated (open, PLAN): ALPN `h2` (an nginx with `http2 on` selects it; we
+offer `http/1.1` only, which matches nginx's default but not every site's),
+`Range` requests, `If-Modified-Since`/`304`, directory redirects (`/dir` →
+`301`), the TLS session-ticket size, and `Alt-Svc`: a site that serves
+HTTP/3 normally advertises it on its TCP answers (the fingerprint lab's
+nginx does), ours never does. The HTTP/3 decoy always serves the `/` page
+and never uses `HttpsDecoyUpstream`.
 
 ### 8.6 What a middlebox sees
 

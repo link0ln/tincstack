@@ -35,7 +35,7 @@ NODE_IP=$SUBNET.10
 UP_IP=$SUBNET.20
 
 cleanup() {
-	docker rm -f "$LAB-node" "$LAB-up" "$LAB-tool" >/dev/null 2>&1 || true
+	docker rm -f "$LAB-node" "$LAB-up" "$LAB-tool" "$LAB-m58" >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -123,7 +123,7 @@ fi
 hb=$(docker run --rm --net "container:$LAB-node" "$TOOLS" \
 	curl -sk https://127.0.0.1:655/ || true)
 
-if echo "$hb" | grep -qi "It works"; then
+if echo "$hb" | grep -qi "Welcome to nginx"; then
 	note "curl -k https returned the decoy page"
 else
 	miss "curl -k https did not return the decoy page"
@@ -139,7 +139,7 @@ fi
 hp=$(docker run --rm --net "container:$LAB-node" "$TOOLS" \
 	curl -s http://127.0.0.1:655/ || true)
 
-if echo "$hp" | grep -qi "It works"; then
+if echo "$hp" | grep -qi "Welcome to nginx"; then
 	note "curl http (cleartext) returned the decoy page too"
 else
 	miss "plain HTTP did not return the decoy page"
@@ -208,12 +208,15 @@ docker exec "$LAB-node" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload >/dev/nu
 sleep 1
 logmark=$(docker logs "$LAB-node" 2>&1 | wc -l)
 t0=$(ticks)
-docker run --rm -i --net "container:$LAB-node" "$TOOLS" python3 - <<'PY' >/dev/null
+# Never reads, and stays until the node gives up (nginx's send_timeout: 60 s
+# without progress; the decoy is a web front since the decoy step).
+docker run -d --name "$LAB-m58" --net "container:$LAB-node" "$TOOLS" python3 -c '
 import socket, time
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
 s.connect(("127.0.0.1", 655)); s.sendall(b"GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
-time.sleep(8)   # never read
-PY
+time.sleep(90)
+' >/dev/null
+sleep 8
 t1=$(ticks)
 m8_ticks=$((t1 - t0))
 note "daemon CPU while an 8 MB decoy sat unread for 8 s: $m8_ticks ticks"
@@ -222,10 +225,15 @@ if [ "$m8_ticks" -lt 50 ]; then
 else
 	miss "M5-8: daemon burned $m8_ticks ticks on a non-reading client"
 fi
-if docker logs "$LAB-node" 2>&1 | tail -n +"$logmark" | grep -q "Timeout from .* during authentication"; then
-	note "M5-8: the stalled decoy connection was dropped by the authentication timeout"
+for _ in $(seq 70); do
+	docker logs "$LAB-node" 2>&1 | tail -n +"$logmark" | grep -q "Web front: .* idle for 60 s" && break
+	sleep 1
+done
+docker rm -f "$LAB-m58" >/dev/null 2>&1 || true
+if docker logs "$LAB-node" 2>&1 | tail -n +"$logmark" | grep -q "Web front: .* idle for 60 s"; then
+	note "M5-8: the stalled decoy connection was dropped by the web-front timeout (60 s without progress)"
 else
-	miss "M5-8: stalled decoy connection was not dropped within the client's 8 s"
+	miss "M5-8: stalled decoy connection was not dropped within 78 s"
 fi
 
 # ---- upstream proxy --------------------------------------------------------

@@ -56,6 +56,7 @@ typedef union connection_status_t {
 		bool tarpit: 1;                 /* 1 if the connection should be added to the tarpit */
 		bool front_pending: 1;          /* 1 if an inbound TCP connection has not been classified by the front yet */
 		bool front_tls_only: 1;         /* 1 if it arrived on the HttpsPort listener: TLS or nothing */
+		bool web_front: 1;              /* answers like a web server: nginx timeouts, no tarpit */
 	};
 	uint32_t value;
 } connection_status_t;

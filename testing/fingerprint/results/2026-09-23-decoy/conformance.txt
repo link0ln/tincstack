@@ -1,0 +1,21 @@
+05:19:02 PASS get: HTTP/1.1 200 OK, headers Server Date Content-Type Content-Length Last-Modified Connection ETag Accept-Ranges 
+05:19:02 PASS get_close: HTTP/1.1 200 OK, headers Server Date Content-Type Content-Length Last-Modified Connection ETag Accept-Ranges 
+05:19:02 PASS head: HTTP/1.1 200 OK, headers Server Date Content-Type Content-Length Last-Modified Connection ETag Accept-Ranges 
+05:19:02 PASS nope: HTTP/1.1 404 Not Found, headers Server Date Content-Type Content-Length Connection 
+05:19:02 PASS post: HTTP/1.1 405 Not Allowed, headers Server Date Content-Type Content-Length Connection 
+05:19:02 PASS garbage: HTTP/1.1 400 Bad Request, headers Server Date Content-Type Content-Length Connection 
+05:19:02 PASS nohost: HTTP/1.1 400 Bad Request, headers Server Date Content-Type Content-Length Connection 
+05:19:02 PASS http10: HTTP/1.1 200 OK, headers Server Date Content-Type Content-Length Last-Modified Connection ETag Accept-Ranges 
+05:19:02 PASS get_close: the page is nginx's, byte for byte
+05:19:02 PASS nope: the page is nginx's, byte for byte
+05:19:02 PASS post: the page is nginx's, byte for byte
+05:19:02 PASS garbage: the page is nginx's, byte for byte
+05:19:02 PASS keep-alive: two requests on one connection, two answers (as nginx)
+05:19:02 PASS the built-in page has the stock nginx file's Last-Modified and ETag
+05:19:02 PASS plain on the TLS port: HTTP/1.1 400 Bad Request with nginx's page
+05:19:02 PASS tincid on the TLS port: HTTP/1.1 400 Bad Request with nginx's page
+05:19:02 PASS a non-ASCII first byte: closed without an answer by both
+05:19:02 PASS 30 simultaneous connections from one address: all 30 answered (as nginx)
+05:20:03 PASS a silent client is closed after 59 s (nginx: 60 s)
+05:20:04 PASS close_notify before the FIN (ours 8/33 TLS closes, nginx 8/28)
+05:20:04 decoy conformance: all checks passed

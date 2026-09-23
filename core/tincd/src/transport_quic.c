@@ -1174,17 +1174,11 @@ static void free_session(quic_session_t *s) {
 /* ---- inbound: accept and receive ----------------------------------------- */
 
 static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr) {
-	/* Admission control, in the spirit of sf_accept(). */
-	static time_t burst_time;
-	static int burst;
-
-	if(now.tv_sec != burst_time) {
-		burst_time = now.tv_sec;
-		burst = 0;
-	}
-
-	if(++burst > max_connection_burst) {
-		logger(DEBUG_CONNECTIONS, LOG_WARNING, "quic: too many new sessions, dropping one");
+	/* Admission control as an HTTP/3 server does it: a cap on concurrent
+	   clients, not a per-second budget that leaves the eleventh Initial of a
+	   burst unanswered (decoy.h). */
+	if(decoy_front_full()) {
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "quic: %d web clients already, dropping a new one", DECOY_MAX_WEB_CLIENTS);
 		return;
 	}
 
@@ -1205,6 +1199,7 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	c->last_ping_time = now.tv_sec;
 	c->transport = transport_get(TRANSPORT_QUIC);
 	c->allow_request = ID;
+	c->status.web_front = true;     /* an HTTP/3 server until a peer authenticates */
 
 	/* `ls' may be a QuicPort listener (not in listen_socket[]): keep its fd for
 	   sending, and a same-family main socket index for tinc's bookkeeping. */

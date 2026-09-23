@@ -586,6 +586,28 @@ against it; docs/transports.md §9.4).
 
 ---
 
+## 16. The decoy answers as nginx does; no tarpit on the web fronts (tincstack, 2026-09-23)
+
+`decoy.c`, `decoy.h`, `https.c`, `transport.c`, `net.c`, `net_socket.c`,
+`transport_quic.c`, `connection.h`.
+
+The decoy imitates nginx 1.27 (`server_tokens off`): nginx's welcome page
+with the stock file's dates, its header order and `Date`, `404`/`405`/`400`
+with its error pages, keep-alive (pipelined requests included), TLS
+`close_notify` before the FIN, and on the TLS-only `HttpsPort` its answer to
+plain bytes (`400`) and to a high first byte (close). Connections on the web
+fronts carry `status.web_front`: `timeout_handler` closes them after 60 s
+(75 s once kept alive) instead of tarpitting them, and the accept paths skip
+`check_tarpit()` and the per-second QUIC budget -- both answered a burst of
+connections from one address with silence -- in favour of a cap of 256
+concurrent unauthenticated clients. The tinc port keeps upstream's tarpit
+and `MaxConnectionBurst`.
+
+Proof: `testing/transports/decoy-conformance-test.sh`, the same probes to a
+tinc node and to nginx side by side (docs/transports.md §8.5.1).
+
+---
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):

@@ -97,6 +97,7 @@ typedef struct https_session_t {
 	bool pin_pending;       /* client: no pin yet; learn it once SPTPS authenticates (M5-7) */
 
 	bool established_after_write; /* server: become established once wbuf drains */
+	bool decoy_keep_alive;  /* server: the decoy said keep-alive; read the next request */
 	decoy_fetch_t *fetch;   /* server: outstanding upstream decoy fetch (M5-1) */
 } https_session_t;
 
@@ -283,6 +284,13 @@ static int flush_wbuf(https_session_t *s) {
 
 		if(n > 0) {
 			s->woff += (size_t) n;
+
+			/* A web front's timeout counts from the last progress, as
+			   nginx's send_timeout does; a peer's pings are not ours. */
+			if(s->c->status.web_front && !s->c->edge) {
+				s->c->last_ping_time = now.tv_sec;
+			}
+
 			continue;
 		}
 
@@ -307,6 +315,11 @@ static int flush_wbuf(https_session_t *s) {
 /* Append available decrypted head bytes into rbuf until "\r\n\r\n" or cap.
    Returns 1 = head complete, 0 = need more (io set), -1 = error/eof. */
 static int read_head(https_session_t *s) {
+	/* A pipelined request may already be here (decoy keep-alive). */
+	if(s->rlen >= 4 && memmem(s->rbuf, s->rlen, "\r\n\r\n", 4)) {
+		return 1;
+	}
+
 	for(;;) {
 		if(s->rlen + 1 >= s->rcap) {
 			if(s->rcap >= HTTPS_MAX_HEAD) {
@@ -712,8 +725,30 @@ static void drive_tls_handshake(https_session_t *s) {
 	}
 }
 
+static void server_read_request(https_session_t *s);
+
+/* The decoy is out. Like nginx: keep the connection for the next request
+   when the response said keep-alive, else send close_notify and close
+   (measured: nginx sends the alert before its FIN; a bare FIN is not what
+   a web server does). */
+static void decoy_written(https_session_t *s) {
+	if(s->decoy_keep_alive) {
+		s->rlen = decoy_next_request(s->rbuf, s->rlen);
+		s->rbuf[s->rlen] = 0;
+		s->state = HS_SERVER_READ_REQ;
+		s->c->last_ping_time = now.tv_sec + DECOY_KEEPALIVE_TIMEOUT - DECOY_HEADER_TIMEOUT;
+		set_io(s, IO_READ);
+		server_read_request(s);        /* a pipelined request may be buffered */
+		return;
+	}
+
+	SSL_shutdown(s->ssl);
+	terminate_connection(s->c, false);
+}
+
 static void write_decoy(https_session_t *s, char *resp, size_t resplen) {
 	set_wbuf(s, resp, resplen);
+	s->decoy_keep_alive = decoy_keeps_alive(resp, resplen);
 	free(resp);
 	s->state = HS_SERVER_WRITE_DECOY;
 	logger(DEBUG_CONNECTIONS, LOG_INFO, "https: serving the decoy to a TLS probe from %s", s->c->hostname);
@@ -721,7 +756,7 @@ static void write_decoy(https_session_t *s, char *resp, size_t resplen) {
 	int f = flush_wbuf(s);
 
 	if(f == 1) {
-		terminate_connection(s->c, false);
+		decoy_written(s);
 	} else if(f < 0) {
 		fail(s);
 	}
@@ -749,6 +784,23 @@ static void serve_decoy(https_session_t *s) {
 	size_t resplen = 0;
 	char *resp = decoy_respond_static(req, s->rlen, &resplen);
 	write_decoy(s, resp, resplen);
+}
+
+static void server_handle_request(https_session_t *s);
+
+static void server_read_request(https_session_t *s) {
+	int r = read_head(s);
+
+	if(r == 0) {
+		return;
+	}
+
+	if(r < 0) {
+		fail(s);
+		return;
+	}
+
+	server_handle_request(s);
 }
 
 static void server_handle_request(https_session_t *s) {
@@ -892,21 +944,9 @@ static void https_io(void *data, int flags) {
 		client_read_response(s);
 		return;
 
-	case HS_SERVER_READ_REQ: {
-		int r = read_head(s);
-
-		if(r == 0) {
-			return;
-		}
-
-		if(r < 0) {
-			fail(s);
-			return;
-		}
-
-		server_handle_request(s);
+	case HS_SERVER_READ_REQ:
+		server_read_request(s);
 		return;
-	}
 
 	case HS_SERVER_WRITE: {
 		int f = flush_wbuf(s);
@@ -927,7 +967,7 @@ static void https_io(void *data, int flags) {
 		int f = flush_wbuf(s);
 
 		if(f == 1) {
-			terminate_connection(c, false);
+			decoy_written(s);
 		} else if(f < 0) {
 			fail(s);
 		}
@@ -1089,6 +1129,7 @@ bool https_accept(connection_t *c, const uint8_t *peek, size_t len) {
 	}
 
 	https_session_t *s = new_session(c, true);
+	c->status.web_front = true;     /* a web server to anyone who is not a peer */
 	s->ssl = SSL_new(tls_server_ctx);
 
 	if(!s->ssl) {

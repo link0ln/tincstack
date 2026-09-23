@@ -73,19 +73,32 @@ static bool decoy_upstream_ready;
 /* For log lines from a fetch that may outlive a config reload. */
 #define UPSTREAM_NAME (decoy_upstream ? decoy_upstream : "(unset)")
 
-/* A generic, brandless landing page. It names no product and no node; it is
-   the sort of placeholder countless idle web servers present. */
+/* nginx's own welcome page (nginx 1.27, /usr/share/nginx/html/index.html),
+   byte for byte: every header already says nginx, and a server that says
+   nginx and shows another server's page is a one-request check
+   (testing/transports/decoy-conformance-test.sh compares the bodies). */
 static const char default_page[] =
-        "<!doctype html>\n"
-        "<html lang=\"en\">\n"
-        "<head><meta charset=\"utf-8\"><title>Welcome</title>\n"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-        "<style>body{font-family:system-ui,Arial,sans-serif;margin:6em auto;max-width:40em;padding:0 1em;color:#333}h1{font-weight:600}</style>\n"
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        "<title>Welcome to nginx!</title>\n"
+        "<style>\n"
+        "html { color-scheme: light dark; }\n"
+        "body { width: 35em; margin: 0 auto;\n"
+        "font-family: Tahoma, Verdana, Arial, sans-serif; }\n"
+        "</style>\n"
         "</head>\n"
         "<body>\n"
-        "<h1>It works!</h1>\n"
-        "<p>This is the default landing page for this server. The site is up and running.</p>\n"
-        "<p>If you are the site administrator, replace this page with your own content.</p>\n"
+        "<h1>Welcome to nginx!</h1>\n"
+        "<p>If you see this page, the nginx web server is successfully installed and\n"
+        "working. Further configuration is required.</p>\n"
+        "\n"
+        "<p>For online documentation and support please refer to\n"
+        "<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\n"
+        "Commercial support is available at\n"
+        "<a href=\"http://nginx.com/\">nginx.com</a>.</p>\n"
+        "\n"
+        "<p><em>Thank you for using nginx.</em></p>\n"
         "</body>\n"
         "</html>\n";
 
@@ -162,9 +175,14 @@ void decoy_exit(void) {
 
 /* ---- static content ------------------------------------------------------ */
 
+/* What the decoy answers is measured against nginx 1.27 with
+   `server_tokens off' (testing/transports/decoy-conformance-test.sh): the
+   same status for the same request, the same headers in the same order, the
+   same error pages byte for byte. */
+
 /* Extract the request-target path (e.g. "/index.html") from the first line.
    Returns a normalised, traversal-safe relative path in `out` (without the
-   leading '/'), defaulting to "index.html". */
+   leading '/'), "index.html" for "/". */
 static void request_path(const char *request, char *out, size_t outlen) {
 	out[0] = 0;
 	const char *sp = strchr(request, ' ');
@@ -194,12 +212,14 @@ static void request_path(const char *request, char *out, size_t outlen) {
 	memcpy(out, p, n);
 	out[n] = 0;
 
-	/* Reject path traversal and absolute/odd names: fall back to the index. */
-	if(!out[0] || strstr(out, "..") || out[0] == '/' || strchr(out, '\\')) {
+	if(!out[0]) {
 		snprintf(out, outlen, "index.html");
+	} else if(strstr(out, "..") || out[0] == '/' || strchr(out, '\\')) {
+		snprintf(out, outlen, "..");     /* never a file: a 404 */
 	}
 }
 
+/* nginx's mime.types for the extensions a decoy site plausibly has. */
 static const char *mime_for(const char *path) {
 	const char *dot = strrchr(path, '.');
 
@@ -207,38 +227,24 @@ static const char *mime_for(const char *path) {
 		return "application/octet-stream";
 	}
 
-	if(!strcasecmp(dot, ".html") || !strcasecmp(dot, ".htm")) {
-		return "text/html; charset=utf-8";
-	}
+	static const char *const map[][2] = {
+		{".html", "text/html"}, {".htm", "text/html"}, {".css", "text/css"},
+		{".js", "application/javascript"}, {".json", "application/json"},
+		{".png", "image/png"}, {".jpg", "image/jpeg"}, {".jpeg", "image/jpeg"},
+		{".gif", "image/gif"}, {".svg", "image/svg+xml"}, {".ico", "image/x-icon"},
+		{".txt", "text/plain"}, {".xml", "text/xml"}, {".woff2", "font/woff2"},
+	};
 
-	if(!strcasecmp(dot, ".css")) {
-		return "text/css";
-	}
-
-	if(!strcasecmp(dot, ".js")) {
-		return "application/javascript";
-	}
-
-	if(!strcasecmp(dot, ".png")) {
-		return "image/png";
-	}
-
-	if(!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg")) {
-		return "image/jpeg";
-	}
-
-	if(!strcasecmp(dot, ".svg")) {
-		return "image/svg+xml";
-	}
-
-	if(!strcasecmp(dot, ".txt")) {
-		return "text/plain; charset=utf-8";
+	for(size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+		if(!strcasecmp(dot, map[i][0])) {
+			return map[i][1];
+		}
 	}
 
 	return "application/octet-stream";
 }
 
-static char *read_root_file(const char *rel, size_t *len, const char **mime) {
+static char *read_root_file(const char *rel, size_t *len, time_t *mtime) {
 	if(!decoy_root) {
 		return NULL;
 	}
@@ -246,76 +252,242 @@ static char *read_root_file(const char *rel, size_t *len, const char **mime) {
 	char path[PATH_MAX];
 	snprintf(path, sizeof(path), "%s" SLASH "%s", decoy_root, rel);
 
+	struct stat st;
+
+	if(stat(path, &st) || !S_ISREG(st.st_mode) || st.st_size > 8 * 1024 * 1024) {
+		return NULL;
+	}
+
 	FILE *f = fopen(path, "rb");
 
 	if(!f) {
 		return NULL;
 	}
 
-	if(fseek(f, 0, SEEK_END)) {
-		fclose(f);
-		return NULL;
-	}
-
-	long sz = ftell(f);
-
-	if(sz < 0 || sz > 8 * 1024 * 1024) {
-		fclose(f);
-		return NULL;
-	}
-
-	rewind(f);
-	char *buf = xmalloc((size_t) sz);
-	size_t rd = fread(buf, 1, (size_t) sz, f);
+	char *buf = xmalloc((size_t) st.st_size + 1);
+	size_t rd = fread(buf, 1, (size_t) st.st_size, f);
 	fclose(f);
 	*len = rd;
-	*mime = mime_for(rel);
+	*mtime = st.st_mtime;
 	return buf;
 }
 
-static char *build_static(const char *request, size_t *resplen) {
-	char rel[512];
-	request_path(request, rel, sizeof(rel));
+/* RFC 7231 IMF-fixdate, locale-independent. */
+static void http_date(time_t t, char *out, size_t outlen) {
+	static const char *const wd[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+	static const char *const mo[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+	struct tm tm;
+#ifdef HAVE_WINDOWS
+	tm = *gmtime(&t);
+#else
+	gmtime_r(&t, &tm);
+#endif
+	snprintf(out, outlen, "%s, %02d %s %04d %02d:%02d:%02d GMT", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon],
+	         tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
 
-	size_t blen = 0;
-	const char *mime = "text/html; charset=utf-8";
-	char *body = read_root_file(rel, &blen, &mime);
-	int status = 200;
-	const char *status_text = "OK";
+/* The built-in page's Last-Modified: the file's mtime in the official
+   nginx:1.27.5 image (Wed, 16 Apr 2025 12:01:11 GMT), so Last-Modified and
+   ETag ("67ff9c07-267") are those of countless stock installs -- not the
+   daemon's start time, which would change on every restart. */
+#define DEFAULT_PAGE_MTIME ((time_t)0x67ff9c07)
 
-	if(!body) {
-		/* An unknown path under a configured root is a 404; with no root the
-		   default page answers every path with 200 (a single-page site). */
-		if(decoy_root) {
-			status = 404;
-			status_text = "Not Found";
-			static const char nf[] = "<!doctype html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1></body></html>\n";
-			body = xstrdup(nf);
-			blen = sizeof(nf) - 1;
-			mime = "text/html; charset=utf-8";
-		} else {
-			body = xmalloc(sizeof(default_page));
-			memcpy(body, default_page, sizeof(default_page));
-			blen = sizeof(default_page) - 1;
+typedef struct http_req_t {
+	bool valid;             /* a well-formed HTTP/1.x request line */
+	bool head;              /* HEAD: headers only */
+	bool get;               /* GET or HEAD */
+	bool http10;
+	bool has_host;
+	bool wants_close;       /* Connection: close */
+} http_req_t;
+
+static bool header_present(const char *request, const char *name) {
+	size_t nlen = strlen(name);
+
+	/* Stop at the blank line: what follows is a body or the next request. */
+	for(const char *l = strchr(request, '\n'); l && l[1] && l[1] != '\r' && l[1] != '\n'; l = strchr(l + 1, '\n')) {
+		if(!strncasecmp(l + 1, name, nlen) && l[1 + nlen] == ':') {
+			return true;
 		}
 	}
 
-	char header[512];
+	return false;
+}
+
+static bool header_has(const char *request, const char *name, const char *token) {
+	size_t nlen = strlen(name);
+
+	/* Stop at the blank line: what follows is a body or the next request. */
+	for(const char *l = strchr(request, '\n'); l && l[1] && l[1] != '\r' && l[1] != '\n'; l = strchr(l + 1, '\n')) {
+		if(!strncasecmp(l + 1, name, nlen) && l[1 + nlen] == ':') {
+			const char *e = strchr(l + 1, '\n');
+			size_t vlen = e ? (size_t)(e - (l + 2 + nlen)) : strlen(l + 2 + nlen);
+			char v[256];
+
+			if(vlen >= sizeof(v)) {
+				vlen = sizeof(v) - 1;
+			}
+
+			memcpy(v, l + 2 + nlen, vlen);
+			v[vlen] = 0;
+
+			for(char *c = v; *c; c++) {
+				*c = (char)tolower((unsigned char) * c);
+			}
+
+			if(strstr(v, token)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/* "METHOD SP /target SP HTTP/1.x", method in upper-case letters. */
+static http_req_t parse_request(const char *request) {
+	http_req_t r = {0};
+	const char *p = request;
+	size_t mlen = 0;
+
+	while(p[mlen] >= 'A' && p[mlen] <= 'Z') {
+		mlen++;
+	}
+
+	if(!mlen || mlen > 16 || p[mlen] != ' ' || p[mlen + 1] != '/') {
+		return r;
+	}
+
+	const char *target = p + mlen + 1;
+	const char *sp = target;
+
+	while(*sp && *sp != ' ' && *sp != '\r' && *sp != '\n') {
+		sp++;
+	}
+
+	if(*sp != ' ' || strncmp(sp + 1, "HTTP/1.", 7) || (sp[8] != '0' && sp[8] != '1') ||
+	                (sp[9] != '\r' && sp[9] != '\n')) {
+		return r;
+	}
+
+	r.valid = true;
+	r.http10 = sp[8] == '0';
+	r.head = mlen == 4 && !strncmp(p, "HEAD", 4);
+	r.get = r.head || (mlen == 3 && !strncmp(p, "GET", 3));
+	r.has_host = header_present(request, "host");
+	r.wants_close = header_has(request, "connection", "close");
+	return r;
+}
+
+/* nginx's own error page, `server_tokens off'. */
+static char *error_body(int status, const char *reason, const char *extra, size_t *len) {
+	char *b;
+	int n;
+
+	if(extra) {
+		n = xasprintf(&b, "<html>\r\n<head><title>%d %s</title></head>\r\n<body>\r\n"
+		              "<center><h1>%d Bad Request</h1></center>\r\n<center>%s</center>\r\n"
+		              "<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n", status, extra, status, extra);
+	} else {
+		n = xasprintf(&b, "<html>\r\n<head><title>%d %s</title></head>\r\n<body>\r\n"
+		              "<center><h1>%d %s</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n",
+		              status, reason, status, reason);
+	}
+
+	*len = n > 0 ? (size_t) n : 0;
+	return b;
+}
+
+static char *assemble(int status, const char *reason, const char *mime, const char *body, size_t blen,
+                      time_t mtime, bool keep_alive, bool head, size_t *resplen) {
+	char date[64], lm[64] = "", etag[64] = "";
+	http_date(time(NULL), date, sizeof(date));
+
+	if(mtime) {
+		char d[40];
+		http_date(mtime, d, sizeof(d));
+		snprintf(lm, sizeof(lm), "Last-Modified: %s\r\n", d);
+		snprintf(etag, sizeof(etag), "ETag: \"%lx-%lx\"\r\n", (unsigned long) mtime, (unsigned long) blen);
+	}
+
+	char header[768];
 	int hlen = snprintf(header, sizeof(header),
 	                    "HTTP/1.1 %d %s\r\n"
 	                    "Server: nginx\r\n"
+	                    "Date: %s\r\n"
 	                    "Content-Type: %s\r\n"
-	                    "Content-Length: %zu\r\n"
-	                    "Connection: close\r\n"
+	                    "Content-Length: %lu\r\n"
+	                    "%s"
+	                    "Connection: %s\r\n"
+	                    "%s%s"
 	                    "\r\n",
-	                    status, status_text, mime, blen);
+	                    status, reason, date, mime, (unsigned long) blen, lm,
+	                    keep_alive ? "keep-alive" : "close", etag, mtime ? "Accept-Ranges: bytes\r\n" : "");
 
-	char *resp = xmalloc((size_t) hlen + blen);
+	size_t out = (size_t) hlen + (head ? 0 : blen);
+	char *resp = xmalloc(out);
 	memcpy(resp, header, (size_t) hlen);
-	memcpy(resp + hlen, body, blen);
-	free(body);
-	*resplen = (size_t) hlen + blen;
+
+	if(!head) {
+		memcpy(resp + hlen, body, blen);
+	}
+
+	*resplen = out;
 	return resp;
+}
+
+/* The response nginx gives `request' on a TLS port (`plain_on_tls' false) or
+   when plain HTTP arrives on its TLS port (true). */
+static char *build_response(const char *request, bool plain_on_tls, size_t *resplen) {
+	http_req_t r = parse_request(request);
+	size_t blen;
+	char *body;
+	char *resp;
+
+	/* A request nginx would not parse, or HTTP/1.1 without Host, or plain
+	   HTTP on the TLS port: 400, and the connection is closed. */
+	if(!r.valid || (!r.http10 && !r.has_host) || plain_on_tls) {
+		body = error_body(400, "Bad Request", r.valid && plain_on_tls ? "The plain HTTP request was sent to HTTPS port" : NULL, &blen);
+		resp = assemble(400, "Bad Request", "text/html", body, blen, 0, false, false, resplen);
+		free(body);
+		return resp;
+	}
+
+	bool keep_alive = !r.http10 && !r.wants_close;
+
+	if(!r.get) {
+		body = error_body(405, "Not Allowed", NULL, &blen);
+		resp = assemble(405, "Not Allowed", "text/html", body, blen, 0, keep_alive, false, resplen);
+		free(body);
+		return resp;
+	}
+
+	char rel[512];
+	request_path(request, rel, sizeof(rel));
+	time_t mtime = 0;
+	body = read_root_file(rel, &blen, &mtime);
+
+	if(body) {
+		resp = assemble(200, "OK", mime_for(rel), body, blen, mtime, keep_alive, r.head, resplen);
+		free(body);
+		return resp;
+	}
+
+	/* The built-in page is the site's index; with a configured root only
+	   its files exist. */
+	if(!decoy_root && !strcmp(rel, "index.html")) {
+		return assemble(200, "OK", "text/html", default_page, sizeof(default_page) - 1, DEFAULT_PAGE_MTIME,
+		                keep_alive, r.head, resplen);
+	}
+
+	body = error_body(404, "Not Found", NULL, &blen);
+	resp = assemble(404, "Not Found", "text/html", body, blen, 0, keep_alive, r.head, resplen);
+	free(body);
+	return resp;
+}
+
+static char *build_static(const char *request, size_t *resplen) {
+	return build_response(request, false, resplen);
 }
 
 char *decoy_respond_static(const char *request, size_t reqlen, size_t *resplen) {
@@ -540,6 +712,39 @@ static void fetch_io(void *data, int flags) {
 	}
 }
 
+/* Bytes of buf[0..len) the first request takes: its head and whatever part
+   of a Content-Length body has arrived. All of it without a complete head. */
+static size_t request_span(const char *buf, size_t len) {
+	size_t used = len;
+
+	for(size_t i = 0; i + 4 <= len; i++) {
+		if(!memcmp(buf + i, "\r\n\r\n", 4)) {
+			used = i + 4;
+			break;
+		}
+	}
+
+	for(size_t i = 0; i + 16 <= used; i++) {
+		if(buf[i] == '\n' && !strncasecmp(buf + i + 1, "content-length:", 15)) {
+			long n = strtol(buf + i + 16, NULL, 10);
+
+			if(n > 0) {
+				used += (size_t)n < len - used ? (size_t)n : len - used;
+			}
+
+			break;
+		}
+	}
+
+	return used;
+}
+
+size_t decoy_next_request(char *buf, size_t len) {
+	size_t used = request_span(buf, len);
+	memmove(buf, buf + used, len - used);
+	return len - used;
+}
+
 decoy_fetch_t *decoy_fetch_start(const char *request, size_t reqlen, decoy_cb_t cb, void *data) {
 	if(!decoy_upstream_ready) {
 		return NULL;
@@ -576,6 +781,7 @@ decoy_fetch_t *decoy_fetch_start(const char *request, size_t reqlen, decoy_cb_t 
 	f->fd = fd;
 	f->cb = cb;
 	f->data = data;
+	reqlen = request_span(request, reqlen); /* not a pipelined one after it */
 	f->orig = xmalloc(reqlen + 1);
 	memcpy(f->orig, request, reqlen);
 	f->orig[reqlen] = 0;
@@ -621,6 +827,7 @@ typedef struct plain_decoy_t {
 	decoy_fetch_t *fetch;
 	char *resp;
 	size_t wlen, woff;
+	bool on_tls_port;       /* plain HTTP on the HttpsPort listener */
 } plain_decoy_t;
 
 static void plain_close(connection_t *c) {
@@ -644,6 +851,8 @@ static const transport_t decoy_plain_transport = {
 	.close = plain_close,
 };
 
+static void plain_respond(plain_decoy_t *p);
+
 static void plain_write(plain_decoy_t *p) {
 	connection_t *c = p->c;
 
@@ -652,12 +861,14 @@ static void plain_write(plain_decoy_t *p) {
 
 		if(n > 0) {
 			p->woff += (size_t) n;
+			/* nginx's send_timeout: 60 s without progress, not 60 s in all */
+			c->last_ping_time = now.tv_sec;
 			continue;
 		}
 
 		if(n < 0 && sockwouldblock(sockerrno)) {
 			/* The client is not reading: wait for write readiness (M5-8);
-			   pingtimeout reaps it if it never does. */
+			   the web-front timeout reaps it if it never does. */
 			io_set(&c->io, IO_WRITE);
 			return;
 		}
@@ -668,7 +879,42 @@ static void plain_write(plain_decoy_t *p) {
 	}
 
 	logger(DEBUG_CONNECTIONS, LOG_INFO, "Served the decoy to a plain-HTTP probe from %s", c->hostname);
-	terminate_connection(c, false);
+
+	if(!decoy_keeps_alive(p->resp, p->wlen)) {
+		terminate_connection(c, false);
+		return;
+	}
+
+	/* Keep-alive, as the response said: wait for the next request, for
+	   nginx's keepalive_timeout (the web-front reaper counts from
+	   last_ping_time with the header timeout). */
+	free(p->resp);
+	p->resp = NULL;
+	p->wlen = p->woff = 0;
+	p->rlen = decoy_next_request(p->req, p->rlen);
+	p->req[p->rlen] = 0;
+	p->state = PS_READ_REQ;
+	c->last_ping_time = now.tv_sec + DECOY_KEEPALIVE_TIMEOUT - DECOY_HEADER_TIMEOUT;
+	io_set(&c->io, IO_READ);
+
+	if(p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) {
+		plain_respond(p); /* a pipelined request is already here */
+	}
+}
+
+
+bool decoy_keeps_alive(const char *resp, size_t len) {
+	static const char ka[] = "\r\nConnection: keep-alive\r\n";
+	const char *end = NULL;
+
+	for(size_t i = 0; i + 4 <= len; i++) {
+		if(!memcmp(resp + i, "\r\n\r\n", 4)) {
+			end = resp + i + 2;
+			break;
+		}
+	}
+
+	return end && mem_has(resp, (size_t)(end - resp), ka, sizeof(ka) - 1);
 }
 
 static void plain_start_write(plain_decoy_t *p, char *resp, size_t len) {
@@ -686,6 +932,13 @@ static void plain_fetched(void *data, char *resp, size_t len) {
 }
 
 static void plain_respond(plain_decoy_t *p) {
+	if(p->on_tls_port) {
+		size_t len = 0;
+		char *resp = build_response(p->req, true, &len);
+		plain_start_write(p, resp, len);
+		return;
+	}
+
 	p->state = PS_FETCHING;
 	io_set(&p->c->io, 0); /* nothing to do on the client socket meanwhile */
 	p->fetch = decoy_fetch_start(p->req, p->rlen, plain_fetched, p);
@@ -712,6 +965,12 @@ static void plain_read(plain_decoy_t *p) {
 			p->req[p->rlen] = 0;
 
 			if(p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) {
+				break;
+			}
+
+			/* nginx answers a request line it cannot parse at once, without
+			   waiting for the rest of a head that will never come. */
+			if(memchr(p->req, '\n', p->rlen) && !parse_request(p->req).valid) {
 				break;
 			}
 
@@ -760,9 +1019,11 @@ static void plain_io(void *data, int flags) {
 	}
 }
 
-void decoy_serve_plain(connection_t *c) {
+static void serve_plain(connection_t *c, bool on_tls_port) {
 	plain_decoy_t *p = xzalloc(sizeof(*p));
 	p->c = c;
+	p->on_tls_port = on_tls_port;
+	c->status.web_front = true;
 	p->state = PS_READ_REQ;
 	c->transport = &decoy_plain_transport;
 	c->transport_data = p;
@@ -772,4 +1033,24 @@ void decoy_serve_plain(connection_t *c) {
 
 	/* The peeked bytes are already in the socket: read them now. */
 	plain_read(p);
+}
+
+void decoy_serve_plain(connection_t *c) {
+	serve_plain(c, false);
+}
+
+void decoy_serve_plain_tls_port(connection_t *c) {
+	serve_plain(c, true);
+}
+
+bool decoy_front_full(void) {
+	int n = 0;
+
+	for list_each(connection_t, c, &connection_list) {
+		if(c->status.web_front && !c->edge && ++n >= DECOY_MAX_WEB_CLIENTS) {
+			return true;
+		}
+	}
+
+	return false;
 }

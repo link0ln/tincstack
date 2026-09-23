@@ -26,6 +26,7 @@
 #include "conf.h"
 #include "connection.h"
 #include "crypto.h"
+#include "decoy.h"
 #include "list.h"
 #include "logger.h"
 #include "names.h"
@@ -992,7 +993,16 @@ static void accept_meta_connection(listen_socket_t *l, bool tls_only) {
 
 	sockaddrunmap(&sa);
 
-	if(!is_local_connection(&sa) && check_tarpit(&sa, fd)) {
+	if(tls_only) {
+		/* A web server's port: no tarpit (a prober opening a dozen
+		   connections would find sockets that never answer), a cap on
+		   concurrent clients instead. */
+		if(decoy_front_full()) {
+			logger(DEBUG_CONNECTIONS, LOG_WARNING, "Web front: %d clients already, closing a new one", DECOY_MAX_WEB_CLIENTS);
+			closesocket(fd);
+			return;
+		}
+	} else if(!is_local_connection(&sa) && check_tarpit(&sa, fd)) {
 		return;
 	}
 
@@ -1008,6 +1018,7 @@ static void accept_meta_connection(listen_socket_t *l, bool tls_only) {
 	c->last_ping_time = now.tv_sec;
 	c->status.front_pending = true;
 	c->status.front_tls_only = tls_only;
+	c->status.web_front = tls_only;
 
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Connection from %s", c->hostname);
 

@@ -86,7 +86,7 @@ node l "$L_IP"
 tnc l join "$inv" >/dev/null 2>&1
 
 docker run -d --name "$PFX-cap" --network "container:$PFX-f" --cap-add NET_ADMIN --cap-add NET_RAW \
-	-v "$RUN/cap:/cap" "$TOOLS" tcpdump -U -i any -s 0 -w /cap/f.pcap 'udp port 443' >/dev/null
+	-v "$RUN/cap:/cap" "$TOOLS" tcpdump -U --immediate-mode -i any -s 0 -w /cap/f.pcap 'udp port 443' >/dev/null
 sleep 2
 
 tnc l set PreferredTransports quic
@@ -176,9 +176,10 @@ sleep 2
 
 stop l
 key=$(docker exec "$PFX-f" sh -c "grep -m1 Ed25519PublicKey $YAML" | sed 's/^ *//')
-# webby: nginx, dialled like a tinc peer (any key will do; it never gets that far)
+# webby: nginx, dialled like a tinc peer (any key will do; it never gets that far).
+# `#' delimits: the base64 key may contain `/'.
 docker exec "$PFX-l" sh -c "
-	sed -i 's/^\(    hosts:\)$/\1\n      webby: |\n        Address = $N_IP\n        QuicPort = 443\n        Transports = quic\n        $key/' $YAML"
+	sed -i 's#^\(    hosts:\)\$#\1\n      webby: |\n        Address = $N_IP\n        QuicPort = 443\n        Transports = quic\n        $key#' $YAML"
 tnc l add ConnectTo webby >/dev/null 2>&1 || true
 : > "$RUN/l/tincd.log"
 start l

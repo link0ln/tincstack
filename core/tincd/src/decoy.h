@@ -67,4 +67,34 @@ void decoy_fetch_cancel(decoy_fetch_t *f);
 struct connection_t;
 void decoy_serve_plain(struct connection_t *c);
 
+/* Plain bytes on the HttpsPort listener (a TLS-only port): answer as nginx
+   answers plain HTTP on its TLS port -- 400 "The plain HTTP request was sent
+   to HTTPS port" for a request, 400 Bad Request for anything else -- and
+   close. */
+void decoy_serve_plain_tls_port(struct connection_t *c);
+
+/* Whether a response keeps the connection open (its head says
+   "Connection: keep-alive"): the caller then reads the next request. */
+/* After answering the request at the start of buf[0..len), move whatever
+   follows it (a pipelined request) to the front. Returns its length. */
+size_t decoy_next_request(char *buf, size_t len);
+
+bool decoy_keeps_alive(const char *resp, size_t len);
+
+/* How long a web front connection may sit without a complete request, and how
+   long an idle keep-alive connection is kept: nginx's client_header_timeout
+   and keepalive_timeout defaults. */
+#define DECOY_HEADER_TIMEOUT 60
+#define DECOY_KEEPALIVE_TIMEOUT 75
+
+/* A web server takes every connection until it runs out of them (nginx: 512
+   worker_connections); it neither tarpits nor ignores a client that opened
+   ten connections this second. The fronts (HttpsPort, QuicPort) use this
+   cap instead of tinc's MaxConnectionBurst: past it, a new TCP connection is
+   closed and a new QUIC Initial dropped. */
+#define DECOY_MAX_WEB_CLIENTS 256
+
+/* True when DECOY_MAX_WEB_CLIENTS unauthenticated front connections are open. */
+bool decoy_front_full(void);
+
 #endif /* TINC_DECOY_H */

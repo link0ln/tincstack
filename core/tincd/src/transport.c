@@ -815,17 +815,34 @@ bool transport_front_dispatch(connection_t *c) {
 		return false;
 	}
 
-	transport_tcp_class_t class = transport_classify_tcp(peek, (size_t)len);
+	/* The HttpsPort listener is a web server's TLS port: no tinc, no obfs.
+	   It decides on the first byte, as nginx does (ngx_http_ssl_handshake):
+	   a TLS handshake record goes to TLS -- a partial ClientHello is
+	   OpenSSL's to wait for, not ours to time out; an SSLv2-style byte
+	   (0x80+) is closed without an answer, which is what nginx's OpenSSL
+	   ends up doing with one that is not a real SSLv2 hello; anything else
+	   is read as plain HTTP and answered with nginx's 400 (measured,
+	   testing/transports/decoy-conformance-test.sh). */
+	if(c->status.front_tls_only) {
+		c->status.front_pending = false;
 
-	/* The HttpsPort listener is a TLS port and nothing else: no tinc, no
-	   obfs, no cleartext decoy there. What a TLS server does with bytes that
-	   are not a ClientHello is the decoy's business (see decoy.c); for now
-	   the connection is closed without an answer. */
-	if(c->status.front_tls_only && class != TCP_CLASS_TLS && class != TCP_CLASS_NEED_MORE) {
-		logger(DEBUG_CONNECTIONS, LOG_INFO, "Front: non-TLS bytes from %s on the https port; closing", c->hostname);
-		terminate_connection(c, false);
+		if(peek[0] == 0x16 && (transport_accept_mask & TRANSPORT_BIT(TRANSPORT_HTTPS)) && transports[TRANSPORT_HTTPS].accept) {
+			c->transport = &transports[TRANSPORT_HTTPS];
+			return transports[TRANSPORT_HTTPS].accept(c, peek, (size_t)len);
+		}
+
+		if(peek[0] & 0x80 || peek[0] == 0x16) {
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "Front: %s sent no TLS on the https port; closing", c->hostname);
+			terminate_connection(c, false);
+			return false;
+		}
+
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Front: plain bytes from %s on the https port; answering as a web server", c->hostname);
+		decoy_serve_plain_tls_port(c);
 		return false;
 	}
+
+	transport_tcp_class_t class = transport_classify_tcp(peek, (size_t)len);
 
 	switch(class) {
 	case TCP_CLASS_NEED_MORE:

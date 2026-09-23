@@ -25,6 +25,7 @@
 #include "autoconnect.h"
 #include "conf_net.h"
 #include "conf.h"
+#include "decoy.h"
 #include "connection.h"
 #include "crypto.h"
 #include "graph.h"
@@ -271,6 +272,21 @@ static void timeout_handler(void *data) {
 		if(close_all_connections) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Forcing connection close after sleep time %s (%s)", c->name, c->hostname);
 			terminate_connection(c, c->edge);
+			continue;
+		}
+
+		/* A web front (the https front, the decoy): until it is a tinc
+		   peer it keeps a web server's timeouts, not tinc's -- nginx closes
+		   a client that has not sent a request in 60 s, with a plain close.
+		   pingtimeout and the tarpit (a socket that never closes) would
+		   both be tells (testing/transports/decoy-conformance-test.sh). */
+		if(c->status.web_front && !c->edge) {
+			if(c->last_ping_time + DECOY_HEADER_TIMEOUT <= now.tv_sec) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "Web front: %s idle for %d s; closing", c->hostname, DECOY_HEADER_TIMEOUT);
+				c->status.tarpit = false;
+				terminate_connection(c, false);
+			}
+
 			continue;
 		}
 
