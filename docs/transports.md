@@ -1328,37 +1328,67 @@ Settings / transport parameters: `initial_max_streams_bidi = 1`,
 `max_idle_timeout = 3 x PingTimeout`, `handshake_timeout = PingTimeout` (so
 the library gives up in step with tinc's reaper, §2 step 3).
 
-### 9.4 Framing: authenticator, meta stream, SPTPS datagrams
+### 9.4 Framing: an HTTP/3 request (since 2026-09-23)
 
-**Stream 0** (one bidirectional stream, opened by the dialler in
-`handshake_completed`; the acceptor adopts the first stream it sees and shuts
-any other with app error 1) carries, in this order:
+The carrier is an HTTP/3 connection (RFC 9114) to everyone, the peer
+included (`h3.c`; before 2026-09-23 it announced ALPN `h3` and then spoke raw
+tinc on stream 0 -- a new node and an older one do not speak `quic` to each
+other and fall back to the next carrier):
 
-1. the **§8.3 authenticator**, byte for byte the `https` one, built by the
-   shared `authn_build()` (`authn.c`): `ver(1) || namelen(1) || name ||
-   nonce(16) || ts_be(8) || Ed25519 sig(64)` over `"tincstack-authn-v2\0" ||
-   server-cert-fp(32) || TLS-exporter(32) || nonce || ts` (version 2, §8.3),
-   exporter label
-   `EXPORTER-tincstack-https-v1` via `gnutls_prf_rfc5705`. The acceptor
-   (`recv_stream_data`) buffers exactly `authn_expected_len()` bytes and
-   calls `authn_verify()` against its own certificate fingerprint and
-   exporter -- same replay cache, same +/-90 s skew as `https`. Not a single
-   byte reaches `receive_meta_bytes()` before it passes; on failure the
-   session is closed with a generic transport error (`quic: authenticator
-   from <host> rejected`) and the dialler falls back (§9.9). Success sets
-   `c->name` and logs `quic: authenticated peer <name>`.
-2. the tinc `ID` line and everything after it: `finish_connecting(c)` runs
-   from `handshake_completed` right after the authenticator is queued, so
-   `send_id()` -> `send` hook -> the same stream. The unchanged Ed25519 SPTPS
-   handshake inside the stream then proves the name (SPTPS is untouched).
+- **Both ends**, right after the handshake, open their three
+  unidirectional streams, as HTTP/3 endpoints do: a control stream with
+  SETTINGS (`QPACK_MAX_TABLE_CAPACITY 0`, `QPACK_BLOCKED_STREAMS 0`,
+  `MAX_FIELD_SECTION_SIZE 65536`, `H3_DATAGRAM 1`) and the QPACK encoder and
+  decoder streams. What the peer sends on its unidirectional streams is
+  consumed and credited; with a dynamic table capacity of 0 no QPACK
+  instruction can arrive.
+- **The dialler** sends one request on its first bidirectional stream:
+  HEADERS `POST https://<authority>/` (`:authority` = the SNI, else the
+  address; `content-type: application/octet-stream`, a browser
+  `user-agent`), then a body of DATA frames. The first DATA frame is the
+  **§8.3 authenticator**, byte for byte the `https` one (`authn_build()`:
+  `ver(1) || namelen(1) || name || nonce(16) || ts_be(8) || Ed25519 sig(64)`
+  over `"tincstack-authn-v2\0" || server-cert-fp(32) || TLS-exporter(32) ||
+  nonce || ts`, exporter label `EXPORTER-tincstack-https-v1` via
+  `gnutls_prf_rfc5705`); every later DATA frame is tinc meta: the `ID` line
+  from `finish_connecting()` and everything after it.
+- **The listener** parses every request stream's frames. The first stream
+  whose DATA carries a valid authenticator (`authn_verify()` against its own
+  certificate fingerprint and exporter, same replay cache and +/-90 s skew as
+  `https`) becomes the meta stream: it answers `HEADERS :status 200,
+  server: nginx` and streams its meta back as DATA frames. Not a single byte
+  reaches `receive_meta_bytes()` before that.
+- **Anyone else** -- a browser, curl, a prober, a POST whose body is not an
+  authenticator (`quic: authenticator from <host> rejected`) -- gets the
+  static decoy page (`decoy_respond_static()`, the https front's page) as an
+  HTTP/3 response on each request stream: HEADERS + DATA + FIN. The
+  connection stays open; tinc's authentication timeout ends it later with
+  `H3_NO_ERROR`. Up to 8 request streams are answered per connection, more
+  are refused with `H3_REQUEST_REJECTED`.
+- **The dialler checks the answer**: the HEADERS payload must be byte for
+  byte the listener's fixed 200 response; anything else (a decoy, a real web
+  server) logs `quic: <peer> answered like a web server, not a tinc peer`
+  and the dialler falls back (§9.9).
+- QPACK uses the static table only, literals are not Huffman-coded, and
+  received field sections are not decoded (the carrier needs nothing from
+  them). Graceful closes carry `H3_NO_ERROR` (0x100).
 
-Inbound stream bytes go to `receive_meta_bytes(c, data, len)`; the
-flow-control credit is returned afterwards with
+Proof that other stacks read this as HTTP/3:
+`testing/transports/h3-interop-test.sh` -- curl (ngtcp2/nghttp3) and
+Chromium get the decoy page over HTTP/3 from a tinc node; decrypted with their
+key logs, the node's control stream carries SETTINGS; the dialler's request
+is parsed and logged by nginx (`POST / HTTP/3.0`, the user agent) and the
+dialler recognises nginx's answer as a web server's. On the core before this
+change every one of those checks fails.
+
+Meta bytes out of DATA frames go to `receive_meta_bytes(c, data, len)`; the
+flow-control credit for everything consumed is returned afterwards with
 `ngtcp2_conn_extend_max_stream_offset` + `ngtcp2_conn_extend_max_offset`.
 
 **Data path**: the SPTPS *datagram* records ride **DATAGRAM frames**, one tinc
-UDP packet per frame, byte for byte what `send_sptps_data()` would have put on
-the wire (`dst-id | src-id | record`, or the direct/legacy forms), so a relay
+UDP packet per frame, as HTTP/3 datagrams (RFC 9297: the request's quarter
+stream id, one byte, then the record), the record byte for byte what
+`send_sptps_data()` would have put on the wire (`dst-id | src-id | record`, or the direct/legacy forms), so a relay
 never sees a difference. `send_sptps_data()` calls
 `relay->connection->transport->send_datagram` (before `obfs_wrap_send`) when
 the relay's meta connection has that hook; `false` => `reduce_mtu`, so tinc's
@@ -1448,8 +1478,31 @@ Captured by `quic-carrier-test.sh` (a): 288 UDP datagrams on the port, the
 first three long headers (`L L L` = client Initial, server Initial+Handshake,
 client Handshake), then short headers only; 0 datagrams without the QUIC fixed
 bit (an SPTPS datagram would clear it half the time); no TCP connection
-established. HTTP/3 conformance beyond the handshake is out of scope
-(ARCHITECTURE §10).
+established. HTTP/3 conformance beyond the handshake was out of scope
+until the wire-fingerprint audit (2026-09-23) and is now §9.4.
+
+What an observer can still tell (testing/fingerprint, re-measured
+2026-09-23 after §9.4):
+
+- the dialler's transport parameters now carry curl's values (100
+  bidirectional and 100 unidirectional streams, 512 KiB stream windows,
+  768 KiB connection window, 30 s idle, `max_datagram_frame_size 65536`, an
+  empty source connection id) but not curl's set and order: ngtcp2 1.25
+  writes `version_information` and puts `initial_source_connection_id`
+  first; curl (ngtcp2 of Debian 13) sends `disable_active_migration` and
+  `max_udp_payload_size 1200` and no `version_information`;
+  `active_connection_id_limit` is 8 (curl 2, Chromium 2) because a second
+  NAT rebind in one session fails with 2;
+- the ClientHello is GnuTLS 3.7.9's: JA4 `q13d0315h3_55b375c5d22e_84684a673e38`
+  (`status_request`, `record_size_limit`, `session_ticket`,
+  `renegotiation_info`, SHA-1 signature schemes). curl's
+  (`q13d0312h3_55b375c5d22e_e01b5de7605b`) comes from OpenSSL 3.5 and
+  Chromium's from BoringSSL; neither can be produced with GnuTLS 3.7
+  (ML-DSA and brainpool signature schemes, ALPS, ECH);
+- the listener's ServerHello is GnuTLS's while the TCP front on the same
+  host is OpenSSL's (JA3S differ).
+
+The last two share one fix: OpenSSL 3.5 for both carriers (PLAN.md).
 
 ### 9.9 Handshake failure and fallback
 

@@ -403,7 +403,7 @@ if not opt_quic.disabled()
         error('the quic carrier needs the node certificate from the openssl crypto backend (-Dcrypto=openssl)')
       endif
     else
-      src_tincd += ['transport_quic.c', 'transport_quic_tls.c']
+      src_tincd += ['transport_quic.c', 'transport_quic_tls.c', 'h3.c']
       deps_tincd += [dep_ngtcp2, dep_ngtcp2_crypto, dep_gnutls]
       cdata.set('HAVE_QUIC', 1)
     endif

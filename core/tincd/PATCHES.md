@@ -564,6 +564,28 @@ Proof: `testing/transports/front-port-test.sh` (docs/transports.md §3.1).
 
 ---
 
+## 15. The quic carrier speaks HTTP/3 (tincstack, 2026-09-23)
+
+`h3.c` (new), `transport_quic.c`, `meson.build`.
+
+The fingerprint audit found a carrier that announced ALPN `h3` and was not
+HTTP/3: its Initial allowed no unidirectional streams (a one-field rule in a
+packet anyone can decrypt), it never opened a control stream, and a real
+HTTP/3 client got nothing back. Now the tinc session is one HTTP/3 request:
+both ends open control (SETTINGS) and QPACK streams; the dialler POSTs and
+streams the authenticator and then the meta connection in DATA frames; the
+listener answers 200 and streams back; SPTPS data rides RFC 9297 datagrams
+(quarter stream id + record). Any other request gets the decoy page as an
+HTTP/3 response instead of a closed connection. The dialler's transport
+parameters and its empty source connection id follow curl's. QPACK is
+static-table only (`h3.c`, ~450 lines). Not compatible with the quic
+carrier of earlier builds: mixed pairs fall back to the next carrier.
+
+Proof: `testing/transports/h3-interop-test.sh` (curl, Chromium and nginx
+against it; docs/transports.md §9.4).
+
+---
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):

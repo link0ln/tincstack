@@ -1,0 +1,151 @@
+######## server b: ClientHellos (src, sport, SNI, ALPN, JA4, JA3, frame bytes)
+10.47.4.10  54096  443 nodeb.lab.test http/1.1 t13d3111h1_e8f1e7e78f70_1f22a2ca17c4 5a1edc7f170af1014fc65c994878e63c 403
+10.47.4.10 39721  443  nodeb.lab.test h3 q13d0315h3_55b375c5d22e_84684a673e38 b74a9bd2d6a25b2f796449a719d25009 1248
+10.47.4.2  44998  443 nodeb.lab.test h2,http/1.1 t13d3013h2_1d37bd780c83_8537cf56674e 32e4b8812cda0c0d50783b438492a769 1646
+10.47.4.2  45008  443 nodeb.lab.test  t13d301200_1d37bd780c83_ecd0401ec68b 284deaeae14ea5ddc96c5d7e59855422 1628
+10.47.4.2 50282  443  nodeb.lab.test h3 q13d0312h3_55b375c5d22e_e01b5de7605b 018311bdaf15f0b071fa2e5eeb923473 1248
+10.47.4.2  45010  443 nodeb.lab.test h2,http/1.1 t13d1517h2_8daaf6152771_63ff51340b64 b8c067d3b0893865f62e923f81b882ab 2026
+10.47.4.2  45022  443 nodeb.lab.test h2,http/1.1 t13d1518h2_8daaf6152771_022b3fe36177 dcb8d79e261ec50f847b17976303eb78 2233
+10.47.4.2  45026  443 nodeb.lab.test h2,http/1.1 t13d1518h2_8daaf6152771_860bec3f24e3 464bec09d03c8e17318bdf9faa9fbf41 2265
+10.47.4.2  45042  443 nodeb.lab.test h2,http/1.1 t13d1518h2_8daaf6152771_b0e2a14823f1 716ac6b0c84ea7fe88d088830668fd55 2329
+10.47.4.2 46243  443  nodeb.lab.test h3 q13d0312h3_55b375c5d22e_178839b6cec1 1ab50d285783f6726b0b91aef6613a5f 1298
+######## server b: ClientHello JA4_r (raw)
+10.47.4.10		t13d3111h1_002f,0033,0035,0039,003c,003d,0067,006b,009c,009d,009e,009f,00ff,1301,1302,1303,c009,c00a,c013,c014,c023,c024,c027,c028,c02b,c02c,c02f,c030,cca8,cca9,ccaa_000a,000b,000d,0016,0017,0023,002b,002d,0033_0403,0503,0603,0807,0808,0809,080a,080b,0804,0805,0806,0401,0501,0601,0303,0301,0302,0402,0502,0602
+10.47.4.10	39721	q13d0315h3_1301,1302,1303_0005,000a,000b,000d,0016,0017,001c,0023,002b,002d,0033,0039,ff01_0401,0809,0804,0403,0807,0501,080a,0805,0503,0808,0601,080b,0806,0603,0201,0203
+10.47.4.2		t13d3013h2_002f,0033,0035,0039,003c,003d,0067,006b,009c,009d,009e,009f,1301,1302,1303,c009,c00a,c013,c014,c023,c024,c027,c028,c02b,c02c,c02f,c030,cca8,cca9,ccaa_000a,000b,000d,0016,0017,001b,002b,002d,0031,0033,ff01_0905,0906,0904,0403,0503,0603,0807,0808,081a,081b,081c,0809,080a,080b,0804,0805,0806,0401,0501,0601,0303,0301,0302,0402,0502,0602
+10.47.4.2		t13d301200_002f,0033,0035,0039,003c,003d,0067,006b,009c,009d,009e,009f,1301,1302,1303,c009,c00a,c013,c014,c023,c024,c027,c028,c02b,c02c,c02f,c030,cca8,cca9,ccaa_000a,000b,000d,0016,0017,001b,0023,002b,002d,0033,ff01_0905,0906,0904,0403,0503,0603,0807,0808,081a,081b,081c,0809,080a,080b,0804,0805,0806,0401,0501,0601,0303,0301,0302,0402,0502,0602
+10.47.4.2	50282	q13d0312h3_1301,1302,1303_000a,000b,000d,0016,0017,001b,002b,002d,0033,0039_0905,0906,0904,0403,0503,0603,0807,0808,081a,081b,081c,0809,080a,080b,0804,0805,0806,0401,0501,0601
+10.47.4.2		t13d1517h2_002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9_0005,000a,000b,000d,0012,0017,001b,0023,002b,002d,0033,44cd,ca34,fe0d,ff01_9a9a,0904,0905,0906,0403,0804,0401,0503,0805,0501,0806,0601
+10.47.4.2		t13d1518h2_002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9_0005,000a,000b,000d,0012,0017,001b,0023,0029,002b,002d,0033,44cd,ca34,fe0d,ff01_6a6a,0904,0905,0906,0403,0804,0401,0503,0805,0501,0806,0601
+10.47.4.2		t13d1518h2_002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9_0005,000a,000b,000d,0012,0017,001b,0023,0029,002b,002d,0033,44cd,ca34,fe0d,ff01_baba,0904,0905,0906,0403,0804,0401,0503,0805,0501,0806,0601
+10.47.4.2		t13d1518h2_002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9_0005,000a,000b,000d,0012,0017,001b,0023,0029,002b,002d,0033,44cd,ca34,fe0d,ff01_dada,0904,0905,0906,0403,0804,0401,0503,0805,0501,0806,0601
+10.47.4.2	46243	q13d0312h3_1301,1302,1303_000a,000d,001b,002b,002d,0033,0039,44cd,ca34,fe0d_0403,0804,0401,0503,0805,0501,0806,0601,0201
+######## server b: ServerHellos (dst, JA3S, cipher, frame bytes)
+10.47.4.10  15af977ce25de452b96affa2addb1036 0x1302 900
+10.47.4.10 39721 eb1d94daa7e0344597e756a1fb6e7054 0x1301 1248
+10.47.4.2  15af977ce25de452b96affa2addb1036 0x1302 901
+10.47.4.2  15af977ce25de452b96affa2addb1036 0x1302 885
+10.47.4.2 50282 907bf3ecef1c987c889946b737b43de8 0x1302 1248
+10.47.4.2  f4febc55ea12b31ae17cfb7e614afda8 0x1301 886
+10.47.4.2  fcb2d4d0991292272fcb1e464eedfd43 0x1301 312
+10.47.4.2  fcb2d4d0991292272fcb1e464eedfd43 0x1301 312
+10.47.4.2  fcb2d4d0991292272fcb1e464eedfd43 0x1301 312
+10.47.4.2 46243 eb1d94daa7e0344597e756a1fb6e7054 0x1301 1248
+######## server b: QUIC transport parameters sent by clients
+Parameter: initial_source_connection_id (len=0)
+Parameter: initial_max_stream_data_bidi_local (len=4) 524288
+Parameter: initial_max_stream_data_bidi_remote (len=4) 524288
+Parameter: initial_max_stream_data_uni (len=4) 524288
+Parameter: initial_max_data (len=4) 786432
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: initial_max_streams_uni (len=2) 100
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: active_connection_id_limit (len=1) 8
+Parameter: max_datagram_frame_size (len=4) 65536
+Parameter: version_information (len=8)
+Parameter: disable_active_migration (len=0)
+Parameter: initial_source_connection_id (len=0)
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: max_udp_payload_size (len=2) 1200
+Parameter: active_connection_id_limit (len=1) 2
+Parameter: initial_max_data (len=4) 786432
+Parameter: initial_max_stream_data_bidi_local (len=4) 524288
+Parameter: initial_max_stream_data_bidi_remote (len=4) 524288
+Parameter: initial_max_stream_data_uni (len=4) 524288
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: initial_max_streams_uni (len=2) 100
+Parameter: initial_max_stream_data_uni (len=4) 6291456
+Parameter: initial_source_connection_id (len=0)
+Parameter: initial_max_stream_data_bidi_local (len=4) 6291456
+Parameter: initial_max_data (len=4) 15728640
+Parameter: initial_max_streams_uni (len=2) 103
+Parameter: max_datagram_frame_size (len=4) 65536
+Parameter: initial_max_stream_data_bidi_remote (len=4) 6291456
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: google_connection_options (len=4)
+Parameter: version_information (len=12)
+Parameter: max_udp_payload_size (len=2) 1472
+Parameter: GREASE (len=6)
+######## server n: ClientHellos (src, sport, SNI, ALPN, JA4, JA3, frame bytes)
+10.47.4.2  49104  443 nodeb.lab.test h2,http/1.1 t13d3013h2_1d37bd780c83_8537cf56674e 32e4b8812cda0c0d50783b438492a769 1646
+10.47.4.2  49108  443 nodeb.lab.test  t13d301200_1d37bd780c83_ecd0401ec68b 284deaeae14ea5ddc96c5d7e59855422 1628
+10.47.4.2 45484  443  nodeb.lab.test h3 q13d0312h3_55b375c5d22e_e01b5de7605b 018311bdaf15f0b071fa2e5eeb923473 1248
+10.47.4.2  49118  443 nodeb.lab.test h2,http/1.1 t13d1517h2_8daaf6152771_234dc10236f4 8a0f80a4e35d4821bd47475f50ee4318 2090
+10.47.4.2  49120  443 nodeb.lab.test h2,http/1.1 t13d1518h2_8daaf6152771_039c54192a81 e0c7e71c404311870de7235cfaa6c0c9 2297
+10.47.4.2 56336  443  nodeb.lab.test h3 q13d0312h3_55b375c5d22e_178839b6cec1 c457c1c211aca481b97744d276507dbf 1298
+10.47.4.2 46816  443  nodeb.lab.test h3 q13d0312h3_55b375c5d22e_178839b6cec1 a800c4caebc27136d42276609a2fe02e 1298
+10.47.4.2 58333  443  nodeb.lab.test h3 q13d0313h3_55b375c5d22e_b0954bf1abdf d7f88af71afa03574a1b7e7097c8bbd6 1298
+######## server n: ClientHello JA4_r (raw)
+10.47.4.2		t13d3013h2_002f,0033,0035,0039,003c,003d,0067,006b,009c,009d,009e,009f,1301,1302,1303,c009,c00a,c013,c014,c023,c024,c027,c028,c02b,c02c,c02f,c030,cca8,cca9,ccaa_000a,000b,000d,0016,0017,001b,002b,002d,0031,0033,ff01_0905,0906,0904,0403,0503,0603,0807,0808,081a,081b,081c,0809,080a,080b,0804,0805,0806,0401,0501,0601,0303,0301,0302,0402,0502,0602
+10.47.4.2		t13d301200_002f,0033,0035,0039,003c,003d,0067,006b,009c,009d,009e,009f,1301,1302,1303,c009,c00a,c013,c014,c023,c024,c027,c028,c02b,c02c,c02f,c030,cca8,cca9,ccaa_000a,000b,000d,0016,0017,001b,0023,002b,002d,0033,ff01_0905,0906,0904,0403,0503,0603,0807,0808,081a,081b,081c,0809,080a,080b,0804,0805,0806,0401,0501,0601,0303,0301,0302,0402,0502,0602
+10.47.4.2	45484	q13d0312h3_1301,1302,1303_000a,000b,000d,0016,0017,001b,002b,002d,0033,0039_0905,0906,0904,0403,0503,0603,0807,0808,081a,081b,081c,0809,080a,080b,0804,0805,0806,0401,0501,0601
+10.47.4.2		t13d1517h2_002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9_0005,000a,000b,000d,0012,0017,001b,0023,002b,002d,0033,44cd,ca34,fe0d,ff01_dada,0904,0905,0906,0403,0804,0401,0503,0805,0501,0806,0601
+10.47.4.2		t13d1518h2_002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9_0005,000a,000b,000d,0012,0017,001b,0023,0029,002b,002d,0033,44cd,ca34,fe0d,ff01_eaea,0904,0905,0906,0403,0804,0401,0503,0805,0501,0806,0601
+10.47.4.2	56336	q13d0312h3_1301,1302,1303_000a,000d,001b,002b,002d,0033,0039,44cd,ca34,fe0d_0403,0804,0401,0503,0805,0501,0806,0601,0201
+10.47.4.2	46816	q13d0312h3_1301,1302,1303_000a,000d,001b,002b,002d,0033,0039,44cd,ca34,fe0d_0403,0804,0401,0503,0805,0501,0806,0601,0201
+10.47.4.2	58333	q13d0313h3_1301,1302,1303_000a,000d,001b,0029,002b,002d,0033,0039,44cd,ca34,fe0d_0403,0804,0401,0503,0805,0501,0806,0601,0201
+######## server n: ServerHellos (dst, JA3S, cipher, frame bytes)
+10.47.4.2  15af977ce25de452b96affa2addb1036 0x1302 1326
+10.47.4.2  15af977ce25de452b96affa2addb1036 0x1302 1318
+10.47.4.2 45484 15af977ce25de452b96affa2addb1036 0x1302 1248
+10.47.4.2  f4febc55ea12b31ae17cfb7e614afda8 0x1301 1309
+10.47.4.2  fcb2d4d0991292272fcb1e464eedfd43 0x1301 310
+10.47.4.2 56336 f4febc55ea12b31ae17cfb7e614afda8 0x1301 1248
+10.47.4.2 46816 f4febc55ea12b31ae17cfb7e614afda8 0x1301 1248
+10.47.4.2 58333 fcb2d4d0991292272fcb1e464eedfd43 0x1301 1248
+######## server n: QUIC transport parameters sent by clients
+Parameter: disable_active_migration (len=0)
+Parameter: initial_source_connection_id (len=0)
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: max_udp_payload_size (len=2) 1200
+Parameter: active_connection_id_limit (len=1) 2
+Parameter: initial_max_data (len=4) 786432
+Parameter: initial_max_stream_data_bidi_local (len=4) 524288
+Parameter: initial_max_stream_data_bidi_remote (len=4) 524288
+Parameter: initial_max_stream_data_uni (len=4) 524288
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: initial_max_streams_uni (len=2) 100
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: initial_max_data (len=4) 15728640
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: initial_max_stream_data_bidi_remote (len=4) 6291456
+Parameter: initial_max_streams_uni (len=2) 103
+Parameter: max_udp_payload_size (len=2) 1472
+Parameter: max_datagram_frame_size (len=4) 65536
+Parameter: version_information (len=12)
+Parameter: google_connection_options (len=4)
+Parameter: initial_source_connection_id (len=0)
+Parameter: initial_max_stream_data_uni (len=4) 6291456
+Parameter: initial_max_stream_data_bidi_local (len=4) 6291456
+Parameter: GREASE (len=13)
+Parameter: max_udp_payload_size (len=2) 1472
+Parameter: initial_max_stream_data_bidi_local (len=4) 6291456
+Parameter: google_connection_options (len=4)
+Parameter: initial_max_streams_uni (len=2) 103
+Parameter: initial_source_connection_id (len=0)
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: initial_max_data (len=4) 15728640
+Parameter: GREASE (len=0)
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: initial_max_stream_data_bidi_remote (len=4) 6291456
+Parameter: max_datagram_frame_size (len=4) 65536
+Parameter: initial_max_stream_data_uni (len=4) 6291456
+Parameter: version_information (len=12)
+Parameter: initial_max_stream_data_bidi_local (len=4) 6291456
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: max_udp_payload_size (len=2) 1472
+Parameter: initial_max_streams_uni (len=2) 103
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: initial_source_connection_id (len=0)
+Parameter: initial_max_data (len=4) 15728640
+Parameter: initial_max_stream_data_bidi_remote (len=4) 6291456
+Parameter: max_datagram_frame_size (len=4) 65536
+Parameter: version_information (len=12)
+Parameter: google_initial_rtt (len=2) 479 us
+Parameter: GREASE (len=7)
+Parameter: google_connection_options (len=4)
+Parameter: initial_max_stream_data_uni (len=4) 6291456
+2026-09-23 00:42:35 INFO    Trying to connect to nodeb (10.47.4.11 port 655) via quic
+2026-09-23 00:42:35 INFO    Dialling nodeb (10.47.4.11 port 443) via quic
+2026-09-23 00:42:35 NOTICE  Connection with nodeb (10.47.4.11 port 655) activated

@@ -41,6 +41,8 @@
 #include "authn.h"
 #include "conf.h"
 #include "connection.h"
+#include "decoy.h"
+#include "h3.h"
 #include "event.h"
 #include "list.h"
 #include "logger.h"
@@ -64,6 +66,10 @@
 #define QUIC_PKT_BUF 1452
 #define QUIC_CID_SLOTS 16               /* issued connection ids we track per session */
 #define QUIC_AUTH_CAP AUTHN_MAX_LEN     /* server-side authenticator accumulation buffer */
+#define QUIC_UNI_STREAMS 3              /* control, QPACK encoder, QPACK decoder */
+#define QUIC_REQ_SLOTS 8                /* request streams a server answers per connection */
+#define QUIC_OK_HDR_CAP 64              /* client: the listener's response HEADERS, kept to check */
+#define QUIC_IDLE_MIN 30                /* s; what curl and Chromium announce */
 
 typedef struct quic_cid_t {
 	uint8_t data[NGTCP2_MAX_CIDLEN];
@@ -82,7 +88,32 @@ typedef struct quic_session_t {
 	io_t own_io;                    /* client: its own ephemeral socket (fd), */
 	bool own_socket;                /* read here and closed with the session */
 
-	int64_t stream_id;              /* meta stream, -1 until opened/adopted */
+	char *authority;                /* client: :authority of the request (SNI or address) */
+	int64_t stream_id;              /* meta stream (the tinc request), -1 until
+	                                   opened (client) or authenticated (server) */
+	h3_parser_t rx;                 /* HTTP/3 frames on the meta stream */
+	uint8_t ok_hdr[QUIC_OK_HDR_CAP];/* client: HEADERS payload of the answer */
+	size_t ok_hdr_len;
+	bool ok_checked;                /* client: the answer is a tinc listener's */
+
+	/* Our unidirectional streams (control + SETTINGS, QPACK encoder and
+	   decoder). Their bytes are constant (h3_uni_preamble), so nothing needs
+	   to be kept for retransmission. */
+	int64_t uni_id[QUIC_UNI_STREAMS];
+	size_t uni_sent[QUIC_UNI_STREAMS];
+	bool uni_blocked[QUIC_UNI_STREAMS];
+	int nuni;
+
+	/* Server: request streams that are not (yet) the tinc session. Each gets
+	   an HTTP/3 answer -- the decoy -- like any web server would give. */
+	struct {
+		int64_t id;
+		h3_parser_t rx;
+		uint8_t *resp;          /* HEADERS + DATA; kept until the session ends */
+		size_t resp_len, resp_sent;
+		bool responded, blocked, done;
+	} req[QUIC_REQ_SLOTS];
+	int nreq;
 
 	/* Meta TX ring: bytes stay valid until acked_stream_data_offset says so,
 	   so the buffer holds [acked, appended); we hand ngtcp2 [sent, appended). */
@@ -104,6 +135,8 @@ typedef struct quic_session_t {
 	/* Server-side authenticator gate. */
 	bool is_server;
 	bool authenticated;
+	bool auth_slot_taken;           /* a request stream is sending an authenticator */
+	int auth_slot;
 	uint8_t authbuf[QUIC_AUTH_CAP];
 	size_t authlen;
 
@@ -237,7 +270,7 @@ static void quic_fail(quic_session_t *s, bool send_cc) {
 		ngtcp2_path_storage_zero(&ps);
 
 		if(!s->ccerr.error_code) {
-			ngtcp2_ccerr_set_application_error(&s->ccerr, 0, NULL, 0);
+			ngtcp2_ccerr_set_application_error(&s->ccerr, H3_NO_ERROR, NULL, 0);
 		}
 
 		ngtcp2_ssize n = ngtcp2_conn_write_connection_close(s->conn, &ps.path, &pi, buf, sizeof(buf), &s->ccerr, quic_now());
@@ -322,104 +355,346 @@ static bool deliver_meta(quic_session_t *s, const uint8_t *data, size_t len) {
 	return true;
 }
 
+/* ---- HTTP/3 streams (h3.h) ------------------------------------------------ */
+
+static const uint64_t uni_types[QUIC_UNI_STREAMS] = {H3_STREAM_CONTROL, H3_STREAM_QPACK_ENCODER, H3_STREAM_QPACK_DECODER};
+
+static bool stream_is_uni(int64_t id) {
+	return id & 0x2;
+}
+
+/* Append raw bytes to the meta stream's TX ring. */
+static void tx_append(quic_session_t *s, const void *data, size_t len) {
+	if(s->tx_len + len > s->tx_cap) {
+		s->tx_cap = s->tx_len + len + 4096;
+		s->tx = xrealloc(s->tx, s->tx_cap);
+	}
+
+	memcpy(s->tx + s->tx_len, data, len);
+	s->tx_len += len;
+}
+
+/* Append one DATA frame carrying `len' bytes of the tinc stream. */
+static void tx_append_data(quic_session_t *s, const void *data, size_t len) {
+	uint8_t hdr[H3_DATA_HDR_MAX];
+	tx_append(s, hdr, h3_data_header(hdr, len));
+	tx_append(s, data, len);
+}
+
+/* Our control stream (SETTINGS) and QPACK streams, which every HTTP/3
+   endpoint opens as soon as it can. */
+static bool open_uni_streams(quic_session_t *s) {
+	for(int i = 0; i < QUIC_UNI_STREAMS; i++) {
+		if(ngtcp2_conn_open_uni_stream(s->conn, &s->uni_id[i], NULL)) {
+			return false;
+		}
+
+		s->nuni = i + 1;
+	}
+
+	return true;
+}
+
+/* The HEADERS payload a tinc listener answers with (h3_response_ok without
+   its frame header), which the dialler checks the answer against. */
+static const uint8_t *ok_headers_payload(size_t *len) {
+	static uint8_t payload[QUIC_OK_HDR_CAP];
+	static size_t plen;
+
+	if(!plen) {
+		size_t flen;
+		uint8_t *f = h3_response_ok(&flen);
+		uint64_t type, l;
+		size_t n1 = h3_varint_get(f, flen, &type);
+		size_t n2 = h3_varint_get(f + n1, flen - n1, &l);
+
+		if(n1 && n2 && l == flen - n1 - n2 && l <= sizeof(payload)) {
+			memcpy(payload, f + n1 + n2, (size_t)l);
+			plen = (size_t)l;
+		}
+
+		free(f);
+	}
+
+	*len = plen;
+	return payload;
+}
+
+/* Server: the slot of a request stream, created on first sight. -1 when all
+   slots are taken (the stream is refused, as a server at its limit would). */
+static int req_slot(quic_session_t *s, int64_t id) {
+	for(int i = 0; i < s->nreq; i++) {
+		if(s->req[i].id == id) {
+			return i;
+		}
+	}
+
+	if(s->nreq == QUIC_REQ_SLOTS) {
+		return -1;
+	}
+
+	int i = s->nreq++;
+	memset(&s->req[i], 0, sizeof(s->req[i]));
+	s->req[i].id = id;
+	return i;
+}
+
+/* Server: answer a request stream with the decoy page, the way an HTTP/3
+   web server answers a browser. The connection stays up; an unauthenticated
+   one is ended later by tinc's authentication timeout. */
+static void req_respond_decoy(quic_session_t *s, int i) {
+	if(s->req[i].responded) {
+		return;
+	}
+
+	static const char request[] = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+	size_t rl;
+	char *r = decoy_respond_static(request, sizeof(request) - 1, &rl);
+	s->req[i].resp = h3_from_http1(r, rl, &s->req[i].resp_len);
+	free(r);
+	s->req[i].responded = true;
+
+	if(!s->req[i].resp) {
+		s->req[i].done = true;
+		ngtcp2_conn_shutdown_stream(s->conn, 0, s->req[i].id, H3_REQUEST_REJECTED);
+		return;
+	}
+
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: serving the decoy to an HTTP/3 request from %s", s->c->hostname);
+}
+
+typedef struct rx_ctx_t {
+	quic_session_t *s;
+	int slot;               /* server: request slot, -1 on the client */
+	int64_t id;
+} rx_ctx_t;
+
+/* Server: authenticator bytes from the first DATA of a request. Returns the
+   bytes consumed; sets *verdict to 1 (authenticated), -1 (rejected) or 0
+   (need more). */
+static size_t server_auth(quic_session_t *s, const uint8_t *p, size_t remain, int *verdict) {
+	size_t used = 0;
+	*verdict = 0;
+
+	while(remain) {
+		size_t expected = authn_expected_len(s->authbuf, s->authlen);
+
+		if(expected == (size_t) -1) {
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: malformed authenticator from %s", s->c->hostname);
+			*verdict = -1;
+			return used;
+		}
+
+		size_t want = expected ? expected - s->authlen : 1;
+
+		if(want > QUIC_AUTH_CAP - s->authlen) {
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: oversized authenticator from %s", s->c->hostname);
+			*verdict = -1;
+			return used;
+		}
+
+		size_t take = want < remain ? want : remain;
+		memcpy(s->authbuf + s->authlen, p, take);
+		s->authlen += take;
+		p += take;
+		remain -= take;
+		used += take;
+
+		expected = authn_expected_len(s->authbuf, s->authlen);
+
+		if(expected && expected != (size_t) -1 && s->authlen == expected) {
+			uint8_t exporter[AUTHN_EXPORTER_LEN];
+			char *name = NULL;
+
+			if(!quic_tls_exporter(s->tls.session, exporter, sizeof(exporter)) ||
+			                !authn_verify(s->authbuf, s->authlen, tls_own_fp, exporter, "quic", s->c->hostname, &name)) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: authenticator from %s rejected", s->c->hostname);
+				*verdict = -1;
+				return used;
+			}
+
+			free(s->c->name);
+			s->c->name = name;
+			s->authenticated = true;
+			logger(DEBUG_CONNECTIONS, LOG_NOTICE, "quic: authenticated peer %s (%s)", s->c->name, s->c->hostname);
+			*verdict = 1;
+			return used;
+		}
+	}
+
+	return used;
+}
+
+static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size_t len) {
+	rx_ctx_t *x = data;
+	quic_session_t *s = x->s;
+
+	if(s->dead) {
+		return false;
+	}
+
+	if(type != H3_FRAME_DATA || !len) {
+		return true;    /* HEADERS, SETTINGS-like or reserved frames: nothing we need */
+	}
+
+	if(x->id == s->stream_id) {
+		return deliver_meta(s, payload, len);
+	}
+
+	if(s->req[x->slot].responded || s->authenticated || (s->auth_slot_taken && s->auth_slot != x->slot)) {
+		return true;    /* a request body nobody is waiting for */
+	}
+
+	s->auth_slot_taken = true;
+	s->auth_slot = x->slot;
+	int verdict;
+	size_t used = server_auth(s, payload, len, &verdict);
+
+	if(verdict < 0) {
+		/* Not a tinc peer: an HTTP/3 client POSTing something. Answer it like
+		   a web server; its later requests get the same. */
+		s->authlen = 0;
+		s->auth_slot_taken = false;
+		req_respond_decoy(s, x->slot);
+		return true;
+	}
+
+	if(verdict > 0) {
+		s->stream_id = x->id;
+		s->req[x->slot].done = true;    /* its answer is the meta stream's TX ring */
+
+		size_t hlen;
+		uint8_t *h = h3_response_ok(&hlen);
+		tx_append(s, h, hlen);
+		free(h);
+
+		if(used < len) {
+			return deliver_meta(s, payload + used, len - used);
+		}
+	}
+
+	return true;
+}
+
+static bool client_frame(void *data, uint64_t type, const uint8_t *payload, size_t len) {
+	rx_ctx_t *x = data;
+	quic_session_t *s = x->s;
+
+	if(s->dead) {
+		return false;
+	}
+
+	if(type == H3_FRAME_HEADERS && !s->ok_checked) {
+		if(s->ok_hdr_len + len > sizeof(s->ok_hdr)) {
+			s->ok_hdr_len = sizeof(s->ok_hdr) + 1;  /* too long to be ours */
+		} else {
+			memcpy(s->ok_hdr + s->ok_hdr_len, payload, len);
+			s->ok_hdr_len += len;
+		}
+
+		return true;
+	}
+
+	if(type != H3_FRAME_DATA || !len) {
+		return true;
+	}
+
+	if(!s->ok_checked) {
+		size_t oklen;
+		const uint8_t *ok = ok_headers_payload(&oklen);
+
+		if(!s->rx.seen_headers || s->ok_hdr_len != oklen || memcmp(s->ok_hdr, ok, oklen)) {
+			/* A web server's answer (a decoy, or not a tinc node at all). */
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: %s (%s) answered like a web server, not a tinc peer",
+			       s->c->name, s->c->hostname);
+			ngtcp2_ccerr_set_application_error(&s->ccerr, H3_NO_ERROR, NULL, 0);
+			quic_fail(s, true);
+			return false;
+		}
+
+		s->ok_checked = true;
+	}
+
+	return deliver_meta(s, payload, len);
+}
+
 static int cb_recv_stream_data(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset,
                                const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
-	(void)flags;
 	(void)offset;
 	(void)stream_user_data;
 	quic_session_t *s = user_data;
+	bool fin = flags & NGTCP2_STREAM_DATA_FLAG_FIN;
 
 	if(s->dead) {
 		return 0;
 	}
 
-	if(s->stream_id < 0) {
-		s->stream_id = stream_id;       /* server adopts the client's stream */
-	} else if(stream_id != s->stream_id) {
-		/* Deliberately no muxing: shut any other stream. */
-		ngtcp2_conn_shutdown_stream(conn, 0, stream_id, 1);
-		return 0;
-	}
+	if(stream_is_uni(stream_id)) {
+		/* The peer's control and QPACK streams: SETTINGS we accept as they
+		   are, and no QPACK instructions can come (our dynamic table
+		   capacity is 0). Consumed and credited. */
+	} else if(!s->is_server) {
+		if(stream_id != s->stream_id) {
+			ngtcp2_conn_shutdown_stream(conn, 0, stream_id, H3_GENERAL_PROTOCOL_ERROR);
+		} else {
+			rx_ctx_t x = {s, -1, stream_id};
 
-	const uint8_t *p = data;
-	size_t remain = datalen;
-
-	/* Server: the first bytes on stream 0 are the shared authenticator; verify
-	   it before a single byte reaches the tinc protocol. */
-	if(s->is_server && !s->authenticated) {
-		size_t want;
-
-		while(!s->authenticated && remain) {
-			size_t expected = authn_expected_len(s->authbuf, s->authlen);
-
-			if(expected == (size_t) -1) {
-				logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: malformed authenticator from %s", s->c->hostname);
-				ngtcp2_ccerr_set_application_error(&s->ccerr, 1, NULL, 0);
-				quic_fail(s, false);
-				return 0;
+			if(!h3_parse(&s->rx, data, datalen, client_frame, &x) && !s->dead) {
+				ngtcp2_ccerr_set_application_error(&s->ccerr, H3_GENERAL_PROTOCOL_ERROR, NULL, 0);
+				quic_fail(s, true);
 			}
 
-			want = expected ? expected - s->authlen : 1;
-
-			if(want > QUIC_AUTH_CAP - s->authlen) {
-				logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: oversized authenticator from %s", s->c->hostname);
-				ngtcp2_ccerr_set_application_error(&s->ccerr, 1, NULL, 0);
-				quic_fail(s, false);
-				return 0;
+			if(fin && !s->dead) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: %s (%s) ended the request stream", s->c->name, s->c->hostname);
+				quic_fail(s, true);
 			}
+		}
+	} else {
+		int i = req_slot(s, stream_id);
 
-			size_t take = want < remain ? want : remain;
-			memcpy(s->authbuf + s->authlen, p, take);
-			s->authlen += take;
-			p += take;
-			remain -= take;
+		if(i < 0) {
+			ngtcp2_conn_shutdown_stream(conn, 0, stream_id, H3_REQUEST_REJECTED);
+		} else {
+			rx_ctx_t x = {s, i, stream_id};
 
-			expected = authn_expected_len(s->authbuf, s->authlen);
-
-			if(expected && expected != (size_t) -1 && s->authlen == expected) {
-				uint8_t exporter[AUTHN_EXPORTER_LEN];
-				char *name = NULL;
-
-				if(!quic_tls_exporter(s->tls.session, exporter, sizeof(exporter)) ||
-				                !authn_verify(s->authbuf, s->authlen, tls_own_fp, exporter, "quic", s->c->hostname, &name)) {
-					logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: authenticator from %s rejected", s->c->hostname);
-					ngtcp2_ccerr_set_application_error(&s->ccerr, 1, NULL, 0);
-					quic_fail(s, false);
-					return 0;
+			if(!h3_parse(&s->req[i].rx, data, datalen, server_frame, &x) && !s->dead) {
+				if(stream_id == s->stream_id) {
+					ngtcp2_ccerr_set_application_error(&s->ccerr, H3_GENERAL_PROTOCOL_ERROR, NULL, 0);
+					quic_fail(s, true);
+				} else {
+					req_respond_decoy(s, i);
 				}
+			}
 
-				free(s->c->name);
-				s->c->name = name;
-				s->authenticated = true;
-				logger(DEBUG_CONNECTIONS, LOG_NOTICE, "quic: authenticated peer %s (%s)", s->c->name, s->c->hostname);
+			if(fin && !s->dead) {
+				if(stream_id == s->stream_id) {
+					logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: %s (%s) ended the request stream", s->c->name, s->c->hostname);
+					quic_fail(s, true);
+				} else {
+					req_respond_decoy(s, i);
+				}
 			}
 		}
 	}
 
-	bool alive = true;
-
-	if(remain) {
-		alive = deliver_meta(s, p, remain);
-	}
-
-	/* Return the flow-control credit for everything we consumed, even if the
-	   connection just died (ngtcp2 still owns the conn until the reaper runs).
-	   The whole chunk was consumed (accumulated or delivered). */
-	if(alive || !s->dead) {
-		ngtcp2_conn_extend_max_stream_offset(conn, stream_id, datalen);
-		ngtcp2_conn_extend_max_offset(conn, datalen);
-	}
-
+	/* Return the flow-control credit for everything consumed, even if the
+	   connection just died (ngtcp2 still owns the conn until the reaper
+	   runs). */
+	ngtcp2_conn_extend_max_stream_offset(conn, stream_id, datalen);
+	ngtcp2_conn_extend_max_offset(conn, datalen);
 	return 0;
 }
 
 static int cb_acked_stream_data_offset(ngtcp2_conn *conn, int64_t stream_id, uint64_t offset, uint64_t datalen,
                                        void *user_data, void *stream_user_data) {
 	(void)conn;
-	(void)stream_id;
 	(void)stream_user_data;
 	quic_session_t *s = user_data;
 	uint64_t acked = offset + datalen;
+
+	if(stream_id != s->stream_id) {
+		return 0;       /* uni preambles are static; decoy answers live to session end */
+	}
 
 	if(acked > s->tx_base) {
 		size_t drop = (size_t)(acked - s->tx_base);
@@ -441,13 +716,11 @@ static int cb_acked_stream_data_offset(ngtcp2_conn *conn, int64_t stream_id, uin
 }
 
 static int cb_stream_open(ngtcp2_conn *conn, int64_t stream_id, void *user_data) {
+	/* The server's meta stream is the request whose body authenticates
+	   (server_frame), not simply the first one a client opens. */
 	(void)conn;
-	quic_session_t *s = user_data;
-
-	if(s->stream_id < 0) {
-		s->stream_id = stream_id;
-	}
-
+	(void)stream_id;
+	(void)user_data;
 	return 0;
 }
 
@@ -456,9 +729,21 @@ static int cb_recv_datagram(ngtcp2_conn *conn, uint32_t flags, const uint8_t *da
 	(void)flags;
 	quic_session_t *s = user_data;
 
-	if(s->dead || !datalen) {
+	if(s->dead || !datalen || s->stream_id < 0) {
 		return 0;
 	}
+
+	/* HTTP/3 datagram (RFC 9297): the quarter stream id of the request it
+	   belongs to comes first. */
+	uint64_t qsid;
+	size_t n = h3_varint_get(data, datalen, &qsid);
+
+	if(!n || qsid != (uint64_t)s->stream_id / 4 || n == datalen) {
+		return 0;
+	}
+
+	data += n;
+	datalen -= n;
 
 	/* The SPTPS data record, byte-for-byte what send_sptps_data() would have
 	   put on the wire; hand it straight to the SPTPS receive path with the
@@ -503,7 +788,17 @@ static int cb_extend_max_stream_data(ngtcp2_conn *conn, int64_t stream_id, uint6
 	(void)stream_id;
 	(void)max_data;
 	(void)stream_user_data;
-	((quic_session_t *)user_data)->stream_blocked = false;
+	quic_session_t *s = user_data;
+	s->stream_blocked = false;
+
+	for(int i = 0; i < s->nuni; i++) {
+		s->uni_blocked[i] = false;
+	}
+
+	for(int i = 0; i < s->nreq; i++) {
+		s->req[i].blocked = false;
+	}
+
 	return 0;
 }
 
@@ -511,13 +806,29 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 	(void)conn;
 	quic_session_t *s = user_data;
 
-	if(s->is_server || s->dead) {
+	if(s->dead) {
 		return 0;
 	}
 
-	/* Client: open stream 0, queue the authenticator, then drive the tinc
-	   handshake so the ID line is the second thing on the stream. All appends
-	   only -- the post-read flush in quic_udp_receive sends them (we are in a
+	/* Both ends open their control and QPACK streams first, as HTTP/3
+	   endpoints do. A peer that allows no unidirectional streams is not an
+	   HTTP/3 server -- nor a tinc node that speaks this carrier (the quic
+	   carrier before 2026-09-23 was not HTTP/3): fall back. */
+	if(!open_uni_streams(s)) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: %s (%s) allows no HTTP/3 control stream", s->c->name, s->c->hostname);
+		ngtcp2_ccerr_set_application_error(&s->ccerr, H3_GENERAL_PROTOCOL_ERROR, NULL, 0);
+		quic_fail(s, true);
+		return 0;
+	}
+
+	if(s->is_server) {
+		return 0;
+	}
+
+	/* Client: the tinc session is one HTTP/3 request. Open it, queue the
+	   request HEADERS and the authenticator as the first DATA frame, then
+	   drive the tinc handshake so the ID line is the next DATA frame. All
+	   appends only -- the post-read flush sends them (we are in a
 	   callback).
 
 	   An unpinned certificate -- or one that replaced the pin (verify_pin) --
@@ -543,6 +854,11 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 
 	s->stream_id = sid;
 
+	size_t hlen;
+	uint8_t *h = h3_request(s->authority, "/", &hlen);
+	tx_append(s, h, hlen);
+	free(h);
+
 	uint8_t exporter[AUTHN_EXPORTER_LEN];
 	uint8_t auth[AUTHN_MAX_LEN];
 	size_t authlen;
@@ -554,14 +870,7 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 		return 0;
 	}
 
-	/* Queue the authenticator as the first stream bytes (append to the ring). */
-	if(s->tx_len + authlen > s->tx_cap) {
-		s->tx_cap = s->tx_len + authlen + 4096;
-		s->tx = xrealloc(s->tx, s->tx_cap);
-	}
-
-	memcpy(s->tx + s->tx_len, auth, authlen);
-	s->tx_len += authlen;
+	tx_append_data(s, auth, authlen);
 
 	/* Sends the ID line onto the same stream (append only while reading). */
 	finish_connecting(s->c);
@@ -599,19 +908,26 @@ static void quic_callbacks(ngtcp2_callbacks *cb, bool server) {
 	cb->extend_max_stream_data = cb_extend_max_stream_data;
 }
 
-static void quic_settings(ngtcp2_settings *settings, ngtcp2_transport_params *params) {
+static void quic_settings(ngtcp2_settings *settings, ngtcp2_transport_params *params, bool server) {
 	ngtcp2_settings_default(settings);
 	settings->initial_ts = quic_now();
 	settings->handshake_timeout = (ngtcp2_duration)pingtimeout * NGTCP2_SECONDS;
 
+	/* What an HTTP/3 endpoint announces (testing/fingerprint: curl 8.14 and
+	   Chromium 153 both allow 100 bidirectional and >= 100 unidirectional
+	   streams). The client's parameters travel in the Initial, which anyone
+	   can decrypt: "ALPN h3 but no unidirectional streams" was a one-field
+	   rule. A server announces what nginx does: 3 unidirectional streams. */
 	ngtcp2_transport_params_default(params);
-	params->initial_max_streams_bidi = 1;
-	params->initial_max_streams_uni = 0;
-	params->initial_max_stream_data_bidi_local = 256 * 1024;
-	params->initial_max_stream_data_bidi_remote = 256 * 1024;
-	params->initial_max_data = 1024 * 1024;
-	params->max_datagram_frame_size = 65535;
-	params->max_idle_timeout = (ngtcp2_duration)(3 * pingtimeout) * NGTCP2_SECONDS;
+	params->initial_max_streams_bidi = 100;
+	params->initial_max_streams_uni = server ? 3 : 100;
+	params->initial_max_stream_data_bidi_local = 512 * 1024;
+	params->initial_max_stream_data_bidi_remote = 512 * 1024;
+	params->initial_max_stream_data_uni = 512 * 1024;
+	params->initial_max_data = 768 * 1024;
+	params->max_datagram_frame_size = 65536;
+	ngtcp2_duration idle = (ngtcp2_duration)(3 * pingtimeout);
+	params->max_idle_timeout = (idle > QUIC_IDLE_MIN ? idle : QUIC_IDLE_MIN) * NGTCP2_SECONDS;
 	/* Must exceed the default 2 or a second migration in one session fails with
 	   ERR_CONNECTION_ID_LIMIT (stream-Q finding). */
 	params->active_connection_id_limit = 8;
@@ -654,12 +970,41 @@ static void quic_flush(quic_session_t *s) {
 				break;
 			}
 		} else {
+			/* One stream per packet, in this order: our unidirectional
+			   preambles, decoy answers, the meta stream; with none pending,
+			   sid -1 lets ngtcp2 send ACKs and control frames. */
 			ngtcp2_vec v = {NULL, 0};
 			size_t cnt = 0;
 			int64_t sid = -1;
+			uint32_t wflags = 0;
+			int uni = -1, req = -1;
 			ngtcp2_ssize pdatalen = 0;
 
-			if(s->stream_id >= 0 && !s->stream_blocked && s->tx_sent < s->tx_base + s->tx_len) {
+			for(int i = 0; i < s->nuni && sid < 0; i++) {
+				size_t plen;
+				const uint8_t *pre = h3_uni_preamble(uni_types[i], &plen);
+
+				if(!s->uni_blocked[i] && s->uni_sent[i] < plen) {
+					v.base = (uint8_t *)pre + s->uni_sent[i];
+					v.len = plen - s->uni_sent[i];
+					cnt = 1;
+					sid = s->uni_id[i];
+					uni = i;
+				}
+			}
+
+			for(int i = 0; i < s->nreq && sid < 0; i++) {
+				if(s->req[i].resp && !s->req[i].done && !s->req[i].blocked) {
+					v.base = s->req[i].resp + s->req[i].resp_sent;
+					v.len = s->req[i].resp_len - s->req[i].resp_sent;
+					cnt = v.len ? 1 : 0;
+					sid = s->req[i].id;
+					wflags = NGTCP2_WRITE_STREAM_FLAG_FIN;
+					req = i;
+				}
+			}
+
+			if(sid < 0 && s->stream_id >= 0 && !s->stream_blocked && s->tx_sent < s->tx_base + s->tx_len) {
 				size_t off = (size_t)(s->tx_sent - s->tx_base);
 				v.base = s->tx + off;
 				v.len = s->tx_len - off;
@@ -667,10 +1012,22 @@ static void quic_flush(quic_session_t *s) {
 				sid = s->stream_id;
 			}
 
-			nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, sizeof(buf), &pdatalen, 0, sid, &v, cnt, ts);
+			nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, sizeof(buf), &pdatalen, wflags, sid, &v, cnt, ts);
 
 			if(nwrite == NGTCP2_ERR_STREAM_DATA_BLOCKED) {
-				s->stream_blocked = true;
+				if(uni >= 0) {
+					s->uni_blocked[uni] = true;
+				} else if(req >= 0) {
+					s->req[req].blocked = true;
+				} else {
+					s->stream_blocked = true;
+				}
+
+				continue;
+			}
+
+			if((nwrite == NGTCP2_ERR_STREAM_SHUT_WR || nwrite == NGTCP2_ERR_STREAM_NOT_FOUND) && req >= 0) {
+				s->req[req].done = true;        /* the client gave up on that request */
 				continue;
 			}
 
@@ -680,8 +1037,19 @@ static void quic_flush(quic_session_t *s) {
 				return;
 			}
 
-			if(pdatalen > 0) {
-				s->tx_sent += (uint64_t)pdatalen;
+			if(pdatalen >= 0 && sid >= 0) {
+				if(uni >= 0) {
+					s->uni_sent[uni] += (size_t)pdatalen;
+				} else if(req >= 0) {
+					s->req[req].resp_sent += (size_t)pdatalen;
+
+					/* All of it, FIN included, is in a packet. */
+					if(s->req[req].resp_sent == s->req[req].resp_len && nwrite > 0) {
+						s->req[req].done = true;
+					}
+				} else {
+					s->tx_sent += (uint64_t)pdatalen;
+				}
 			}
 
 			if(nwrite == 0) {
@@ -792,6 +1160,12 @@ static void free_session(quic_session_t *s) {
 	}
 
 	quic_tls_session_free(&s->tls);
+
+	for(int i = 0; i < s->nreq; i++) {
+		free(s->req[i].resp);
+	}
+
+	free(s->authority);
 	free(s->tx);
 	list_delete(&quic_sessions, s);
 	free(s);
@@ -858,7 +1232,7 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	ngtcp2_settings settings;
 	ngtcp2_transport_params params;
 	quic_callbacks(&cb, true);
-	quic_settings(&settings, &params);
+	quic_settings(&settings, &params, true);
 	params.original_dcid = hd.dcid;
 	params.original_dcid_present = 1;
 
@@ -954,9 +1328,10 @@ static void session_read(quic_session_t *s, const uint8_t *buf, size_t len, cons
 	}
 }
 
-/* Client sessions: one datagram from the session's own socket. A packet for
-   any other connection id -- a stray, or someone probing the ephemeral
-   port -- is dropped; this socket never accepts a connection. */
+/* Client sessions: one datagram from the session's own socket. Anything that
+   is not a QUIC packet for our (empty) connection id -- a stray, or someone
+   probing the ephemeral port -- is dropped; this socket never accepts a
+   connection. */
 static void quic_client_read(void *data, int flags) {
 	(void)flags;
 	quic_session_t *s = data;
@@ -976,7 +1351,9 @@ static void quic_client_read(void *data, int flags) {
 	sockaddrunmap(&addr);
 	ngtcp2_version_cid vc;
 
-	if(ngtcp2_pkt_decode_version_cid(&vc, buf, (size_t)len, TRANSPORT_QUIC_CIDLEN) < 0 || session_by_cid(vc.dcid, vc.dcidlen) != s) {
+	/* Our connection id is empty, so every packet for us carries an empty
+	   destination connection id. */
+	if(ngtcp2_pkt_decode_version_cid(&vc, buf, (size_t)len, 0) < 0 || vc.dcidlen) {
 		return;
 	}
 
@@ -1182,17 +1559,32 @@ bool quic_dial(connection_t *c) {
 	}
 
 	free(alpn);
-	free(sni);
+
+	/* :authority of the request: the name the TLS handshake presents, else
+	   the address dialled, the way a browser writes it. */
+	{
+		char *host, *port;
+		sockaddr2str(&s->peer, &host, &port);
+		bool v6 = !sni && s->peer.sa.sa_family == AF_INET6;
+		bool dflt = !strcmp(port, "443");
+		xasprintf(&s->authority, "%s%s%s%s%s", v6 ? "[" : "", sni ? sni : host, v6 ? "]" : "",
+		          dflt ? "" : ":", dflt ? "" : port);
+		free(host);
+		free(port);
+		free(sni);
+	}
 
 	ngtcp2_callbacks cb;
 	ngtcp2_settings settings;
 	ngtcp2_transport_params params;
 	quic_callbacks(&cb, false);
-	quic_settings(&settings, &params);
+	quic_settings(&settings, &params, false);
 
-	ngtcp2_cid dcid = {.datalen = NGTCP2_MIN_INITIAL_DCIDLEN}, scid = {.datalen = TRANSPORT_QUIC_CIDLEN};
+	/* A zero-length source connection id, as curl and Chromium use: the
+	   session has a socket of its own, so nothing needs to route by it (an
+	   8-byte one was a field no reference client shares). */
+	ngtcp2_cid dcid = {.datalen = NGTCP2_MIN_INITIAL_DCIDLEN}, scid = {.datalen = 0};
 	gnutls_rnd(GNUTLS_RND_RANDOM, dcid.data, dcid.datalen);
-	gnutls_rnd(GNUTLS_RND_RANDOM, scid.data, scid.datalen);
 
 	ngtcp2_path path = {
 		.local = {(ngtcp2_sockaddr *)&s->local.sa, SALEN(s->local.sa)},
@@ -1204,7 +1596,6 @@ bool quic_dial(connection_t *c) {
 		return false;
 	}
 
-	cid_add(s, scid.data, scid.datalen);
 	ngtcp2_conn_set_tls_native_handle(s->conn, s->tls.session);
 
 	c->status.connecting = false;
@@ -1233,13 +1624,7 @@ bool quic_send(connection_t *c) {
 	uint32_t avail = c->outbuf.len - c->outbuf.offset;
 
 	if(avail) {
-		if(s->tx_len + avail > s->tx_cap) {
-			s->tx_cap = s->tx_len + avail + 4096;
-			s->tx = xrealloc(s->tx, s->tx_cap);
-		}
-
-		memcpy(s->tx + s->tx_len, c->outbuf.data + c->outbuf.offset, avail);
-		s->tx_len += avail;
+		tx_append_data(s, c->outbuf.data + c->outbuf.offset, avail);
 		buffer_read(&c->outbuf, avail);
 	}
 
@@ -1259,7 +1644,15 @@ bool quic_send_datagram(connection_t *c, const void *buf, size_t len) {
 
 	size_t max = ngtcp2_conn_get_max_tx_udp_payload_size(s->conn);
 
-	if(len > QUIC_MAX_DGRAM || (max > 35 && len > max - 35)) {
+	if(s->stream_id < 0) {
+		return false;
+	}
+
+	/* HTTP/3 datagram: the request's quarter stream id, then the record. */
+	uint8_t qsid[8];
+	size_t qlen = h3_varint_put(qsid, (uint64_t)s->stream_id / 4);
+
+	if(len + qlen > QUIC_MAX_DGRAM || (max > 35 + qlen && len > max - 35 - qlen)) {
 		return false; /* caller treats it like EMSGSIZE -> reduce_mtu */
 	}
 
@@ -1268,8 +1661,9 @@ bool quic_send_datagram(connection_t *c, const void *buf, size_t len) {
 	}
 
 	size_t i = (s->dgram_head + s->dgram_n) % QUIC_DGRAM_QUEUE;
-	memcpy(s->dgram[i].data, buf, len);
-	s->dgram[i].len = len;
+	memcpy(s->dgram[i].data, qsid, qlen);
+	memcpy(s->dgram[i].data + qlen, buf, len);
+	s->dgram[i].len = qlen + len;
 	s->dgram_n++;
 
 	if(!s->reading) {
@@ -1294,7 +1688,7 @@ void quic_close(connection_t *c) {
 		ngtcp2_path_storage_zero(&ps);
 
 		if(!s->ccerr.error_code) {
-			ngtcp2_ccerr_set_application_error(&s->ccerr, 0, NULL, 0);
+			ngtcp2_ccerr_set_application_error(&s->ccerr, H3_NO_ERROR, NULL, 0);
 		}
 
 		ngtcp2_ssize n = ngtcp2_conn_write_connection_close(s->conn, &ps.path, &pi, buf, sizeof(buf), &s->ccerr, quic_now());

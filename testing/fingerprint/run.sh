@@ -49,7 +49,10 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 mkdir -p "$RUN/pki" "$OUT"
-docker network create --subnet "$SUBNET.0/24" "$NET" >/dev/null
+# --internal: the lab must not reach the Internet. Before 2026-09-23 it could,
+# and Chromium used that to call Google (component updates, gvt1.com) from
+# inside a measurement that claimed to stay on this host.
+docker network create --internal --subnet "$SUBNET.0/24" "$NET" >/dev/null
 
 if ! docker image inspect "$TOOLS" >/dev/null 2>&1; then
 	log "building $TOOLS"
@@ -157,8 +160,15 @@ sleep 3
 tools() { # run a reference client on the lab network, as a separate source IP each time
 	docker run --rm --network "$NET" --add-host "$NAME:$1" "$TOOLS" sh -c "$2" 2>&1 | tail -c 600
 }
+# Chromium honours --ignore-certificate-errors over TLS/TCP but not over QUIC:
+# there it failed the handshake (CERTIFICATE_VERIFY_FAILED) and fell back to
+# TCP, so the QUIC probes measured a ClientHello and nothing after it. Trusting
+# the lab certificate's key by hash covers both.
+SPKI=$(docker run --rm -v "$RUN/pki:/p" "$IMG" sh -c \
+	'openssl x509 -in /p/leaf.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64')
 chrome() { # <server ip> <url> [extra flags]
 	tools "$1" "chromium --headless=new --no-sandbox --disable-gpu --ignore-certificate-errors \
+		--ignore-certificate-errors-spki-list=$SPKI \
 		--user-data-dir=/tmp/c --host-resolver-rules='MAP $NAME $1' ${3:-} --dump-dom '$2' >/dev/null 2>&1; echo chromium done"
 }
 
