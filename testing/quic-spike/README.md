@@ -1,5 +1,10 @@
 # testing/quic-spike — stream Q: QUIC carrier primitives on ngtcp2
 
+**Historical (2026-09-16).** The spike used ngtcp2's GnuTLS backend and the
+since-removed `core/Dockerfile.build-quic`; the carrier moved to the OpenSSL
+3.5 backend on 2026-09-23 (docs/transports.md §9.1). Kept as the record of
+what was proven then; it does not build against the current core image.
+
 Standalone proof (no tincd code involved) that the library chosen for the M5
 QUIC carrier does everything the carrier contract needs, driven the way tincd
 will drive it: one unconnected UDP socket, one single-threaded `poll()` loop,

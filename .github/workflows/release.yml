@@ -20,8 +20,8 @@
 # deployment is `docker compose` against the published image
 # (platforms/linux/docker/compose.release.yml).
 #
-# Architecture: linux/amd64 only for now. arm64 needs either QEMU (the ngtcp2 +
-# GnuTLS stage makes that ~10x slower) or an arm64 runner; add it as a matrix
+# Architecture: linux/amd64 only for now. arm64 needs either QEMU (the ngtcp2
+# source stage makes that ~10x slower) or an arm64 runner; add it as a matrix
 # leg once a first release has gone out on amd64.
 #
 # FIRST RELEASE, ONE MANUAL STEP: a package that Actions creates in ghcr.io is

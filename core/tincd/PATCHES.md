@@ -608,6 +608,29 @@ tinc node and to nginx side by side (docs/transports.md §8.5.1).
 
 ---
 
+## 17. One TLS stack: OpenSSL 3.5 for both carriers (tincstack, 2026-09-23)
+
+`transport_quic_tls.{c,h}` (rewritten), `transport_quic.c`, `tls.c`,
+`https.c`, `meson.build`, `meson_options.txt`, `core/Dockerfile.build`.
+
+The core image moves to Debian 13 and the quic carrier from ngtcp2's GnuTLS
+backend to `ngtcp2_crypto_ossl` on OpenSSL 3.5, so the https and quic
+carriers, client and server, run on the TLS library curl 8.14 and nginx use
+there. The dialler's ClientHellos take curl's settings on top of OpenSSL's
+defaults: no `session_ticket` extension on both, and on https ALPN
+`h2, http/1.1` and `post_handshake_auth`. A server that selects h2 is a web
+server: the https dial gives up. The quic client now checks the selected
+ALPN itself (GnuTLS enforced it). The exporter the authenticator is bound to
+is the same value in both stacks, so GnuTLS-era and OpenSSL nodes still
+connect.
+
+Proof: `testing/fingerprint/run.sh` (both ClientHellos' JA4, JA3 and size
+equal curl's; the QUIC ServerHello's JA3S equal nginx's) and
+`testing/transports/mixed-version-test.sh` (docs/transports.md §8.2, §9.1,
+§9.8).
+
+---
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):

@@ -1,14 +1,14 @@
 /*
     transport_quic.c -- the `quic' carrier: SPTPS meta on one QUIC stream and
                         SPTPS data records in QUIC DATAGRAM frames, over tinc's
-                        own UDP listen socket (ngtcp2 + GnuTLS).
+                        own UDP listen socket (ngtcp2 + OpenSSL).
 
     QUIC is an outer carrier: SPTPS (Ed25519 identity, ChaCha20-Poly1305, the
     meta+data records) runs unchanged inside it (principle 1). ngtcp2 owns no
     socket, no threads and no timers -- this file feeds it datagrams read from
     the M4 front's UDP socket, drains what it wants to send, and drives one
     timeout_t from ngtcp2_conn_get_expiry(), exactly as the stream-Q spike
-    proved (testing/quic-spike/). The GnuTLS-specific ~60 lines are in
+    proved (testing/quic-spike/). The TLS-backend-specific lines are in
     transport_quic_tls.c so another TLS backend can replace them per platform.
 
     Peer authentication: the dialler sends the shared authenticator (authn.c,
@@ -34,7 +34,6 @@
 
 #include <time.h>
 
-#include <gnutls/crypto.h>
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
 
@@ -295,7 +294,7 @@ static ngtcp2_conn *get_conn(ngtcp2_crypto_conn_ref *ref) {
 
 static void cb_rand(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *ctx) {
 	(void)ctx;
-	gnutls_rnd(GNUTLS_RND_RANDOM, dest, destlen);
+	quic_tls_random(dest, destlen);
 }
 
 static int cb_get_new_connection_id(ngtcp2_conn *conn, ngtcp2_cid *cid, ngtcp2_stateless_reset_token *token,
@@ -303,7 +302,7 @@ static int cb_get_new_connection_id(ngtcp2_conn *conn, ngtcp2_cid *cid, ngtcp2_s
 	(void)conn;
 	quic_session_t *s = user_data;
 
-	if(gnutls_rnd(GNUTLS_RND_RANDOM, cid->data, cidlen)) {
+	if(!quic_tls_random(cid->data, cidlen)) {
 		return NGTCP2_ERR_CALLBACK_FAILURE;
 	}
 
@@ -506,7 +505,7 @@ static size_t server_auth(quic_session_t *s, const uint8_t *p, size_t remain, in
 			uint8_t exporter[AUTHN_EXPORTER_LEN];
 			char *name = NULL;
 
-			if(!quic_tls_exporter(s->tls.session, exporter, sizeof(exporter)) ||
+			if(!quic_tls_exporter(&s->tls, exporter, sizeof(exporter)) ||
 			                !authn_verify(s->authbuf, s->authlen, tls_own_fp, exporter, "quic", s->c->hostname, &name)) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: authenticator from %s rejected", s->c->hostname);
 				*verdict = -1;
@@ -825,6 +824,15 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 		return 0;
 	}
 
+	/* The server must have chosen our protocol (GnuTLS enforced this with
+	   GNUTLS_ALPN_MANDATORY; OpenSSL completes a handshake without one). */
+	if(!quic_tls_alpn_selected(&s->tls)) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: %s (%s) chose no HTTP/3 ALPN", s->c->name, s->c->hostname);
+		ngtcp2_ccerr_set_application_error(&s->ccerr, H3_NO_ERROR, NULL, 0);
+		quic_fail(s, true);
+		return 0;
+	}
+
 	/* Client: the tinc session is one HTTP/3 request. Open it, queue the
 	   request HEADERS and the authenticator as the first DATA frame, then
 	   drive the tinc handshake so the ID line is the next DATA frame. All
@@ -863,7 +871,7 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 	uint8_t auth[AUTHN_MAX_LEN];
 	size_t authlen;
 
-	if(!quic_tls_exporter(s->tls.session, exporter, sizeof(exporter)) ||
+	if(!quic_tls_exporter(&s->tls, exporter, sizeof(exporter)) ||
 	                !(authlen = authn_build(s->tls.peer_fp, exporter, auth, sizeof(auth)))) {
 		logger(DEBUG_CONNECTIONS, LOG_ERR, "quic: could not build the authenticator for %s", s->c->name);
 		quic_fail(s, false);
@@ -1232,7 +1240,7 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	params.original_dcid_present = 1;
 
 	ngtcp2_cid scid = {.datalen = TRANSPORT_QUIC_CIDLEN};
-	gnutls_rnd(GNUTLS_RND_RANDOM, scid.data, scid.datalen);
+	quic_tls_random(scid.data, scid.datalen);
 
 	if(ngtcp2_crypto_generate_stateless_reset_token(params.stateless_reset_token, static_secret, sizeof(static_secret), &scid)) {
 		free_session(s);
@@ -1258,7 +1266,7 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	cid_add(s, scid.data, scid.datalen);
 	cid_add(s, hd.dcid.data, hd.dcid.datalen);
 
-	ngtcp2_conn_set_tls_native_handle(s->conn, s->tls.session);
+	ngtcp2_conn_set_tls_native_handle(s->conn, quic_tls_native_handle(&s->tls));
 	connection_add(c);
 
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "quic: connection from %s", c->hostname);
@@ -1579,7 +1587,7 @@ bool quic_dial(connection_t *c) {
 	   session has a socket of its own, so nothing needs to route by it (an
 	   8-byte one was a field no reference client shares). */
 	ngtcp2_cid dcid = {.datalen = NGTCP2_MIN_INITIAL_DCIDLEN}, scid = {.datalen = 0};
-	gnutls_rnd(GNUTLS_RND_RANDOM, dcid.data, dcid.datalen);
+	quic_tls_random(dcid.data, dcid.datalen);
 
 	ngtcp2_path path = {
 		.local = {(ngtcp2_sockaddr *)&s->local.sa, SALEN(s->local.sa)},
@@ -1591,7 +1599,7 @@ bool quic_dial(connection_t *c) {
 		return false;
 	}
 
-	ngtcp2_conn_set_tls_native_handle(s->conn, s->tls.session);
+	ngtcp2_conn_set_tls_native_handle(s->conn, quic_tls_native_handle(&s->tls));
 
 	c->status.connecting = false;
 	connection_add(c);
@@ -1753,7 +1761,7 @@ bool quic_init(void) {
 		}
 
 		free(key_pem);
-		logger(DEBUG_ALWAYS, LOG_ERR, "quic carrier: GnuTLS init failed");
+		logger(DEBUG_ALWAYS, LOG_ERR, "quic carrier: TLS (OpenSSL) init failed");
 		return false;
 	}
 
@@ -1772,7 +1780,7 @@ bool quic_init(void) {
 	}
 
 	if(!quic_ready) {
-		gnutls_rnd(GNUTLS_RND_RANDOM, static_secret, sizeof(static_secret));
+		quic_tls_random(static_secret, sizeof(static_secret));
 		transport_set_quic_cid_matcher(quic_cid_match);
 		quic_ready = true;
 
@@ -1836,8 +1844,8 @@ bool quic_init(void) {
 		}
 
 		transport_advertise_port("QuicPort", quic_port);
-		logger(DEBUG_ALWAYS, LOG_INFO, "QUIC carrier ready (ngtcp2 %s, GnuTLS)%s", ngtcp2_version(0)->version_str,
-		       quic_port ? "" : ", on the tinc port");
+		logger(DEBUG_ALWAYS, LOG_INFO, "QUIC carrier ready (ngtcp2 %s, %s)%s", ngtcp2_version(0)->version_str,
+		       OpenSSL_version(OPENSSL_VERSION), quic_port ? "" : ", on the tinc port");
 	}
 
 	return true;

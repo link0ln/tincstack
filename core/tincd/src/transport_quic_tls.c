@@ -1,11 +1,17 @@
 /*
-    transport_quic_tls.c -- GnuTLS backend for the quic carrier.
+    transport_quic_tls.c -- OpenSSL backend for the quic carrier.
 
     The only backend-specific code in the carrier (docs/transports.md §9.10):
-    certificate credentials, the SHA-256 fingerprint-pinning verify callback
-    (§9.7: a pin that moved is re-pinned after SPTPS), the QUIC TLS 1.3
-    priority string, ALPN/SNI, and the RFC 5705 exporter. Replace this file to
-    move the carrier to wolfSSL / BoringSSL on another platform.
+    the server context built from the node certificate, the SHA-256
+    fingerprint-pinning verify callback (§9.7: a pin that moved is re-pinned
+    after SPTPS), ALPN/SNI, the RFC 5705 exporter and the random source.
+    OpenSSL >= 3.5 carries the QUIC TLS API that ngtcp2_crypto_ossl drives.
+
+    Until 2026-09-23 this was GnuTLS 3.7.9 (ngtcp2_crypto_gnutls); its QUIC
+    ClientHello had a JA4 no reference client shares, and the ServerHello
+    differed from the https front's OpenSSL one on the same host
+    (testing/fingerprint). The handshake now uses OpenSSL's defaults, as
+    curl 8.14 and nginx on Debian 13 do; nothing here tunes the ClientHello.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -22,90 +28,68 @@
 
 #ifdef HAVE_QUIC
 
-#include <gnutls/crypto.h>
-#include <gnutls/x509.h>
-#include <ngtcp2/ngtcp2_crypto_gnutls.h>
+#include <openssl/err.h>
+#include <openssl/pem.h>
+#include <openssl/rand.h>
+#include <openssl/x509.h>
 
 #include "authn.h"
 #include "logger.h"
 #include "transport_quic_tls.h"
 
-/* TLS 1.3 only, the cipher suites QUIC allows, no middlebox compat mode
-   (identical to the spike). */
-static const char tls_priority[] =
-        "NORMAL:-VERS-ALL:+VERS-TLS1.3:-CIPHER-ALL:+AES-128-GCM:+AES-256-GCM:"
-        "+CHACHA20-POLY1305:-GROUP-ALL:+GROUP-X25519:+GROUP-SECP256R1:"
-        "%DISABLE_TLS13_COMPAT_MODE";
-
-/* The shared server credential built from the node certificate. */
-static gnutls_certificate_credentials_t server_cred;
-static bool server_cred_ready;
+/* The shared server context built from the node certificate. */
+static SSL_CTX *server_ctx;
+static SSL_CTX *client_ctx;
 
 #define container_of(ptr, type, member) \
 	((type *)((char *)(ptr) - offsetof(type, member)))
 
-bool quic_tls_global_init(void) {
-	return gnutls_global_init() >= 0;
+static quic_tls_t *tls_of(SSL *ssl) {
+	ngtcp2_crypto_conn_ref *ref = SSL_get_app_data(ssl);
+	return ref ? container_of(ref, quic_tls_t, conn_ref) : NULL;
 }
 
-void quic_tls_global_deinit(void) {
-	gnutls_global_deinit();
-}
+static void log_ossl_errors(const char *what) {
+	unsigned long e;
 
-bool quic_tls_set_server_cert(const char *cert_pem, const char *key_pem) {
-	gnutls_certificate_credentials_t cred;
-
-	if(gnutls_certificate_allocate_credentials(&cred) < 0) {
-		return false;
-	}
-
-	gnutls_datum_t cert = {(unsigned char *)cert_pem, (unsigned int)strlen(cert_pem)};
-	gnutls_datum_t key = {(unsigned char *)key_pem, (unsigned int)strlen(key_pem)};
-
-	if(gnutls_certificate_set_x509_key_mem(cred, &cert, &key, GNUTLS_X509_FMT_PEM) < 0) {
-		gnutls_certificate_free_credentials(cred);
-		return false;
-	}
-
-	if(server_cred_ready) {
-		gnutls_certificate_free_credentials(server_cred);
-	}
-
-	server_cred = cred;
-	server_cred_ready = true;
-	return true;
-}
-
-void quic_tls_free_server_cert(void) {
-	if(server_cred_ready) {
-		gnutls_certificate_free_credentials(server_cred);
-		server_cred_ready = false;
+	while((e = ERR_get_error())) {
+		char buf[256];
+		ERR_error_string_n(e, buf, sizeof(buf));
+		logger(DEBUG_ALWAYS, LOG_ERR, "quic: %s: %s", what, buf);
 	}
 }
 
-/* Client: verify the server certificate by SHA-256 of its DER, nothing else.
-   The expected fingerprint (if any) and the presented one both live in the
-   quic_tls_t we recover from the session pointer. */
-static int verify_pin(gnutls_session_t session) {
-	ngtcp2_crypto_conn_ref *ref = gnutls_session_get_ptr(session);
+/* Server: offer only the configured protocol; a client that asks for none of
+   it gets no_application_protocol, as an HTTP/3 server does (RFC 9001 §8.1). */
+static int alpn_select(SSL *ssl, const unsigned char **out, unsigned char *outlen,
+                       const unsigned char *in, unsigned int inlen, void *arg) {
+	(void)arg;
+	quic_tls_t *t = tls_of(ssl);
 
-	if(!ref) {
-		return GNUTLS_E_CERTIFICATE_ERROR;
+	if(!t || !t->alpn_wire[0]) {
+		return SSL_TLSEXT_ERR_ALERT_FATAL;
 	}
 
-	quic_tls_t *t = container_of(ref, quic_tls_t, conn_ref);
-
-	unsigned int n = 0;
-	const gnutls_datum_t *certs = gnutls_certificate_get_peers(session, &n);
-
-	if(!certs || !n) {
-		return GNUTLS_E_CERTIFICATE_ERROR;
+	if(SSL_select_next_proto((unsigned char **)out, outlen, t->alpn_wire, t->alpn_wire[0] + 1u, in, inlen) != OPENSSL_NPN_NEGOTIATED) {
+		return SSL_TLSEXT_ERR_ALERT_FATAL;
 	}
 
-	size_t digestlen = QUIC_FP_LEN;
+	return SSL_TLSEXT_ERR_OK;
+}
 
-	if(gnutls_fingerprint(GNUTLS_DIG_SHA256, &certs[0], t->peer_fp, &digestlen) < 0 || digestlen != QUIC_FP_LEN) {
-		return GNUTLS_E_CERTIFICATE_ERROR;
+/* Client: verify the server certificate by SHA-256 of its DER, nothing else
+   (no chain, no name: a peer is pinned, then proven by the authenticator
+   and SPTPS). */
+static int verify_pin(X509_STORE_CTX *xs, void *arg) {
+	(void)arg;
+	SSL *ssl = X509_STORE_CTX_get_ex_data(xs, SSL_get_ex_data_X509_STORE_CTX_idx());
+	quic_tls_t *t = ssl ? tls_of(ssl) : NULL;
+	X509 *leaf = X509_STORE_CTX_get0_cert(xs);
+	unsigned int len = 0;
+
+	if(!t || !leaf || X509_digest(leaf, EVP_sha256(), t->peer_fp, &len) != 1 || len != QUIC_FP_LEN) {
+		X509_STORE_CTX_set_error(xs, X509_V_ERR_UNSPECIFIED);
+		return 0;
 	}
 
 	for(size_t i = 0; i < QUIC_FP_LEN; i++) {
@@ -115,12 +99,8 @@ static int verify_pin(gnutls_session_t session) {
 	t->have_peer_fp = true;
 
 	/* Unpinned: accept on first use (transport_quic.c pins it afterwards). */
-	if(!t->pin[0]) {
-		return 0;
-	}
-
-	if(!strcmp(t->peer_fp_hex, t->pin)) {
-		return 0;
+	if(!t->pin[0] || !strcmp(t->peer_fp_hex, t->pin)) {
+		return 1;
 	}
 
 	/* The pin moved: a renewal, a re-issued certificate, or someone on path.
@@ -132,108 +112,192 @@ static int verify_pin(gnutls_session_t session) {
 	logger(DEBUG_ALWAYS, LOG_NOTICE, "quic: the peer presents certificate %s, not the pinned %s; "
 	       "it replaces the pin only if SPTPS authenticates the peer over this session", t->peer_fp_hex, t->pin);
 	t->repin = true;
-	return 0;
+	return 1;
+}
+
+bool quic_tls_global_init(void) {
+	if(ngtcp2_crypto_ossl_init() != 0) {
+		return false;
+	}
+
+	if(!client_ctx) {
+		client_ctx = SSL_CTX_new(TLS_client_method());
+
+		if(!client_ctx) {
+			log_ossl_errors("client context");
+			return false;
+		}
+
+		SSL_CTX_set_min_proto_version(client_ctx, TLS1_3_VERSION);
+		SSL_CTX_set_max_proto_version(client_ctx, TLS1_3_VERSION);
+		SSL_CTX_set_verify(client_ctx, SSL_VERIFY_PEER, NULL);
+		SSL_CTX_set_cert_verify_callback(client_ctx, verify_pin, NULL);
+		/* curl 8.14's QUIC ClientHello has no session_ticket extension;
+		   with it ours was curl's plus one (testing/fingerprint). */
+		SSL_CTX_set_options(client_ctx, SSL_OP_NO_TICKET);
+	}
+
+	return true;
+}
+
+void quic_tls_global_deinit(void) {
+	if(client_ctx) {
+		SSL_CTX_free(client_ctx);
+		client_ctx = NULL;
+	}
+
+	quic_tls_free_server_cert();
+}
+
+bool quic_tls_set_server_cert(const char *cert_pem, const char *key_pem) {
+	SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+
+	if(!ctx) {
+		log_ossl_errors("server context");
+		return false;
+	}
+
+	SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+	SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+
+	BIO *cbio = BIO_new_mem_buf(cert_pem, -1);
+	BIO *kbio = BIO_new_mem_buf(key_pem, -1);
+	X509 *cert = cbio ? PEM_read_bio_X509(cbio, NULL, NULL, NULL) : NULL;
+	EVP_PKEY *key = kbio ? PEM_read_bio_PrivateKey(kbio, NULL, NULL, NULL) : NULL;
+	bool ok = cert && key && SSL_CTX_use_certificate(ctx, cert) == 1 &&
+	          SSL_CTX_use_PrivateKey(ctx, key) == 1 && SSL_CTX_check_private_key(ctx) == 1;
+
+	/* Intermediates after the leaf, as tls.c does for the https front. */
+	if(ok && cbio) {
+		X509 *ca;
+
+		while((ca = PEM_read_bio_X509(cbio, NULL, NULL, NULL))) {
+			if(SSL_CTX_add_extra_chain_cert(ctx, ca) != 1) {
+				X509_free(ca);
+			}
+		}
+	}
+
+	ERR_clear_error(); /* the chain loop ends on a PEM "no start line" */
+	BIO_free(cbio);
+	BIO_free(kbio);
+	X509_free(cert);
+	EVP_PKEY_free(key);
+
+	if(!ok) {
+		log_ossl_errors("loading the server certificate");
+		SSL_CTX_free(ctx);
+		return false;
+	}
+
+	SSL_CTX_set_alpn_select_cb(ctx, alpn_select, NULL);
+
+	quic_tls_free_server_cert();
+	server_ctx = ctx;
+	return true;
+}
+
+void quic_tls_free_server_cert(void) {
+	if(server_ctx) {
+		SSL_CTX_free(server_ctx);
+		server_ctx = NULL;
+	}
 }
 
 bool quic_tls_session_init(quic_tls_t *t, bool server,
                            ngtcp2_conn *(*get_conn)(ngtcp2_crypto_conn_ref *),
                            void *user_data, const char *alpn, const char *sni, const char *pin_hex) {
-	int rv;
-
 	t->server = server;
 	t->conn_ref.get_conn = get_conn;
 	t->conn_ref.user_data = user_data;
 
+	size_t alen = alpn ? strlen(alpn) : 0;
+
+	if(!alen || alen >= sizeof(t->alpn_wire) - 1) {
+		return false;
+	}
+
+	t->alpn_wire[0] = (uint8_t)alen;
+	memcpy(t->alpn_wire + 1, alpn, alen);
+
+	SSL_CTX *ctx = server ? server_ctx : client_ctx;
+
+	if(!ctx || !(t->ssl = SSL_new(ctx))) {
+		return false;
+	}
+
+	SSL_set_app_data(t->ssl, &t->conn_ref);
+
 	if(server) {
-		if(!server_cred_ready) {
-			return false;
+		if(ngtcp2_crypto_ossl_configure_server_session(t->ssl) != 0) {
+			goto fail;
 		}
 
-		t->cred = server_cred;
-		t->own_cred = false;
+		SSL_set_accept_state(t->ssl);
 	} else {
-		if(gnutls_certificate_allocate_credentials(&t->cred) < 0) {
-			return false;
-		}
-
-		t->own_cred = true;
-
 		if(pin_hex) {
 			strncpy(t->pin, pin_hex, sizeof(t->pin) - 1);
 		}
 
-		gnutls_certificate_set_verify_function(t->cred, verify_pin);
+		if(ngtcp2_crypto_ossl_configure_client_session(t->ssl) != 0 ||
+		                SSL_set_alpn_protos(t->ssl, t->alpn_wire, (unsigned int)alen + 1) != 0) {
+			goto fail;
+		}
+
+		if(sni && *sni && SSL_set_tlsext_host_name(t->ssl, sni) != 1) {
+			goto fail;
+		}
+
+		SSL_set_connect_state(t->ssl);
 	}
 
-	unsigned int flags = server ? GNUTLS_SERVER : GNUTLS_CLIENT;
-
-	if(server) {
-		flags |= GNUTLS_NO_AUTO_SEND_TICKET;
-	}
-
-	if((rv = gnutls_init(&t->session, flags)) < 0) {
+	if(ngtcp2_crypto_ossl_ctx_new(&t->octx, t->ssl) != 0) {
 		goto fail;
-	}
-
-	rv = server ? ngtcp2_crypto_gnutls_configure_server_session(t->session)
-	     : ngtcp2_crypto_gnutls_configure_client_session(t->session);
-
-	if(rv) {
-		goto fail;
-	}
-
-	if((rv = gnutls_priority_set_direct(t->session, tls_priority, NULL)) < 0) {
-		goto fail;
-	}
-
-	gnutls_session_set_ptr(t->session, &t->conn_ref);
-
-	if((rv = gnutls_credentials_set(t->session, GNUTLS_CRD_CERTIFICATE, t->cred)) < 0) {
-		goto fail;
-	}
-
-	if(alpn && *alpn) {
-		gnutls_datum_t ad = {(unsigned char *)alpn, (unsigned int)strlen(alpn)};
-		gnutls_alpn_set_protocols(t->session, &ad, 1,
-		                          GNUTLS_ALPN_MANDATORY | (server ? GNUTLS_ALPN_SERVER_PRECEDENCE : 0));
-	}
-
-	if(!server && sni && *sni) {
-		gnutls_server_name_set(t->session, GNUTLS_NAME_DNS, sni, strlen(sni));
 	}
 
 	return true;
 
 fail:
-
-	if(t->session) {
-		gnutls_deinit(t->session);
-		t->session = NULL;
-	}
-
-	if(t->own_cred) {
-		gnutls_certificate_free_credentials(t->cred);
-		t->own_cred = false;
-	}
-
+	log_ossl_errors("session setup");
+	quic_tls_session_free(t);
 	return false;
 }
 
 void quic_tls_session_free(quic_tls_t *t) {
-	if(t->session) {
-		gnutls_deinit(t->session);
-		t->session = NULL;
+	if(t->octx) {
+		ngtcp2_crypto_ossl_ctx_del(t->octx);
+		t->octx = NULL;
 	}
 
-	if(t->own_cred) {
-		gnutls_certificate_free_credentials(t->cred);
-		t->own_cred = false;
+	if(t->ssl) {
+		/* ngtcp2's callbacks must not find a conn_ref whose ngtcp2_conn is
+		   already gone (ngtcp2_crypto_ossl.h). */
+		SSL_set_app_data(t->ssl, NULL);
+		SSL_free(t->ssl);
+		t->ssl = NULL;
 	}
 }
 
-bool quic_tls_exporter(gnutls_session_t session, uint8_t *out, size_t outlen) {
-	return gnutls_prf_rfc5705(session, strlen(AUTHN_EXPORTER_LABEL), AUTHN_EXPORTER_LABEL,
-	                          0, NULL, outlen, (char *)out) >= 0;
+bool quic_tls_alpn_selected(quic_tls_t *t) {
+	const unsigned char *sel = NULL;
+	unsigned int len = 0;
+	SSL_get0_alpn_selected(t->ssl, &sel, &len);
+	return sel && len == t->alpn_wire[0] && !memcmp(sel, t->alpn_wire + 1, len);
+}
+
+void *quic_tls_native_handle(quic_tls_t *t) {
+	return t->octx;
+}
+
+bool quic_tls_exporter(quic_tls_t *t, uint8_t *out, size_t outlen) {
+	/* TLS 1.3 (RFC 8446 §7.5): no context and an empty one are the same, so
+	   this matches the GnuTLS backend's value on the wire. */
+	return t->ssl && SSL_export_keying_material(t->ssl, out, outlen, AUTHN_EXPORTER_LABEL,
+	                strlen(AUTHN_EXPORTER_LABEL), NULL, 0, 0) == 1;
+}
+
+bool quic_tls_random(uint8_t *out, size_t len) {
+	return RAND_bytes(out, (int)len) == 1;
 }
 
 #endif /* HAVE_QUIC */

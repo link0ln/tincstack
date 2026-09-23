@@ -145,7 +145,7 @@ networks:
                                               # (host:port; Host header rewritten)
 
       # QUIC carrier (point 7; M5 G3). Compiled when tinc is built with ngtcp2 +
-      # GnuTLS on an OpenSSL build (the Docker image is); then `quic' is in the
+      # OpenSSL >= 3.5 (the Docker image is, on Debian 13); then `quic' is in the
       # default accept list and is dialled only when a node lists it in
       # PreferredTransports ([quic, plain]). Meta rides one QUIC stream, SPTPS
       # data rides DATAGRAM frames; the node certificate (keys.tls_cert) and the

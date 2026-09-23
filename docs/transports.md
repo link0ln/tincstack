@@ -29,7 +29,7 @@ front dispatch), `transport_table.c` (names + classifier, no daemon deps),
 | `TRANSPORT_HTTPS` | `https` | M5 | TLS front, meta+data in one TLS flow | reserved |
 | `TRANSPORT_OBFS`  | `obfs`  | M5 | obfuscated single UDP flow | reserved |
 | `TRANSPORT_HTTPS` | `https` | OpenSSL builds | TLS front, meta+data in one TLS flow | done (M5, G1) |
-| `TRANSPORT_QUIC`  | `quic`  | OpenSSL builds with ngtcp2 + GnuTLS (`-Dquic`, default in `Dockerfile.build`) | QUIC v1: meta on one bidi stream, SPTPS data in DATAGRAM frames | done (M5, G3) |
+| `TRANSPORT_QUIC`  | `quic`  | OpenSSL >= 3.5 builds with ngtcp2 (`-Dquic`, default in `Dockerfile.build`) | QUIC v1: meta on one bidi stream, SPTPS data in DATAGRAM frames | done (M5, G3) |
 | `TRANSPORT_TEST`  | `test`  | `-Dtransport_test=true` only | — (dial always fails) | test aid |
 
 The ids are stable bit positions: a carrier's advertisement and the accept mask
@@ -1117,7 +1117,21 @@ written to the host record only once the SPTPS handshake inside that TLS session
 activated the link (`c->edge` set by the ACK), i.e. once the peer proved its
 Ed25519 identity over the very session the certificate belongs to (the exporter
 in the authenticator, §8.3, binds the two). A malformed existing pin is ignored
-and never overwritten (logged). ALPN offers `http/1.1`.
+and never overwritten (logged).
+
+**The ClientHello is curl's** (since 2026-09-23, Debian 13 / OpenSSL 3.5).
+The dialler uses OpenSSL's defaults as curl 8.14 does, plus curl's three
+choices: ALPN `h2, http/1.1`, no `session_ticket` extension
+(`SSL_OP_NO_TICKET`), `post_handshake_auth` offered. Measured
+(`testing/fingerprint/results/2026-09-23-deb13/`): JA4
+`t13d3013h2_1d37bd780c83_8537cf56674e`, JA3
+`32e4b8812cda0c0d50783b438492a769`, 1646 bytes -- all three identical to
+curl's; before, OpenSSL 3.0 with ALPN `http/1.1` only, 403 bytes, a JA4 no
+reference client shared. A tinc server selects `http/1.1` (it offers no
+h2); a server that selects `h2` is a web server, and the dial gives up
+right after the handshake (`answered like a web server (ALPN h2)`,
+checked against nginx with `http2 on`). Not a browser: Chromium's
+ClientHello (GREASE, ECH, ALPS) needs BoringSSL.
 
 **A moved pin.** When the presented certificate does not match the pin, the
 dial carries on exactly like a first contact: the handshake completes as any TLS
@@ -1303,8 +1317,8 @@ UDP flow to correlate.
 Status: **implemented** (`core/tincd/src/transport_quic.c`,
 `transport_quic_tls.c`; stream G3, 2026-09-16) on the library and the
 primitives stream Q de-risked (`testing/quic-spike/`, decision table in §9.1).
-The carrier is compiled whenever meson finds ngtcp2 + GnuTLS (`-Dquic=auto`,
-the default) on an OpenSSL build; `core/Dockerfile.build` ships it. Proof
+The carrier is compiled whenever meson finds ngtcp2 with its OpenSSL backend
+and OpenSSL >= 3.5 (`-Dquic=auto`, the default) on an OpenSSL build; `core/Dockerfile.build` ships it. Proof
 script: `testing/transports/quic-carrier-test.sh`.
 
 ### 9.1 Library decision (stream Q)
@@ -1320,12 +1334,24 @@ script: `testing/transports/quic-carrier-test.sh`.
 | connection migration | yes | yes: passive (peer address change -> path validation) and active (`initiate_immediate_migration`) | yes |
 | crypto backends | Schannel / quictls | GnuTLS, wolfSSL, BoringSSL, picotls, OpenSSL >= 3.5; backend-specific code is ~60 lines | BoringSSL |
 
-Decision: **ngtcp2 with the GnuTLS backend** on Linux. Least build risk (one
-pinned tarball, distro TLS library), and the only candidate whose model (the
+Decision: **ngtcp2 with the GnuTLS backend** on Linux (2026-09-16). Least
+build risk (one pinned tarball, distro TLS library), and the only candidate whose model (the
 application owns the socket, the loop and the timers) matches how the M4 front
 dispatches datagrams (`transport_udp_dispatch` -> `udp_receive`). The
 reference `tinc-quic` used msquic and had to give it its own socket and
 threads; that is where its dead stream muxing came from.
+
+**Revised 2026-09-23: ngtcp2 with the OpenSSL backend, on Debian 13.** The
+wire-fingerprint audit found GnuTLS 3.7.9's QUIC ClientHello unique (no
+reference client shares its JA4) and its ServerHello different from the
+OpenSSL one the https front sends from the same host (§9.8). Debian 13's
+OpenSSL 3.5 has the QUIC TLS API `ngtcp2_crypto_ossl` needs, and it is the
+stack curl 8.14 and nginx use there, so the carriers now share one TLS
+library. ngtcp2 is still built from the pinned tarball (`--with-openssl`):
+trixie's `libngtcp2` is 1.11 without the ossl backend. Mixed pairs -- a
+GnuTLS node and an OpenSSL node -- interoperate over `quic` (and `https`)
+in both directions: the authenticator's TLS 1.3 exporter is the same value
+in both stacks (`testing/transports/mixed-version-test.sh`).
 
 The spike (`testing/quic-spike/run.sh`, three runs `ALL PASS`) proved the
 primitives the carrier is built on: handshake with a PEM cert + SHA-256 pin,
@@ -1357,7 +1383,7 @@ short-header rule (§9.5).
   re-armed after every flush from `ngtcp2_conn_get_expiry()`; its callback
   runs `ngtcp2_conn_handle_expiry()` and flushes.
 - Per-session state (`quic_session_t`, `c->transport_data`): `ngtcp2_conn *`,
-  the GnuTLS session (`quic_tls_t`), socket fd + family index, the peer
+  the TLS session (`quic_tls_t`: OpenSSL `SSL` + `ngtcp2_crypto_ossl_ctx`), socket fd + family index, the peer
   `sockaddr_t`, the meta stream id, the meta TX ring with absolute offsets
   (bytes stay valid until `acked_stream_data_offset`), a 64-entry datagram TX
   queue, the timer, the list of connection ids this node issued (for the keyed
@@ -1372,13 +1398,13 @@ short-header rule (§9.5).
 
 | hook | what it does |
 |---|---|
-| `init()` | `tls_init()` then the node certificate PEM from `tls_current_pem()` (the single node cert, `keys.tls_cert/tls_key`, G1) -> `gnutls_certificate_set_x509_key_mem`; 32-byte static secret for stateless-reset tokens; registers the CID matcher with `transport_set_quic_cid_matcher()`; binds the `QuicPort` sockets when configured. Logs `QUIC carrier ready (ngtcp2 1.25.0, GnuTLS)`. `quic_read_config()` on `tinc reload` rebuilds the credential when the certificate fingerprint changed. |
-| `exit()` | close every session, free the credential, `gnutls_global_deinit()`. |
-| `dial(c)` | pin = the peer's `TlsFingerprint` host-record key (absent => accept-on-first-use, §9.7); port = the peer's host-record `QuicPort`, else own configured `QuicPort` (not the own host record's advertisement), else the port as dialled; a fresh socket on an ephemeral port (§3.1); GnuTLS client session with ALPN `QuicAlpn` (default `h3`) and SNI from §9.8; random DCID(8) + SCID(8); `ngtcp2_conn_client_new(..., NGTCP2_PROTO_VER_V1, ...)`; `connection_add(c)`; flush (the Initial goes out). `finish_connecting()` is *not* called here. Logs `Dialling <peer> via quic`. |
+| `init()` | `tls_init()` then the node certificate PEM from `tls_current_pem()` (the single node cert, `keys.tls_cert/tls_key`, G1) -> a TLS 1.3 `SSL_CTX` (`quic_tls_set_server_cert`); 32-byte static secret for stateless-reset tokens; registers the CID matcher with `transport_set_quic_cid_matcher()`; binds the `QuicPort` sockets when configured. Logs `QUIC carrier ready (ngtcp2 1.25.0, OpenSSL 3.5.7 ...)`. `quic_read_config()` on `tinc reload` rebuilds the credential when the certificate fingerprint changed. |
+| `exit()` | close every session, free both `SSL_CTX`s. |
+| `dial(c)` | pin = the peer's `TlsFingerprint` host-record key (absent => accept-on-first-use, §9.7); port = the peer's host-record `QuicPort`, else own configured `QuicPort` (not the own host record's advertisement), else the port as dialled; a fresh socket on an ephemeral port (§3.1); OpenSSL client session with ALPN `QuicAlpn` (default `h3`, checked after the handshake: a server that selected none is not ours) and SNI from §9.8; random DCID(8) + SCID(8); `ngtcp2_conn_client_new(..., NGTCP2_PROTO_VER_V1, ...)`; `connection_add(c)`; flush (the Initial goes out). `finish_connecting()` is *not* called here. Logs `Dialling <peer> via quic`. |
 | `udp_receive` / `quic_udp_try(ls, buf, len, addr)` | `ngtcp2_pkt_decode_version_cid`; DCID in the session table => `ngtcp2_conn_read_pkt(path = {socket addr, datagram source}, ...)` then flush -- the remote of the path is always the datagram's real source, which is the whole NAT-rebind mechanism. Unknown DCID: only a packet `ngtcp2_accept()` takes as a well-formed v1 Initial (>= 1200 bytes) opens a session (`quic_accept`, burst-limited by `max_connection_burst`, `new_connection()` named `<unknown>`, `allow_request = ID`); anything else **returns `false` and falls through** to the obfs keyed check and SPTPS. `read_pkt` errors: `DRAINING/CLOSING/DROP_CONN` => silent teardown; `NGTCP2_ERR_CRYPTO` => `CONNECTION_CLOSE` with the TLS alert; other => `CONNECTION_CLOSE` with `ngtcp2_ccerr_set_liberr`. Every teardown ends in `terminate_connection()`. |
 | `send(c)` | append `c->outbuf` to the TX ring, flush: queued datagrams first (`ngtcp2_conn_writev_datagram`), then `ngtcp2_conn_writev_stream` on the meta stream; `sendto` each packet; `NGTCP2_ERR_STREAM_DATA_BLOCKED` marks the stream blocked until `extend_max_stream_data`; then `ngtcp2_conn_update_pkt_tx_time` + re-arm the timer. `EMSGSIZE` from the socket is ignored (ngtcp2's PMTUD probes). |
 | `send_datagram(c, buf, len)` | queue + flush; returns `false` when `len > 1400` or `len > ngtcp2_conn_get_max_tx_udp_payload_size() - 35`, which `send_sptps_data()` treats like `EMSGSIZE` (-> `reduce_mtu`); when the 64-entry queue is full the datagram is dropped (SPTPS tolerates loss). |
-| `close(c)` | best-effort `ngtcp2_conn_write_connection_close` (the recorded `ccerr`, else app error 0) + `sendto`; drop the CIDs; `ngtcp2_conn_del`, `gnutls_deinit`; free. |
+| `close(c)` | best-effort `ngtcp2_conn_write_connection_close` (the recorded `ccerr`, else app error 0) + `sendto`; drop the CIDs; `ngtcp2_conn_del`, `ngtcp2_crypto_ossl_ctx_del`, `SSL_free`; free. |
 | `local_address(c, sa)` | `getsockname()` on the session's socket. |
 
 Settings / transport parameters: `initial_max_streams_bidi = 1`,
@@ -1410,7 +1436,7 @@ other and fall back to the next carrier):
   `ver(1) || namelen(1) || name || nonce(16) || ts_be(8) || Ed25519 sig(64)`
   over `"tincstack-authn-v2\0" || server-cert-fp(32) || TLS-exporter(32) ||
   nonce || ts`, exporter label `EXPORTER-tincstack-https-v1` via
-  `gnutls_prf_rfc5705`); every later DATA frame is tinc meta: the `ID` line
+  `SSL_export_keying_material`); every later DATA frame is tinc meta: the `ID` line
   from `finish_connecting()` and everything after it.
 - **The listener** parses every request stream's frames. The first stream
   whose DATA carries a valid authenticator (`authn_verify()` against its own
@@ -1553,16 +1579,23 @@ What an observer can still tell (testing/fingerprint, re-measured
   `max_udp_payload_size 1200` and no `version_information`;
   `active_connection_id_limit` is 8 (curl 2, Chromium 2) because a second
   NAT rebind in one session fails with 2;
-- the ClientHello is GnuTLS 3.7.9's: JA4 `q13d0315h3_55b375c5d22e_84684a673e38`
-  (`status_request`, `record_size_limit`, `session_ticket`,
-  `renegotiation_info`, SHA-1 signature schemes). curl's
-  (`q13d0312h3_55b375c5d22e_e01b5de7605b`) comes from OpenSSL 3.5 and
-  Chromium's from BoringSSL; neither can be produced with GnuTLS 3.7
-  (ML-DSA and brainpool signature schemes, ALPS, ECH);
-- the listener's ServerHello is GnuTLS's while the TCP front on the same
-  host is OpenSSL's (JA3S differ).
-
-The last two share one fix: OpenSSL 3.5 for both carriers (PLAN.md).
+- until 2026-09-23 the ClientHello was GnuTLS 3.7.9's (JA4
+  `q13d0315h3_55b375c5d22e_84684a673e38`: `status_request`,
+  `record_size_limit`, `session_ticket`, `renegotiation_info`, SHA-1
+  signature schemes) and the listener's ServerHello GnuTLS's while the TCP
+  front on the same host was OpenSSL's. Since the move to OpenSSL 3.5
+  (§9.1, re-measured in `testing/fingerprint/results/2026-09-23-deb13/`):
+  the ClientHello is curl's -- JA4 `q13d0312h3_55b375c5d22e_e01b5de7605b`,
+  JA3 `018311bdaf15f0b071fa2e5eeb923473`, 1248 bytes, identical to curl
+  8.14's (the dialler sets `SSL_OP_NO_TICKET`, as curl's has no
+  `session_ticket`); the ServerHello's JA3S is nginx's
+  (`15af977c...` to curl, `f4febc55...` to Chromium) on both carriers;
+- not a browser: Chromium's JA4 (`..._178839b6cec1`: GREASE, ECH, ALPS)
+  needs BoringSSL;
+- the lab's reference nginx (`nginx:1.27`, Debian 12, OpenSSL 3.0) has no
+  post-quantum key exchange; ours selects `X25519MLKEM768` when the client
+  offers it, as an OpenSSL 3.5 server (nginx on Debian 13) does -- its
+  ServerHello flight is ~660 bytes larger than the lab nginx's.
 
 ### 9.9 Handshake failure and fallback
 
@@ -1593,8 +1626,9 @@ socket change (Android Wi-Fi -> LTE), which tinc does not do today.
 ### 9.10 Build wiring
 
 `meson_options.txt`: `option('quic', type: 'feature', value: 'auto')`.
-`src/meson.build` looks up `libngtcp2 >= 1.0`, `libngtcp2_crypto_gnutls` and
-`gnutls >= 3.7.3`; when all three are found *and* `crypto=openssl` (the node
+`src/meson.build` looks up `libngtcp2 >= 1.12`, `libngtcp2_crypto_ossl` and
+`openssl >= 3.5` (until 2026-09-23: `libngtcp2_crypto_gnutls` and `gnutls`);
+when all three are found *and* `crypto=openssl` (the node
 certificate comes from `tls.c`, which is OpenSSL) it adds `transport_quic.c`
 + `transport_quic_tls.c` and defines `HAVE_QUIC`; `-Dquic=enabled` on a
 non-OpenSSL crypto build is an error. `transport_table.c`'s `quic` row is
@@ -1610,14 +1644,18 @@ tick is enough") only holds if every default node image carries the carrier,
 and the compose lab (`platforms/linux/docker`) builds from
 `Dockerfile.build`. Cost: +16 s build, runtime image 100 MB (+5.4 MB). The
 QUIC-less build stays green and is proven with
-`--build-arg QUIC=disabled` (image `ws-g3-noquic`: `tincd` links neither
-ngtcp2 nor GnuTLS, `Transports accept=plain,sf,obfs,https`).
+`--build-arg QUIC=disabled` (image `ws-g3-noquic`: `tincd` links no
+ngtcp2, `Transports accept=plain,sf,obfs,https`). Base image: Debian 13
+(`debian:13-slim`) since 2026-09-23, for OpenSSL 3.5.
 
-Windows (mingw) and Android (NDK, M8): GnuTLS is the heavy part of this
-choice. ngtcp2's API is backend-independent; only the TLS object setup differs
-(`ngtcp2_crypto_<backend>_configure_*_session` plus the backend's credential
-calls, ~150 lines in `transport_quic_tls.c`), so wolfSSL or BoringSSL can
-replace GnuTLS per platform without touching the carrier.
+Windows (mingw) and Android (NDK, M8) have **neither TLS carrier today**:
+the Windows core is built with `-Dcrypto=gcrypt` and Android links only
+LibreSSL's libcrypto. When they get `https`/`quic` they must link **the same
+OpenSSL 3.5** (statically, built in the build container) with the same
+client settings -- a different TLS library gives each platform its own
+ClientHello, and the dialler is exactly what clients on those platforms
+are. ngtcp2's API is backend-independent; the backend code is
+`transport_quic_tls.c` (~290 lines).
 
 ### 9.11 Known limits
 

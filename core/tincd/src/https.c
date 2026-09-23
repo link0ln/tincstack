@@ -701,6 +701,17 @@ static void drive_tls_handshake(https_session_t *s) {
 			s->state = HS_SERVER_READ_REQ;
 			set_io(s, IO_READ);
 		} else {
+			const unsigned char *alpn = NULL;
+			unsigned int alpnlen = 0;
+			SSL_get0_alpn_selected(s->ssl, &alpn, &alpnlen);
+
+			/* We offer h2 as curl does; only a web server takes it. */
+			if(alpnlen == 2 && !memcmp(alpn, "h2", 2)) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "https: %s (%s) answered like a web server (ALPN h2)", s->c->name, s->c->hostname);
+				fail(s);
+				return;
+			}
+
 			if(!verify_server_cert(s) || !build_client_request(s)) {
 				fail(s);
 				return;

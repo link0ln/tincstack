@@ -103,7 +103,7 @@ option('sandbox',
 option('quic',
        type: 'feature',
        value: 'auto',
-       description: 'QUIC carrier (ngtcp2 with the GnuTLS backend); auto = when pkg-config finds libngtcp2 + libngtcp2_crypto_gnutls + gnutls')
+       description: 'QUIC carrier (ngtcp2 with the OpenSSL backend); auto = when pkg-config finds libngtcp2 + libngtcp2_crypto_ossl + openssl >= 3.5')
 
 option('transport_test',
        type: 'boolean',

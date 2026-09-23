@@ -56,6 +56,10 @@ static time_t tls_expiry_warned_at;
 /* http/1.1 ALPN wire form: one length-prefixed protocol name. */
 static const uint8_t alpn_http11[] = { 8, 'h', 't', 't', 'p', '/', '1', '.', '1' };
 
+/* What the dialler offers: curl's list. A tinc server selects http/1.1 (it
+   has no h2); a web server that picks h2 is not a tinc node (https.c). */
+static const uint8_t alpn_client[] = { 2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1' };
+
 /* ---- small helpers ------------------------------------------------------- */
 
 static void tls_log_errors(const char *what) {
@@ -404,7 +408,13 @@ static SSL_CTX *build_client_ctx(void) {
 	   Chasing a public CA chain here would leak nothing useful and would
 	   break the self-signed default. See https.c. */
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
-	SSL_CTX_set_alpn_protos(ctx, alpn_http11, sizeof(alpn_http11));
+	SSL_CTX_set_alpn_protos(ctx, alpn_client, sizeof(alpn_client));
+
+	/* The ClientHello curl 8.14 on OpenSSL 3.5 sends (testing/fingerprint):
+	   no session_ticket extension, post_handshake_auth offered. With these
+	   and the ALPN above the JA4 is curl's. */
+	SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
+	SSL_CTX_set_post_handshake_auth(ctx, 1);
 	return ctx;
 }
 

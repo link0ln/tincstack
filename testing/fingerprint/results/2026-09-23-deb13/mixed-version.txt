@@ -1,0 +1,13 @@
+Assigned address 10.60.1.2/24 to leaf.
+19:45:14 PASS quic: founder tincstack/core:pre-deb13, leaf tincstack/core:dev
+Assigned address 10.245.228.2/24 to leaf.
+19:45:17 PASS quic: founder tincstack/core:dev, leaf tincstack/core:pre-deb13
+Assigned address 10.249.47.2/24 to leaf.
+19:45:20 PASS quic: founder tincstack/core:dev, leaf tincstack/core:dev
+Assigned address 10.85.169.2/24 to leaf.
+19:45:23 PASS https: founder tincstack/core:pre-deb13, leaf tincstack/core:dev
+Assigned address 10.233.58.2/24 to leaf.
+19:45:25 PASS https: founder tincstack/core:dev, leaf tincstack/core:pre-deb13
+Assigned address 10.214.43.2/24 to leaf.
+19:45:27 PASS https: founder tincstack/core:dev, leaf tincstack/core:dev
+19:45:27 mixed versions: all pairs connect
