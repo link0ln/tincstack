@@ -71,7 +71,7 @@ See `tinc.example.yaml` for an annotated example.
 * **Transports** — `Transports` (accept list, default all) and
   `PreferredTransports` (dial preference — tick *quic* and move it up to prefer
   QUIC; the peer follows because its accept list already includes it),
-  obfuscated-UDP parameters, the HTTPS front (`HttpsFront*`, `TlsCert`/`TlsKey`,
+  obfuscated-UDP parameters, the HTTPS front (`HttpsPort` (0 = off), `TlsCert`/`TlsKey`,
   decoy root/upstream) and `QuicPort`. Validated before saving; only changed
   keys are written.
 * Toolbar: Start / Stop / Restart, **Invite…**, **Join…**, run-at-Windows-startup

@@ -1035,7 +1035,7 @@ dies before it activates advances to the next candidate automatically (§2).
 | `AllowPlainMeta` | `yes` | `no` = refuse inbound cleartext tinc meta connections; drops `plain` from the accept mask (§2.1; breaks `tinc join` against this node) |
 | `PreferredTransports` | `plain` | dial order; always ends at `plain` |
 | `SingleFlow` | `no` | `yes` = dial `sf` first (TCP kept as fallback) |
-| `HttpsSni` | peer `Address` name, else `localhost` | SNI the https dial presents |
+| `HttpsSni` | peer `Address` name, else none | SNI the https dial presents |
 | `TlsCert` / `TlsKey` | generated self-signed | PEM files; else `keys.tls_cert/tls_key` |
 | `HttpsDecoyRoot` | built-in page | static files served to probers |
 | `HttpsDecoyUpstream` | (unset) | `host:port` to proxy probers to instead |
@@ -1105,7 +1105,11 @@ takes. See docs/config-schema.md for every option and every failure code, and
 host-record `HttpsPort`, else the dialler's own `HttpsPort` option, else the port
 dialled; §3.1) and a
 TLS client handshake with a plausible SNI (`HttpsSni`, else the peer's `Address`
-if it is a hostname, else `localhost`). PKI verification is off
+if it is a hostname, else **none**: a peer dialled by IP gets no SNI and a
+`Host:` of that IP, plus `:port` when it is not 443 -- what curl sends to an
+IP. Until 2026-09-23 it sent SNI `localhost` and `Host: localhost`, which no
+client dialling an IP does; found comparing the Windows dialler with curl,
+`testing/transports/windows-wine-test.sh`). PKI verification is off
 (`SSL_VERIFY_NONE`); instead the peer's certificate is pinned by SHA-256
 fingerprint (`TlsFingerprint` in the peer's host record). A match needs nothing
 more; a mismatch is handled like a first contact (below). If none is pinned, the
@@ -1648,14 +1652,32 @@ QUIC-less build stays green and is proven with
 ngtcp2, `Transports accept=plain,sf,obfs,https`). Base image: Debian 13
 (`debian:13-slim`) since 2026-09-23, for OpenSSL 3.5.
 
-Windows (mingw) and Android (NDK, M8) have **neither TLS carrier today**:
-the Windows core is built with `-Dcrypto=gcrypt` and Android links only
-LibreSSL's libcrypto. When they get `https`/`quic` they must link **the same
-OpenSSL 3.5** (statically, built in the build container) with the same
-client settings -- a different TLS library gives each platform its own
-ClientHello, and the dialler is exactly what clients on those platforms
-are. ngtcp2's API is backend-independent; the backend code is
-`transport_quic_tls.c` (~290 lines).
+**Windows** (mingw) has both carriers since 2026-09-23: `core/Dockerfile.build-win`
+builds OpenSSL 3.5.7, zlib 1.3.1, zstd 1.5.7 and ngtcp2 1.25.0 from
+sha256-pinned tarballs and links them statically into `tincd.exe` (`-Dcrypto=openssl
+-Dquic=enabled`; it still imports only system DLLs). The same OpenSSL with
+the same client settings is the point: a different TLS library gives a
+platform its own ClientHello. zlib and zstd are there for that alone --
+Debian's OpenSSL offers `compress_certificate` (zlib, zstd), so without them
+the Windows ClientHello lacked extension `001b`. OpenSSL is configured
+`no-autoload-config no-module no-dso` with `OPENSSLDIR` under Program Files:
+the elevated service never reads an `openssl.cnf` or loads a provider from a
+user-writable path. Proof, under Wine in Docker (`testing/transports/windows-wine-test.sh`,
+14 checks, `testing/fingerprint/results/2026-09-23-windows/`): a Linux leaf
+connects to a Windows founder over both carriers and back; curl gets the
+decoy from the Windows node over TLS and HTTP/3 and nginx's 400 to plain
+bytes; its ServerHellos have the Linux build's JA3S; its https and QUIC
+ClientHellos equal the Linux dialler's in JA4_r and byte count, which equal
+curl's when all three dial the same IP; and a hung dial no longer stalls the
+daemon (mingw has no `O_NONBLOCK`, so the https dial socket had stayed
+blocking -- the same check fails in 10 s on a build without the fix). Not
+proven: a real Windows kernel, and the Wintun data path (the lab runs
+`DeviceType = dummy`).
+
+**Android** (NDK, M8) still has **neither TLS carrier**: it links only
+LibreSSL's libcrypto. It must get the same OpenSSL 3.5, built the same way.
+ngtcp2's API is backend-independent; the backend code is
+`transport_quic_tls.c` (~300 lines).
 
 ### 9.11 Known limits
 

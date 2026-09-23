@@ -289,7 +289,7 @@ def test_transports_tab_validation_blocks_save(window):
     opts = yc.load(w.app.path).net("demo").options
     assert opts["Transports"] == ["https"]
     assert opts["TlsCert"] == "C:/certs/fullchain.pem" and opts["TlsKey"] == "C:/certs/privkey.pem"
-    assert "HttpsFront" not in opts and "QuicPort" not in opts and "ObfsJunkPacketCount" not in opts
+    assert "HttpsPort" not in opts and "QuicPort" not in opts and "ObfsJunkPacketCount" not in opts
 
 
 def test_start_stop_do_not_block_qt_thread(window):

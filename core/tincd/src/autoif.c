@@ -90,6 +90,10 @@ static bool build(char *cmd, size_t cmdlen, const char *fmt, ...) {
 	return true;
 }
 
+#ifdef HAVE_LINUX
+/* Only the Linux path runs commands (WIFEXITED is POSIX; on Windows the
+   declaration was implicit and the function dead code until gcc 14 made
+   that an error). */
 static bool run(const char *cmd) {
 	logger(DEBUG_STATUS, LOG_INFO, "Built-in tinc-up: %s", cmd);
 	int status = system(cmd);
@@ -101,6 +105,7 @@ static bool run(const char *cmd) {
 
 	return true;
 }
+#endif
 
 bool autoif_up(void) {
 #ifdef HAVE_LINUX

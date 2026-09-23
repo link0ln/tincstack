@@ -629,6 +629,23 @@ equal curl's; the QUIC ServerHello's JA3S equal nginx's) and
 `testing/transports/mixed-version-test.sh` (docs/transports.md §8.2, §9.1,
 §9.8).
 
+## 18. The TLS carriers on Windows (tincstack, 2026-09-23)
+
+`core/Dockerfile.build-win`, `meson.build`, `dropin.{c,h}`, `https.c`,
+`autoif.c`, `transport_quic.c`, `transport.c`, `transport_sf.c`, `obfs.c`,
+`httpc.c`, `pool.c`.
+
+The Windows core moves from libgcrypt to a static OpenSSL 3.5.7 (with zlib
+and zstd, as Debian's is) and gains `https` and `quic` (static ngtcp2,
+`NGTCP2_STATICLIB`). Portability fixes the carriers needed on mingw:
+`memmem`/`strcasestr` fallbacks in `dropin.c`, `ioctlsocket(FIONBIO)` for the
+https dial socket (there is no `O_NONBLOCK`; it had stayed blocking), no
+`%zd`/`%zu` (msvcrt printf), `autoif.c`'s `WIFEXITED` path Linux-only. On
+every platform: a dial to an IP now sends no SNI and `Host: <ip>[:port]`,
+as curl does, instead of `localhost`.
+
+Proof: `testing/transports/windows-wine-test.sh` (docs/transports.md §9.10).
+
 ---
 
 ## Building
@@ -641,9 +658,9 @@ Linux (musl/Alpine, as used on the relay containers):
 
 Windows (mingw-w64 cross-build, for the laptop):
 
-    meson setup build-win --cross-file .ci/cross/windows/amd64 \
-        -Dbuildtype=release -Dminiupnpc=disabled -Dcrypto=gcrypt
-    meson compile -C build-win
+    docker build -f core/Dockerfile.build-win -t tincstack/core-win:dev core
+    # static OpenSSL 3.5 + zlib + zstd + ngtcp2, then
+    # meson -Dcrypto=openssl -Dquic=enabled (§18)
 
 `UDPDiscoveryBurst` and `UDPRebindOnWake` are added to the Linux meson
 `check_functions` / option handling and registered in `tincctl.c`.

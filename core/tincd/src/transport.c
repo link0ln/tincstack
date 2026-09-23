@@ -854,7 +854,7 @@ bool transport_front_dispatch(connection_t *c) {
 			return false;
 		}
 
-		logger(DEBUG_META, LOG_DEBUG, "Front: %zd undecided byte(s) from %s; parking for %d ms", len, c->hostname, FRONT_POLL_MS);
+		logger(DEBUG_META, LOG_DEBUG, "Front: %ld undecided byte(s) from %s; parking for %d ms", (long)len, c->hostname, FRONT_POLL_MS);
 		front_park(c);
 		return false;
 

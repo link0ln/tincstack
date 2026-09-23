@@ -34,6 +34,15 @@ extern int vasprintf(char **, const char *, va_list ap) ATTR_FORMAT(printf, 2, 0
 extern int gettimeofday(struct timeval *, void *);
 #endif
 
+/* GNU extensions the https carrier uses; mingw has neither. */
+#ifndef HAVE_MEMMEM
+extern void *memmem(const void *haystack, size_t hlen, const void *needle, size_t nlen);
+#endif
+
+#ifndef HAVE_STRCASESTR
+extern char *strcasestr(const char *haystack, const char *needle);
+#endif
+
 #ifndef timeradd
 #define timeradd(a, b, r) do {\
 		(r)->tv_sec = (a)->tv_sec + (b)->tv_sec;\

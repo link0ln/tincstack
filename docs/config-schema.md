@@ -137,7 +137,8 @@ networks:
                                               # on every restart; shared with QUIC.
       HttpsSni: www.example.com               # SNI the `https' DIAL presents; default =
                                               # the peer's Address if it is a hostname,
-                                              # else `localhost'
+                                              # else none (an IP gets no SNI, as curl
+                                              # sends none; `localhost' until 2026-09-23)
       HttpsDecoyRoot: /var/www/decoy          # static files served to probers, with
                                               # nginx's answers (404/405/400, dates,
                                               # ETag); unset = nginx's welcome page

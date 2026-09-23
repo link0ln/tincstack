@@ -128,6 +128,38 @@ int vasprintf(char **buf, const char *fmt, va_list ap) {
 }
 #endif
 
+#ifndef HAVE_MEMMEM
+void *memmem(const void *haystack, size_t hlen, const void *needle, size_t nlen) {
+	const char *h = haystack;
+
+	if(!nlen) {
+		return (void *)h;
+	}
+
+	for(size_t i = 0; i + nlen <= hlen; i++) {
+		if(h[i] == *(const char *)needle && !memcmp(h + i, needle, nlen)) {
+			return (void *)(h + i);
+		}
+	}
+
+	return NULL;
+}
+#endif
+
+#ifndef HAVE_STRCASESTR
+char *strcasestr(const char *haystack, const char *needle) {
+	size_t nlen = strlen(needle);
+
+	for(; *haystack; haystack++) {
+		if(!strncasecmp(haystack, needle, nlen)) {
+			return (char *)haystack;
+		}
+	}
+
+	return nlen ? NULL : (char *)haystack;
+}
+#endif
+
 #ifndef HAVE_GETTIMEOFDAY
 int gettimeofday(struct timeval *tv, void *tz) {
 #ifdef HAVE_WINDOWS

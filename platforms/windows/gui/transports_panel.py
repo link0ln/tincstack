@@ -86,13 +86,12 @@ class TransportsPanel(QtWidgets.QWidget):
         # -- https front --
         https = QtWidgets.QGroupBox("HTTPS front (carrier 'https'; the decoy on the listen port is default-on)")
         hf = QtWidgets.QFormLayout(https)
-        self.https_front = QtWidgets.QCheckBox("HttpsFront — enable the TLS front on the listen port")
-        self.https_front.toggled.connect(self.changed)
-        hf.addRow(self.https_front)
         self.https_port = QtWidgets.QSpinBox()
-        self.https_port.setRange(1, 65535)
+        self.https_port.setRange(0, 65535)
+        self.https_port.setSpecialValueText("0 (off)")
+        self.https_port.setToolTip(tr.SPEC_BY_NAME["HttpsPort"].help)
         self.https_port.valueChanged.connect(self.changed)
-        hf.addRow("HttpsFrontPort:", self.https_port)
+        hf.addRow("HttpsPort:", self.https_port)
         self.paths: dict[str, QtWidgets.QLineEdit] = {}
         for name in ("TlsCert", "TlsKey", "HttpsDecoyRoot"):
             row = QtWidgets.QHBoxLayout()
@@ -166,9 +165,7 @@ class TransportsPanel(QtWidgets.QWidget):
             v = eff[name]
             sb.setValue(int(v) if str(v).lstrip("-").isdigit() else sb.minimum())
         self.magic.setText(str(eff["ObfsInitMagicHeader"]))
-        hf = eff["HttpsFront"]
-        self.https_front.setChecked(hf is True or str(hf).lower() in ("yes", "true", "1"))
-        self.https_port.setValue(int(eff["HttpsFrontPort"]) if str(eff["HttpsFrontPort"]).isdigit() else 443)
+        self.https_port.setValue(int(eff["HttpsPort"]) if str(eff["HttpsPort"]).isdigit() else 443)
         for name, le in self.paths.items():
             le.setText(str(eff[name] or ""))
         self.decoy_upstream.setText(str(eff["HttpsDecoyUpstream"] or ""))
@@ -200,8 +197,7 @@ class TransportsPanel(QtWidgets.QWidget):
             "Transports": [c for c in tr.CARRIERS if self.accept[c].isChecked()],
             "PreferredTransports": self.preferred(),
             "ObfsInitMagicHeader": self.magic.text().strip() or "0",
-            "HttpsFront": self.https_front.isChecked(),
-            "HttpsFrontPort": self.https_port.value(),
+            "HttpsPort": self.https_port.value(),
             "HttpsDecoyUpstream": self.decoy_upstream.text().strip(),
             "QuicPort": self.quic_port.value(),
         }

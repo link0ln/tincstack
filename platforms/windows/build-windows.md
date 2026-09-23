@@ -27,18 +27,26 @@ platforms/windows/build-core-win.sh
 Output: `platforms/windows/resources/{tincd.exe,tinc.exe,SHA256SUMS}` (the
 directory is gitignored; binaries never enter git).
 
-Build options (mirrors `core/tincd/PATCHES.md`): `-Dcrypto=gcrypt` (Debian has
-`libgcrypt-mingw-w64-dev`; there is no mingw OpenSSL package),
-`-Dminiupnpc=disabled`, static link, no zlib/lzo/lz4 (no mingw packages; the
-meson wraps would download at build time — kept offline/deterministic; tinc's
-`Compression` defaults to 0 anyway), no curses/readline (`tinc top` is not used
-by the GUI).
+Build options (mirrors `core/tincd/PATCHES.md` §18): `-Dcrypto=openssl
+-Dquic=enabled` against OpenSSL 3.5.7, zlib 1.3.1, zstd 1.5.7 and ngtcp2
+1.25.0, all cross-built in the image from sha256-pinned tarballs and linked
+statically (there is no mingw OpenSSL 3.5 package; until 2026-09-23 the core
+used `-Dcrypto=gcrypt` and had no `https`/`quic`). zlib and zstd serve
+OpenSSL's certificate compression only, so the ClientHello matches the Linux
+one; tinc's own `Compression` is still compiled out (no lzo/lz4). OpenSSL is
+`no-autoload-config no-module no-dso` with `OPENSSLDIR` under Program Files.
+`-Dminiupnpc=disabled`, no curses/readline (`tinc top` is not used by the GUI).
+Wire proof under Wine: `testing/transports/windows-wine-test.sh`.
 
 Verified 2026-09-16: `file` → `PE32+ executable (console) x86-64, for MS
 Windows`; imports `ADVAPI32 IPHLPAPI KERNEL32 msvcrt USER32 WS2_32` only (no
 external DLLs besides `wintun.dll`, which `tincd` loads at runtime); under
 `wine64` in a throwaway container `tincd.exe --version` → `tinc version
 1.1pre18 (… protocol 17.7) Features: libgcrypt legacy_protocol`.
+Re-verified 2026-09-23 on the OpenSSL build: 7.7 MB, DLL names in the image
+`ADVAPI32 CRYPT32 IPHLPAPI KERNEL32 msvcrt USER32 WS2_32` (+ `wintun.dll`,
+loaded at runtime) -- `CRYPT32` is OpenSSL's, a system DLL; `--version` →
+`Features: openssl legacy_protocol`.
 
 `wintun.dll` is a signed Microsoft-signed driver bundle, not built here:
 download from <https://www.wintun.net/>, copy `bin/amd64/wintun.dll` into

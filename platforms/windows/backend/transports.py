@@ -35,7 +35,7 @@ CARRIER_HELP = {
 @dataclass(frozen=True)
 class OptionSpec:
     name: str
-    kind: str            # carriers | int | bool | port | path | str | magic
+    kind: str            # carriers | int | bool | port | front_port | path | str | magic
     default: Any
     help: str
     group: str
@@ -57,8 +57,11 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
                "Junk bytes prepended to the handshake (0 = off)", "obfs", 0, 1024),
     OptionSpec("ObfsInitMagicHeader", "magic", 0,
                "Handshake magic header: 0 = off, N, or MIN-MAX range", "obfs"),
-    OptionSpec("HttpsFront", "bool", False, "Enable the TLS front on the listen port", "https"),
-    OptionSpec("HttpsFrontPort", "port", 443, "TCP port of the HTTPS front", "https"),
+    # The core's key is HttpsPort (docs/config-schema.md). Until 2026-09-23 the
+    # editor wrote `HttpsFront` / `HttpsFrontPort`, which no core reads: the
+    # setting looked saved and did nothing.
+    OptionSpec("HttpsPort", "front_port", 443,
+               "TCP port of the HTTPS front; 0 = off (default 443 on a listening node)", "https"),
     OptionSpec("TlsCert", "path", "",
                "Real certificate chain (PEM). Empty = self-signed, generated at first start", "https"),
     OptionSpec("TlsKey", "path", "", "Private key for TlsCert (PEM); required with TlsCert", "https"),
@@ -66,7 +69,8 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
                "Static content served to probers (empty = built-in default page)", "https"),
     OptionSpec("HttpsDecoyUpstream", "str", "",
                "Or transparently proxy probers to this host:port / URL", "https"),
-    OptionSpec("QuicPort", "port", 443, "UDP port of the QUIC carrier", "quic"),
+    OptionSpec("QuicPort", "front_port", 443,
+               "UDP port of the QUIC front; 0 = off (default 443 on a listening node)", "quic"),
 )
 
 SPEC_BY_NAME: dict[str, OptionSpec] = {o.name: o for o in TRANSPORT_OPTIONS}
@@ -144,9 +148,9 @@ def validate(options: dict) -> list[str]:
                               f"valid: {', '.join(CARRIERS)}")
             if len(set(lst)) != len(lst):
                 errors.append(f"{spec.name}: duplicate carrier")
-        elif spec.kind in ("int", "port"):
+        elif spec.kind in ("int", "port", "front_port"):
             n = _as_int(v)
-            lo, hi = (1, 65535) if spec.kind == "port" else (spec.minimum, spec.maximum)
+            lo, hi = {"port": (1, 65535), "front_port": (0, 65535)}.get(spec.kind, (spec.minimum, spec.maximum))
             if n is None:
                 errors.append(f"{spec.name}: must be an integer, got {v!r}")
             elif not (lo <= n <= hi):

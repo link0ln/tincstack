@@ -1,0 +1,19 @@
+20:40:57 PASS tincd.exe listens with https and quic on 443 (OpenSSL 3.5.7, static)
+20:41:01 PASS a Linux leaf connects to the Windows node over https
+Warning: removing PreferredTransports = https
+20:41:02 PASS a Linux leaf connects to the Windows node over quic
+20:41:04 PASS curl gets the decoy page from the Windows node over TLS
+20:41:04 PASS curl --http3-only gets the decoy page from the Windows node
+20:41:04 PASS plain HTTP on the Windows node's 443 gets nginx's 400
+20:41:05 PASS every ServerHello from the Windows node has the Linux build's JA3S (15af977ce25de452b96affa2addb1036, TLS and QUIC)
+Assigned address 10.102.172.2/24 to wleaf.
+Assigned address 10.102.172.3/24 to lleaf.
+20:41:21 PASS the Windows node connects to a Linux founder over https
+20:41:27 PASS the Windows node connects to a Linux founder over quic
+Warning: removing PreferredTransports = https
+20:41:33 PASS dialling an IP, the Linux https ClientHello has curl's extensions (t13i3012h2; curl 1623 bytes, ours 1623)
+20:41:33 PASS the Windows https ClientHello is the Linux one: t13i3012h2, 1623 bytes, same extensions
+20:41:35 PASS dialling an IP, the Linux quic ClientHello has curl's extensions (q13i0311h3; curl 1248 bytes, ours 1248)
+20:41:35 PASS the Windows quic ClientHello is the Linux one: q13i0311h3, 1248 bytes, same extensions
+20:41:41 PASS while its https dial hangs, the Windows node's own front answers (455 ms)
+20:41:43 windows (wine): all checks passed

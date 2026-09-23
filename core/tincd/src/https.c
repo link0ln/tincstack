@@ -84,7 +84,8 @@ typedef struct https_session_t {
 	https_state_t state;
 	bool is_server;
 
-	char *sni;              /* client: SNI / Host value to present */
+	char *sni;              /* client: SNI to present; NULL when dialling an IP, as curl does */
+	char *host;             /* client: the Host header value */
 
 	char *wbuf;            /* pending outbound handshake/decoy bytes */
 	size_t wlen, woff;
@@ -248,6 +249,7 @@ void https_close(connection_t *c) {
 
 	decoy_fetch_cancel(s->fetch);
 	free(s->sni);
+	free(s->host);
 	free(s->wbuf);
 	free(s->rbuf);
 	free(s);
@@ -499,7 +501,7 @@ static bool build_client_request(https_session_t *s) {
 	                  "Sec-WebSocket-Key: %s\r\n"
 	                  "Cookie: sid=%s\r\n"
 	                  "\r\n",
-	                  s->sni ? s->sni : TLS_DEFAULT_CN, wskey, b64);
+	                  s->host, wskey, b64);
 
 	if(rl <= 0 || rl >= (int) sizeof(req)) {
 		return false;
@@ -1007,7 +1009,10 @@ static void https_io(void *data, int flags) {
 /* ---- dial (outbound) ----------------------------------------------------- */
 
 /* Choose the SNI: HttpsSni if set, else the peer's Address if it is a name,
-   else the generic default. */
+   else none. A client given an IP sends no SNI (RFC 6066 §3 forbids a
+   literal, and curl omits it); until 2026-09-23 this sent "localhost",
+   which no browser or curl dialling an IP does (found comparing the
+   Windows dialler's ClientHello with curl's). */
 static char *choose_sni(connection_t *c) {
 	char *sni = NULL;
 
@@ -1053,11 +1058,26 @@ static char *choose_sni(connection_t *c) {
 
 	exit_configuration(tree);
 
-	if(addr) {
-		return addr;
+	return addr;
+}
+
+/* The Host header as curl writes it: the name (or the dialled IP, IPv6 in
+   brackets), with ":port" unless the port is 443. */
+static char *choose_host(const char *sni, const sockaddr_t *peer) {
+	char *addr = NULL, *port = NULL, *host;
+	sockaddr2str(peer, &addr, &port);
+	bool v6 = peer->sa.sa_family == AF_INET6;
+	const char *name = sni ? sni : addr;
+
+	if(!strcmp(port, "443")) {
+		xasprintf(&host, "%s%s%s", v6 && !sni ? "[" : "", name, v6 && !sni ? "]" : "");
+	} else {
+		xasprintf(&host, "%s%s%s:%s", v6 && !sni ? "[" : "", name, v6 && !sni ? "]" : "", port);
 	}
 
-	return xstrdup(TLS_DEFAULT_CN);
+	free(addr);
+	free(port);
+	return host;
 }
 
 bool https_dial(connection_t *c) {
@@ -1100,6 +1120,14 @@ bool https_dial(connection_t *c) {
 		int fl = fcntl(fd, F_GETFL);
 		fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 	}
+#elif defined(HAVE_WINDOWS)
+	{
+		/* mingw has no O_NONBLOCK: without this the dial socket stayed
+		   blocking on Windows, and connect()/SSL_read() could stall the
+		   whole event loop (found building the carrier for Windows). */
+		unsigned long arg = 1;
+		ioctlsocket(fd, FIONBIO, &arg);
+	}
 #endif
 
 	int r = connect(fd, &peer.sa, SALEN(peer.sa));
@@ -1116,13 +1144,14 @@ bool https_dial(connection_t *c) {
 	https_session_t *s = new_session(c, false);
 	s->state = HS_TCP_CONNECTING;
 	s->sni = choose_sni(c);
+	s->host = choose_host(s->sni, &peer);
 
 	connection_add(c);
 	io_add(&c->io, https_io, c, c->socket, IO_READ | IO_WRITE);
 
 	/* The address actually dialled: c->hostname still names the tinc port. */
 	char *where = sockaddr2hostname(&peer);
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Dialling %s (%s) via https (SNI %s)", c->name, where, s->sni);
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Dialling %s (%s) via https (SNI %s)", c->name, where, s->sni ? s->sni : "none");
 	free(where);
 	return true;
 }

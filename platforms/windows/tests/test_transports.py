@@ -6,7 +6,7 @@ def test_defaults_match_schema():
     eff = tr.effective({})
     assert eff["Transports"] == ["plain", "obfs", "https", "quic"]
     assert eff["PreferredTransports"] == ["plain"]
-    assert eff["HttpsFront"] is False and eff["HttpsFrontPort"] == 443
+    assert eff["HttpsPort"] == 443 and "HttpsFront" not in eff
     assert eff["QuicPort"] == 443 and eff["ObfsJunkPacketCount"] == 0
 
 
@@ -14,7 +14,7 @@ def test_validate_ok_for_absent_and_sane():
     assert tr.validate({}) == []
     assert tr.validate({"Transports": ["quic", "plain"], "PreferredTransports": "quic, plain",
                         "ObfsJunkPacketCount": 3, "ObfsInitMagicHeader": "1000-2000",
-                        "HttpsFront": "yes", "HttpsFrontPort": 8443,
+                        "HttpsPort": 8443,
                         "TlsCert": "/c.pem", "TlsKey": "/k.pem",
                         "HttpsDecoyUpstream": "example.org:443", "QuicPort": 443}) == []
 
@@ -23,13 +23,13 @@ def test_validate_errors():
     errs = tr.validate({"Transports": [], "PreferredTransports": ["tcp", "plain", "plain"],
                         "ObfsJunkPacketCount": "x", "ObfsJunkPacketMinSize": 500,
                         "ObfsJunkPacketMaxSize": 100, "ObfsInitMagicHeader": "9-5",
-                        "HttpsFront": "maybe", "HttpsFrontPort": 70000,
-                        "TlsCert": "/c.pem", "HttpsDecoyUpstream": "not a host", "QuicPort": 0})
+                        "HttpsPort": 70000,
+                        "TlsCert": "/c.pem", "HttpsDecoyUpstream": "not a host", "QuicPort": -1})
     joined = "\n".join(errs)
     for needle in ("Transports: must list at least one", "unknown carrier(s) tcp", "duplicate carrier",
                    "ObfsJunkPacketCount: must be an integer", "MinSize must be <=",
-                   "ObfsInitMagicHeader: range", "HttpsFront: must be yes/no",
-                   "HttpsFrontPort: must be between 1 and 65535", "TlsCert and TlsKey",
+                   "ObfsInitMagicHeader: range",
+                   "HttpsPort: must be between 0 and 65535", "TlsCert and TlsKey",
                    "HttpsDecoyUpstream: expected", "QuicPort: must be between"):
         assert needle in joined, needle
 
@@ -38,7 +38,7 @@ def test_changes_writes_only_user_edits():
     loaded = {"Name": "a", "Transports": ["plain", "quic"]}
     edited = {"Transports": ["plain", "quic"],          # unchanged -> nothing
               "PreferredTransports": ["quic", "plain"],  # absent, non-default -> write
-              "HttpsFront": False,                       # absent, default -> stay absent
+              "HttpsPort": 443,                          # absent, default -> stay absent
               "QuicPort": 443,                           # absent, default -> stay absent
               "TlsCert": "",                             # absent, empty -> stay absent
               "ObfsJunkPacketCount": 4}                  # absent, non-default -> write
@@ -55,5 +55,11 @@ def test_changes_present_key_back_to_default_is_explicit():
 
 def test_apply_changes_removes_on_none():
     opts = {"Name": "a", "QuicPort": 4433}
-    tr.apply_changes(opts, {"QuicPort": None, "HttpsFront": True})
-    assert opts == {"Name": "a", "HttpsFront": True}
+    tr.apply_changes(opts, {"QuicPort": None, "HttpsPort": 0})
+    assert opts == {"Name": "a", "HttpsPort": 0}
+
+
+def test_front_ports_zero_is_off_not_an_error():
+    # The core reads 0 as "no front" (transport_front_port); the editor must let it through.
+    assert tr.validate({"HttpsPort": 0, "QuicPort": 0}) == []
+    assert tr.changes({}, {"HttpsPort": 0}) == {"HttpsPort": 0}

@@ -184,7 +184,7 @@ static sf_send_t sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t 
 			   level that is visible without -d5 -- the old line was a bare
 			   "Message too long" behind DEBUG_TRAFFIC, which is why a dial that
 			   died here looked like a hang. */
-			logger(DEBUG_ALWAYS, LOG_WARNING, "Single-flow frame of %zu bytes does not fit the path: %s", outlen, sockstrerror(sockerrno));
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Single-flow frame of %lu bytes does not fit the path: %s", (unsigned long)outlen, sockstrerror(sockerrno));
 			return SF_SEND_TOOBIG;
 		}
 

@@ -1115,7 +1115,7 @@ static void quic_arm_timer(quic_session_t *s) {
 	ngtcp2_tstamp delta = expiry > n ? expiry - n : 0;
 	struct timeval tv = {
 		(time_t)(delta / NGTCP2_SECONDS),
-		(suseconds_t)((delta % NGTCP2_SECONDS) / NGTCP2_MICROSECONDS)
+		(long)((delta % NGTCP2_SECONDS) / NGTCP2_MICROSECONDS)   /* tv_usec: suseconds_t, long on Windows */
 	};
 
 	if(s->timer.cb) {

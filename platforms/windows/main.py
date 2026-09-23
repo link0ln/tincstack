@@ -99,7 +99,7 @@ KNOWN_OPTIONS = [
     ("AcmeRenewDays", "int", None, "Renew when fewer than this many days are left (default 30)"),
 ] + [
     (spec.name,
-     {"carriers": "str", "int": "int", "port": "int", "bool": "bool", "path": "str",
+     {"carriers": "str", "int": "int", "port": "int", "front_port": "int", "bool": "bool", "path": "str",
       "str": "str", "magic": "str"}[spec.kind],
      None, spec.help + "  (see the Transports tab)")
     for spec in transports.TRANSPORT_OPTIONS

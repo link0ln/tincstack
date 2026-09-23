@@ -310,7 +310,7 @@ char *pool_allocate(const char *pool) {
 	}
 
 	if(!result) {
-		fprintf(stderr, "No free address left in AddressPool %s (%zu in use).\n", pool, used.n);
+		fprintf(stderr, "No free address left in AddressPool %s (%lu in use).\n", pool, (unsigned long)used.n);
 	}
 
 	used_free(&used);

@@ -856,8 +856,8 @@ static void obfs_log_toobig(obfs_link_t *l, size_t size, size_t budget) {
 
 	l->last_toobig = now.tv_sec;
 	logger(DEBUG_TRAFFIC, LOG_INFO,
-	       "obfs datagram of %zu bytes would not fit the path to %s (%s) (usable UDP payload %zu bytes); reducing the packet size",
-	       size, l->node ? l->node->name : "?", l->node ? l->node->hostname : "?", budget);
+	       "obfs datagram of %lu bytes would not fit the path to %s (%s) (usable UDP payload %lu bytes); reducing the packet size",
+	       (unsigned long)size, l->node ? l->node->name : "?", l->node ? l->node->hostname : "?", (unsigned long)budget);
 }
 
 obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
@@ -906,7 +906,7 @@ obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, s
 	size_t flen = obfs_encode(l, buf, len, frame, sizeof(frame), false);
 
 	if(!flen) {
-		logger(DEBUG_TRAFFIC, LOG_WARNING, "Could not obfs-wrap a %zu-byte datagram to %s", len, to->name);
+		logger(DEBUG_TRAFFIC, LOG_WARNING, "Could not obfs-wrap a %lu-byte datagram to %s", (unsigned long)len, to->name);
 		return OBFS_SEND_OK; /* it is an obfs link; dropping the datagram beats leaking it in the clear */
 	}
 
@@ -929,8 +929,8 @@ obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, s
 			if(l->last_toobig != now.tv_sec) {
 				l->last_toobig = now.tv_sec;
 				logger(DEBUG_ALWAYS, LOG_WARNING,
-				       "The path to %s (%s) refused a %zu-byte obfs datagram: %s; usable UDP payload is now %zu bytes",
-				       to->name, to->hostname, flen, sockstrerror(sockerrno), budget);
+				       "The path to %s (%s) refused a %lu-byte obfs datagram: %s; usable UDP payload is now %lu bytes",
+				       to->name, to->hostname, (unsigned long)flen, sockstrerror(sockerrno), (unsigned long)budget);
 			}
 
 			return OBFS_SEND_TOOBIG;

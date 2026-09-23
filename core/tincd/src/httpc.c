@@ -384,7 +384,7 @@ bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, 
 		goto fail;
 	}
 
-	n += snprintf(head + n, sizeof(head) - (size_t) n, "Content-Length: %zu\r\n\r\n", req->body_len);
+	n += snprintf(head + n, sizeof(head) - (size_t) n, "Content-Length: %lu\r\n\r\n", (unsigned long)req->body_len);
 
 	if(SSL_write(ssl, head, n) != n) {
 		ssl_error(err, errlen, "cannot send the request", ssl);

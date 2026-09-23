@@ -89,9 +89,11 @@ check_functions = [
   'fchmod',
   'getentropy',
   'gettimeofday',
+  'memmem',
   'memset_s',
   'mlockall',
   'putenv',
+  'strcasestr',
   'strsignal',
   'unsetenv',
 ]
@@ -407,6 +409,11 @@ if not opt_quic.disabled()
       src_tincd += ['transport_quic.c', 'transport_quic_tls.c', 'h3.c']
       deps_tincd += [dep_ngtcp2, dep_ngtcp2_crypto, dep_ossl_quic]
       cdata.set('HAVE_QUIC', 1)
+      if os_name == 'windows'
+        # The mingw build links ngtcp2 statically (core/Dockerfile.build-win);
+        # without this its headers declare every symbol dllimport.
+        cdata.set('NGTCP2_STATICLIB', 1)
+      endif
     endif
   endif
 endif
