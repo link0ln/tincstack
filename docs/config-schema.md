@@ -149,10 +149,13 @@ networks:
       # PreferredTransports ([quic, plain]). Meta rides one QUIC stream, SPTPS
       # data rides DATAGRAM frames; the node certificate (keys.tls_cert) and the
       # https authenticator are shared. Mechanism: docs/transports.md §9.
-      QuicPort: 443                 # extra UDP listener for QUIC (e.g. 443 for
-                                    # HTTP/3 plausibility). Default = the tinc
-                                    # Port, i.e. no extra socket. Also valid in a
-                                    # peer's host record: the port to dial it on.
+      HttpsPort: 443                # TCP listener for the https front only
+                                    # (docs/transports.md 3.1). Default 443 on a
+                                    # listening node, none with Port = 0; 0 = off.
+                                    # The node writes the port it bound into its
+                                    # own host record; that is where peers dial.
+      QuicPort: 443                 # UDP listener for the quic front only; same
+                                    # default and advertisement as HttpsPort.
       QuicSni: cdn.example.net      # SNI the quic DIAL presents; default = HttpsSni,
                                     # else the peer's Address if it is a hostname,
                                     # else none
@@ -202,8 +205,8 @@ networks:
         TlsFingerprint = 6776...64f2      # pinned; the `https' and `quic' dials
                                           # verify the peer cert against it
                                           # (accept-on-first-use then pin if absent)
-        QuicPort = 443                    # optional: dial this peer's quic carrier
-                                          # here instead of Port
+        HttpsPort = 443                   # written by the peer itself: dial its
+        QuicPort = 443                    # https / quic front here instead of Port
 ```
 
 ## Dead-peer detection (`PingInterval`, `PingTimeout`)

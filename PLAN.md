@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-23, late night (**`CERT_RENEW=1` is the default again. First wire-fingerprint audit (`testing/fingerprint/run.sh`, against nginx, curl and Chromium): neither carrier passes the owner's rule yet -- the fronts sit on tinc's port 655 and the quic client even sends *from* it (🔴); our QUIC ClientHello says h3 but forbids the streams HTTP/3 needs and has a JA4 no reference client shares; our QUIC server never answers an h3 request; our TLS ClientHello is a 403-byte OpenSSL 3.0 one next to 1.6-2 KB from curl and Chromium; the decoy answers garbage with 200. Our TLS server side is the one part that matches nginx.**) Before that, 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
+**Last Updated:** 2026-09-23, early morning (**the https and quic fronts moved off tinc's port: a listening node binds front-only TCP/UDP 443, advertises it in its own host record so invitations carry it, and the quic dial sends from an ephemeral port -- `front-port-test.sh` and a re-measured fingerprint run show TLS and QUIC to 443 only. Found on the way: the UDP front shared 443 with any other `SO_REUSEADDR` server (fixed), and the Linux compose files published only 655, so a compose node would have advertised an unreachable 443 (fixed: `FRONT_PORT`). QUIC h3 conformance and the decoy are next.**) Before that, 2026-09-23, late night (**`CERT_RENEW=1` is the default again. First wire-fingerprint audit (`testing/fingerprint/run.sh`, against nginx, curl and Chromium): neither carrier passes the owner's rule yet -- the fronts sit on tinc's port 655 and the quic client even sends *from* it (🔴); our QUIC ClientHello says h3 but forbids the streams HTTP/3 needs and has a JA4 no reference client shares; our QUIC server never answers an h3 request; our TLS ClientHello is a 403-byte OpenSSL 3.0 one next to 1.6-2 KB from curl and Chromium; the decoy answers garbage with 200. Our TLS server side is the one part that matches nginx.**) Before that, 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
 up two defects that break a node weeks after it is installed, and both are
 fixed: nothing renewed the ACME certificate (it simply expired, leaving the
 https front *more* conspicuous than the self-signed one it replaced), and a
@@ -2347,7 +2347,7 @@ Defects identified during the source audit, to fix as their milestone is reached
     Chromium 153; tshark 4.4 decrypts QUIC Initials itself, so everything
     below is what a **passive** observer sees unless marked "active".
     Reproduced: the same JA4 values in three runs. Findings, worst first:
-    - [ ] 🔴 **Port.** A founding node listens on 655, tinc's IANA port
+    - [x] 🔴 **Port.** A founding node listens on 655, tinc's IANA port
       (`zeroconf.c:735`), and the https front and quic share it
       (`QuicPort` defaults to `Port`). "TLS or QUIC on 655" needs no
       fingerprinting at all. Worse, our quic *client* sends from its bound
@@ -2356,6 +2356,45 @@ Defects identified during the source audit, to fix as their milestone is reached
       the client would send *from* UDP 443, which no browser does.
       Fix: dial QUIC from an ephemeral socket; default the fronts to 443
       where the node can bind it, and say so loudly where it cannot.
+      **Fixed 2026-09-23** (docs/transports.md §3.1, PATCHES.md §14): a
+      listening node binds front-only TCP `HttpsPort` / UDP `QuicPort`, 443
+      by default, advertises what it bound in its own host record (so
+      invitations carry it), warns and advertises nothing when it cannot
+      bind; dials go to the advertised port; the quic dial has its own
+      ephemeral-port socket; the UDP front drops `SO_REUSEADDR` (found on
+      the way: with it Linux let the front share UDP 443 with another
+      server and split that server's datagrams). Proof:
+      `testing/transports/front-port-test.sh` 16/16 (SYN dports only 443,
+      QUIC dport 443 from ephemeral sport 51314, no answer to a tinc ID line
+      on TCP 443 or random bytes on UDP 443, fallback to the tinc port
+      without an advertisement, no-`CAP_NET_BIND_SERVICE` node warns and
+      withdraws, UDP 443 held by an `SO_REUSEADDR` DTLS server refused --
+      that last case failed on the code before the `SO_REUSEADDR` change);
+      re-measured `testing/fingerprint/results/2026-09-23-port/`: tincd A
+      -> B on TCP 443 (sport 34272) and UDP 443 (sport 58379), JA4 values
+      unchanged. Regressions on the final image, all exit 0: https-carrier,
+      quic-carrier, cert-repin, tls-front, carrier-switch, plain-refuse,
+      invitee-mesh, obfs, same-nat-meta, classify, smoke, cert-lifecycle,
+      matrix (on `core:dev-test`, `-Dtransport_test=true`; on plain `core:dev`
+      it fails by construction, there is no `test` carrier); `make lint`,
+      `make secrets` clean; mingw cross-build OK; `FRONT_PORT=8443` checked
+      in the node image (listens and advertises 8443).
+      Linux compose publishes `FRONT_PORT` (443) tcp+udp -- before
+      this a compose node would have advertised 443 that nobody could reach.
+      Limits, open:
+      - [ ] 🟡 the advertisement is the bound port: an operator port-forward
+        to a different external port is overwritten on every start (the
+        compose files publish the same port; routers with NAT remapping are
+        not covered)
+      - [ ] 🟡 the Docker invitee also reserves host 443 (compose publishes it
+        unconditionally), which fails `compose up` on a host running a web
+        server until `FRONT_PORT` is changed
+      - [ ] 🟡 `tinc join` is still cleartext tinc on the tinc port (item below)
+      - [ ] 🟠 non-TLS bytes on TCP 443 are closed without a word; nginx
+        answers `400` (decoy step, next)
+      - [ ] 🟡 Windows: `SO_REUSEADDR` on the TCP listeners lets another
+        process bind the same port there (upstream behaviour, unchanged);
+        the Windows core was cross-built with this change, not run
     - [ ] 🟠 **Our QUIC ClientHello claims `h3` and breaks HTTP/3.** Transport
       parameters in the (publicly decryptable) Initial:
       `initial_max_streams_uni` absent (= 0) and `initial_max_streams_bidi =
@@ -2577,6 +2616,16 @@ Defects identified during the source audit, to fix as their milestone is reached
     but does not skip on win32, where `routes.apply_now()` really runs. Same
     single failure on HEAD c6d7a91 (68 passed, 1 failed) and with the LPE fix
     (83 passed, 1 failed). A test bug, not a product one; skip it on win32.
+  - 🟡 **`%zd` / `%zu` in log formats on the Windows build.** The mingw
+    cross-build (2026-09-23, `core/Dockerfile.build-win`) warns
+    `unknown conversion type character 'z'` and then mismatched arguments at
+    `transport.c:840` (front parking, `DEBUG_META`) and
+    `transport_sf.c:187`: the logger's format is checked as the msvcrt
+    `printf`, where `%zd` is not known, so the `%s` after it reads a
+    `ssize_t` as a pointer. Whether that crashes depends on the runtime the
+    exe links (UCRT knows `%z`, old msvcrt does not): not run on Windows.
+    Only at debug levels. Fix: cast and use `%ld`/`%lu`, or build with
+    `__USE_MINGW_ANSI_STDIO`.
   - 🟡 **`httpc` `dechunk()` trusts the chunk size: heap overflow.** A chunk
     header of `ffffffffffffffff` makes `in + chunk` wrap, the bound check
     passes, and `memmove()` is called with `SIZE_MAX`. ASan, new harness

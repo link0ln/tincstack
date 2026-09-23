@@ -379,6 +379,69 @@ bool transport_read_config(void) {
    re-armed from this one timer; see transport_front_dispatch(). */
 static timeout_t front_poll_timer;
 
+/* ---- front ports ------------------------------------------------------- */
+
+#define FRONT_PORT_DEFAULT 443
+
+/* tinc merges this node's own host record into config_tree, and that record
+   is where transport_advertise_port() writes HttpsPort/QuicPort for peers.
+   Read back as an option, our own advertisement would look like the
+   operator's choice -- and a chosen QuicPort is also the port we dial every
+   peer on. So only a line that did not come from a host record counts. */
+static config_t *lookup_option_not_host(const char *option) {
+	for(config_t *cfg = lookup_config(&config_tree, option); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
+		if(!cfg->file || !strstr(cfg->file, SLASH "hosts" SLASH)) {
+			return cfg;
+		}
+	}
+
+	return NULL;
+}
+
+int transport_front_port(const char *option, bool *configured) {
+	int port = 0;
+	*configured = get_config_int(lookup_option_not_host(option), &port);
+
+	if(*configured) {
+		return port > 0 && port < 65536 ? port : 0;
+	}
+
+	/* Only a node others dial needs a front at all. Port 0 (every node that
+	   joined by invitation) means "outbound only": binding 443 there would
+	   open a public port on a laptop for nothing. */
+	char *p = NULL;
+	bool inbound = true;
+
+	if(get_config_string(lookup_config(&config_tree, "Port"), &p) && p) {
+		inbound = !is_decimal(p) || atoi(p) != 0;
+	}
+
+	free(p);
+	return inbound ? FRONT_PORT_DEFAULT : 0;
+}
+
+void transport_advertise_port(const char *key, int port) {
+	splay_tree_t *tree = create_configuration();
+	int current = 0;
+
+	if(read_host_config(tree, myself->name, false)) {
+		get_config_int(lookup_config(tree, key), &current);
+	}
+
+	exit_configuration(tree);
+
+	if(current == port) {
+		return;
+	}
+
+	char value[8];
+	snprintf(value, sizeof(value), "%d", port);
+
+	if(!replace_config_file(myself->name, key, port ? value : NULL)) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "Could not record %s in this node's host record", key);
+	}
+}
+
 bool transport_init(void) {
 	/* The plain-HTTP decoy path needs the decoy config even when the https
 	   carrier's init (which also reads it) is not run. Idempotent. */
@@ -393,6 +456,16 @@ bool transport_init(void) {
 
 			transport_init_done |= TRANSPORT_BIT(i);
 		}
+	}
+
+	/* A front this node no longer runs must not stay advertised, or peers
+	   keep dialling a port nobody listens on. */
+	if(!(transport_init_done & TRANSPORT_BIT(TRANSPORT_HTTPS))) {
+		transport_advertise_port("HttpsPort", 0);
+	}
+
+	if(!(transport_init_done & TRANSPORT_BIT(TRANSPORT_QUIC))) {
+		transport_advertise_port("QuicPort", 0);
 	}
 
 	/* From here on transport_read_config() (i.e. every reload) initialises a
@@ -743,6 +816,16 @@ bool transport_front_dispatch(connection_t *c) {
 	}
 
 	transport_tcp_class_t class = transport_classify_tcp(peek, (size_t)len);
+
+	/* The HttpsPort listener is a TLS port and nothing else: no tinc, no
+	   obfs, no cleartext decoy there. What a TLS server does with bytes that
+	   are not a ClientHello is the decoy's business (see decoy.c); for now
+	   the connection is closed without an answer. */
+	if(c->status.front_tls_only && class != TCP_CLASS_TLS && class != TCP_CLASS_NEED_MORE) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Front: non-TLS bytes from %s on the https port; closing", c->hostname);
+		terminate_connection(c, false);
+		return false;
+	}
 
 	switch(class) {
 	case TCP_CLASS_NEED_MORE:

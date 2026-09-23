@@ -324,7 +324,8 @@ line is unchanged, so the handshake is wire-compatible with upstream tinc.
 
 ## 3. Inbound front classifier
 
-One TCP listen port and one UDP port serve every carrier. On a new inbound
+One TCP listen port and one UDP port serve every carrier (plus the front-only
+ports of §3.1, which admit TLS and QUIC and nothing else). On a new inbound
 connection the front peeks the first bytes (`MSG_PEEK`, up to
 `TRANSPORT_TCP_PEEK` = 8) and routes by them. The bytes stay in the socket so
 the carrier that claims them reads them itself (`SSL_accept` needs the
@@ -421,6 +422,58 @@ Why these are unambiguous:
   carrier is enabled.
 
 ---
+
+### 3.1 The front ports: TLS and QUIC on 443 (2026-09-23)
+
+The fingerprint audit (`testing/fingerprint`) found the `https` and `quic`
+fronts on tinc's own port, 655 by IANA assignment: a TLS or QUIC flow to 655 is
+tinc to anyone who looks at the port, however good the TLS is. Now:
+
+- A node that accepts inbound connections (`Port` unset or non-zero) also
+  listens on **TCP `HttpsPort`** and **UDP `QuicPort`**, both **443** by
+  default, one socket per address family. These sockets are front-only: TCP
+  `HttpsPort` hands TLS to the `https` carrier and closes anything else
+  (`c->status.front_tls_only`, `transport_front_dispatch`); UDP `QuicPort`
+  feeds only `quic_udp_try()` and drops what it does not claim. `plain`,
+  `sf` and `obfs` stay on the tinc port, and the tinc port still accepts
+  `https` and `quic` for peers that do not know the new port.
+- The UDP front socket is opened **without `SO_REUSEADDR`**
+  (`setup_udp_socket(sa, false)`). On Linux two UDP sockets that both set it
+  share the port and the kernel splits datagrams between them, so with it the
+  front would silently take part of another QUIC server's traffic on 443
+  instead of failing to bind.
+- The node writes the ports it actually bound into **its own host record**
+  (`transport_advertise_port()`), and removes the line when it bound nothing,
+  so `tinc invite` and host-record exchange tell peers where to dial. A node
+  that cannot bind (no root / `CAP_NET_BIND_SERVICE`, port taken) logs
+  `could not listen on TCP|UDP port 443 (the default); peers reach the ...
+  front on the tinc port ..., where it is easy to spot` and advertises
+  nothing.
+- A dial goes to the peer's host-record `HttpsPort` / `QuicPort`, else the
+  dialler's own configured option, else the tinc port it dials. The node's own
+  host record is merged into its config tree, so the dialler's "own option"
+  lookup skips host-record lines (`lookup_option_not_host()`); otherwise its
+  own advertisement would read back as an option and it would dial every peer
+  on 443.
+- The `quic` dial sends from a **fresh socket on an ephemeral port**, like
+  every QUIC client, instead of from the node's listening socket (source port
+  655 or 443 is a server's port, not a client's).
+- `HttpsPort = 0` / `QuicPort = 0` turns a front listener off.
+
+Limits: the advertised port is the port bound, so an operator port-forward that
+maps a different external port is overwritten on every start (publish the
+same port; the Linux compose files do, `FRONT_PORT`). `tinc join` is still
+cleartext tinc on the tinc port. Non-TLS bytes on `HttpsPort` are closed
+without an answer, which a web server would not do (the decoy step).
+
+Proof: `testing/transports/front-port-test.sh` -- listeners and
+advertisement, the invitation carrying the ports, https and quic joins over
+443 (SYN destination ports only 443, QUIC from an ephemeral source port), no
+answer to a tinc ID line on TCP 443 or random bytes on UDP 443, the https dial
+falling back to the tinc port without an advertisement, a node without
+`CAP_NET_BIND_SERVICE` warning and advertising nothing, and a quic front that
+refuses to share UDP 443 with an `SO_REUSEADDR` DTLS server (on the code
+before that change it shared it and advertised 443).
 
 ## 4. Single-flow framing (`sf`)
 
@@ -984,7 +1037,8 @@ dies before it activates advances to the next candidate automatically (§2).
 | `TlsCert` / `TlsKey` | generated self-signed | PEM files; else `keys.tls_cert/tls_key` |
 | `HttpsDecoyRoot` | built-in page | static files served to probers |
 | `HttpsDecoyUpstream` | (unset) | `host:port` to proxy probers to instead |
-| `QuicPort` | the tinc `Port` | extra UDP listener for the quic carrier (also a host-record key: the port to dial); default = no extra socket |
+| `HttpsPort` | `443` on a listening node, none with `Port = 0` | TCP listener for the https front only (§3.1); advertised in the own host record, where it is the port peers dial; `0` = off |
+| `QuicPort` | `443` on a listening node, none with `Port = 0` | UDP listener for the quic front only (§3.1); advertised like `HttpsPort`; `0` = off |
 | `QuicSni` | `HttpsSni`, else peer `Address` if a name | SNI the quic dial presents |
 | `QuicAlpn` | `h3` | ALPN offered/required by the quic carrier |
 
@@ -1045,7 +1099,9 @@ takes. See docs/config-schema.md for every option and every failure code, and
 
 ### 8.2 Dial and certificate pinning
 
-`https_dial` opens a non-blocking TCP connection to the peer's front port and a
+`https_dial` opens a non-blocking TCP connection to the peer's front port (its
+host-record `HttpsPort`, else the dialler's own `HttpsPort` option, else the port
+dialled; §3.1) and a
 TLS client handshake with a plausible SNI (`HttpsSni`, else the peer's `Address`
 if it is a hostname, else `localhost`). PKI verification is off
 (`SSL_VERIFY_NONE`); instead the peer's certificate is pinned by SHA-256
@@ -1229,11 +1285,12 @@ short-header rule (§9.5).
   SPTPS UDP flow between the two nodes. `accept` (TCP) is NULL.
 - Socket: **tinc's existing UDP listen sockets**, picked by address family
   like `sf_pick_socket()`; the front classifier (§3) hands QUIC datagrams to
-  the carrier. With `QuicPort` set to something other than the tinc port, the
-  carrier additionally binds one UDP socket per address family on that port
-  (private `listen_socket_t` entries fed to the same `handle_incoming_vpn_data`
-  path, so `listen_socket[]` indices stay valid) and dials from it. Default:
-  `QuicPort` = the tinc port, no extra socket.
+  the carrier. On a listening node the carrier also binds one UDP socket per
+  address family on `QuicPort` (443 by default, §3.1; private
+  `listen_socket_t` entries read by `quic_listen_read()`, which feeds
+  `quic_udp_try()` only, so `listen_socket[]` indices stay valid). A dial
+  does not use either: it opens its own socket on an ephemeral port
+  (`quic_client_read()`), which the session closes with it.
 - Loop: tinc's `event.c`. Reads arrive through `handle_incoming_vpn_data` ->
   `transport_udp_dispatch` -> `quic_udp_try()`. Writes are `sendto()` on the
   session's socket to the path ngtcp2 returns. One `timeout_t` per session,
@@ -1257,7 +1314,7 @@ short-header rule (§9.5).
 |---|---|
 | `init()` | `tls_init()` then the node certificate PEM from `tls_current_pem()` (the single node cert, `keys.tls_cert/tls_key`, G1) -> `gnutls_certificate_set_x509_key_mem`; 32-byte static secret for stateless-reset tokens; registers the CID matcher with `transport_set_quic_cid_matcher()`; binds the `QuicPort` sockets when configured. Logs `QUIC carrier ready (ngtcp2 1.25.0, GnuTLS)`. `quic_read_config()` on `tinc reload` rebuilds the credential when the certificate fingerprint changed. |
 | `exit()` | close every session, free the credential, `gnutls_global_deinit()`. |
-| `dial(c)` | pin = the peer's `TlsFingerprint` host-record key (absent => accept-on-first-use, §9.7); port = the peer's host-record `QuicPort`, else own `QuicPort`, else the port as dialled; socket by family; GnuTLS client session with ALPN `QuicAlpn` (default `h3`) and SNI from §9.8; random DCID(8) + SCID(8); `ngtcp2_conn_client_new(..., NGTCP2_PROTO_VER_V1, ...)`; `connection_add(c)`; flush (the Initial goes out). `finish_connecting()` is *not* called here. Logs `Dialling <peer> via quic`. |
+| `dial(c)` | pin = the peer's `TlsFingerprint` host-record key (absent => accept-on-first-use, §9.7); port = the peer's host-record `QuicPort`, else own configured `QuicPort` (not the own host record's advertisement), else the port as dialled; a fresh socket on an ephemeral port (§3.1); GnuTLS client session with ALPN `QuicAlpn` (default `h3`) and SNI from §9.8; random DCID(8) + SCID(8); `ngtcp2_conn_client_new(..., NGTCP2_PROTO_VER_V1, ...)`; `connection_add(c)`; flush (the Initial goes out). `finish_connecting()` is *not* called here. Logs `Dialling <peer> via quic`. |
 | `udp_receive` / `quic_udp_try(ls, buf, len, addr)` | `ngtcp2_pkt_decode_version_cid`; DCID in the session table => `ngtcp2_conn_read_pkt(path = {socket addr, datagram source}, ...)` then flush -- the remote of the path is always the datagram's real source, which is the whole NAT-rebind mechanism. Unknown DCID: only a packet `ngtcp2_accept()` takes as a well-formed v1 Initial (>= 1200 bytes) opens a session (`quic_accept`, burst-limited by `max_connection_burst`, `new_connection()` named `<unknown>`, `allow_request = ID`); anything else **returns `false` and falls through** to the obfs keyed check and SPTPS. `read_pkt` errors: `DRAINING/CLOSING/DROP_CONN` => silent teardown; `NGTCP2_ERR_CRYPTO` => `CONNECTION_CLOSE` with the TLS alert; other => `CONNECTION_CLOSE` with `ngtcp2_ccerr_set_liberr`. Every teardown ends in `terminate_connection()`. |
 | `send(c)` | append `c->outbuf` to the TX ring, flush: queued datagrams first (`ngtcp2_conn_writev_datagram`), then `ngtcp2_conn_writev_stream` on the meta stream; `sendto` each packet; `NGTCP2_ERR_STREAM_DATA_BLOCKED` marks the stream blocked until `extend_max_stream_data`; then `ngtcp2_conn_update_pkt_tx_time` + re-arm the timer. `EMSGSIZE` from the socket is ignored (ngtcp2's PMTUD probes). |
 | `send_datagram(c, buf, len)` | queue + flush; returns `false` when `len > 1400` or `len > ngtcp2_conn_get_max_tx_udp_payload_size() - 35`, which `send_sptps_data()` treats like `EMSGSIZE` (-> `reduce_mtu`); when the 64-entry queue is full the datagram is dropped (SPTPS tolerates loss). |
@@ -1451,7 +1508,7 @@ replace GnuTLS per platform without touching the carrier.
 
 ### 9.11 Known limits
 
-1. `QuicPort` is read at start only (a change needs a restart); `QuicSni` /
+1. `QuicPort` / `HttpsPort` are read at start only (a change needs a restart); `QuicSni` /
    `QuicAlpn` are read per dial.
 2. The datagram queue is bounded (64) and drops when full; SPTPS handles the
    loss, but a burst larger than that is not paced.

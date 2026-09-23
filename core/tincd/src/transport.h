@@ -240,6 +240,18 @@ bool transport_local_address(struct connection_t *c, sockaddr_t *sa);
    is now a tinc connection and the caller may go on reading meta data. */
 bool transport_front_dispatch(struct connection_t *c);
 
+/* Front ports (docs/transports.md §3.1). The https and quic fronts listen on
+   443 by default -- a separate listener next to the tinc port, which keeps
+   plain and obfs -- on a node that accepts inbound connections (Port is not
+   0). `option' is "HttpsPort" or "QuicPort": set by the operator it wins, 0
+   turning the extra listener off. Returns the port to try, or 0. */
+int transport_front_port(const char *option, bool *configured);
+
+/* Write `key = port' into this node's own host record (drop the line when
+   port is 0), only if it changed, so invitations tell peers where the front
+   listens. */
+void transport_advertise_port(const char *key, int port);
+
 /* Inbound UDP: true if the datagram was consumed by a carrier. */
 bool transport_udp_dispatch(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr);
 

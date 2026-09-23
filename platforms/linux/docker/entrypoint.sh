@@ -18,6 +18,11 @@
 #   PORT            listen port; unset = the daemon's rule (655 for a founding
 #                   node, ephemeral for an invitee). Stored as options.Port,
 #                   which the daemon and `tinc invite` both rank first.
+#   FRONT_PORT      port of the https (TCP) and quic (UDP) fronts, the port
+#                   compose publishes for them; unset = the daemon's default,
+#                   443. Stored as options.HttpsPort and options.QuicPort. A
+#                   listening node advertises it in its own host record, so it
+#                   must be the port peers reach from outside.
 #   INVITE          invitation string: `tinc join` on the first start only
 #                   (CONNECT_TO is accepted as an alias)
 #   LOG_LEVEL       tincd -d level (default 1)
@@ -37,6 +42,7 @@ NETNAME=${NETNAME:-tincstack}
 NODE_NAME=${NODE_NAME:-}
 PUBLIC_ADDRESS=${PUBLIC_ADDRESS:-}
 PORT=${PORT:-}
+FRONT_PORT=${FRONT_PORT:-}
 INVITE=${INVITE:-${CONNECT_TO:-}}
 LOG_LEVEL=${LOG_LEVEL:-1}
 CERT_RENEW=${CERT_RENEW:-1}
@@ -105,6 +111,12 @@ fi
 if [[ -n $PORT ]]; then
     cli set Port "$PORT"
     log "options.Port = $PORT"
+fi
+
+if [[ -n $FRONT_PORT ]]; then
+    cli set HttpsPort "$FRONT_PORT"
+    cli set QuicPort "$FRONT_PORT"
+    log "options.HttpsPort = options.QuicPort = $FRONT_PORT"
 fi
 
 address=

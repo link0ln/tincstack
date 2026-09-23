@@ -82,10 +82,10 @@ materialise b nodeb
 cp "$RUN/pki/leaf.pem" "$RUN/pki/leaf.key" "$RUN/b/"
 chmod 644 "$RUN/b/leaf.pem" "$RUN/b/leaf.key"
 
-configure() { # <carrier A prefers>
-	python3 - "$RUN" "$1" <<-'PY'
+configure() { # <carrier A prefers> [b]: with b, B's options too (before B starts)
+	python3 - "$RUN" "$1" "${2:-}" <<-'PY'
 		import re, sys
-		run, carrier = sys.argv[1:]
+		run, carrier, touch_b = sys.argv[1:]
 
 		def host_block(path, name):
 		    s = open(path).read()
@@ -106,18 +106,25 @@ configure() { # <carrier A prefers>
 
 		a, b = ('%s/%s/tinc.yaml' % (run, d) for d in 'ab')
 		ed = lambda path, n: [l for l in host_block(path, n) if l.startswith('Ed25519PublicKey')]
+		# B's front ports as B advertised them in its own host record (443),
+		# which B writes when it starts: A is configured again after that.
+		fronts = [l for l in host_block(b, 'nodeb') if l.startswith(('HttpsPort', 'QuicPort'))]
+		assert touch_b or len(fronts) == 2, 'B advertised no front ports: %r' % fronts
 		set_host(a, 'nodeb', ['Address = nodeb.lab.test', 'Port = 655', 'Transports = https, quic',
-		                      'Subnet = 10.198.0.2/32'] + ed(b, 'nodeb'))
-		set_host(b, 'nodea', ed(a, 'nodea') + ['Subnet = 10.198.0.1/32'])
+		                      'Subnet = 10.198.0.2/32'] + fronts + ed(b, 'nodeb'))
 		set_options(a, ['PreferredTransports: [%s]' % carrier, 'ConnectTo: [nodeb]'])
-		set_options(b, ['Transports: [https, quic]', 'AllowPlainMeta: no',
-		                'TlsCert: /c/leaf.pem', 'TlsKey: /c/leaf.key'])
+		if touch_b:
+		    set_host(b, 'nodea', ed(a, 'nodea') + ['Subnet = 10.198.0.1/32'])
+		    set_options(b, ['Transports: [https, quic]', 'AllowPlainMeta: no',
+		                    'TlsCert: /c/leaf.pem', 'TlsKey: /c/leaf.key'])
 	PY
 }
-configure https
+configure https b
 
 docker run -d --name "$PFX-b" --network "$NET" --ip "$B_IP" --cap-add NET_ADMIN --device /dev/net/tun \
 	-v "$RUN/b:/c" "$IMG" tincd -c /c/tinc.yaml -n lab -D -d2 >/dev/null
+sleep 3
+configure https
 
 # ---- nginx, the reference server -----------------------------------------------
 mkdir -p "$RUN/n"
@@ -171,18 +178,18 @@ docker rm -f "$PFX-a" >/dev/null
 
 log "curl: TLS and HTTP/3 against B and N"
 {
-	echo "== curl -> B https =="; tools "$B_IP" "curl -sk -m 5 -i https://$NAME:655/ | head -12"
+	echo "== curl -> B https =="; tools "$B_IP" "curl -sk -m 5 -i https://$NAME/ | head -12"
 	echo "== curl -> N https =="; tools "$N_IP" "curl -sk -m 5 -i https://$NAME/ | head -12"
-	echo "== curl -> B garbage over TLS =="; tools "$B_IP" "printf 'XYZZY\r\n\r\n' | openssl s_client -quiet -connect $NAME:655 -servername $NAME 2>/dev/null | head -5"
+	echo "== curl -> B garbage over TLS =="; tools "$B_IP" "printf 'XYZZY\r\n\r\n' | openssl s_client -quiet -connect $NAME:443 -servername $NAME 2>/dev/null | head -5"
 	echo "== curl -> N garbage over TLS =="; tools "$N_IP" "printf 'XYZZY\r\n\r\n' | openssl s_client -quiet -connect $NAME:443 -servername $NAME 2>/dev/null | head -5"
-	echo "== curl -> B http3 =="; tools "$B_IP" "curl -sSk -m 5 -i --http3-only https://$NAME:655/ 2>&1 | head -12"
+	echo "== curl -> B http3 =="; tools "$B_IP" "curl -sSk -m 5 -i --http3-only https://$NAME/ 2>&1 | head -12"
 	echo "== curl -> N http3 =="; tools "$N_IP" "curl -sSk -m 5 -i --http3-only https://$NAME/ 2>&1 | head -12"
 } > "$OUT/probes.txt" 2>&1
 
 log "chromium: TLS and QUIC against B and N"
-chrome "$B_IP" "https://$NAME:655/" >/dev/null
+chrome "$B_IP" "https://$NAME/" >/dev/null
 chrome "$N_IP" "https://$NAME/" >/dev/null
-chrome "$B_IP" "https://$NAME:655/" "--enable-quic --origin-to-force-quic-on=$NAME:655" >/dev/null
+chrome "$B_IP" "https://$NAME/" "--enable-quic --origin-to-force-quic-on=$NAME:443" >/dev/null
 chrome "$N_IP" "https://$NAME/" "--enable-quic --origin-to-force-quic-on=$NAME:443" >/dev/null
 sleep 2
 docker rm -f "$PFX-capb" "$PFX-capn" >/dev/null
@@ -191,7 +198,7 @@ docker rm -f "$PFX-capb" "$PFX-capn" >/dev/null
 log "dissecting"
 docker run --rm -v "$OUT:/out" -e A_IP="$A_IP" "$TOOLS" sh -c '
 	cd /out
-	F="ip.src udp.srcport tcp.srcport tls.handshake.extensions_server_name tls.handshake.extensions_alpn_str tls.handshake.ja4 tls.handshake.ja3 frame.len"
+	F="ip.src udp.srcport tcp.srcport udp.dstport tcp.dstport tls.handshake.extensions_server_name tls.handshake.extensions_alpn_str tls.handshake.ja4 tls.handshake.ja3 frame.len"
 	fields() { for f in $F; do printf -- "-e %s " "$f"; done; }
 	for s in b n; do
 		echo "######## server $s: ClientHellos (src, sport, SNI, ALPN, JA4, JA3, frame bytes)"

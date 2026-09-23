@@ -30,6 +30,7 @@ services:
       NODE_NAME: ${NODE_NAME:-}
       PUBLIC_ADDRESS: ${PUBLIC_ADDRESS:-}
       PORT: ${PORT:-}
+      FRONT_PORT: ${FRONT_PORT:-}
       INVITE: ${INVITE:-}
       LOG_LEVEL: ${LOG_LEVEL:-1}
     ports:
@@ -37,6 +38,13 @@ services:
       # no published port (leave PORT unset, the mapping is then inert).
       - "${PORT:-655}:${PORT:-655}/tcp"
       - "${PORT:-655}:${PORT:-655}/udp"
+      # The https and quic fronts (docs/transports.md 3.1): TLS and QUIC on 443,
+      # where they look like the web, not on tinc's port. The node advertises
+      # this port to its peers, so it must be published as is. Host port 443
+      # taken by a web server: set FRONT_PORT to a free one (8443). An invitee
+      # does not listen on it, but Docker still reserves the host port.
+      - "${FRONT_PORT:-443}:${FRONT_PORT:-443}/tcp"
+      - "${FRONT_PORT:-443}:${FRONT_PORT:-443}/udp"
     volumes:
       - data:/etc/tincstack
 

@@ -219,9 +219,11 @@ extern bool sptps_udp_addresses_known_nodes(const struct node_t *n, const uint8_
 extern void finish_connecting(struct connection_t *c);
 extern bool do_outgoing_connection(struct outgoing_t *outgoing);
 extern void handle_new_meta_connection(void *data, int flags);
+extern void handle_new_front_connection(void *data, int flags);
 extern void handle_new_unix_connection(void *data, int flags);
 extern int setup_listen_socket(const sockaddr_t *sa);
 extern int setup_vpn_in_socket(const sockaddr_t *sa);
+extern int setup_udp_socket(const sockaddr_t *sa, bool shared);
 extern void rebind_udp_sockets(void);
 extern bool udp_rebind_on_wake;
 extern bool send_sptps_data(struct node_t *to, struct node_t *from, int type, const void *data, size_t len);

@@ -76,8 +76,11 @@ typedef struct quic_session_t {
 	ngtcp2_conn *conn;
 	int fd;                         /* UDP socket this session's packets go out on */
 	size_t sock;                    /* index into listen_socket[] of the same family
-	                                   (datagram delivery, local address) */
+	                                   (datagram delivery) */
+	sockaddr_t local;               /* the local end of the path ngtcp2 sees */
 	sockaddr_t peer;                /* current validated remote path */
+	io_t own_io;                    /* client: its own ephemeral socket (fd), */
+	bool own_socket;                /* read here and closed with the session */
 
 	int64_t stream_id;              /* meta stream, -1 until opened/adopted */
 
@@ -129,6 +132,8 @@ static bool quic_ready;
 static listen_socket_t quic_listen[MAXSOCKETS];
 static int quic_listens;
 static int quic_port;
+static bool quic_port_configured;       /* set by the operator, not the 443 default */
+static int quic_port_option;            /* that setting, bound here or not (dial fallback) */
 
 static void quic_flush(quic_session_t *s);
 static void quic_arm_timer(quic_session_t *s);
@@ -756,22 +761,12 @@ static int pick_socket(const sockaddr_t *peer) {
 	return -1;
 }
 
-/* The extra QuicPort socket of a family, or -1 (then the main socket is used). */
-static int quic_extra_fd(int family) {
-	for(int i = 0; i < quic_listens; i++) {
-		if(quic_listen[i].sa.sa.sa_family == family) {
-			return quic_listen[i].udp.fd;
-		}
-	}
-
-	return -1;
-}
-
 static quic_session_t *new_session(connection_t *c, int fd, size_t sock, const sockaddr_t *peer, bool is_server) {
 	quic_session_t *s = xzalloc(sizeof(*s));
 	s->c = c;
 	s->fd = fd;
 	s->sock = sock;
+	s->local = listen_socket[sock].sa;
 	s->peer = *peer;
 	s->is_server = is_server;
 	s->stream_id = -1;
@@ -784,6 +779,12 @@ static quic_session_t *new_session(connection_t *c, int fd, size_t sock, const s
 
 static void free_session(quic_session_t *s) {
 	timeout_del(&s->timer);
+
+	if(s->own_socket) {
+		io_del(&s->own_io);
+		closesocket(s->fd);
+		s->own_socket = false;
+	}
 
 	if(s->conn) {
 		ngtcp2_conn_del(s->conn);
@@ -873,7 +874,7 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	params.stateless_reset_token_present = 1;
 
 	ngtcp2_path path = {
-		.local = {(ngtcp2_sockaddr *)&listen_socket[s->sock].sa.sa, SALEN(listen_socket[s->sock].sa.sa)},
+		.local = {(ngtcp2_sockaddr *)&s->local.sa, SALEN(s->local.sa)},
 		.remote = {(ngtcp2_sockaddr *)&s->peer.sa, SALEN(s->peer.sa)},
 	};
 
@@ -912,6 +913,76 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	quic_flush(s);
 }
 
+/* Feed one datagram to an existing session and flush what it produced. */
+static void session_read(quic_session_t *s, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
+	sockaddr_t addr = *vaddr;
+	int rv;
+
+	if(s->dead) {
+		return;
+	}
+
+	/* The path's remote is the datagram's real source: a NAT rebind shows up
+	   here as a new remote and ngtcp2 starts path validation on its own. */
+	ngtcp2_path path = {
+		.local = {(ngtcp2_sockaddr *)&s->local.sa, SALEN(s->local.sa)},
+		.remote = {(ngtcp2_sockaddr *)&addr.sa, SALEN(addr.sa)},
+	};
+	ngtcp2_pkt_info pi = {0};
+
+	s->reading = true;
+	rv = ngtcp2_conn_read_pkt(s->conn, &path, &pi, buf, len, quic_now());
+	s->reading = false;
+
+	if(rv) {
+		if(rv == NGTCP2_ERR_DRAINING || rv == NGTCP2_ERR_CLOSING || rv == NGTCP2_ERR_DROP_CONN) {
+			quic_fail(s, false);
+		} else if(rv == NGTCP2_ERR_CRYPTO) {
+			ngtcp2_ccerr_set_tls_alert(&s->ccerr, ngtcp2_conn_get_tls_alert(s->conn), NULL, 0);
+			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "quic: TLS alert from %s", s->c->hostname);
+			quic_fail(s, true);
+		} else {
+			ngtcp2_ccerr_set_liberr(&s->ccerr, rv, NULL, 0);
+			quic_fail(s, true);
+		}
+
+		return;
+	}
+
+	if(!s->dead) {
+		quic_flush(s);
+	}
+}
+
+/* Client sessions: one datagram from the session's own socket. A packet for
+   any other connection id -- a stray, or someone probing the ephemeral
+   port -- is dropped; this socket never accepts a connection. */
+static void quic_client_read(void *data, int flags) {
+	(void)flags;
+	quic_session_t *s = data;
+	uint8_t buf[MAXSIZE];
+	sockaddr_t addr;
+	socklen_t addrlen = sizeof(addr);
+	ssize_t len = recvfrom(s->fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
+
+	if(len <= 0) {
+		if(len < 0 && !sockwouldblock(sockerrno)) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: receive on the socket for %s failed: %s", s->c->hostname, sockstrerror(sockerrno));
+		}
+
+		return;
+	}
+
+	sockaddrunmap(&addr);
+	ngtcp2_version_cid vc;
+
+	if(ngtcp2_pkt_decode_version_cid(&vc, buf, (size_t)len, TRANSPORT_QUIC_CIDLEN) < 0 || session_by_cid(vc.dcid, vc.dcidlen) != s) {
+		return;
+	}
+
+	session_read(s, buf, (size_t)len, &addr);
+}
+
 bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
 	if(!quic_ready) {
 		return false;
@@ -945,39 +1016,10 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 		return false;
 	}
 
-	if(s->dead) {
-		return true;
-	}
-
-	/* The path's remote is the datagram's real source: a NAT rebind shows up
-	   here as a new remote and ngtcp2 starts path validation on its own. */
-	ngtcp2_path path = {
-		.local = {(ngtcp2_sockaddr *)&listen_socket[s->sock].sa.sa, SALEN(listen_socket[s->sock].sa.sa)},
-		.remote = {(ngtcp2_sockaddr *)&addr.sa, SALEN(addr.sa)},
-	};
-	ngtcp2_pkt_info pi = {0};
-
-	s->reading = true;
-	rv = ngtcp2_conn_read_pkt(s->conn, &path, &pi, buf, len, quic_now());
-	s->reading = false;
-
-	if(rv) {
-		if(rv == NGTCP2_ERR_DRAINING || rv == NGTCP2_ERR_CLOSING || rv == NGTCP2_ERR_DROP_CONN) {
-			quic_fail(s, false);
-		} else if(rv == NGTCP2_ERR_CRYPTO) {
-			ngtcp2_ccerr_set_tls_alert(&s->ccerr, ngtcp2_conn_get_tls_alert(s->conn), NULL, 0);
-			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "quic: TLS alert from %s", s->c->hostname);
-			quic_fail(s, true);
-		} else {
-			ngtcp2_ccerr_set_liberr(&s->ccerr, rv, NULL, 0);
-			quic_fail(s, true);
-		}
-
-		return true;
-	}
-
-	if(!s->dead) {
-		quic_flush(s);
+	/* A client session reads its own ephemeral socket (quic_client_read);
+	   its connection ids never arrive on a listening socket legitimately. */
+	if(!s->own_socket) {
+		session_read(s, buf, len, &addr);
 	}
 
 	return true;
@@ -1071,11 +1113,12 @@ bool quic_dial(connection_t *c) {
 	get_config_string(lookup_config(&config_tree, "QuicAlpn"), &alpn);
 	char *sni = choose_sni(c);
 
-	/* Destination port: the peer's host-record QuicPort, else our own QuicPort
-	   (a network-wide option, propagated by invitations), else the peer's tinc
-	   port as dialled. Source socket: the QuicPort listener when one exists. */
+	/* Destination port: the peer's host-record QuicPort (a node advertises
+	   the one it listens on), else our own QuicPort if the operator set it
+	   (a network-wide choice, propagated by invitations), else the peer's
+	   tinc port as dialled. */
 	sockaddr_t peer = c->address;
-	int port = quic_port;
+	int port = quic_port_option;
 	tree = create_configuration();
 
 	if(read_host_config(tree, c->name, false)) {
@@ -1092,13 +1135,43 @@ bool quic_dial(connection_t *c) {
 		}
 	}
 
-	int fd = quic_extra_fd(peer.sa.sa_family);
+	/* Source socket: a fresh one on an ephemeral port, like every QUIC
+	   client. Dialling from the listening socket put our tinc port (or 443)
+	   in the source port of every packet, which no browser does
+	   (testing/fingerprint, 2026-09-23). Same local address as the listener,
+	   so BindToAddress still decides the interface. */
+	sockaddr_t local = listen_socket[sock].sa;
 
-	if(fd < 0) {
-		fd = listen_socket[sock].udp.fd;
+	if(local.sa.sa_family == AF_INET) {
+		local.in.sin_port = 0;
+	} else if(local.sa.sa_family == AF_INET6) {
+		local.in6.sin6_port = 0;
 	}
 
+	int fd = setup_vpn_in_socket(&local);
+
+	if(fd < 0) {
+		logger(DEBUG_CONNECTIONS, LOG_ERR, "quic: could not open a socket to dial %s", c->name);
+		free(alpn);
+		free(sni);
+		return false;
+	}
+
+	socklen_t locallen = sizeof(local);
+
+	if(getsockname(fd, &local.sa, &locallen) < 0) {
+		logger(DEBUG_CONNECTIONS, LOG_ERR, "quic: getsockname failed dialling %s: %s", c->name, sockstrerror(sockerrno));
+		closesocket(fd);
+		free(alpn);
+		free(sni);
+		return false;
+	}
+
+	sockaddrunmap(&local);
 	quic_session_t *s = new_session(c, fd, (size_t)sock, &peer, false);
+	s->local = local;
+	s->own_socket = true;
+	io_add(&s->own_io, quic_client_read, s, fd, IO_READ);
 
 	if(!quic_tls_session_init(&s->tls, false, get_conn, &s->tls, alpn ? alpn : QUIC_ALPN_DEFAULT, sni, pin)) {
 		logger(DEBUG_CONNECTIONS, LOG_ERR, "quic: TLS init failed dialling %s", c->name);
@@ -1122,7 +1195,7 @@ bool quic_dial(connection_t *c) {
 	gnutls_rnd(GNUTLS_RND_RANDOM, scid.data, scid.datalen);
 
 	ngtcp2_path path = {
-		.local = {(ngtcp2_sockaddr *)&listen_socket[s->sock].sa.sa, SALEN(listen_socket[s->sock].sa.sa)},
+		.local = {(ngtcp2_sockaddr *)&s->local.sa, SALEN(s->local.sa)},
 		.remote = {(ngtcp2_sockaddr *)&s->peer.sa, SALEN(s->peer.sa)},
 	};
 
@@ -1137,7 +1210,10 @@ bool quic_dial(connection_t *c) {
 	c->status.connecting = false;
 	connection_add(c);
 
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Dialling %s (%s) via quic", c->name, c->hostname);
+	/* The address actually dialled: c->hostname still names the tinc port. */
+	char *where = sockaddr2hostname(&s->peer);
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Dialling %s (%s) via quic", c->name, where);
+	free(where);
 
 	/* finish_connecting() runs later, from handshake_completed, so the
 	   authenticator is the first thing on the stream (docs/transports.md §9.4). */
@@ -1240,10 +1316,32 @@ bool quic_local_address(connection_t *c, sockaddr_t *sa) {
 	}
 
 	socklen_t salen = sizeof(*sa);
-	return getsockname(listen_socket[s->sock].udp.fd, &sa->sa, &salen) >= 0;
+	return getsockname(s->fd, &sa->sa, &salen) >= 0;
 }
 
 /* ---- init / exit --------------------------------------------------------- */
+
+/* A QuicPort listener: QUIC only. Anything quic_udp_try() does not claim is
+   dropped, as a QUIC server drops what it cannot parse -- the tinc port's
+   SPTPS and obfs handling never answer on the front port. */
+static void quic_listen_read(void *data, int flags) {
+	(void)flags;
+	listen_socket_t *ls = data;
+	uint8_t buf[MAXSIZE];
+	sockaddr_t addr;
+	socklen_t addrlen = sizeof(addr);
+	ssize_t len = recvfrom(ls->udp.fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
+
+	if(len <= 0) {
+		if(len < 0 && !sockwouldblock(sockerrno)) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: receive on the QuicPort socket failed: %s", sockstrerror(sockerrno));
+		}
+
+		return;
+	}
+
+	quic_udp_try(ls, buf, (size_t)len, &addr);
+}
 
 bool quic_init(void) {
 	if(!tls_init()) {
@@ -1289,13 +1387,17 @@ bool quic_init(void) {
 		transport_set_quic_cid_matcher(quic_cid_match);
 		quic_ready = true;
 
-		/* QuicPort: an extra UDP listener per address family, fed to the same
-		   receive path as the main sockets. Only when it differs from the
-		   tinc port; otherwise the shared socket is the QUIC socket. */
-		quic_port = 0;
-		get_config_int(lookup_config(&config_tree, "QuicPort"), &quic_port);
+		/* QuicPort: an extra UDP listener per address family -- 443 by
+		   default on a node that accepts inbound connections
+		   (transport_front_port), because QUIC on tinc's port 655 needs no
+		   fingerprinting to be spotted (testing/fingerprint, 2026-09-23).
+		   It takes QUIC only (quic_listen_read); plain and obfs stay on the
+		   tinc port. Only when it differs from the tinc port; otherwise the
+		   shared socket is the QUIC socket. */
+		quic_port = transport_front_port("QuicPort", &quic_port_configured);
+		quic_port_option = quic_port_configured ? quic_port : 0;
 
-		if(quic_port > 0 && quic_port < 65536 && quic_port != atoi(myport.udp)) {
+		if(quic_port && quic_port != atoi(myport.udp)) {
 			for(int i = 0; i < listen_sockets && quic_listens < MAXSOCKETS; i++) {
 				sockaddr_t sa = listen_socket[i].sa;
 
@@ -1319,17 +1421,19 @@ bool quic_init(void) {
 					continue;
 				}
 
-				int fd = setup_vpn_in_socket(&sa);
+				int fd = setup_udp_socket(&sa, false);
 
 				if(fd < 0) {
-					logger(DEBUG_ALWAYS, LOG_WARNING, "quic: could not bind QuicPort %d; using the tinc port", quic_port);
+					logger(DEBUG_ALWAYS, LOG_WARNING, "quic: could not listen on UDP port %d%s; peers reach the quic front on the tinc port %s, "
+					       "where it is easy to spot. Grant the port (root, CAP_NET_BIND_SERVICE) or set QuicPort", quic_port,
+					       quic_port_configured ? "" : " (the default)", myport.udp);
 					continue;
 				}
 
 				listen_socket_t *ls = &quic_listen[quic_listens++];
 				ls->sa = sa;
 				ls->tcp.fd = -1;
-				io_add(&ls->udp, handle_incoming_vpn_data, ls, fd, IO_READ);
+				io_add(&ls->udp, quic_listen_read, ls, fd, IO_READ);
 				char *h = sockaddr2hostname(&sa);
 				logger(DEBUG_ALWAYS, LOG_INFO, "quic: listening on %s (QuicPort)", h);
 				free(h);
@@ -1338,6 +1442,11 @@ bool quic_init(void) {
 			quic_port = 0;
 		}
 
+		if(!quic_listens) {
+			quic_port = 0;
+		}
+
+		transport_advertise_port("QuicPort", quic_port);
 		logger(DEBUG_ALWAYS, LOG_INFO, "QUIC carrier ready (ngtcp2 %s, GnuTLS)%s", ngtcp2_version(0)->version_str,
 		       quic_port ? "" : ", on the tinc port");
 	}

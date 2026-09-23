@@ -521,11 +521,12 @@ bool read_host_config(splay_tree_t *config_tree, const char *name, bool verbose)
 
 /* `text` (a host record) with every `key = ...` line replaced by one
    `key = value` line -- in place of the first, or at the end when there was
-   none. Case-insensitive on the variable name, exact on its end, so
-   "TlsFingerprint" does not also catch "TlsFingerprintX". Caller frees. */
+   none; a NULL value drops them all. Case-insensitive on the variable name,
+   exact on its end, so "TlsFingerprint" does not also catch
+   "TlsFingerprintX". Caller frees. */
 char *host_text_set_var(const char *text, const char *key, const char *value) {
 	size_t keylen = strlen(key);
-	size_t cap = (text ? strlen(text) : 0) + keylen + strlen(value) + 8;
+	size_t cap = (text ? strlen(text) : 0) + keylen + (value ? strlen(value) : 0) + 8;
 	char *out = xmalloc(cap);
 	size_t len = 0;
 	bool written = false;
@@ -540,7 +541,7 @@ char *host_text_set_var(const char *text, const char *key, const char *value) {
 			memcpy(out + len, line, linelen);
 			len += linelen;
 			out[len++] = '\n';
-		} else if(!written) {
+		} else if(!written && value) {
 			len += (size_t) snprintf(out + len, cap - len, "%s = %s\n", key, value);
 			written = true;
 		}
@@ -548,7 +549,7 @@ char *host_text_set_var(const char *text, const char *key, const char *value) {
 		line = eol ? eol + 1 : NULL;
 	}
 
-	if(!written) {
+	if(!written && value) {
 		len += (size_t) snprintf(out + len, cap - len, "%s = %s\n", key, value);
 	}
 
@@ -558,7 +559,8 @@ char *host_text_set_var(const char *text, const char *key, const char *value) {
 
 /* Like append_config_file(), but the host record ends up with exactly one
    `key` line: for values that are replaced rather than accumulated (a
-   certificate pin that moved). */
+   certificate pin that moved, a port this node advertises). A NULL value
+   removes every `key` line. */
 bool replace_config_file(const char *name, const char *key, const char *value) {
 	if(yamlconf_path && netname) {
 		if(!yamlconf_lock(yamlconf_path)) {

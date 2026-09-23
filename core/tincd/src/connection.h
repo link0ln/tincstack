@@ -55,6 +55,7 @@ typedef union connection_status_t {
 		bool invitation_used: 1;        /* 1 if the invitation has been consumed */
 		bool tarpit: 1;                 /* 1 if the connection should be added to the tarpit */
 		bool front_pending: 1;          /* 1 if an inbound TCP connection has not been classified by the front yet */
+		bool front_tls_only: 1;         /* 1 if it arrived on the HttpsPort listener: TLS or nothing */
 	};
 	uint32_t value;
 } connection_status_t;

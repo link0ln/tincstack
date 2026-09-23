@@ -1773,6 +1773,7 @@ const var_t variables[] = {
 	{"AcmePollTimeout", VAR_SERVER},
 	{"AcmeRenewDays", VAR_SERVER},
 	/* quic carrier (M5, G3) */
+	{"HttpsPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"QuicPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"QuicSni", VAR_SERVER | VAR_SAFE},
 	{"QuicAlpn", VAR_SERVER | VAR_SAFE},

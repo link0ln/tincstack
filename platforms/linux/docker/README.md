@@ -49,6 +49,7 @@ docker compose down -v                             # destroy the node incl. keys
 | `NODE_NAME` | node name, honoured on the first start only | derived from the hostname by the daemon |
 | `PUBLIC_ADDRESS` | `host` or `host:port` written to the node's own host record as `Address`; used verbatim in invitations | unset: the CLI falls back to a local-address guess and warns |
 | `PORT` | listen port and the port published on the host; written to `options.Port` with `tinc set Port` | unset: daemon rule (655 founding node, ephemeral invitee) |
+| `FRONT_PORT` | port of the `https` (TCP) and `quic` (UDP) fronts and the port published for them; written to `options.HttpsPort` and `options.QuicPort`. A listening node advertises it to peers, so it must be reachable from outside as is (no remapping) | unset: `443` |
 | `INVITE` | invitation string, `tinc join` on the first start only (`join.sh` sets it) | unset |
 | `LOG_LEVEL` | `tincd -d` | `1` |
 | `CERT_RENEW` | `1`: run `tinc cert renew` on a timer when `CertDomain` and `CloudflareToken` are set. Peers follow a renewed certificate on their own (they re-pin it after SPTPS authenticates this node). `0` turns it off | `1` |
@@ -56,7 +57,7 @@ docker compose down -v                             # destroy the node incl. keys
 | `TINCSTACK_TAG` | tag of the `tincstack/core` and `tincstack/node` images | `dev` |
 
 An existing identity in the volume always wins: `NODE_NAME` and `INVITE` are
-ignored once `tinc.yaml` exists; `PORT` and `PUBLIC_ADDRESS` are re-applied on
+ignored once `tinc.yaml` exists; `PORT`, `FRONT_PORT` and `PUBLIC_ADDRESS` are re-applied on
 every start.
 
 ## What lives where

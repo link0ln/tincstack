@@ -139,6 +139,66 @@ static void https_schedule_reap(void) {
 
 /* ---- lifecycle ----------------------------------------------------------- */
 
+/* HttpsPort: an extra TCP listener per address family -- 443 by default on a
+   node that accepts inbound connections (transport_front_port) -- because a
+   TLS front on tinc's port 655 needs no fingerprinting to be spotted
+   (testing/fingerprint, 2026-09-23). It takes TLS only
+   (handle_new_front_connection); the tinc port keeps its full front. */
+static listen_socket_t https_listen[MAXSOCKETS];
+static int https_listens;
+static int https_port_option;           /* the operator's HttpsPort (dial fallback), else 0 */
+
+static void https_listen_setup(void) {
+	bool configured = false;
+	int port = transport_front_port("HttpsPort", &configured);
+	https_port_option = configured ? port : 0;
+
+	if(port && port != atoi(myport.tcp)) {
+		for(int i = 0; i < listen_sockets && https_listens < MAXSOCKETS; i++) {
+			sockaddr_t sa = listen_socket[i].sa;
+
+			if(sa.sa.sa_family == AF_INET) {
+				sa.in.sin_port = htons((uint16_t)port);
+			} else if(sa.sa.sa_family == AF_INET6) {
+				sa.in6.sin6_port = htons((uint16_t)port);
+			} else {
+				continue;
+			}
+
+			bool dup = false;
+
+			for(int j = 0; j < https_listens; j++) {
+				if(!sockaddrcmp(&https_listen[j].sa, &sa)) {
+					dup = true;
+				}
+			}
+
+			if(dup) {
+				continue;
+			}
+
+			int fd = setup_listen_socket(&sa);
+
+			if(fd < 0) {
+				logger(DEBUG_ALWAYS, LOG_WARNING, "https: could not listen on TCP port %d%s; peers reach the https front on the tinc port %s, "
+				       "where it is easy to spot. Grant the port (root, CAP_NET_BIND_SERVICE) or set HttpsPort", port,
+				       configured ? "" : " (the default)", myport.tcp);
+				continue;
+			}
+
+			listen_socket_t *ls = &https_listen[https_listens++];
+			ls->sa = sa;
+			ls->udp.fd = -1;
+			io_add(&ls->tcp, handle_new_front_connection, ls, fd, IO_READ);
+			char *h = sockaddr2hostname(&sa);
+			logger(DEBUG_ALWAYS, LOG_INFO, "https: listening on %s (HttpsPort)", h);
+			free(h);
+		}
+	}
+
+	transport_advertise_port("HttpsPort", https_listens ? port : 0);
+}
+
 bool https_init(void) {
 	if(!tls_init()) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "https carrier: TLS certificate not available");
@@ -146,10 +206,21 @@ bool https_init(void) {
 	}
 
 	decoy_read_config();
+
+	if(!https_listens) {
+		https_listen_setup();
+	}
+
 	return true;
 }
 
 void https_exit(void) {
+	for(int i = 0; i < https_listens; i++) {
+		io_del(&https_listen[i].tcp);
+		closesocket(https_listen[i].tcp.fd);
+	}
+
+	https_listens = 0;
 	timeout_del(&https_reaper);
 	decoy_exit();
 	tls_exit();
@@ -943,7 +1014,28 @@ bool https_dial(connection_t *c) {
 		return false;
 	}
 
-	int fd = socket(c->address.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
+	/* Destination port: the peer's host-record HttpsPort (a node advertises
+	   the one it listens on), else our own HttpsPort if the operator set it,
+	   else the peer's tinc port as dialled -- whose front still takes TLS. */
+	sockaddr_t peer = c->address;
+	int port = https_port_option;
+	splay_tree_t *tree = create_configuration();
+
+	if(read_host_config(tree, c->name, false)) {
+		get_config_int(lookup_config(tree, "HttpsPort"), &port);
+	}
+
+	exit_configuration(tree);
+
+	if(port > 0 && port < 65536) {
+		if(peer.sa.sa_family == AF_INET) {
+			peer.in.sin_port = htons((uint16_t)port);
+		} else if(peer.sa.sa_family == AF_INET6) {
+			peer.in6.sin6_port = htons((uint16_t)port);
+		}
+	}
+
+	int fd = socket(peer.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
 
 	if(fd < 0) {
 		return false;
@@ -959,7 +1051,7 @@ bool https_dial(connection_t *c) {
 	}
 #endif
 
-	int r = connect(fd, &c->address.sa, SALEN(c->address.sa));
+	int r = connect(fd, &peer.sa, SALEN(peer.sa));
 
 	if(r == -1 && !sockinprogress(sockerrno)) {
 		logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: could not connect to %s (%s): %s", c->name, c->hostname, sockstrerror(sockerrno));
@@ -977,7 +1069,10 @@ bool https_dial(connection_t *c) {
 	connection_add(c);
 	io_add(&c->io, https_io, c, c->socket, IO_READ | IO_WRITE);
 
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Dialling %s (%s) via https (SNI %s)", c->name, c->hostname, s->sni);
+	/* The address actually dialled: c->hostname still names the tinc port. */
+	char *where = sockaddr2hostname(&peer);
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Dialling %s (%s) via https (SNI %s)", c->name, where, s->sni);
+	free(where);
 	return true;
 }
 

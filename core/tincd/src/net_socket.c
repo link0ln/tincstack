@@ -293,6 +293,14 @@ static void set_udp_buffer(int nfd, int type, const char *name, int size, bool w
 }
 
 int setup_vpn_in_socket(const sockaddr_t *sa) {
+	return setup_udp_socket(sa, true);
+}
+
+/* shared = false: no SO_REUSEADDR. On Linux two UDP sockets that both set it
+   share the port, and the kernel splits the datagrams between them -- a front
+   on 443 would silently take part of another QUIC server's traffic instead of
+   failing to bind. */
+int setup_udp_socket(const sockaddr_t *sa, bool shared) {
 	int nfd;
 	int option;
 
@@ -331,7 +339,11 @@ int setup_vpn_in_socket(const sockaddr_t *sa) {
 #endif
 
 	option = 1;
-	setsockopt(nfd, SOL_SOCKET, SO_REUSEADDR, (void *)&option, sizeof(option));
+
+	if(shared) {
+		setsockopt(nfd, SOL_SOCKET, SO_REUSEADDR, (void *)&option, sizeof(option));
+	}
+
 	setsockopt(nfd, SOL_SOCKET, SO_BROADCAST, (void *)&option, sizeof(option));
 
 	set_udp_buffer(nfd, SO_RCVBUF, "SO_RCVBUF", udp_rcvbuf, udp_rcvbuf_warnings);
@@ -399,7 +411,7 @@ int setup_vpn_in_socket(const sockaddr_t *sa) {
 	}
 
 	return nfd;
-} /* int setup_vpn_in_socket */
+} /* int setup_udp_socket */
 
 /* Rebind every UDP listening socket to a fresh OS-assigned source port.
 
@@ -965,9 +977,7 @@ static bool check_tarpit(const sockaddr_t *sa, int fd) {
   accept a new tcp connect and create a
   new connection
 */
-void handle_new_meta_connection(void *data, int flags) {
-	(void)flags;
-	listen_socket_t *l = data;
+static void accept_meta_connection(listen_socket_t *l, bool tls_only) {
 	connection_t *c;
 	sockaddr_t sa;
 	int fd;
@@ -997,6 +1007,7 @@ void handle_new_meta_connection(void *data, int flags) {
 	c->socket = fd;
 	c->last_ping_time = now.tv_sec;
 	c->status.front_pending = true;
+	c->status.front_tls_only = tls_only;
 
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Connection from %s", c->hostname);
 
@@ -1007,6 +1018,18 @@ void handle_new_meta_connection(void *data, int flags) {
 	connection_add(c);
 
 	c->allow_request = ID;
+}
+
+void handle_new_meta_connection(void *data, int flags) {
+	(void)flags;
+	accept_meta_connection(data, false);
+}
+
+/* The HttpsPort listener (https.c): same front, but only a TLS ClientHello
+   gets anywhere (transport_front_dispatch). */
+void handle_new_front_connection(void *data, int flags) {
+	(void)flags;
+	accept_meta_connection(data, true);
 }
 
 #ifndef HAVE_WINDOWS
