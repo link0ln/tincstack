@@ -42,20 +42,22 @@ docker run --rm -v "$REPO":/src -v /opt/android-sdk:/opt/android-sdk:ro \
 Requirements: Android SDK platform 34, build-tools 34.0.0, NDK 26.1.10909125
 (mounted at `/opt/android-sdk`); the container brings JDK 17, meson, ninja,
 pkg-config and make. `native/build-core.sh` can also be run on its own to
-produce `jniLibs/<abi>/libtincd.so` (`--crypto nolegacy` builds without
-LibreSSL: SPTPS/Ed25519 only, no legacy RSA protocol).
+produce `jniLibs/<abi>/libtincd.so`. By default it cross-builds OpenSSL 3.5.7,
+zstd and ngtcp2 (sha256-pinned tarballs, statically linked) so the core has
+the `https` and `quic` carriers with the same ClientHellos as the Linux and
+Windows builds (`testing/transports/android-emulator-test.sh`);
+`--crypto nolegacy` builds without any of it: SPTPS/Ed25519 only, no legacy
+RSA protocol, no TLS carriers.
 
 Two Gradle properties narrow the build:
 
 * `-PtincAbis="x86_64"` — build and package a single ABI (default: all four).
   An emulator needs only its own, which turns a four-ABI core build into one.
-* `-PtincCrypto=nolegacy` — hand `--crypto nolegacy` to `build-core.sh`.
-  **Required today:** the default `-PtincCrypto=openssl` no longer compiles
-  against the bundled LibreSSL 3.7.3, because the core's TLS front
-  (`core/tincd/src/tls.c`, M5/G1) uses OpenSSL 3.0-only API
-  (`EVP_EC_gen`, `SSL_OP_NO_RENEGOTIATION`) that no LibreSSL release provides
-  (checked up to 4.1.0), and `build-core.sh` installs only LibreSSL's
-  libcrypto, not libssl. See PLAN.md M8 "Found during M8".
+* `-PtincCrypto=nolegacy` — hand `--crypto nolegacy` to `build-core.sh`
+  (no OpenSSL, no `https`/`quic`). Until 2026-09-24 this was required: the
+  default build linked LibreSSL 3.7.3's libcrypto, which lacks the OpenSSL 3
+  API the TLS front uses, so it did not compile. The default is OpenSSL 3.5
+  now and builds.
 
 Emulator (no device, no host install)
 -------------------------------------
@@ -87,8 +89,9 @@ ways. Screens are located with `uiautomator dump` and every wait has a
 deadline; nothing is a fixed sleep.
 
 ```
-./gradlew --no-daemon -PtincAbis=x86_64 -PtincCrypto=nolegacy assembleDebug
+./gradlew --no-daemon -PtincAbis=x86_64 assembleDebug
 docker/join-on-emulator.sh          # KEEP=1 leaves the lab and the emulator up
+TRANSPORT=https docker/join-on-emulator.sh   # the same, the tunnel over https (or quic)
 ```
 
 Reading the app's private files (the joined `tinc.yaml`) needs a userdebug

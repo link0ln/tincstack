@@ -779,6 +779,8 @@ bool do_outgoing_connection(outgoing_t *outgoing) {
 	const transport_t *t;
 	bool fallback;
 
+	outgoing->retry_requested = false;
+
 begin:
 	sa = get_recent_address(outgoing->node->address_cache);
 	t = NULL;

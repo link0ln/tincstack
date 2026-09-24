@@ -143,6 +143,15 @@ typedef struct outgoing_t {
 	   once-per-cycle token for transport_udp_meta_fallback(). */
 	int failures;
 	bool udp_fallback_used;
+
+	/* The dial in progress was cut by `tinc retry' (retry() below), not by
+	   the carrier: terminate_connection() re-dials the same carrier instead
+	   of counting it as failed. Without this, the Android app -- which runs
+	   `tinc retry' on every connectivity change, including the VPN coming
+	   up -- killed each https handshake it overlapped and pinned the link
+	   to plain for the session (2026-09-24, platforms/android/docker/
+	   join-on-emulator.sh TRANSPORT=https). Cleared by every new dial. */
+	bool retry_requested;
 } outgoing_t;
 
 typedef struct ports_t {

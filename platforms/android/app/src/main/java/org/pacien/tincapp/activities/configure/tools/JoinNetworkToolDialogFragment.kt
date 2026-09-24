@@ -28,7 +28,7 @@ import org.pacien.tincapp.commands.Tinc
 import org.pacien.tincapp.commands.TincApp
 import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.databinding.ConfigureToolsDialogNetworkJoinBinding
-import org.pacien.tincapp.utils.makePublic
+import org.pacien.tincapp.utils.makePrivate
 
 /**
  * Join by invitation URL or QR code: `tinc -c <net>/tinc.yaml -n <net> join <url>`.
@@ -78,6 +78,6 @@ class JoinNetworkToolDialogFragment : ConfigurationToolDialogFragment() {
       validateNetName(netName)
         .thenCompose { Tinc.join(netName, url) }
         .thenCompose { TincApp.removeScripts(netName) }
-        .thenApply { AppPaths.confDir(netName).makePublic() }
+        .thenApply { AppPaths.confDir(netName).makePrivate() }
     )
 }

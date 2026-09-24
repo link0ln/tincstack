@@ -45,7 +45,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  platforms/linux/docker/reload-test.sh \
                  testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
                  testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
-                 testing/transports/cert-repin-test.sh testing/transports/front-port-test.sh testing/transports/h3-interop-test.sh testing/transports/decoy-conformance-test.sh testing/transports/mixed-version-test.sh testing/transports/windows-wine-test.sh testing/fingerprint/run.sh \
+                 testing/transports/cert-repin-test.sh testing/transports/front-port-test.sh testing/transports/h3-interop-test.sh testing/transports/decoy-conformance-test.sh testing/transports/mixed-version-test.sh testing/transports/windows-wine-test.sh testing/transports/android-emulator-test.sh testing/transports/retry-carrier-test.sh testing/fingerprint/run.sh \
                  testing/transports/obfs-test.sh testing/transports/obfs-mtu-test.sh \
                  testing/transports/matrix-test.sh \
                  testing/transports/classify-test.sh \

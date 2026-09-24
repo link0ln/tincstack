@@ -18,7 +18,12 @@
 #   6. connect (the exported CONNECT intent) and ping the inviter through the
 #      tunnel.
 #
-# Tunables: LAB (prefix, default wsy), SUBNET, APK, NETNAME, TINCSTACK_TAG,
+# TRANSPORT=https|quic (2026-09-24): before connecting, set the phone's
+# PreferredTransports to that carrier (with the app's own libtinc.so, as the
+# app's user), then also require that the inviter sees the phone's link on
+# it -- the VpnService tunnel over a TLS carrier, end to end.
+#
+# Tunables: LAB (prefix, default wsy), SUBNET, APK, NETNAME, TINCSTACK_TAG, TRANSPORT,
 # KEEP=1 (leave the lab up), WAIT (seconds for each deadline).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -110,6 +115,22 @@ grep -qE "^      node_a:"       <<<"$yaml" || fail "the inviter is not a host re
 grep -qE "InterfaceAddress: 10\." <<<"$yaml" || fail "no pool address (InterfaceAddress)"
 echo "OK: schema-conformant, pool address present"
 
+# The file holds the node's private keys: owner-only. Until 2026-09-24 the
+# join handler ran tincapp's makePublic() over it (0666, directories 0777).
+mode=$(adb shell "su 0 stat -c %a /data/data/$PKG/files/networks/$NETNAME/tinc.yaml" | tr -d '\r')
+case $mode in 600|400) echo "OK: tinc.yaml is mode $mode" ;; *) fail "tinc.yaml is mode $mode, readable beyond the app" ;; esac
+
+if [[ -n ${TRANSPORT:-} ]]; then
+    step "prefer the $TRANSPORT carrier (the app's libtinc.so, run as the app)"
+    # The extracted jniLibs: <dir of base.apk>/lib/<ABI dir> (x86_64 here).
+    apk=$(adb shell "pm path $PKG" | tr -d '\r' | sed -n 's/^package://p' | head -n1 || true)
+    libdir="${apk%/*}/lib/$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
+    [ -n "$apk" ] || fail "no APK path for $PKG"
+    adb shell "run-as $PKG $libdir/libtinc.so -c /data/data/$PKG/files/networks/$NETNAME/tinc.yaml -n $NETNAME set PreferredTransports $TRANSPORT" \
+        || fail "could not set PreferredTransports"
+    adb shell "run-as $PKG $libdir/libtincd.so --version" | tr -d '\r' | head -2 || true
+fi
+
 step "connect and ping the inviter through the tunnel"
 # the app's own intent API (intent/Actions.kt): CONNECT with a tinc:<net> URI
 adb shell am start -a "$PKG.intent.action.CONNECT" -d "tinc:$NETNAME" >/dev/null
@@ -135,9 +156,16 @@ until adb shell "ping -c1 -W2 $pool_a" >/dev/null 2>&1; do
 done
 adb shell "ping -c3 -W2 $pool_a"
 
+if [[ -n ${TRANSPORT:-} ]]; then
+    step "the inviter's link to the phone runs over $TRANSPORT"
+    conn=$(docker exec "$INVITER" tincstack-cli dump connections | tr -d '\r' | grep '^phone ' || true)
+    echo "$conn"
+    grep -q "transport $TRANSPORT" <<<"$conn" || fail "the phone's link is not on $TRANSPORT: $conn"
+fi
+
 step "and back: the inviter reaches the phone's pool address"
 phone_ip=$(grep -oE 'InterfaceAddress: [0-9.]+' <<<"$yaml" | head -1 | awk '{print $2}')
 docker exec "$INVITER" ping -c3 -W2 "$phone_ip"
 
 echo
-echo "PASS: joined on Android, schema-conformant config, tunnel carries traffic"
+echo "PASS: joined on Android, schema-conformant config, tunnel carries traffic${TRANSPORT:+ over $TRANSPORT}"

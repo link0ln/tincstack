@@ -129,6 +129,8 @@ void terminate_connection(connection_t *c, bool report) {
 	   BEFORE the edge is torn down below: the carrier fallback decision
 	   further down depends on it. */
 	bool activated = c->edge != NULL;
+	/* The carrier's name outlives c (a static transport_t); c does not. */
+	const char *carrier = c->transport ? c->transport->name : "plain";
 
 	if(c->node) {
 		if(c->node->connection == c) {
@@ -196,7 +198,12 @@ void terminate_connection(connection_t *c, bool report) {
 		   the walk starts again from the first preference, never from a
 		   fallback (review L-2). */
 		if(!activated) {
-			transport_next_candidate(outgoing);
+			if(outgoing->retry_requested) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "The dial was restarted by `tinc retry', not failed by the carrier: trying %s again",
+				       carrier);
+			} else {
+				transport_next_candidate(outgoing);
+			}
 		}
 
 		do_outgoing_connection(outgoing);
@@ -581,6 +588,7 @@ void retry(void) {
 	for list_each(connection_t, c, &connection_list) {
 		if(c->outgoing && !c->node) {
 			c->last_ping_time = 0;
+			c->outgoing->retry_requested = true;
 		}
 	}
 

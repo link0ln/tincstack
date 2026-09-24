@@ -342,13 +342,10 @@ jobs:
           rm -f keytool.log
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
-      # -PtincCrypto=nolegacy is not a preference, it is the only thing that
-      # builds: app/build.gradle defaults to openssl, and core/tincd/src/tls.c
-      # uses OpenSSL 3.0-only API (EVP_EC_gen, SSL_OP_NO_RENEGOTIATION) that
-      # the LibreSSL the Android cross-build ships does not have. See PLAN.md
-      # Known Issues. The released APK therefore speaks SPTPS/Ed25519 only and
-      # not the legacy RSA protocol; the release notes say so. Drop the flag
-      # once tls.c has a LibreSSL fallback and build-core.sh builds libssl.
+      # The gradle default crypto (openssl) since 2026-09-24: build-core.sh
+      # cross-builds OpenSSL 3.5 + ngtcp2 per ABI, so the APK has the https
+      # and quic carriers and the legacy protocol. Until then this passed
+      # -PtincCrypto=nolegacy, the only thing that built against LibreSSL.
       - name: Build the app in the repository's own build container
         env:
           APK_NAME: ${{ steps.apkver.outputs.name }}
@@ -362,7 +359,7 @@ jobs:
             -v /tmp/gradle:/root/.gradle \
             -w /src/platforms/android \
             -e ANDROID_HOME=/opt/android-sdk -e ANDROID_SDK_ROOT=/opt/android-sdk \
-            tincstack/android-build ./gradlew --no-daemon -PtincCrypto=nolegacy \
+            tincstack/android-build ./gradlew --no-daemon \
             ${APK_NAME:+-PtincVersionName="$APK_NAME"} \
             ${APK_CODE:+-PtincVersionCode="$APK_CODE"} \
             assembleRelease \
@@ -491,9 +488,8 @@ jobs:
           repository secrets (see \`platforms/android/readme.md\`) and cut a new
           tag to get an installable one.
 
-          It is built \`-PtincCrypto=nolegacy\`: SPTPS/Ed25519 only, **no legacy
-          RSA protocol**, so it cannot talk to a tinc 1.0-era peer. That is a
-          build constraint, not a choice — see Known Issues in \`PLAN.md\`.
+          Its core links OpenSSL 3.5 and ngtcp2: the \`https\` and \`quic\`
+          carriers and the legacy protocol, as on Linux and Windows.
           EOF
           mapfile -t built < <(find assets -type f)
           if [ ${#built[@]} -eq 0 ]; then

@@ -8,7 +8,8 @@
 #
 #   * assembleRelease -- the release variant had never been built by anyone
 #     before the first tag, and it died twice: once on the gradle default
-#     -PtincCrypto=openssl, which does not compile, and once in R8 on
+#     -PtincCrypto=openssl, which did not compile against LibreSSL (fixed
+#     2026-09-24: build-core.sh builds OpenSSL 3.5), and once in R8 on
 #     SnakeYAML's java.beans references.
 #   * testDebugUnitTest -- the Robolectric suite.
 #
@@ -67,9 +68,8 @@ jobs:
       - name: Build container
         run: docker build -t tincstack/android-build -f platforms/android/docker/Dockerfile.build platforms/android/docker
 
-      # -PtincCrypto=nolegacy for the same reason release.yml passes it: the
-      # gradle default (openssl) does not compile against the LibreSSL the
-      # Android cross-build ships. See PLAN.md Known Issues.
+      # The gradle default crypto (openssl): OpenSSL 3.5 + ngtcp2 per ABI,
+      # built by native/build-core.sh -- the https and quic carriers.
       - name: assembleRelease and unit tests
         run: |
           set -eo pipefail
@@ -80,7 +80,7 @@ jobs:
             -w /src/platforms/android \
             -e ANDROID_HOME=/opt/android-sdk -e ANDROID_SDK_ROOT=/opt/android-sdk \
             tincstack/android-build \
-            ./gradlew --no-daemon -PtincCrypto=nolegacy testDebugUnitTest assembleRelease \
+            ./gradlew --no-daemon testDebugUnitTest assembleRelease \
             2>&1 | tee gradle.log || {
               msg=$(tail -n 40 gradle.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
               echo "::error title=android build failed::$msg"

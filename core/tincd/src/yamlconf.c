@@ -597,14 +597,48 @@ static FILE *private_tmpfile(void) {
 }
 #endif
 
-FILE *yamlconf_content_fp(const char *content) {
-	FILE *f;
-#ifdef _WIN32
-	f = private_tmpfile();
-#else
-	/* tmpfile(): created 0600 and unlinked at once, so it has no name. */
-	f = tmpfile();
+#ifndef _WIN32
+/* tmpfile() uses $TMPDIR or a fixed directory (/tmp; bionic: /data/local/tmp,
+   which an Android app cannot write), so where there is none it fails and
+   every config read that goes through here fails with it -- reported as
+   "Could not open configuration file ...". The fallback is the directory
+   that already holds the config and its keys: mkstemp (0600), unlinked at
+   once, so it has no name either. */
+static FILE *private_tmpfile(void) {
+	FILE *f = tmpfile();
+
+	if(f || !yamlconf_path) {
+		return f;
+	}
+
+	const char *slash = strrchr(yamlconf_path, '/');
+	size_t dirlen = slash ? (size_t)(slash - yamlconf_path + 1) : 0;
+	char *path = malloc(dirlen + sizeof(".tyc-XXXXXX"));
+
+	if(!path) {
+		return NULL;
+	}
+
+	memcpy(path, yamlconf_path, dirlen);
+	memcpy(path + dirlen, ".tyc-XXXXXX", sizeof(".tyc-XXXXXX"));
+	int fd = mkstemp(path);
+
+	if(fd >= 0) {
+		unlink(path);
+		f = fdopen(fd, "w+");
+
+		if(!f) {
+			close(fd);
+		}
+	}
+
+	free(path);
+	return f;
+}
 #endif
+
+FILE *yamlconf_content_fp(const char *content) {
+	FILE *f = private_tmpfile();
 
 	if(f) {
 		fwrite(content, 1, strlen(content), f);

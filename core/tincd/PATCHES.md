@@ -646,6 +646,30 @@ as curl does, instead of `localhost`.
 
 Proof: `testing/transports/windows-wine-test.sh` (docs/transports.md §9.10).
 
+## 19. The TLS carriers on Android; `tinc retry` keeps the carrier (tincstack, 2026-09-24)
+
+`platforms/android/native/build-core.sh`, `net.c`, `net.h`, `net_socket.c`,
+`yamlconf.c`.
+
+The Android core links OpenSSL 3.5.7, zstd and ngtcp2 statically, as the
+Windows build does, instead of LibreSSL's libcrypto (which no longer compiled
+against `tls.c`), and gains `https` and `quic`. Found getting the app onto
+them, both on every platform:
+
+- `retry()` expired every connection still being set up, and the carrier
+  selector read that as a failed handshake: a `tinc retry` during a TLS or
+  QUIC handshake demoted the link to plain for the session. It now marks
+  them, and the re-dial uses the same carrier.
+- `yamlconf_content_fp()` used `tmpfile()` alone; where the fixed temporary
+  directory is not writable (an Android app: bionic's `/data/local/tmp`) every
+  config read failed as "Could not open configuration file". It falls back
+  to a `mkstemp` file (0600, unlinked at once) next to the config.
+
+Proof: `testing/transports/android-emulator-test.sh`,
+`testing/transports/retry-carrier-test.sh`,
+`platforms/android/docker/join-on-emulator.sh` with `TRANSPORT=https|quic`
+(docs/transports.md §2, §9.10).
+
 ---
 
 ## Building

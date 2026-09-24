@@ -24,17 +24,25 @@
 # script replaces app/CMakeLists.txt: it writes one meson cross file per ABI
 # and builds the core with the NDK's clang.
 #
-# Crypto: -Dcrypto=openssl against a static LibreSSL libcrypto (the same
-# library and version tincapp shipped), cross-built here with LibreSSL's own
-# autotools configure. Pass --crypto nolegacy to skip LibreSSL entirely
-# (SPTPS/Ed25519 only, no legacy RSA protocol; see docs).
+# Crypto: -Dcrypto=openssl -Dquic=enabled against OpenSSL 3.5 (libssl +
+# libcrypto), zstd and ngtcp2, all cross-built here from sha256-pinned
+# tarballs and linked statically -- the same versions and OpenSSL options as
+# the Linux image and the Windows build, so the https and quic carriers exist
+# on Android and its ClientHellos are theirs (docs/transports.md §9.10).
+# zstd (and the NDK's zlib) are there for OpenSSL's certificate compression
+# only: Debian's OpenSSL offers it, so without them the hello lacks one
+# extension. Until 2026-09-24 this was LibreSSL 3.7.3's libcrypto alone, which
+# no longer compiled against tls.c (EVP_EC_gen) and could not link libssl:
+# the APK had to be built --crypto nolegacy, without either TLS carrier.
+# --crypto nolegacy still skips all of it (SPTPS/Ed25519 only, no legacy RSA
+# protocol, no https/quic).
 #
 # Usage:
 #   build-core.sh --ndk <NDK dir> --out <dir> [--abis "arm64-v8a armeabi-v7a x86 x86_64"]
 #                 [--api 21] [--crypto openssl|nolegacy] [--jobs N] [--core <core/tincd dir>]
 #
 # Output: <out>/jniLibs/<abi>/libtincd.so and libtinc.so (stripped),
-#         <out>/build/<abi>/ (meson build dirs), <out>/deps/<abi>/ (LibreSSL).
+#         <out>/build/<abi>/ (meson build dirs), <out>/deps/<abi>/ (OpenSSL, zstd, ngtcp2).
 
 set -euo pipefail
 
@@ -48,13 +56,15 @@ CRYPTO=openssl
 JOBS="$(nproc 2>/dev/null || echo 4)"
 CORE="$(cd "$SCRIPT_DIR/../../../core/tincd" 2>/dev/null && pwd || true)"
 
-LIBRESSL_VERSION=3.7.3
-LIBRESSL_SHA256=7948c856a90c825bd7268b6f85674a8dcd254bae42e221781b24e3f8dc335db3
-LIBRESSL_URLS=(
-  "https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-${LIBRESSL_VERSION}.tar.gz"
-  "https://cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-${LIBRESSL_VERSION}.tar.gz"
-  "https://ftp.fr.openbsd.org/pub/OpenBSD/LibreSSL/libressl-${LIBRESSL_VERSION}.tar.gz"
-)
+OPENSSL_VERSION=3.5.7
+OPENSSL_SHA256=a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8
+OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+ZSTD_VERSION=1.5.7
+ZSTD_SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+ZSTD_URL="https://github.com/facebook/zstd/releases/download/v${ZSTD_VERSION}/zstd-${ZSTD_VERSION}.tar.gz"
+NGTCP2_VERSION=1.25.0
+NGTCP2_SHA256=2a34d2484ba17847a5d11965704e9dd0fac4c6d8efc75ffe1ec7de66d8c6b6fb
+NGTCP2_URL="https://github.com/ngtcp2/ngtcp2/releases/download/v${NGTCP2_VERSION}/ngtcp2-${NGTCP2_VERSION}.tar.xz"
 
 usage() { sed -n '/^# Usage:/,/^$/p' "$0"; exit 1; }
 
@@ -76,7 +86,7 @@ done
 [ -n "$OUT" ] || { echo "--out is required" >&2; exit 1; }
 [ -f "$CORE/meson.build" ] || { echo "core source not found at '$CORE' (use --core)" >&2; exit 1; }
 case "$CRYPTO" in openssl|nolegacy) ;; *) echo "--crypto must be openssl or nolegacy" >&2; exit 1 ;; esac
-for tool in meson ninja pkg-config make; do
+for tool in meson ninja pkg-config make perl curl; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
@@ -106,76 +116,114 @@ abi_cpu() {
   esac
 }
 
-fetch_libressl() {
-  local dl="$OUT/dl" tarball="$OUT/dl/libressl-${LIBRESSL_VERSION}.tar.gz"
-  mkdir -p "$dl"
-  if [ -f "$tarball" ] && echo "$LIBRESSL_SHA256  $tarball" | sha256sum -c --quiet 2>/dev/null; then
-    return
+# fetch <url> <sha256>: into $OUT/dl once, verified every time
+fetch() {
+  local url="$1" sum="$2" file="$OUT/dl/${1##*/}"
+  mkdir -p "$OUT/dl"
+  if [ -f "$file" ] && echo "$sum  $file" | sha256sum -c --quiet 2>/dev/null; then
+    echo "$file"; return
   fi
-  for url in "${LIBRESSL_URLS[@]}"; do
-    echo ">>> fetching $url"
-    if curl -fsSL --retry 3 -o "$tarball.part" "$url"; then
-      mv "$tarball.part" "$tarball"
-      if echo "$LIBRESSL_SHA256  $tarball" | sha256sum -c --quiet; then return; fi
-      echo "checksum mismatch for $url" >&2
-      rm -f "$tarball"
-    fi
-  done
-  echo "could not fetch LibreSSL ${LIBRESSL_VERSION}" >&2
-  exit 1
+  echo ">>> fetching $url" >&2
+  curl -fsSL --retry 3 -o "$file.part" "$url" || { echo "could not fetch $url" >&2; exit 1; }
+  mv "$file.part" "$file"
+  echo "$sum  $file" | sha256sum -c --quiet || { echo "checksum mismatch for $url" >&2; rm -f "$file"; exit 1; }
+  echo "$file"
 }
 
-# Build a static LibreSSL libcrypto for one ABI into $OUT/deps/<abi>
-build_libressl() {
-  local abi="$1" triple prefix src
+openssl_target() {
+  case "$1" in
+    arm64-v8a) echo android-arm64 ;; armeabi-v7a) echo android-arm ;;
+    x86) echo android-x86 ;; x86_64) echo android-x86_64 ;;
+  esac
+}
+
+# A static-only prefix: fold each .pc's private libs and requirements into the
+# public ones, so a plain `pkg-config --libs` (meson without -Dstatic, which
+# on Android would also make the executable static) links everything
+# libcrypto.a / libngtcp2_crypto_ossl.a need.
+flatten_pc() {
+  local pc
+  for pc in "$1"/lib/pkgconfig/*.pc; do
+    awk '
+      /^Libs.private:/     { lp = lp " " substr($0, 15); next }
+      /^Requires.private:/ { rp = rp " " substr($0, 18); next }
+      { line[++n] = $0 }
+      END {
+        for (i = 1; i <= n; i++) {
+          l = line[i]
+          if (l ~ /^Libs:/ && lp != "") l = l lp
+          if (l ~ /^Requires:/ && rp != "") { l = l (l ~ /: *$/ ? "" : ",") rp; rp = "" }
+          print l
+        }
+        if (rp != "") print "Requires:" rp
+      }' "$pc" > "$pc.tmp" && mv "$pc.tmp" "$pc"
+  done
+}
+
+# Build static zstd, OpenSSL (libssl + libcrypto) and ngtcp2 for one ABI into
+# $OUT/deps/<abi>.
+build_deps() {
+  local abi="$1" triple prefix src cc tarball
   triple="$(abi_triple "$abi")"
   prefix="$OUT/deps/$abi"
-  if [ -f "$prefix/lib/libcrypto.a" ] && [ -f "$prefix/lib/pkgconfig/openssl.pc" ]; then
-    echo ">>> [$abi] LibreSSL already built in $prefix"
+  cc="$BIN/${triple}${API}-clang"
+  if [ -f "$prefix/lib/libngtcp2_crypto_ossl.a" ] && [ -f "$prefix/lib/pkgconfig/openssl.pc" ] \
+     && grep -q "^Version: ${OPENSSL_VERSION}$" "$prefix/lib/pkgconfig/openssl.pc"; then
+    echo ">>> [$abi] OpenSSL ${OPENSSL_VERSION} + ngtcp2 already built in $prefix"
     return
   fi
-  fetch_libressl
-  src="$OUT/src/$abi/libressl-${LIBRESSL_VERSION}"
-  rm -rf "$src"; mkdir -p "$(dirname "$src")"
-  tar -xzf "$OUT/dl/libressl-${LIBRESSL_VERSION}.tar.gz" -C "$(dirname "$src")"
-  echo ">>> [$abi] configuring LibreSSL ${LIBRESSL_VERSION} for $triple$API"
+  rm -rf "$prefix"
+  src="$OUT/src/$abi"
+  rm -rf "$src"; mkdir -p "$src" "$prefix/lib" "$prefix/include"
+
+  echo ">>> [$abi] zstd ${ZSTD_VERSION}"
+  tarball="$(fetch "$ZSTD_URL" "$ZSTD_SHA256")"
+  tar -xzf "$tarball" -C "$src"
+  make -C "$src/zstd-${ZSTD_VERSION}/lib" -j"$JOBS" libzstd.a CC="$cc" AR="$BIN/llvm-ar" \
+      ZSTD_LEGACY_SUPPORT=0 CFLAGS="-O2 -fPIC -ffunction-sections -fdata-sections" > "$src/zstd.log" 2>&1 \
+    || { tail -30 "$src/zstd.log"; exit 1; }
+  install -m644 "$src/zstd-${ZSTD_VERSION}/lib/libzstd.a" "$prefix/lib/"
+  install -m644 "$src/zstd-${ZSTD_VERSION}/lib/"{zstd.h,zstd_errors.h,zdict.h} "$prefix/include/"
+
+  # OpenSSL options as in core/Dockerfile.build-win: no config file read at
+  # start, no provider/engine modules loaded at run time, library only.
+  # zlib is the NDK's (libz.so is a public NDK library).
+  echo ">>> [$abi] OpenSSL ${OPENSSL_VERSION} ($(openssl_target "$abi"), API $API)"
+  tarball="$(fetch "$OPENSSL_URL" "$OPENSSL_SHA256")"
+  tar -xzf "$tarball" -C "$src"
   (
-    cd "$src"
-    ./configure --host="$triple" --prefix="$prefix" \
-        --disable-shared --disable-tests --disable-asm \
-        CC="$BIN/${triple}${API}-clang" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" STRIP="$BIN/llvm-strip" \
-        CFLAGS="-O2 -ffunction-sections -fdata-sections" > configure.log 2>&1 \
+    cd "$src/openssl-${OPENSSL_VERSION}"
+    export ANDROID_NDK_ROOT="$NDK" PATH="$BIN:$PATH"
+    ./Configure "$(openssl_target "$abi")" -D__ANDROID_API__="$API" \
+        --prefix="$prefix" --libdir=lib --openssldir=/nonexistent/ssl \
+        no-shared no-module no-dso no-autoload-config no-tests no-docs no-apps \
+        enable-zlib enable-zstd \
+        --with-zstd-include="$prefix/include" --with-zstd-lib="$prefix/lib" \
+        -ffunction-sections -fdata-sections > configure.log 2>&1 \
       || { tail -30 configure.log; exit 1; }
-    make -j"$JOBS" -C crypto > build.log 2>&1 || { tail -30 build.log; exit 1; }
-    make -C crypto install > install.log 2>&1
-    make -C include install >> install.log 2>&1
+    make -j"$JOBS" build_libs > build.log 2>&1 || { tail -40 build.log; exit 1; }
+    make install_dev > install.log 2>&1 || { tail -20 install.log; exit 1; }
   )
-  # tinc's meson build asks pkg-config for `openssl`; libcrypto is all it links.
-  mkdir -p "$prefix/lib/pkgconfig"
-  cat > "$prefix/lib/pkgconfig/libcrypto.pc" <<EOF
-prefix=$prefix
-exec_prefix=\${prefix}
-libdir=\${exec_prefix}/lib
-includedir=\${prefix}/include
+  flatten_pc "$prefix"
 
-Name: LibreSSL-libcrypto
-Description: LibreSSL cryptography library (static, Android $abi)
-Version: ${LIBRESSL_VERSION}
-Libs: -L\${libdir} -lcrypto
-Cflags: -I\${includedir}
-EOF
-  cat > "$prefix/lib/pkgconfig/openssl.pc" <<EOF
-prefix=$prefix
-exec_prefix=\${prefix}
-libdir=\${exec_prefix}/lib
-includedir=\${prefix}/include
-
-Name: OpenSSL
-Description: LibreSSL libcrypto presented as OpenSSL (static, Android $abi)
-Version: ${LIBRESSL_VERSION}
-Requires: libcrypto
-EOF
+  echo ">>> [$abi] ngtcp2 ${NGTCP2_VERSION}"
+  tarball="$(fetch "$NGTCP2_URL" "$NGTCP2_SHA256")"
+  tar -xJf "$tarball" -C "$src"
+  (
+    cd "$src/ngtcp2-${NGTCP2_VERSION}"
+    export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" PKG_CONFIG_PATH=
+    ./configure --host="$triple" --prefix="$prefix" --libdir="$prefix/lib" \
+        --enable-lib-only --disable-shared --enable-static --with-openssl --without-gnutls \
+        CC="$cc" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" STRIP="$BIN/llvm-strip" \
+        CFLAGS="-O2 -fPIC -ffunction-sections -fdata-sections" \
+        OPENSSL_LIBS="$(pkg-config --libs openssl)" > configure.log 2>&1 \
+      || { tail -30 configure.log; exit 1; }
+    make -j"$JOBS" > build.log 2>&1 || { tail -40 build.log; exit 1; }
+    make install > install.log 2>&1 || { tail -20 install.log; exit 1; }
+  )
+  flatten_pc "$prefix"
   rm -rf "$src"
+  PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --modversion openssl libngtcp2 libngtcp2_crypto_ossl
 }
 
 write_cross_file() {
@@ -234,6 +282,7 @@ MESON_OPTS=(
   -Dbuildtype=release
   -Dprefix=/
   -Dcrypto="$CRYPTO"
+  -Dquic="$([ "$CRYPTO" = openssl ] && echo enabled || echo disabled)"
   -Dcurses=disabled
   -Dreadline=disabled
   -Dsystemd=disabled
@@ -257,7 +306,7 @@ echo "crypto: $CRYPTO"
 echo "out:    $OUT"
 
 for abi in $ABIS; do
-  if [ "$CRYPTO" = openssl ]; then build_libressl "$abi"; fi
+  if [ "$CRYPTO" = openssl ]; then build_deps "$abi"; fi
   build_core "$abi"
 done
 

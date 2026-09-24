@@ -24,7 +24,7 @@ import org.pacien.tincapp.R
 import org.pacien.tincapp.commands.TincApp
 import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.databinding.ConfigureToolsDialogNetworkGenerateBinding
-import org.pacien.tincapp.utils.makePublic
+import org.pacien.tincapp.utils.makePrivate
 
 /**
  * A new network is a `tinc.yaml` holding just the node name; the daemon
@@ -49,5 +49,5 @@ class GenerateConfigToolDialogFragment : ConfigurationToolDialogFragment() {
     R.string.configure_tools_generate_config_generating,
     validateNetName(netName)
       .thenCompose { TincApp.createNetwork(netName, nodeName) }
-      .thenApply { AppPaths.confDir(netName).makePublic() })
+      .thenApply { AppPaths.confDir(netName).makePrivate() })
 }

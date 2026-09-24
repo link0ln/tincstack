@@ -1,0 +1,92 @@
+
+== images
+
+== inviter: a Linux node at 10.44.77.10 (PUBLIC_ADDRESS so the invitation is dialable)
+2026-09-24 10:21:14 NOTICE  Materialised defaults into `/etc/tincstack/tinc.yaml' [tincstack]: Mode=router AddressPool=10.70.145.0/24 Subnet=10.70.145.1/32 Transports=plain, sf, obfs, https, quic tls_cert/tls_key TlsFingerprint ed25519_priv Ed25519PublicKey rsa_priv RSA-public 
+2026-09-24 10:21:14 INFO    AddressPool 10.70.145.0/24 (first host 10.70.145.1/32)
+2026-09-24 10:21:14 NOTICE  Listening on 0.0.0.0 port 655
+
+== emulator on wsa-lab
+
+== install the debug APK (clean: the app's data must start empty)
+Success
+
+== grant the VpnService consent non-interactively
+
+== invitation for the phone
+Assigned address 10.70.145.2/24 to phone.
+invitation: 10.44.77.10:655/SYH7QZvaaHeHFzPMAllG2CPMyh_fcbHN-8Xu0g9a0NUBaucz
+
+== join through the UI (the field the QR scanner fills)
+
+== the file the core wrote
+networks:
+  phonenet:
+    options:
+      Name: phone
+      ConnectTo: node_a
+      Mode: router
+      AddressPool: 10.70.145.0/24
+      InterfaceAddress: 10.70.145.2/24
+      Port: 0
+      UDPRebindOnWake: yes
+    hosts:
+      phone: |
+        Subnet = 10.70.145.2/32
+        Transports = plain, sf, obfs, https, quic
+        TlsFingerprint = e349d7f0c1fcfc7286c7c46df76b3757ab5da7211adb0301698ca0216213375b
+        Ed25519PublicKey = gQjXbTqkFUvLx0t15yPCrWAmDLtUwiTYTWMfDwMGIBH
+        <key redacted>
+      node_a: |
+        Address = 10.44.77.10
+        Subnet = 10.70.145.1/32
+        Transports = plain, sf, obfs, https, quic
+        TlsFingerprint = 4b45b7531c5a4af9a30f5d46f668869fe4d636ed5c2031941bf0ec3fe88c9f91
+        Ed25519PublicKey = Np7V7LGZe/svCnMuefcU+HDbA4g7GiZCbLIjtoonb/K
+        <key redacted>
+        HttpsPort = 443
+        QuicPort = 443
+        Port = 655
+    keys:
+      tls_cert: |
+        <key redacted>
+      tls_key: |
+        <key redacted>
+      ed25519_priv: |
+        <key redacted>
+      rsa_priv: |
+        <key redacted>
+OK: schema-conformant, pool address present
+OK: tinc.yaml is mode 600
+
+== prefer the https carrier (the app's libtinc.so, run as the app)
+tinc version 1.1pre18 (built Sep 24 2026 09:56:33, protocol 17.7)
+Features: openssl comp_zlib legacy_protocol
+
+== connect and ping the inviter through the tunnel
+tun0             UNKNOWN        10.70.145.2/24 fe80::a75f:e069:ab8e:c0eb/64 
+PING 10.70.145.1 (10.70.145.1) 56(84) bytes of data.
+64 bytes from 10.70.145.1: icmp_seq=1 ttl=64 time=0.745 ms
+64 bytes from 10.70.145.1: icmp_seq=2 ttl=64 time=3.70 ms
+64 bytes from 10.70.145.1: icmp_seq=3 ttl=64 time=0.619 ms
+
+--- 10.70.145.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2032ms
+rtt min/avg/max/mdev = 0.619/1.689/3.704/1.425 ms
+
+== the inviter's link to the phone runs over https
+phone at 10.44.77.2 port 48240 options 700000b socket 17 status 60100 transport https
+
+== and back: the inviter reaches the phone's pool address
+PING 10.70.145.2 (10.70.145.2) 56(84) bytes of data.
+64 bytes from 10.70.145.2: icmp_seq=1 ttl=64 time=11.4 ms
+64 bytes from 10.70.145.2: icmp_seq=2 ttl=64 time=209 ms
+64 bytes from 10.70.145.2: icmp_seq=3 ttl=64 time=0.562 ms
+
+--- 10.70.145.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 0.562/73.500/208.521/95.577 ms
+
+PASS: joined on Android, schema-conformant config, tunnel carries traffic over https
+
+== cleanup

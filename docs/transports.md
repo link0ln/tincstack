@@ -225,7 +225,15 @@ Proof: `testing/transports/same-nat-meta-test.sh` (and the same script with
    Only then is it given up (`Carrier https failed 3 times in a row for nodeb,
    no longer preferred`) and the walk moves on. A carrier that never worked
    is abandoned on its first failure, so a peer that cannot do it costs one
-   attempt, as before.
+   attempt, as before. A dial cut by `tinc retry` is not such a failure:
+   `retry()` expires every connection still being set up so it is re-dialled
+   at once, and since 2026-09-24 it marks them (`outgoing->retry_requested`),
+   so the re-dial uses the **same** carrier (`The dial was restarted by
+   \`tinc retry', not failed by the carrier: trying https again`). Before,
+   a retry during a TLS or QUIC handshake fell back to plain for the rest of
+   the session; the Android app runs `tinc retry` on every connectivity
+   change, the VPN coming up included, so its https link nearly always ended
+   on plain (`testing/transports/retry-carrier-test.sh`).
 4. When a connection **activates** (ACK received), the walk is reset to the
    top of the preference list and, if the activated connection is the one we
    dialled (not a link the peer opened towards us that inherited our
@@ -1674,9 +1682,31 @@ blocking -- the same check fails in 10 s on a build without the fix). Not
 proven: a real Windows kernel, and the Wintun data path (the lab runs
 `DeviceType = dummy`).
 
-**Android** (NDK, M8) still has **neither TLS carrier**: it links only
-LibreSSL's libcrypto. It must get the same OpenSSL 3.5, built the same way.
-ngtcp2's API is backend-independent; the backend code is
+**Android** (NDK, M8) has both carriers since 2026-09-24:
+`platforms/android/native/build-core.sh` cross-builds OpenSSL 3.5.7, zstd
+1.5.7 and ngtcp2 1.25.0 per ABI from the same sha256-pinned tarballs, with
+the same OpenSSL options (zlib is the NDK's), and links them statically;
+`libtincd.so` needs only `libc`, `libm` and `libz`. Until then it linked
+LibreSSL 3.7.3's libcrypto alone, which no longer compiled against `tls.c`,
+so every APK was built `--crypto nolegacy` without either carrier. Proof on
+the Android 14 emulator (`testing/transports/android-emulator-test.sh`): the
+NDK binaries dial a Linux founder over https and quic, and their ClientHellos
+equal the Linux dialler's (JA4_r, handshake length, QUIC transport
+parameters). Frame lengths differ there only because the emulator's
+user-mode NAT re-segments TCP. The app itself tunnels over both carriers:
+join through the UI, VpnService, ping both ways, the inviter's link on
+https / quic (`platforms/android/docker/join-on-emulator.sh` with
+`TRANSPORT=https|quic`, `testing/fingerprint/results/2026-09-24-android/`).
+Not proven: an ARM device, a mobile network.
+
+What "the same ClientHello as curl" covers: JA4_r (cipher and extension
+lists), TLS handshake length and the Initial's size. It does **not** cover
+the QUIC transport parameters inside the Initial: ours are ngtcp2's
+(`15,5,6,7,4,8,9,1,14,32,17`: with `max_datagram_frame_size`, which the
+datagram data path needs, and `version_information`), curl 8.14's on Debian
+13 are OpenSSL's own QUIC stack's (`12,15,1,3,14,4,5,6,7,8,9`), 10 bytes
+shorter. Anyone can decrypt an Initial, so this is visible (PLAN.md Known
+Issues). ngtcp2's API is backend-independent; the backend code is
 `transport_quic_tls.c` (~300 lines).
 
 ### 9.11 Known limits
