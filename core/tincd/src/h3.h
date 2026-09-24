@@ -14,8 +14,9 @@
     prober -- gets the decoy page as an ordinary HTTP/3 response.
 
     Only the static QPACK table is used, and SETTINGS announce a dynamic table
-    capacity of 0, so no peer may reference one. Received field sections are
-    not decoded: the carrier needs nothing from them.
+    capacity of 0, so no peer may reference one. The listener decodes a
+    request's pseudo-headers (h3_decode_request) to answer it as nginx would;
+    nothing else is decoded.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -78,6 +79,22 @@ uint8_t *h3_response_ok(size_t *outlen);
    Connection-specific headers are dropped, names lowercased. Newly allocated;
    NULL if `resp' is not a response. */
 uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen);
+
+/* What a web server answers a request by: its pseudo-header fields, decoded
+   from a HEADERS frame's field section (RFC 9204: static table references
+   and literals, Huffman-coded or not). NUL-terminated; a field that is
+   missing stays empty. */
+typedef struct h3_req_fields_t {
+	char method[32];
+	char path[8192];
+	char authority[256];
+} h3_req_fields_t;
+
+/* Decode the field section `fs' (a HEADERS frame's payload). Returns false if
+   it cannot be decoded: a reference to a dynamic table (we announce a
+   capacity of 0, so a peer may not make one), a malformed integer, string or
+   Huffman code, or a pseudo-header value longer than its buffer. */
+bool h3_decode_request(const uint8_t *fs, size_t len, h3_req_fields_t *out);
 
 /* Incremental frame parser for one stream. Frame headers may arrive split
    across packets; payloads are handed out in whatever pieces arrive. */

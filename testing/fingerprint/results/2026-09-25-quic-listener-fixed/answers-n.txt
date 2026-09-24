@@ -1,0 +1,5 @@
+GET /	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+GET /nope	404 146 B [server,date,content-type,content-length]
+HEAD /	200 0 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+POST /	405 150 B [server,date,content-type,content-length]
+DELETE /	405 150 B [server,date,content-type,content-length]

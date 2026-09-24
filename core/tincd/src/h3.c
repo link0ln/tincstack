@@ -16,6 +16,7 @@
 #include "system.h"
 
 #include "h3.h"
+#include "h3_huffman.h"
 #include "xalloc.h"
 
 /* QPACK static table entries this file refers to (RFC 9204 Appendix A). */
@@ -379,6 +380,225 @@ uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen) {
 	}
 
 	return headers_frame(&fs, blen ? &data : NULL, outlen);
+}
+
+/* ---- QPACK decoding (the listener's view of a request) ------------------------- */
+
+/* Prefixed integer (RFC 7541 5.1) with a `bits'-bit prefix at buf[*i].
+   Returns false if truncated or over 2^32. */
+static bool qd_int(const uint8_t *buf, size_t len, size_t *i, int bits, uint64_t *v) {
+	if(*i >= len) {
+		return false;
+	}
+
+	uint64_t max = ((uint64_t)1 << bits) - 1;
+	*v = buf[(*i)++] & max;
+
+	if(*v < max) {
+		return true;
+	}
+
+	for(int shift = 0; shift <= 28; shift += 7) {
+		if(*i >= len) {
+			return false;
+		}
+
+		uint8_t b = buf[(*i)++];
+		*v += (uint64_t)(b & 0x7f) << shift;
+
+		if(!(b & 0x80)) {
+			return *v <= UINT32_MAX;
+		}
+	}
+
+	return false;
+}
+
+/* Canonical-code tables for decoding (the HPACK code is canonical: codes of
+   one length are consecutive in symbol order). */
+static uint32_t huff_first[31];
+static uint16_t huff_count[31], huff_offset[31], huff_sorted[257];
+
+static void huff_init(void) {
+	static bool done;
+
+	if(done) {
+		return;
+	}
+
+	uint16_t n = 0;
+
+	for(int l = 1; l <= 30; l++) {
+		huff_offset[l] = n;
+		huff_first[l] = UINT32_MAX;
+
+		for(int sym = 0; sym < 257; sym++) {
+			if(huff_len[sym] == l) {
+				if(huff_first[l] == UINT32_MAX) {
+					huff_first[l] = huff_code[sym];
+				}
+
+				huff_sorted[n++] = (uint16_t)sym;
+				huff_count[l]++;
+			}
+		}
+	}
+
+	done = true;
+}
+
+/* Huffman-decode src[0..len) into out (cap bytes, NUL-terminated). */
+static bool huff_decode(const uint8_t *src, size_t len, char *out, size_t cap, size_t *outlen) {
+	huff_init();
+	uint32_t code = 0;
+	int bits = 0;
+	size_t o = 0;
+
+	for(size_t i = 0; i < len; i++) {
+		for(int b = 7; b >= 0; b--) {
+			code = code << 1 | ((src[i] >> b) & 1);
+			bits++;
+
+			if(huff_count[bits] && code >= huff_first[bits] && code - huff_first[bits] < huff_count[bits]) {
+				uint16_t sym = huff_sorted[huff_offset[bits] + (code - huff_first[bits])];
+
+				if(sym == 256 || o + 1 >= cap) {
+					return false;   /* EOS in a string, or too long */
+				}
+
+				out[o++] = (char)sym;
+				code = 0;
+				bits = 0;
+			} else if(bits == 30) {
+				return false;
+			}
+		}
+	}
+
+	/* Padding: fewer than 8 bits, all ones (a prefix of EOS). */
+	if(bits > 7 || code != ((uint32_t)1 << bits) - 1) {
+		return false;
+	}
+
+	out[o] = 0;
+	*outlen = o;
+	return true;
+}
+
+/* A string literal: H flag at bit `bits' of buf[*i], then a length with a
+   `bits'-bit prefix. Decoded into out (cap bytes, NUL-terminated). */
+static bool qd_string(const uint8_t *buf, size_t len, size_t *i, int bits, char *out, size_t cap) {
+	if(*i >= len) {
+		return false;
+	}
+
+	bool huff = buf[*i] & (1 << bits);
+	uint64_t slen;
+
+	if(!qd_int(buf, len, i, bits, &slen) || slen > len - *i) {
+		return false;
+	}
+
+	const uint8_t *str = buf + *i;
+	*i += slen;
+
+	if(huff) {
+		size_t olen;
+		return huff_decode(str, slen, out, cap, &olen);
+	}
+
+	if(slen >= cap) {
+		return false;
+	}
+
+	memcpy(out, str, slen);
+	out[slen] = 0;
+	return true;
+}
+
+/* Where a field goes: its buffer in `out', by static-table name index or by
+   literal name; NULL for a field the decoy does not need. */
+static char *qd_target(h3_req_fields_t *out, int idx, const char *name, size_t *cap) {
+	if(idx == 0 || (name && !strcmp(name, ":authority"))) {
+		*cap = sizeof(out->authority);
+		return out->authority;
+	}
+
+	if(idx == 1 || (name && !strcmp(name, ":path"))) {
+		*cap = sizeof(out->path);
+		return out->path;
+	}
+
+	if((idx >= 15 && idx <= 21) || (name && !strcmp(name, ":method"))) {
+		*cap = sizeof(out->method);
+		return out->method;
+	}
+
+	return NULL;
+}
+
+bool h3_decode_request(const uint8_t *fs, size_t len, h3_req_fields_t *out) {
+	/* Static table entries a request's pseudo-headers can be indexed by
+	   (RFC 9204 Appendix A). */
+	static const char *const methods[] = {"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"};
+	size_t i = 0;
+	uint64_t v;
+
+	memset(out, 0, sizeof(*out));
+
+	/* Required Insert Count must be 0: no dynamic table exists. Delta Base
+	   is then meaningless, but must parse. */
+	if(!qd_int(fs, len, &i, 8, &v) || v || !qd_int(fs, len, &i, 7, &v)) {
+		return false;
+	}
+
+	char scratch[8192];
+
+	while(i < len) {
+		uint8_t b = fs[i];
+		size_t cap = 0;
+		char *dst;
+
+		if(b & 0x80) {                          /* 1Txxxxxx: indexed field line */
+			if(!(b & 0x40) || !qd_int(fs, len, &i, 6, &v)) {
+				return false;                   /* dynamic reference */
+			}
+
+			if(v == 0) {
+				out->authority[0] = 0;
+			} else if(v == 1) {
+				strcpy(out->path, "/");
+			} else if(v >= 15 && v <= 21) {
+				strcpy(out->method, methods[v - 15]);
+			}
+		} else if(b & 0x40) {                   /* 01NTxxxx: literal, name reference */
+			if(!(b & 0x10) || !qd_int(fs, len, &i, 4, &v)) {
+				return false;
+			}
+
+			dst = qd_target(out, (int)v, NULL, &cap);
+
+			if(!qd_string(fs, len, &i, 7, dst ? dst : scratch, dst ? cap : sizeof(scratch))) {
+				return false;
+			}
+		} else if(b & 0x20) {                   /* 001NHxxx: literal, literal name */
+			char name[128];
+
+			if(!qd_string(fs, len, &i, 3, name, sizeof(name))) {
+				return false;
+			}
+
+			dst = qd_target(out, -1, name, &cap);
+
+			if(!qd_string(fs, len, &i, 7, dst ? dst : scratch, dst ? cap : sizeof(scratch))) {
+				return false;
+			}
+		} else {
+			return false;                           /* post-base forms: dynamic */
+		}
+	}
+
+	return true;
 }
 
 /* ---- frame parser ------------------------------------------------------------------ */

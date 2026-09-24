@@ -1,0 +1,12 @@
+vn-1200	version negotiation 27 B, ids echoed, versions 00000001
+vn-1200-ids20	version negotiation 51 B, ids echoed, versions 00000001
+vn-1199	version negotiation 27 B, ids echoed, versions 00000001
+vn-draft29	version negotiation 27 B, ids echoed, versions 00000001
+vn-v2	version negotiation 27 B, ids echoed, versions 00000001
+v1-initial-junk-1200	silence
+v1-initial-junk-600	silence
+short-unknown-1200	short header (stateless reset?), >= 43 B
+short-unknown-100	short header (stateless reset?), >= 43 B
+short-unknown-40	short header (stateless reset?), < 43 B
+zeros-1200	silence
+http-get	short header (stateless reset?), < 43 B

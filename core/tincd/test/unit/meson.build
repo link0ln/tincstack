@@ -69,6 +69,15 @@ tests = {
   },
 }
 
+# The HTTP/3 layer exists only in a quic build.
+if 'h3.c' in src_tincd
+  tests += {
+    'h3': {
+      'code': 'test_h3.c',
+    },
+  }
+endif
+
 env = ['CMOCKA_MESSAGE_OUTPUT=TAP']
 
 foreach test, data : tests

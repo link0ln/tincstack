@@ -120,6 +120,10 @@ typedef struct quic_session_t {
 	struct {
 		int64_t id;
 		h3_parser_t rx;
+		uint8_t *hdr;           /* the request's HEADERS payload, until decoded */
+		size_t hdr_len;
+		h3_req_fields_t *fields;        /* decoded; NULL if not (yet) */
+		bool hdr_seen, hdr_bad;
 		uint8_t *resp;          /* HEADERS + DATA; kept until the session ends */
 		size_t resp_len, resp_sent;
 		bool responded, blocked, done;
@@ -454,14 +458,50 @@ static int req_slot(quic_session_t *s, int64_t id) {
 /* Server: answer a request stream with the decoy page, the way an HTTP/3
    web server answers a browser. The connection stays up; an unauthenticated
    one is ended later by tinc's authentication timeout. */
+static bool field_ok(const char *v, bool token) {
+	if(!*v) {
+		return false;
+	}
+
+	for(; *v; v++) {
+		unsigned char c = (unsigned char) * v;
+
+		if(token ? !(c >= 'A' && c <= 'Z') : (c <= 0x20 || c >= 0x7f)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/* The request as the decoy's HTTP/1.1 parser takes it: the stream's real
+   method, path and authority, so a path that does not exist gets 404, a
+   method other than GET or HEAD 405, and HEAD no body -- nginx's answers.
+   A request whose fields were not decoded, or that no HTTP/1.1 parser would
+   accept, becomes a request line it rejects: 400. */
+static char *req_as_http1(const h3_req_fields_t *f) {
+	char *r = NULL;
+
+	if(f && field_ok(f->method, true) && field_ok(f->path, false) &&
+	                (!*f->authority || field_ok(f->authority, false))) {
+		xasprintf(&r, "%s %s HTTP/1.1\r\nHost: %s\r\n\r\n", f->method, f->path,
+		          *f->authority ? f->authority : "localhost");
+	} else {
+		r = xstrdup("\r\n\r\n");
+	}
+
+	return r;
+}
+
 static void req_respond_decoy(quic_session_t *s, int i) {
 	if(s->req[i].responded) {
 		return;
 	}
 
-	static const char request[] = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+	char *request = req_as_http1(s->req[i].fields);
 	size_t rl;
-	char *r = decoy_respond_static(request, sizeof(request) - 1, &rl);
+	char *r = decoy_respond_static(request, strlen(request), &rl);
+	free(request);
 	s->req[i].resp = h3_from_http1(r, rl, &s->req[i].resp_len);
 	free(r);
 	s->req[i].responded = true;
@@ -537,6 +577,54 @@ static size_t server_auth(quic_session_t *s, const uint8_t *p, size_t remain, in
 	return used;
 }
 
+/* Server: a piece of a request stream's first HEADERS frame. Once it is
+   whole, the request is decoded, and anything but a POST -- the only method
+   a tinc dialler uses -- is answered at once, as nginx answers it without
+   waiting for a body. A POST waits for its authenticator; if it fails, the
+   answer is nginx's to a POST of a static file: 405. */
+#define QUIC_REQ_HDR_CAP 16384
+
+static void server_headers(quic_session_t *s, int i, const uint8_t *payload, size_t len) {
+	bool end = len == s->req[i].rx.remain;
+
+	if(s->req[i].hdr_seen || s->req[i].responded) {
+		return;         /* trailers, or a request already answered */
+	}
+
+	if(!s->req[i].hdr_bad) {
+		if(s->req[i].hdr_len + len > QUIC_REQ_HDR_CAP) {
+			s->req[i].hdr_bad = true;
+		} else if(len) {
+			s->req[i].hdr = xrealloc(s->req[i].hdr, s->req[i].hdr_len + len);
+			memcpy(s->req[i].hdr + s->req[i].hdr_len, payload, len);
+			s->req[i].hdr_len += len;
+		}
+	}
+
+	if(!end) {
+		return;
+	}
+
+	s->req[i].hdr_seen = true;
+	h3_req_fields_t *f = xzalloc(sizeof(*f));
+
+	if(!s->req[i].hdr_bad && h3_decode_request(s->req[i].hdr, s->req[i].hdr_len, f)) {
+		s->req[i].fields = f;
+	} else {
+		free(f);
+	}
+
+	free(s->req[i].hdr);
+	s->req[i].hdr = NULL;
+	s->req[i].hdr_len = 0;
+
+	/* Undecoded: answered (400) when the body or FIN comes, as before --
+	   never early, so a dialler's POST is never answered by mistake. */
+	if(s->req[i].fields && strcmp(s->req[i].fields->method, "POST")) {
+		req_respond_decoy(s, i);
+	}
+}
+
 static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size_t len) {
 	rx_ctx_t *x = data;
 	quic_session_t *s = x->s;
@@ -545,8 +633,13 @@ static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size
 		return false;
 	}
 
+	if(type == H3_FRAME_HEADERS && x->id != s->stream_id) {
+		server_headers(s, x->slot, payload, len);
+		return true;
+	}
+
 	if(type != H3_FRAME_DATA || !len) {
-		return true;    /* HEADERS, SETTINGS-like or reserved frames: nothing we need */
+		return true;    /* SETTINGS-like or reserved frames: nothing we need */
 	}
 
 	if(x->id == s->stream_id) {
@@ -1231,6 +1324,8 @@ static void free_session(quic_session_t *s) {
 
 	for(int i = 0; i < s->nreq; i++) {
 		free(s->req[i].resp);
+		free(s->req[i].hdr);
+		free(s->req[i].fields);
 	}
 
 	free(s->authority);
@@ -1795,9 +1890,101 @@ bool quic_local_address(connection_t *c, sockaddr_t *sa) {
 
 /* ---- init / exit --------------------------------------------------------- */
 
-/* A QuicPort listener: QUIC only. Anything quic_udp_try() does not claim is
-   dropped, as a QUIC server drops what it cannot parse -- the tinc port's
-   SPTPS and obfs handling never answer on the front port. */
+/* Front socket: Version Negotiation for a long header of any version but 1,
+   as nginx sends it (measured, nginx 1.26.3 / Debian 13): no minimum
+   datagram size, connection ids up to 20 bytes echoed swapped, version 1
+   the only one listed. Version 0 (itself a VN) is never answered. Returns
+   true if the datagram was such a packet. */
+static bool front_version_negotiation(int fd, const uint8_t *buf, size_t len, const sockaddr_t *addr, socklen_t addrlen) {
+	if(len < 7 || !(buf[0] & 0x80)) {
+		return false;
+	}
+
+	uint32_t version = (uint32_t)buf[1] << 24 | (uint32_t)buf[2] << 16 | (uint32_t)buf[3] << 8 | buf[4];
+
+	if(version == 1) {
+		return false;
+	}
+
+	size_t dcidlen = buf[5];
+
+	if(version == 0 || dcidlen > 20 || len < 7 + dcidlen) {
+		return true;
+	}
+
+	size_t scidlen = buf[6 + dcidlen];
+
+	if(scidlen > 20 || len < 7 + dcidlen + scidlen) {
+		return true;
+	}
+
+	const uint8_t *dcid = buf + 6;
+	const uint8_t *scid = buf + 7 + dcidlen;
+	uint8_t vn[7 + 20 + 20 + 4];
+	size_t n = 0;
+	vn[n++] = 0xc0;                 /* nginx's; the unused bits are not randomised */
+	memset(vn + n, 0, 4);
+	n += 4;
+	vn[n++] = (uint8_t)scidlen;
+	memcpy(vn + n, scid, scidlen);
+	n += scidlen;
+	vn[n++] = (uint8_t)dcidlen;
+	memcpy(vn + n, dcid, dcidlen);
+	n += dcidlen;
+	memcpy(vn + n, "\x00\x00\x00\x01", 4);
+	n += 4;
+
+	if(sendto(fd, (const void *)vn, n, 0, &addr->sa, addrlen) < 0) {
+		logger(DEBUG_TRAFFIC, LOG_DEBUG, "quic: sending version negotiation failed: %s", sockstrerror(sockerrno));
+	}
+
+	return true;
+}
+
+/* Front socket: a stateless reset for a short-header packet no session
+   claimed, as nginx sends it (measured): only with the fixed bit set, not to
+   a datagram of 21 bytes or less, one byte shorter than the trigger up to
+   43 bytes, a random length in [43, min(3 * len, 1200)) above that. The
+   token is the one a session with that connection id announces. */
+static void front_stateless_reset(int fd, const uint8_t *buf, size_t len, const sockaddr_t *addr, socklen_t addrlen) {
+	if((buf[0] & 0xc0) != 0x40 || len <= 21) {
+		return;
+	}
+
+	uint8_t out[1200];
+	size_t n;
+
+	if(len <= 43) {
+		n = len - 1;
+	} else {
+		size_t max = 3 * len < sizeof(out) ? 3 * len : sizeof(out);
+		uint32_t r;
+		quic_tls_random((uint8_t *)&r, sizeof(r));
+		n = 43 + r % (max - 43);
+	}
+
+	ngtcp2_cid cid;
+	ngtcp2_cid_init(&cid, buf + 1, TRANSPORT_QUIC_CIDLEN);
+
+	if(!quic_tls_random(out, n - NGTCP2_STATELESS_RESET_TOKENLEN) ||
+	                ngtcp2_crypto_generate_stateless_reset_token(out + n - NGTCP2_STATELESS_RESET_TOKENLEN,
+	                                static_secret, sizeof(static_secret), &cid)) {
+		return;
+	}
+
+	out[0] = (out[0] & 0x3f) | 0x40;
+
+	if(sendto(fd, (const void *)out, n, 0, &addr->sa, addrlen) < 0) {
+		logger(DEBUG_TRAFFIC, LOG_DEBUG, "quic: sending a stateless reset failed: %s", sockstrerror(sockerrno));
+	}
+}
+
+/* A QuicPort listener: QUIC only, answered as nginx answers it. A version
+   it does not speak gets Version Negotiation; a short-header packet for no
+   connection gets a stateless reset; anything else quic_udp_try() does not
+   claim is dropped. The tinc port's SPTPS and obfs handling never answer on
+   the front port -- and these answers are sent from the front port only,
+   since on the tinc port unclaimed packets are SPTPS's and obfs's. */
 static void quic_listen_read(void *data, int flags) {
 	(void)flags;
 	listen_socket_t *ls = data;
@@ -1814,7 +2001,13 @@ static void quic_listen_read(void *data, int flags) {
 		return;
 	}
 
-	quic_udp_try(ls, buf, (size_t)len, &addr);
+	if(!quic_ready || front_version_negotiation(ls->udp.fd, buf, (size_t)len, &addr, addrlen)) {
+		return;
+	}
+
+	if(!quic_udp_try(ls, buf, (size_t)len, &addr)) {
+		front_stateless_reset(ls->udp.fd, buf, (size_t)len, &addr, addrlen);
+	}
 }
 
 bool quic_init(void) {

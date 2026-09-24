@@ -713,6 +713,30 @@ second-flight check decrypts the Initials with
 across the connection-ID move), `quic-carrier-test.sh` (b) with a second
 NAT rebind, `mixed-version-test.sh` (docs/transports.md §9.4, §9.8, §9.9).
 
+## 21. The quic listener answers probes and requests as nginx does (tincstack, 2026-09-25)
+
+`transport_quic.c`, `h3.c`, `h3.h`, `h3_huffman.h` (new, generated),
+`test/unit/test_h3.c` (new).
+
+Measured next to Debian 13's nginx 1.26.3 (`quic-listener-wire-test.sh`),
+the listener was silent where nginx answers and answered 200 where nginx
+does not. The QuicPort socket now sends Version Negotiation for any version
+but 1 and a stateless reset for a short-header datagram no session claims,
+with nginx's size thresholds and formats; tinc's own port does neither,
+since unclaimed datagrams there are SPTPS's and obfs's. The HTTP/3 decoy
+decodes the request's QPACK field section (`h3_decode_request`: static
+table, literals, RFC 7541 Huffman; a dynamic-table reference fails, as our
+SETTINGS forbid one) and passes the real method, path and authority to the
+TCP decoy's responder, so 404, 405 and a body-less `HEAD` come out as
+nginx's. Anything but a POST is answered when its HEADERS frame is whole; a
+POST -- the tinc session's method -- still waits for its authenticator, and
+an undecodable field section is never answered early, so a dialler's
+request cannot be answered by mistake.
+
+Proof: `quic-listener-wire-test.sh` (probes and HTTP/3 answers now equal
+nginx's; the previous core fails both), `test_h3.c` (RFC 7541 vectors,
+malformed input, the dialler's own request).
+
 ---
 
 ## Building

@@ -1659,14 +1659,28 @@ What an observer can still tell (testing/fingerprint, re-measured
   Debian 13's nginx 1.26.3 on OpenSSL 3.5.7 -- the same TLS stack, so both
   answer curl's `X25519MLKEM768`; `nginx:1.27`, OpenSSL 3.0, does not and
   is the wrong reference for this):
-  - one datagram suffices: nginx answers an unknown QUIC version with
-    Version Negotiation and a short-header datagram for an unknown
-    connection with a stateless reset (even a 27-byte `GET /` line); the
-    listener answers neither;
-  - its HTTP/3 decoy returns 200 and the page for any path and method,
-    and a body to `HEAD` (curl: `ERR_MALFORMED_HTTP_MESSAGING`); nginx 404,
-    405, and no body. The TCP decoy gets these right; the HTTP/3 one does
-    not use it;
+  - one datagram: nginx answers an unknown QUIC version with Version
+    Negotiation and a short-header datagram for an unknown connection with
+    a stateless reset (even a 27-byte `GET /` line). Since 2026-09-25 the
+    front socket does the same, to nginx's measured thresholds (VN: no
+    minimum size, ids up to 20 bytes echoed, 00000001 only, never to
+    version 0; reset: fixed bit set, more than 21 bytes, one byte shorter
+    up to 43, else a random length in [43, min(3 x len, 1200)), no rate
+    limit). The token is the one the connection id's session would have
+    announced, so a peer of a session this process already closed learns
+    it at once; after a restart the secret is new and the reset is
+    ignored, as before. Only on the QuicPort socket: on tinc's port an
+    unclaimed datagram belongs to SPTPS and obfs;
+  - the HTTP/3 decoy answered 200 and the page for any path and method,
+    and a body to `HEAD`. Since 2026-09-25 the listener decodes the
+    request's QPACK field section (static table and literals, Huffman
+    included; a dynamic-table reference cannot be valid, SETTINGS announce
+    capacity 0) and hands method, path and authority to the TCP decoy's
+    responder: 404, 405, `HEAD` without a body, as nginx. A request that is
+    not a POST is answered as soon as its HEADERS frame is whole; a POST
+    waits for its body, and one whose authenticator fails gets 405. Left:
+    nginx answers a POST's 405 right after the HEADERS, ours after the
+    body -- a timing difference, see PLAN.md;
   - in the clear: 8-byte connection ids (nginx 20), 4-byte long-header
     Length fields (nginx minimal), and a handshake flight whose third
     datagram carries the whole server flight in one unpadded CRYPTO frame
