@@ -86,7 +86,10 @@ done
 [ -n "$OUT" ] || { echo "--out is required" >&2; exit 1; }
 [ -f "$CORE/meson.build" ] || { echo "core source not found at '$CORE' (use --core)" >&2; exit 1; }
 case "$CRYPTO" in openssl|nolegacy) ;; *) echo "--crypto must be openssl or nolegacy" >&2; exit 1 ;; esac
-for tool in meson ninja pkg-config make perl curl; do
+NGTCP2_PATCH="$CORE/../ngtcp2/tincstack-wire.patch"
+[ -f "$NGTCP2_PATCH" ] || { echo "missing $NGTCP2_PATCH" >&2; exit 1; }
+NGTCP2_PATCH_SHA="$(sha256sum "$NGTCP2_PATCH" | cut -d' ' -f1)"
+for tool in meson ninja pkg-config make perl curl patch sha256sum; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
@@ -168,7 +171,8 @@ build_deps() {
   prefix="$OUT/deps/$abi"
   cc="$BIN/${triple}${API}-clang"
   if [ -f "$prefix/lib/libngtcp2_crypto_ossl.a" ] && [ -f "$prefix/lib/pkgconfig/openssl.pc" ] \
-     && grep -q "^Version: ${OPENSSL_VERSION}$" "$prefix/lib/pkgconfig/openssl.pc"; then
+     && grep -q "^Version: ${OPENSSL_VERSION}$" "$prefix/lib/pkgconfig/openssl.pc" \
+     && [ "$(cat "$prefix/ngtcp2-patch.sha256" 2>/dev/null)" = "$NGTCP2_PATCH_SHA" ]; then
     echo ">>> [$abi] OpenSSL ${OPENSSL_VERSION} + ngtcp2 already built in $prefix"
     return
   fi
@@ -206,11 +210,14 @@ build_deps() {
   )
   flatten_pc "$prefix"
 
-  echo ">>> [$abi] ngtcp2 ${NGTCP2_VERSION}"
+  echo ">>> [$abi] ngtcp2 ${NGTCP2_VERSION} + tincstack-wire.patch"
   tarball="$(fetch "$NGTCP2_URL" "$NGTCP2_SHA256")"
   tar -xJf "$tarball" -C "$src"
   (
     cd "$src/ngtcp2-${NGTCP2_VERSION}"
+    # The dialler's Initial as curl's OpenSSL QUIC client writes it
+    # (docs/transports.md §9.8); tincd refuses to build without it.
+    patch -p1 < "$NGTCP2_PATCH" > patch.log 2>&1 || { cat patch.log; exit 1; }
     export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" PKG_CONFIG_PATH=
     ./configure --host="$triple" --prefix="$prefix" --libdir="$prefix/lib" \
         --enable-lib-only --disable-shared --enable-static --with-openssl --without-gnutls \
@@ -222,6 +229,7 @@ build_deps() {
     make install > install.log 2>&1 || { tail -20 install.log; exit 1; }
   )
   flatten_pc "$prefix"
+  echo "$NGTCP2_PATCH_SHA" > "$prefix/ngtcp2-patch.sha256"
   rm -rf "$src"
   PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --modversion openssl libngtcp2 libngtcp2_crypto_ossl
 }

@@ -1,0 +1,8 @@
+# testing/transports/quic-wire-test.sh on the previous core (tincstack/core:pre-tp), 2026-09-24
+19:56:49 PASS the leaf is on quic
+19:56:52 FAIL transport parameters differ from curl's
+19:56:53 FAIL the ClientHello differs: ours 'q13i0311h3_1301,1302,1303_000a,000b,000d,0016,0017,001b,002b,002d,0033,0039_0905,0906,0904,0403,0503,0603,0807,0808,081a,081b,081c,0809,080a,080b,0804,0805,0806,0401,0501,0601	1487', curl 'q13i0311h3_1301,1302,1303_000a,000b,000d,0016,0017,001b,002b,002d,0033,0039_0905,0906,0904,0403,0503,0603,0807,0808,081a,081b,081c,0809,080a,080b,0804,0805,0806,0401,0501,0601	1477'
+19:56:54 FAIL the first flight differs (udp length, pn length, Length, frames, crypto offset, crypto length, padding)
+19:56:56      the Initial before the client's Finished has Length 22 here, 1051 from curl (known difference, not required)
+19:57:05 PASS the tunnel carries 56- and 1400-byte pings both ways, datagrams confirmed; PMTU: 1366
+19:57:05 quic wire: FAILURES above

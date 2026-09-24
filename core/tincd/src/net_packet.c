@@ -1067,8 +1067,10 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	   treated exactly like EMSGSIZE so tinc's MTU discovery converges. With
 	   plain/sf/obfs the hook is NULL and this is byte-identical to before. */
 	if(relay->connection && relay->connection->transport && relay->connection->transport->send_datagram) {
-		if(!relay->connection->transport->send_datagram(relay->connection, buf, (size_t)(buf_ptr - buf))) {
-			reduce_mtu(relay, (int)origlen - 1);
+		size_t excess = 0;
+
+		if(!relay->connection->transport->send_datagram(relay->connection, buf, (size_t)(buf_ptr - buf), &excess)) {
+			reduce_mtu(relay, (int)origlen - (int)(excess ? excess : 1));
 		}
 
 		return true;

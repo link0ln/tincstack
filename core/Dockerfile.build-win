@@ -69,10 +69,12 @@ RUN curl -fsSL -o openssl.tar.gz \
     && make -j"$(nproc)" build_libs \
     && make install_dev \
     && cd /deps && rm -rf openssl*
+COPY ngtcp2/tincstack-wire.patch /deps/
 RUN curl -fsSL -o ngtcp2.tar.xz \
         "https://github.com/ngtcp2/ngtcp2/releases/download/v${NGTCP2_VERSION}/ngtcp2-${NGTCP2_VERSION}.tar.xz" \
     && echo "${NGTCP2_SHA256}  ngtcp2.tar.xz" | sha256sum -c - \
     && tar xJf ngtcp2.tar.xz && cd "ngtcp2-${NGTCP2_VERSION}" \
+    && patch -p1 < /deps/tincstack-wire.patch \
     && export PKG_CONFIG_LIBDIR="${MINGW}/lib/pkgconfig" \
     && ./configure --host=x86_64-w64-mingw32 --prefix="${MINGW}" \
         --enable-lib-only --disable-shared --enable-static --with-openssl --without-gnutls \

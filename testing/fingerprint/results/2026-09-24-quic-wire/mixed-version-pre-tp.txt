@@ -1,0 +1,6 @@
+19:36:50 PASS quic: founder tincstack/core:pre-tp, leaf tincstack/core:dev: an older listener cannot send datagrams to a current dialler; it gave quic up once and is on 'plain', tunnel carries traffic
+19:36:52 PASS quic: founder tincstack/core:dev, leaf tincstack/core:pre-tp
+19:36:55 PASS quic: founder tincstack/core:dev, leaf tincstack/core:dev
+19:36:58 PASS https: founder tincstack/core:pre-tp, leaf tincstack/core:dev
+19:37:01 PASS https: founder tincstack/core:dev, leaf tincstack/core:pre-tp
+19:37:03 PASS https: founder tincstack/core:dev, leaf tincstack/core:dev

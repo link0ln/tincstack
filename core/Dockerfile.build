@@ -30,11 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
+# tincstack-wire.patch: the dialler's Initial as curl's OpenSSL QUIC client
+# writes it (docs/transports.md §9.8); tincd refuses to build without it.
+COPY ngtcp2/tincstack-wire.patch /build/
 RUN curl -fsSL -o ngtcp2.tar.xz \
         "https://github.com/ngtcp2/ngtcp2/releases/download/v${NGTCP2_VERSION}/ngtcp2-${NGTCP2_VERSION}.tar.xz" \
     && echo "${NGTCP2_SHA256}  ngtcp2.tar.xz" | sha256sum -c - \
     && tar xJf ngtcp2.tar.xz \
     && cd "ngtcp2-${NGTCP2_VERSION}" \
+    && patch -p1 < /build/tincstack-wire.patch \
     && ./configure --prefix=/usr/local --with-openssl --without-gnutls --enable-lib-only \
     && make -j"$(nproc)" \
     && make DESTDIR=/install install \

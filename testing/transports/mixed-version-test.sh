@@ -9,6 +9,14 @@
 # bound to the RFC 5705 exporter, and that only interoperates if both TLS
 # stacks compute the same TLS 1.3 exporter value.
 #
+# Since 2026-09-24 the quic dialler announces curl's transport parameters, which
+# carry no max_datagram_frame_size: an older listener cannot send it datagrams.
+# A current dialler sees that (no marker frame after the listener's answer) and
+# gives quic up before the link is activated. So with an OLD_IMAGE from before
+# then, "old founder, new leaf" over quic must fall back cleanly instead: the
+# leaf says why, ends up on another carrier that carries traffic, and does not
+# keep re-dialling quic.
+#
 # Usage: OLD_IMAGE=tincstack/core:<tag> [CORE_IMAGE=...] testing/transports/mixed-version-test.sh
 #   OLD_IMAGE: a core image built from an earlier commit (e.g. `git archive
 #   <commit> core | tar x -C /tmp/old && docker build -f /tmp/old/core/Dockerfile.build /tmp/old/core').
@@ -36,8 +44,8 @@ node() { # <name> <ip> <image>
 		"$3" sh -c 'mkdir -p /c; exec sleep infinity' >/dev/null
 }
 
-pair() { # <founder image> <leaf image> <transport>
-	local fi=$1 li=$2 tr=$3 inv
+pair() { # <founder image> <leaf image> <transport> [fallback]
+	local fi=$1 li=$2 tr=$3 expect=${4:-carrier} inv
 	cleanup
 	docker network create --internal --subnet "$SUBNET.0/24" "$NET" >/dev/null
 	node f "$SUBNET.10" "$fi"
@@ -50,6 +58,10 @@ pair() { # <founder image> <leaf image> <transport>
 	t l join "$inv" >/dev/null 2>&1
 	t l set PreferredTransports "$tr"
 	docker exec -d "$PFX-l" sh -c "tincd -n lab -c $Y -D -d3 >>/tmp/tincd.log 2>&1"
+	if [[ $expect == fallback ]]; then
+		fallback "$fi" "$li" "$tr"
+		return
+	fi
 	for _ in $(seq 30); do
 		if t l dump connections 2>/dev/null | grep -q "^founder .*transport $tr"; then
 			log "PASS $tr: founder $fi, leaf $li"
@@ -62,8 +74,38 @@ pair() { # <founder image> <leaf image> <transport>
 	FAILED=1
 }
 
+fallback() { # <founder image> <leaf image> <transport>
+	local fi=$1 li=$2 tr=$3 got dials fip
+	for _ in $(seq 30); do
+		got=$(t l dump connections 2>/dev/null | grep "^founder " | grep -o "transport [a-z]*" | head -1)
+		[[ -n $got ]] && break
+		sleep 1
+	done
+	sleep 15
+	got=$(t l dump connections 2>/dev/null | grep "^founder " | grep -o "transport [a-z]*" | head -1)
+	dials=$(docker exec "$PFX-l" grep -c "Dialling founder .* via $tr" /tmp/tincd.log || true)
+	fip=$(docker exec "$PFX-f" ip -4 -br addr show lab 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
+	if docker exec "$PFX-l" grep -q "too old to send datagrams" /tmp/tincd.log &&
+	                [[ -n $got && $got != "transport $tr" ]] && [[ $dials -le 1 ]] &&
+	                docker exec "$PFX-l" ping -c3 -W2 "$fip" >/dev/null 2>&1; then
+		log "PASS $tr: founder $fi, leaf $li: an older listener cannot send datagrams to a current dialler; it gave $tr up once and is on '${got#transport }', tunnel carries traffic"
+	else
+		log "FAIL $tr: founder $fi, leaf $li: expected a clean fallback, got '${got:-nothing}' after $dials $tr dial(s)"
+		docker exec "$PFX-l" grep -iE "quic|carrier|datagrams" /tmp/tincd.log | tail -5 >&2 || true
+		FAILED=1
+	fi
+}
+
+# An OLD_IMAGE from before 2026-09-24 knows nothing of datagrams a dialler does not announce.
+old_quic=carrier
+docker run --rm "$OLD" sh -c 'grep -q "too old to send datagrams" "$(command -v tincd)"' 2>/dev/null || old_quic=fallback
+
 for tr in quic https; do
-	pair "$OLD" "$NEW" "$tr"
+	if [[ $tr == quic ]]; then
+		pair "$OLD" "$NEW" "$tr" "$old_quic"
+	else
+		pair "$OLD" "$NEW" "$tr"
+	fi
 	pair "$NEW" "$OLD" "$tr"
 	pair "$NEW" "$NEW" "$tr"
 done

@@ -670,6 +670,38 @@ Proof: `testing/transports/android-emulator-test.sh`,
 `platforms/android/docker/join-on-emulator.sh` with `TRANSPORT=https|quic`
 (docs/transports.md §2, §9.10).
 
+## 20. The quic dialler's Initial is curl's; datagrams negotiated inside (tincstack, 2026-09-24)
+
+`transport_quic.c`, `h3.h`, `transport.h`, `transport_quic.h`, `net_packet.c`;
+`core/ngtcp2/tincstack-wire.patch` on ngtcp2 1.25.0.
+
+curl 8.14 on Debian 13 speaks QUIC through OpenSSL 3.5's own stack, and the
+dialler's Initial -- decryptable by anyone -- was ngtcp2's. The patch adds
+`ngtcp2_conn_set_openssl_client_wire()`: transport parameters in OpenSSL's
+set and order (`active_connection_id_limit` written as given, even 2; no
+`version_information`, no `max_datagram_frame_size`), 4-byte packet
+numbers, 2-byte Length fields, the ClientHello in order instead of ngtcp2's
+shuffled CRYPTO fragments; and `ngtcp2_conn_set_remote_max_datagram_frame_size()`.
+The dialler also announces `disable_active_migration` and
+`max_udp_payload_size 1200`, and sends 1200-byte packets at most.
+
+Since the dialler no longer announces datagrams, a listener enables them
+itself for an authenticated peer and says so with an empty reserved HTTP/3
+frame (`H3_FRAME_TINC_DGRAM`); a dialler that does not get it (an older
+listener) gives quic up before activation. Older diallers still announce
+datagrams and ignore the frame.
+
+Found on the way: `quic_send_datagram()` sized datagrams by the configured
+UDP payload limit instead of the path's; once a peer announced 1200, a
+larger datagram sat at the head of the queue for ever, and the meta stream
+behind it stalled until the ping timeout. It now uses the path's limit,
+reports the overshoot so tinc's MTU discovery converges in one step, and the
+flush drops a queued datagram that no longer fits.
+
+Proof: `testing/transports/quic-wire-test.sh` (the old core fails it),
+`quic-carrier-test.sh` (b) with a second NAT rebind,
+`mixed-version-test.sh` (docs/transports.md §9.4, §9.8, §9.9).
+
 ---
 
 ## Building

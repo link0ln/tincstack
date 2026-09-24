@@ -1415,16 +1415,20 @@ short-header rule (§9.5).
 | `dial(c)` | pin = the peer's `TlsFingerprint` host-record key (absent => accept-on-first-use, §9.7); port = the peer's host-record `QuicPort`, else own configured `QuicPort` (not the own host record's advertisement), else the port as dialled; a fresh socket on an ephemeral port (§3.1); OpenSSL client session with ALPN `QuicAlpn` (default `h3`, checked after the handshake: a server that selected none is not ours) and SNI from §9.8; random DCID(8) + SCID(8); `ngtcp2_conn_client_new(..., NGTCP2_PROTO_VER_V1, ...)`; `connection_add(c)`; flush (the Initial goes out). `finish_connecting()` is *not* called here. Logs `Dialling <peer> via quic`. |
 | `udp_receive` / `quic_udp_try(ls, buf, len, addr)` | `ngtcp2_pkt_decode_version_cid`; DCID in the session table => `ngtcp2_conn_read_pkt(path = {socket addr, datagram source}, ...)` then flush -- the remote of the path is always the datagram's real source, which is the whole NAT-rebind mechanism. Unknown DCID: only a packet `ngtcp2_accept()` takes as a well-formed v1 Initial (>= 1200 bytes) opens a session (`quic_accept`, burst-limited by `max_connection_burst`, `new_connection()` named `<unknown>`, `allow_request = ID`); anything else **returns `false` and falls through** to the obfs keyed check and SPTPS. `read_pkt` errors: `DRAINING/CLOSING/DROP_CONN` => silent teardown; `NGTCP2_ERR_CRYPTO` => `CONNECTION_CLOSE` with the TLS alert; other => `CONNECTION_CLOSE` with `ngtcp2_ccerr_set_liberr`. Every teardown ends in `terminate_connection()`. |
 | `send(c)` | append `c->outbuf` to the TX ring, flush: queued datagrams first (`ngtcp2_conn_writev_datagram`), then `ngtcp2_conn_writev_stream` on the meta stream; `sendto` each packet; `NGTCP2_ERR_STREAM_DATA_BLOCKED` marks the stream blocked until `extend_max_stream_data`; then `ngtcp2_conn_update_pkt_tx_time` + re-arm the timer. `EMSGSIZE` from the socket is ignored (ngtcp2's PMTUD probes). |
-| `send_datagram(c, buf, len)` | queue + flush; returns `false` when `len > 1400` or `len > ngtcp2_conn_get_max_tx_udp_payload_size() - 35`, which `send_sptps_data()` treats like `EMSGSIZE` (-> `reduce_mtu`); when the 64-entry queue is full the datagram is dropped (SPTPS tolerates loss). |
+| `send_datagram(c, buf, len, &excess)` | queue + flush; returns `false` when the record plus its quarter stream id exceeds `min(1400, ngtcp2_conn_get_path_max_tx_udp_payload_size() - 35)` -- the *path's* limit, which the peer's `max_udp_payload_size` caps -- and sets `excess` to the overshoot, so `send_sptps_data()` reduces the MTU by exactly that (like `EMSGSIZE`, one step); when the 64-entry queue is full the datagram is dropped (SPTPS tolerates loss). The flush drops a queued datagram that no longer fits the path (it would otherwise block the queue, and the meta stream behind it, for good: until 2026-09-24 the check used the configured limit, 1452, and a dialler announcing 1200 got nothing through). |
 | `close(c)` | best-effort `ngtcp2_conn_write_connection_close` (the recorded `ccerr`, else app error 0) + `sendto`; drop the CIDs; `ngtcp2_conn_del`, `ngtcp2_crypto_ossl_ctx_del`, `SSL_free`; free. |
 | `local_address(c, sa)` | `getsockname()` on the session's socket. |
 
-Settings / transport parameters: `initial_max_streams_bidi = 1`,
-`initial_max_streams_uni = 0`, `initial_max_data = 1 MiB`,
-`initial_max_stream_data_bidi_{local,remote} = 256 KiB`,
-`max_datagram_frame_size = 65535`, `active_connection_id_limit = 8`,
-`max_idle_timeout = 3 x PingTimeout`, `handshake_timeout = PingTimeout` (so
-the library gives up in step with tinc's reaper, §2 step 3).
+Settings / transport parameters (`quic_settings()`): 100 bidirectional
+streams, 100 unidirectional (a listener: 3, as nginx), 512 KiB stream
+windows, 768 KiB connection window, `max_datagram_frame_size = 65536`,
+`active_connection_id_limit = 8`, `max_idle_timeout = 3 x PingTimeout`
+(at least 30 s), `handshake_timeout = PingTimeout` (so the library gives up
+in step with tinc's reaper, §2 step 3). The dialler, as curl: also
+`disable_active_migration`, `max_udp_payload_size = 1200`, sends 1200-byte
+packets at most and never probes the path MTU; on the wire it writes its
+parameters as curl does (§9.8): `active_connection_id_limit` 2 and no
+`max_datagram_frame_size`, although it accepts 8 and 65536.
 
 ### 9.4 Framing: an HTTP/3 request (since 2026-09-23)
 
@@ -1494,8 +1498,26 @@ own MTU probing converges on the datagram ceiling. `recv_datagram` delivers
 with `handle_incoming_vpn_packet_decap(ls, data, len, &session peer)`: the
 classifier is skipped (the bytes came from a carrier) and the unchanged SPTPS
 receive path authenticates, decrypts and forwards relayed packets as today.
-Ceiling: ~1160 bytes at the initial 1200-byte UDP payload, ~1410 after PMTUD
-on Ethernet; `SF_MAX_PAYLOAD` is 1200 for comparison.
+Ceiling: ~1165 bytes, since a dialler takes and sends 1200-byte packets at
+most (§9.8): tinc's path MTU over `quic` is 1131 in the lab (1366 before
+2026-09-24, when PMTUD took it to Ethernet's); `SF_MAX_PAYLOAD` is 1200 for
+comparison.
+
+**Datagrams nobody announced** (since 2026-09-24): the dialler's
+transport parameters are curl's, and curl announces no
+`max_datagram_frame_size`, so by the book the listener may not send it
+DATAGRAM frames. The dialler accepts them anyway (its local limit stays
+65536); the listener, once the authenticator checks out, sets the peer's
+limit itself (`ngtcp2_conn_set_remote_max_datagram_frame_size`, from the
+patch) and follows its 200 answer with an empty reserved frame
+(`H3_FRAME_TINC_DGRAM`, type `0x38ae` = 0x1f * 467 + 0x21, which HTTP/3
+endpoints ignore, RFC 9114 §7.2.8). Only an authenticated tinc peer ever
+sees it, encrypted. A dialler whose listener's answer lacks it -- a tinc from
+before -- gives `quic` up before the link activates (`quic: <peer> runs a
+tinc too old to send datagrams to this one; not using quic`) and the next
+carrier is tried (§9.9). An older dialler announces the frame size itself
+and ignores the reserved frame, so a current listener serves it as before
+(`mixed-version-test.sh`).
 
 ### 9.5 Classifier (what G3 changed in §3)
 
@@ -1580,17 +1602,43 @@ established. HTTP/3 conformance beyond the handshake was out of scope
 until the wire-fingerprint audit (2026-09-23) and is now §9.4.
 
 What an observer can still tell (testing/fingerprint, re-measured
-2026-09-23 after §9.4):
+2026-09-23 after §9.4; the Initial re-measured 2026-09-24 by
+`quic-wire-test.sh`):
 
-- the dialler's transport parameters now carry curl's values (100
-  bidirectional and 100 unidirectional streams, 512 KiB stream windows,
-  768 KiB connection window, 30 s idle, `max_datagram_frame_size 65536`, an
-  empty source connection id) but not curl's set and order: ngtcp2 1.25
-  writes `version_information` and puts `initial_source_connection_id`
-  first; curl (ngtcp2 of Debian 13) sends `disable_active_migration` and
-  `max_udp_payload_size 1200` and no `version_information`;
-  `active_connection_id_limit` is 8 (curl 2, Chromium 2) because a second
-  NAT rebind in one session fails with 2;
+- **the dialler's Initial is curl's** since 2026-09-24. curl 8.14 on Debian
+  13 runs OpenSSL 3.5's own QUIC stack (no ngtcp2 in `curl -V`); the
+  dialler runs ngtcp2 with `core/ngtcp2/tincstack-wire.patch`
+  (`ngtcp2_conn_set_openssl_client_wire`), and `quic-wire-test.sh`, curl
+  and the dialler capturing side by side, finds them equal in: the transport
+  parameters -- set, order and values: `disable_active_migration`,
+  `initial_source_connection_id` (empty), `max_idle_timeout 30000`,
+  `max_udp_payload_size 1200`, `active_connection_id_limit 2`,
+  `initial_max_data 786432`, three stream windows of 524288, 100 + 100
+  streams; the ClientHello (JA4_r, 1477 bytes dialling an IP); both Initial
+  packets: 4-byte packet numbers, a 2-byte Length field, the ClientHello in
+  order in one CRYPTO frame each (0+1158, 1158+323), 834 bytes of PADDING.
+  Before, ngtcp2 1.25 wrote `version_information` and
+  `max_datagram_frame_size`, another order, 1-byte packet numbers and 4-byte
+  Length fields, and cut the ClientHello into ~11 shuffled CRYPTO frames
+  between PING and PADDING frames (its defence against middleboxes that read
+  SNI, and a fingerprint of its own). Consequences: packets of 1200 bytes at
+  most both ways (§9.4 ceiling), and datagrams negotiated inside the tunnel
+  (§9.4);
+- **the dialler's second flight is not curl's**: the Initial that carries
+  the ACK for the server's Initial, coalesced with the Handshake packet
+  (Finished) and a 1-RTT packet, is padded by OpenSSL to fill the 1200 bytes
+  (Length 1051) while ngtcp2 pads the 1-RTT packet and leaves the Initial at
+  25 bytes. The Length field of a long header is not header-protected: this
+  is readable without decrypting anything. Fixing it means writing the whole
+  datagram before padding its first packet, which ngtcp2 does not do
+  (PLAN.md Known Issues);
+- the first 1-RTT packets (HTTP/3 control and QPACK streams, the request)
+  are 41, 41 and 315 bytes from the dialler, 55, 40, 40 and 69 from curl:
+  another SETTINGS, and a POST carrying the authenticator where curl sends a
+  GET. Encrypted, but their sizes show;
+- the listener's side of QUIC (its Initial and Handshake packets, its
+  transport parameters -- `max_datagram_frame_size`, 1-byte packet numbers)
+  has not been compared with nginx's;
 - until 2026-09-23 the ClientHello was GnuTLS 3.7.9's (JA4
   `q13d0315h3_55b375c5d22e_84684a673e38`: `status_request`,
   `record_size_limit`, `session_ticket`, `renegotiation_info`, SHA-1
@@ -1622,6 +1670,7 @@ because the connection dies before it activates:
 | TLS failure (a pin mismatch is not one, §9.7) | `NGTCP2_ERR_CRYPTO` | `CONNECTION_CLOSE` with the alert, next candidate |
 | Version Negotiation packet | `decode_version_cid` | v1 only: not claimed, session times out as above |
 | authenticator rejected (acceptor) | §9.4 | generic close, `quic: authenticator from <host> rejected`; the dialler logs `Carrier quic failed ..., falling back to plain` and dials plain, where the wrong key fails SPTPS too (d) |
+| the listener is a tinc from before 2026-09-24 (cannot send datagrams to a dialler that does not announce them, §9.4) | no `H3_FRAME_TINC_DGRAM` after the listener's 200 answer | `quic: <peer> runs a tinc too old to send datagrams to this one; not using quic`, closed before activation => next candidate, dialled once (`mixed-version-test.sh`) |
 | mid-session: idle timeout, peer close, library error | `read_pkt` / `handle_expiry` errors | `terminate_connection` on an *activated* link => the reconnect starts from the first preference again, i.e. quic is re-dialled, and it is abandoned only after three consecutive pre-activation failures (§2 steps 3-5; `quic-carrier-test.sh` (l): reload, UDP black-hole, `kill -9` + restart all come back as quic) |
 
 **NAT rebind** needs no code on the dialling side: tinc's socket does not
@@ -1631,13 +1680,24 @@ carrier copies the new remote into the session, `c->address` and
 `c->hostname` (so `dump connections` follows) and logs `quic: path validated
 for <peer>, remote now <addr>`. Observed (b): mapping flipped 40000 -> 40001
 mid-session, ping continues both ways, exactly one `quic: connection from`
-before and after (no re-handshake), the dialler never fell back. Active
+before and after (no re-handshake), the dialler never fell back; a second
+flip 40001 -> 40002 in the same session works as well, with the dialler
+announcing `active_connection_id_limit` 2 (it accepts 8: the spike's second
+migration failed at 2 with `ERR_CONNECTION_ID_LIMIT`). Active
 migration (`ngtcp2_conn_initiate_immediate_migration`) is only for a *local*
 socket change (Android Wi-Fi -> LTE), which tinc does not do today.
 
 ### 9.10 Build wiring
 
 `meson_options.txt`: `option('quic', type: 'feature', value: 'auto')`.
+ngtcp2 is built from the pinned 1.25.0 tarball with
+`core/ngtcp2/tincstack-wire.patch` applied, on every platform
+(`core/Dockerfile.build`, `core/Dockerfile.build-win`,
+`platforms/android/native/build-core.sh`, which also rebuilds its cached
+dependencies when the patch changes); `transport_quic.c` does not compile
+against an unpatched ngtcp2 (`NGTCP2_TINCSTACK_WIRE`). The patch leaves
+ngtcp2's behaviour unchanged unless `ngtcp2_conn_set_openssl_client_wire` is
+called: ngtcp2's own test suite passes on the patched tree (266/266).
 `src/meson.build` looks up `libngtcp2 >= 1.12`, `libngtcp2_crypto_ossl` and
 `openssl >= 3.5` (until 2026-09-23: `libngtcp2_crypto_gnutls` and `gnutls`);
 when all three are found *and* `crypto=openssl` (the node

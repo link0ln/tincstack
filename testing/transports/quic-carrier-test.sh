@@ -321,6 +321,32 @@ if dumpc b | grep nodea | grep -q "port 40001"; then
 else
 	miss "B's connection address did not follow: $(dumpc b | grep nodea)"
 fi
+
+# A second rebind in the same session. The dialler announces curl's
+# active_connection_id_limit 2 and accepts up to 8 (the spike found a second
+# migration failing at 2 with ERR_CONNECTION_ID_LIMIT).
+nat iptables -t nat -R POSTROUTING 1 -p udp -d "$B_IP" -j SNAT --to-source "$A_IP:40002-40002"
+nat conntrack -F >/dev/null 2>&1 || true
+note "NAT mapping flipped again 40001 -> 40002"
+sleep 1
+docker exec "$PFX-a" ping -c5 -i0.2 -W2 "$B_VPN" >/dev/null 2>&1 || true
+sleep 2
+if waitping a "$B_VPN" 3 && waitping b "$A_VPN" 3; then
+	note "ping still 0% loss both ways after the second rebind"
+else
+	miss "ping broke after the second rebind"
+fi
+if docker logs "$PFX-b" 2>&1 | grep "quic: path validated" | tail -1 | grep -q "40002"; then
+	note "B log: $(docker logs "$PFX-b" 2>&1 | grep 'quic: path validated' | tail -1 | sed 's/.*quic:/quic:/')"
+else
+	miss "B did not log path validation to port 40002: $(docker logs "$PFX-b" 2>&1 | grep -i 'path' | tail -3)"
+fi
+hs3=$(docker logs "$PFX-b" 2>&1 | grep -c "quic: connection from" || true)
+if [ "$hs3" = "$hs1" ]; then
+	note "still no re-handshake after the second rebind"
+else
+	miss "B re-handshook on the second rebind ($hs1 -> $hs3 connections)"
+fi
 if grep -q "Dialling nodeb" "$BASE-a/a.log" && ! grep -q "falling back" "$BASE-a/a.log"; then
 	note "A never fell back or re-dialled"
 else

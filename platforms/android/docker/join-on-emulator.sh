@@ -31,7 +31,7 @@ cd "$(dirname "$0")"
 LAB=${LAB:-wsy}
 SUBNET=${SUBNET:-10.44.77.0/24}
 INVITER_IP=${INVITER_IP:-10.44.77.10}
-TAG=${TINCSTACK_TAG:-wsy}
+TAG=${TINCSTACK_TAG:-dev}
 NETNAME=${NETNAME:-phonenet}
 PKG=net.tincstack.android
 APK=${APK:-../app/build/outputs/apk/debug/app-debug.apk}
@@ -59,11 +59,15 @@ trap cleanup EXIT
 [ -f "$APK" ] || fail "no APK at $APK -- build it first (see readme.md 'Build')"
 
 step "images"
-docker image inspect "tincstack/node:$TAG" >/dev/null 2>&1 || {
+# The inviter runs the core of this tree: tincstack/core:$TAG as built (built
+# here if missing), and a node image always rebuilt on top of it -- a cached
+# one kept whatever core it was first built with (until 2026-09-24 the default
+# tag's was a GnuTLS-era core).
+docker image inspect "tincstack/core:$TAG" >/dev/null 2>&1 ||
     docker build -f "$REPO/core/Dockerfile.build" -t "tincstack/core:$TAG" "$REPO/core"
-    docker build --build-arg "CORE_IMAGE=tincstack/core:$TAG" -t "tincstack/node:$TAG" \
-        "$REPO/platforms/linux/docker"
-}
+docker build -q --build-arg "CORE_IMAGE=tincstack/core:$TAG" -t "tincstack/node:$TAG" \
+    "$REPO/platforms/linux/docker" >/dev/null
+docker run --rm --entrypoint tincd "tincstack/node:$TAG" --version | head -1
 
 step "inviter: a Linux node at $INVITER_IP (PUBLIC_ADDRESS so the invitation is dialable)"
 docker network inspect "$NET" >/dev/null 2>&1 || docker network create --subnet "$SUBNET" "$NET" >/dev/null

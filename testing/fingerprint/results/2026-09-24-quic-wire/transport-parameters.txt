@@ -1,0 +1,24 @@
+leaf
+Parameter: disable_active_migration (len=0)
+Parameter: initial_source_connection_id (len=0)
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: max_udp_payload_size (len=2) 1200
+Parameter: active_connection_id_limit (len=1) 2
+Parameter: initial_max_data (len=4) 786432
+Parameter: initial_max_stream_data_bidi_local (len=4) 524288
+Parameter: initial_max_stream_data_bidi_remote (len=4) 524288
+Parameter: initial_max_stream_data_uni (len=4) 524288
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: initial_max_streams_uni (len=2) 100
+curl
+Parameter: disable_active_migration (len=0)
+Parameter: initial_source_connection_id (len=0)
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: max_udp_payload_size (len=2) 1200
+Parameter: active_connection_id_limit (len=1) 2
+Parameter: initial_max_data (len=4) 786432
+Parameter: initial_max_stream_data_bidi_local (len=4) 524288
+Parameter: initial_max_stream_data_bidi_remote (len=4) 524288
+Parameter: initial_max_stream_data_uni (len=4) 524288
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: initial_max_streams_uni (len=2) 100

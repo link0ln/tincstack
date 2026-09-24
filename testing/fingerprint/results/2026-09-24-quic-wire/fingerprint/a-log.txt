@@ -1,0 +1,3 @@
+2026-09-24 16:42:51 INFO    Trying to connect to nodeb (10.47.4.11 port 655) via quic
+2026-09-24 16:42:51 INFO    Dialling nodeb (10.47.4.11 port 443) via quic
+2026-09-24 16:42:51 NOTICE  Connection with nodeb (10.47.4.11 port 655) activated

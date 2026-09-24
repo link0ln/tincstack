@@ -52,7 +52,7 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
    QUIC DATAGRAM. Returns false when it does not fit the connection's current
    datagram ceiling, so the caller treats it exactly like EMSGSIZE and lets
    tinc's MTU probing converge (docs/transports.md §9.5). */
-bool quic_send_datagram(struct connection_t *c, const void *buf, size_t len);
+bool quic_send_datagram(struct connection_t *c, const void *buf, size_t len, size_t *excess);
 
 /* Classifier hook: short-header 1-RTT packets carry a destination connection
    id we issued and no version word, so the pure classifier cannot key on them.

@@ -152,8 +152,9 @@ typedef struct transport_t {
 	/* Data path (M5 quic): frame one SPTPS datagram (the exact bytes
 	   send_sptps_data() would put on the wire) on the carrier's flow instead
 	   of the plain UDP socket. false = does not fit the carrier's ceiling; the
-	   caller treats it like EMSGSIZE. NULL = data rides the plain UDP path. */
-	bool (*send_datagram)(struct connection_t *c, const void *buf, size_t len);
+	   caller treats it like EMSGSIZE, and *excess (when not 0) says by how many
+	   bytes it was over. NULL = data rides the plain UDP path. */
+	bool (*send_datagram)(struct connection_t *c, const void *buf, size_t len, size_t *excess);
 } transport_t;
 
 #define TRANSPORT_CAP_META_TCP     0x01 /* meta channel is a TCP stream on the front port */

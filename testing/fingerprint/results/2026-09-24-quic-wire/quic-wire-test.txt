@@ -1,0 +1,7 @@
+19:12:44 PASS the leaf is on quic
+19:12:47 PASS transport parameters are curl's: disable_active_migration,initial_source_connection_id,max_idle_timeout,max_udp_payload_size,active_connection_id_limit,initial_max_data,initial_max_stream_data_bidi_local,initial_max_stream_data_bidi_remote,initial_max_stream_data_uni,initial_max_streams_bidi,initial_max_streams_uni
+19:12:49 PASS the ClientHello is curl's: q13i0311h3_1301,1302,1303_000a,000b,000d..., 1477 bytes
+19:12:50 PASS the first flight is curl's: 1208 B (Length 1182, CRYPTO 0+1158, PADDING 0); 1208 B (Length 1182, CRYPTO 1158+323, PADDING 834)
+19:12:51      the Initial before the client's Finished has Length 26 here, 1051 from curl (known difference, not required)
+19:13:00 PASS the tunnel carries 56- and 1400-byte pings both ways, datagrams confirmed; PMTU: 1131
+19:13:00 quic wire: all checks passed

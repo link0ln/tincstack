@@ -37,6 +37,10 @@
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
 
+#ifndef NGTCP2_TINCSTACK_WIRE
+#error "ngtcp2 without core/ngtcp2/tincstack-wire.patch: the dialler would announce ngtcp2's transport parameters, not curl's"
+#endif
+
 #include "authn.h"
 #include "conf.h"
 #include "connection.h"
@@ -68,6 +72,13 @@
 #define QUIC_UNI_STREAMS 3              /* control, QPACK encoder, QPACK decoder */
 #define QUIC_REQ_SLOTS 8                /* request streams a server answers per connection */
 #define QUIC_OK_HDR_CAP 64              /* client: the listener's response HEADERS, kept to check */
+#define QUIC_DGRAM_FRAME_MAX 65536      /* max_datagram_frame_size we accept */
+#define QUIC_CURL_UDP_PAYLOAD 1200      /* curl's max_udp_payload_size, and all it ever sends */
+#define QUIC_CURL_CID_LIMIT 2           /* curl's active_connection_id_limit */
+/* What a DATAGRAM costs in a 1-RTT packet besides its payload: header byte,
+   destination connection id (TRANSPORT_QUIC_CIDLEN; the dialler's is empty),
+   4-byte packet number, frame type, 2-byte length, AEAD tag -- with slack. */
+#define QUIC_DGRAM_OVERHEAD 35
 #define QUIC_IDLE_MIN 30                /* s; what curl and Chromium announce */
 
 typedef struct quic_cid_t {
@@ -94,6 +105,7 @@ typedef struct quic_session_t {
 	uint8_t ok_hdr[QUIC_OK_HDR_CAP];/* client: HEADERS payload of the answer */
 	size_t ok_hdr_len;
 	bool ok_checked;                /* client: the answer is a tinc listener's */
+	bool dgram_marked;              /* client: the listener sent H3_FRAME_TINC_DGRAM */
 
 	/* Our unidirectional streams (control + SETTINGS, QPACK encoder and
 	   decoder). Their bytes are constant (h3_uni_preamble), so nothing needs
@@ -169,6 +181,7 @@ static int quic_port_option;            /* that setting, bound here or not (dial
 
 static void quic_flush(quic_session_t *s);
 static void quic_arm_timer(quic_session_t *s);
+static size_t dgram_room(quic_session_t *s);
 
 /* ---- time ---------------------------------------------------------------- */
 
@@ -567,6 +580,21 @@ static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size
 		tx_append(s, h, hlen);
 		free(h);
 
+		/* A current dialler takes DATAGRAM frames without announcing it (its
+		   Initial is curl's, and curl has none): allow them to it, and tell it
+		   we know, with a frame only an authenticated peer ever sees. An
+		   earlier dialler announced them itself and skips the frame. */
+		const ngtcp2_transport_params *rp = ngtcp2_conn_get_remote_transport_params(s->conn);
+
+		if(rp && !rp->max_datagram_frame_size) {
+			ngtcp2_conn_set_remote_max_datagram_frame_size(s->conn, QUIC_DGRAM_FRAME_MAX);
+		}
+
+		uint8_t mark[16];
+		size_t mlen = h3_varint_put(mark, H3_FRAME_TINC_DGRAM);
+		mlen += h3_varint_put(mark + mlen, 0);
+		tx_append(s, mark, mlen);
+
 		if(used < len) {
 			return deliver_meta(s, payload + used, len - used);
 		}
@@ -594,6 +622,11 @@ static bool client_frame(void *data, uint64_t type, const uint8_t *payload, size
 		return true;
 	}
 
+	if(type == H3_FRAME_TINC_DGRAM) {
+		s->dgram_marked = true;
+		return true;
+	}
+
 	if(type != H3_FRAME_DATA || !len) {
 		return true;
 	}
@@ -605,6 +638,17 @@ static bool client_frame(void *data, uint64_t type, const uint8_t *payload, size
 		if(!s->rx.seen_headers || s->ok_hdr_len != oklen || memcmp(s->ok_hdr, ok, oklen)) {
 			/* A web server's answer (a decoy, or not a tinc node at all). */
 			logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: %s (%s) answered like a web server, not a tinc peer",
+			       s->c->name, s->c->hostname);
+			ngtcp2_ccerr_set_application_error(&s->ccerr, H3_NO_ERROR, NULL, 0);
+			quic_fail(s, true);
+			return false;
+		}
+
+		if(!s->dgram_marked) {
+			/* A listener from before 2026-09-24: it cannot send us datagrams,
+			   since we do not announce them. Give up before the link is
+			   activated, so the next carrier is tried. */
+			logger(DEBUG_CONNECTIONS, LOG_WARNING, "quic: %s (%s) runs a tinc too old to send datagrams to this one; not using quic",
 			       s->c->name, s->c->hostname);
 			ngtcp2_ccerr_set_application_error(&s->ccerr, H3_NO_ERROR, NULL, 0);
 			quic_fail(s, true);
@@ -933,12 +977,24 @@ static void quic_settings(ngtcp2_settings *settings, ngtcp2_transport_params *pa
 	params->initial_max_stream_data_bidi_remote = 512 * 1024;
 	params->initial_max_stream_data_uni = 512 * 1024;
 	params->initial_max_data = 768 * 1024;
-	params->max_datagram_frame_size = 65536;
+	params->max_datagram_frame_size = QUIC_DGRAM_FRAME_MAX;
 	ngtcp2_duration idle = (ngtcp2_duration)(3 * pingtimeout);
 	params->max_idle_timeout = (idle > QUIC_IDLE_MIN ? idle : QUIC_IDLE_MIN) * NGTCP2_SECONDS;
 	/* Must exceed the default 2 or a second migration in one session fails with
-	   ERR_CONNECTION_ID_LIMIT (stream-Q finding). */
+	   ERR_CONNECTION_ID_LIMIT (stream-Q finding). The dialler writes curl's 2
+	   on the wire (quic_dial); 8 is only what it accepts. */
 	params->active_connection_id_limit = 8;
+
+	if(!server) {
+		/* The rest of curl's Initial (OpenSSL 3.5's QUIC client): it forbids
+		   migration towards it, takes and sends packets of 1200 bytes at
+		   most, and never probes for more. An observer who decrypts the
+		   Initial -- anyone can -- would see a larger packet as a lie. */
+		params->disable_active_migration = 1;
+		params->max_udp_payload_size = QUIC_CURL_UDP_PAYLOAD;
+		settings->max_tx_udp_payload_size = QUIC_CURL_UDP_PAYLOAD;
+		settings->no_pmtud = 1;
+	}
 }
 
 /* ---- flush and timer ----------------------------------------------------- */
@@ -969,7 +1025,11 @@ static void quic_flush(quic_session_t *s) {
 				return;
 			}
 
-			if(accepted) {
+			/* ngtcp2 leaves a DATAGRAM that does not fit the packet unwritten,
+			   for us to offer again -- for ever, if it never will fit (the
+			   path shrank after it was queued): drop that one, or it blocks
+			   everything behind it, the meta stream included. SPTPS copes. */
+			if(accepted || s->dgram[s->dgram_head].len > dgram_room(s)) {
 				s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
 				s->dgram_n--;
 			}
@@ -1599,6 +1659,10 @@ bool quic_dial(connection_t *c) {
 		return false;
 	}
 
+	/* The transport parameters and the ClientHello's packing as curl's
+	   OpenSSL QUIC client writes them (core/ngtcp2/tincstack-wire.patch). */
+	ngtcp2_conn_set_openssl_client_wire(s->conn, QUIC_CURL_CID_LIMIT);
+
 	ngtcp2_conn_set_tls_native_handle(s->conn, quic_tls_native_handle(&s->tls));
 
 	c->status.connecting = false;
@@ -1638,14 +1702,21 @@ bool quic_send(connection_t *c) {
 	return true;
 }
 
-bool quic_send_datagram(connection_t *c, const void *buf, size_t len) {
+/* The largest DATAGRAM payload a packet on the current path takes. The
+   path's limit, not the configured one: a peer announcing
+   max_udp_payload_size 1200 (every dialler since 2026-09-24, as curl does)
+   caps it there, and so does a path whose MTU is not yet probed. */
+static size_t dgram_room(quic_session_t *s) {
+	size_t max = ngtcp2_conn_get_path_max_tx_udp_payload_size(s->conn);
+	return max > QUIC_DGRAM_OVERHEAD ? max - QUIC_DGRAM_OVERHEAD : 0;
+}
+
+bool quic_send_datagram(connection_t *c, const void *buf, size_t len, size_t *excess) {
 	quic_session_t *s = c->transport_data;
 
 	if(!s || s->dead || !s->conn) {
 		return false;
 	}
-
-	size_t max = ngtcp2_conn_get_max_tx_udp_payload_size(s->conn);
 
 	if(s->stream_id < 0) {
 		return false;
@@ -1654,8 +1725,14 @@ bool quic_send_datagram(connection_t *c, const void *buf, size_t len) {
 	/* HTTP/3 datagram: the request's quarter stream id, then the record. */
 	uint8_t qsid[8];
 	size_t qlen = h3_varint_put(qsid, (uint64_t)s->stream_id / 4);
+	size_t room = dgram_room(s);
 
-	if(len + qlen > QUIC_MAX_DGRAM || (max > 35 + qlen && len > max - 35 - qlen)) {
+	if(room > QUIC_MAX_DGRAM) {
+		room = QUIC_MAX_DGRAM;
+	}
+
+	if(len + qlen > room) {
+		*excess = len + qlen - room;
 		return false; /* caller treats it like EMSGSIZE -> reduce_mtu */
 	}
 

@@ -13,14 +13,15 @@
 #     * it connects over `https' and over `quic';
 #     * its ClientHellos are the Linux dialler's, dialling the same founder
 #       the same way: extension for extension (JA4_r), handshake length, and
-#       for QUIC the transport parameters in order -- and their JA4_r is curl's.
+#       for QUIC the transport parameters in order -- and their JA4_r is curl's,
+#       and so, for QUIC, are the transport parameters.
 #
 # Compared by TLS handshake length, not frame length: the emulator's
 # user-mode NAT (slirp) terminates the guest's TCP and re-sends it in its
 # own segments (1460 + 91 bytes here), which is the emulator's doing, not the
-# phone's. The QUIC transport parameters are ngtcp2's, not curl's (curl 8.14
-# on Debian 13 runs OpenSSL's own QUIC stack): printed, not required --
-# PLAN.md Known Issues.
+# phone's. The QUIC transport parameters are curl's (OpenSSL's QUIC stack)
+# since core/ngtcp2/tincstack-wire.patch (2026-09-24); the rest of the Initial
+# is testing/transports/quic-wire-test.sh's business.
 #
 # Not covered here: the VpnService data path (this runs the daemon as root
 # with `DeviceType = dummy'; platforms/android/docker/join-on-emulator.sh
@@ -161,9 +162,8 @@ curl_hellos() { # <ja4 prefix>: ClientHellos from neither node -- curl's
 for p in t13:https q13:quic; do
 	a=$(hellos "$A_IP" "${p%%:*}"); l=$(hellos "$C_IP" "${p%%:*}"); k=$(curl_hellos "${p%%:*}")
 	printf 'android %s\n%s\nlinux %s\n%s\ncurl %s\n%s\n' "${p#*:}" "$a" "${p#*:}" "$l" "${p#*:}" "$k" >> "$RUN/clienthellos.txt"
-	if [[ -n $k && $(cut -f1 <<<"$k") == "$(cut -f1 <<<"$l")" ]]; then
-		ok "dialling an IP, the Linux ${p#*:} ClientHello has curl's extensions ($(cut -c1-10 <<<"$k"); handshake: curl $(cut -f2 <<<"$k") bytes, ours $(cut -f2 <<<"$l"))"
-		[[ -z $(cut -f3 <<<"$k") ]] || log "     QUIC transport parameters: curl $(cut -f3 <<<"$k"), ours $(cut -f3 <<<"$l")"
+	if [[ -n $k && $(cut -f1 <<<"$k") == "$(cut -f1 <<<"$l")" && $(cut -f3 <<<"$k") == "$(cut -f3 <<<"$l")" ]]; then
+		ok "dialling an IP, the Linux ${p#*:} ClientHello has curl's extensions ($(cut -c1-10 <<<"$k"); handshake: curl $(cut -f2 <<<"$k") bytes, ours $(cut -f2 <<<"$l"))$(tp=$(cut -f3 <<<"$k"); [[ -z $tp ]] || echo " and transport parameters $tp")"
 	else
 		bad "dialling an IP, the Linux ${p#*:} ClientHello has curl's extensions"
 		diff <(tr ',_\t' '\n' <<<"$l") <(tr ',_\t' '\n' <<<"$k") | head -8 >&2 || true

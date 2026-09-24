@@ -201,24 +201,24 @@ docker stop -t 3 "$PFX-capf" >/dev/null
 
 hellos() { # <src ip> <ja4 prefix>
 	docker run --rm -v "$RUN/cap:/cap" "$TOOLS" tshark -r /cap/capf.pcap -Y "tls.handshake.type == 1 && ip.src == $1" \
-		-T fields -e tls.handshake.ja4_r -e frame.len 2>/dev/null | grep "^$2" | sort -u
+		-T fields -e tls.handshake.ja4_r -e frame.len -e tls.quic.parameter.type 2>/dev/null | grep "^$2" | sort -u
 }
 curl_hellos() { # <ja4 prefix>: ClientHellos from neither node -- curl's
 	docker run --rm -v "$RUN/cap:/cap" "$TOOLS" tshark -r /cap/capf.pcap \
 		-Y "tls.handshake.type == 1 && ip.src != $D_IP && ip.src != $C_IP && ip.src != $F_IP" \
-		-T fields -e tls.handshake.ja4_r -e frame.len 2>/dev/null | grep "^$1" | sort -u
+		-T fields -e tls.handshake.ja4_r -e frame.len -e tls.quic.parameter.type 2>/dev/null | grep "^$1" | sort -u
 }
 for p in t13:https q13:quic; do
 	w=$(hellos "$D_IP" "${p%%:*}"); l=$(hellos "$C_IP" "${p%%:*}"); k=$(curl_hellos "${p%%:*}")
 	printf 'windows %s\n%s\nlinux %s\n%s\ncurl %s\n%s\n' "${p#*:}" "$w" "${p#*:}" "$l" "${p#*:}" "$k" >> "$RUN/clienthellos.txt"
-	if [[ -n $k && $(cut -f1 <<<"$k") == "$(cut -f1 <<<"$l")" ]]; then
-		ok "dialling an IP, the Linux ${p#*:} ClientHello has curl's extensions ($(cut -c1-10 <<<"$k"); curl $(cut -f2 <<<"$k") bytes, ours $(cut -f2 <<<"$l"))"
+	if [[ -n $k && $(cut -f1 <<<"$k") == "$(cut -f1 <<<"$l")" && $(cut -f3 <<<"$k") == "$(cut -f3 <<<"$l")" ]]; then
+		ok "dialling an IP, the Linux ${p#*:} ClientHello has curl's extensions ($(cut -c1-10 <<<"$k"); curl $(cut -f2 <<<"$k") bytes, ours $(cut -f2 <<<"$l"))$(tp=$(cut -f3 <<<"$k"); [[ -z $tp ]] || echo " and transport parameters $tp")"
 	else
 		bad "dialling an IP, the Linux ${p#*:} ClientHello has curl's extensions"
 		diff <(tr ',_\t' '\n' <<<"$l") <(tr ',_\t' '\n' <<<"$k") | head -8 >&2 || true
 	fi
 	if [[ -n $w && $w == "$l" ]]; then
-		ok "the Windows ${p#*:} ClientHello is the Linux one: $(cut -c1-10 <<<"$w"), $(cut -f2 <<<"$w") bytes, same extensions"
+		ok "the Windows ${p#*:} ClientHello is the Linux one: $(cut -c1-10 <<<"$w"), $(cut -f2 <<<"$w") bytes, same extensions$(tp=$(cut -f3 <<<"$w"); [[ -z $tp ]] || echo ", transport parameters $tp")"
 	else
 		bad "the Windows ${p#*:} ClientHello differs from the Linux one"
 		diff <(tr ',_\t' '\n' <<<"$w") <(tr ',_\t' '\n' <<<"$l") | head -8 >&2 || true

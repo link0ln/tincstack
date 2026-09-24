@@ -33,6 +33,10 @@
 #define H3_FRAME_DATA 0x00
 #define H3_FRAME_HEADERS 0x01
 #define H3_FRAME_SETTINGS 0x04
+/* A reserved frame type (RFC 9114 §7.2.8: 0x1f * N + 0x21, N = 467), which
+   HTTP/3 endpoints ignore. A listener sends it, empty, after its answer to an
+   authenticated tinc dialler: "I send you datagrams you did not announce". */
+#define H3_FRAME_TINC_DGRAM 0x38ae
 
 #define H3_STREAM_CONTROL 0x00
 #define H3_STREAM_QPACK_ENCODER 0x02

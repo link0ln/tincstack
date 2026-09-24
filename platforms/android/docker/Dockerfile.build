@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openjdk-17-jdk-headless \
         meson ninja-build pkg-config python3 \
-        make perl file \
+        make perl file patch \
         curl ca-certificates unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 ENV ANDROID_HOME=/opt/android-sdk \

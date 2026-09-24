@@ -1,0 +1,391 @@
+--- a/lib/includes/ngtcp2/ngtcp2.h
++++ b/lib/includes/ngtcp2/ngtcp2.h
+@@ -4984,6 +4984,65 @@
+   ngtcp2_conn *conn, uint8_t *dest, size_t destlen);
+ 
+ /**
++ * @macro
++ *
++ * :macro:`NGTCP2_TINCSTACK_WIRE` is defined by tincstack's patch
++ * (core/ngtcp2/tincstack-wire.patch), which adds
++ * `ngtcp2_conn_set_openssl_client_wire` and
++ * `ngtcp2_conn_set_remote_max_datagram_frame_size`.
++ */
++#define NGTCP2_TINCSTACK_WIRE 1
++
++/**
++ * @function
++ *
++ * `ngtcp2_conn_set_openssl_client_wire` makes a client's first flight
++ * look like OpenSSL 3.5's own QUIC client (curl's):
++ *
++ * - the local transport parameters are encoded in OpenSSL's order
++ *   (disable_active_migration, initial_source_connection_id,
++ *   max_idle_timeout, max_udp_payload_size, active_connection_id_limit,
++ *   initial_max_data, initial_max_stream_data_bidi_local,
++ *   initial_max_stream_data_bidi_remote, initial_max_stream_data_uni,
++ *   initial_max_streams_bidi, initial_max_streams_uni), and only those:
++ *   no version_information, no max_datagram_frame_size, no
++ *   ack_delay_exponent, max_ack_delay or grease_quic_bit;
++ * - active_connection_id_limit is written as
++ *   |wire_active_connection_id_limit| (even when it is 2), while the local
++ *   value keeps governing how many connection IDs are accepted;
++ * - the local max_datagram_frame_size keeps governing which DATAGRAM
++ *   frames are accepted, although the peer is not told about it;
++ * - every packet number is encoded in 4 bytes, and the Length field
++ *   of a long header in 2;
++ * - the ClientHello goes into the Initial packets in order, in as few
++ *   CRYPTO frames as fit, without the interleaved PING and PADDING
++ *   frames ngtcp2 adds by default.
++ *
++ * Call it right after `ngtcp2_conn_client_new`, before the first packet
++ * is written.
++ */
++NGTCP2_EXTERN void
++ngtcp2_conn_set_openssl_client_wire(ngtcp2_conn *conn,
++                                    uint64_t wire_active_connection_id_limit);
++
++/**
++ * @function
++ *
++ * `ngtcp2_conn_set_remote_max_datagram_frame_size` overrides the
++ * remote endpoint's max_datagram_frame_size, for a peer that accepts
++ * DATAGRAM frames without announcing it (see
++ * `ngtcp2_conn_set_openssl_client_wire`).  It may be called once the
++ * remote transport parameters are known.
++ *
++ * This function returns 0 if it succeeds, or
++ * :macro:`NGTCP2_ERR_INVALID_STATE` if the remote transport parameters
++ * are not available yet.
++ */
++NGTCP2_EXTERN int
++ngtcp2_conn_set_remote_max_datagram_frame_size(ngtcp2_conn *conn,
++                                               uint64_t size);
++
++/**
+  * @function
+  *
+  * `ngtcp2_conn_encode_local_transport_params2` encodes the local QUIC
+--- a/lib/ngtcp2_conn.c
++++ b/lib/ngtcp2_conn.c
+@@ -1972,6 +1972,21 @@
+ }
+ 
+ /*
++ * conn_select_pkt_numlen returns the number of bytes to encode the
++ * next packet number of |pktns| with: 4 on a connection set up by
++ * ngtcp2_conn_set_openssl_client_wire, as OpenSSL 3.5 always encodes
++ * it, otherwise the shortest encoding.
++ */
++static size_t conn_select_pkt_numlen(const ngtcp2_conn *conn,
++                                     const ngtcp2_pktns *pktns) {
++  if (conn->local.wire.openssl_client) {
++    return 4;
++  }
++
++  return pktns_select_pkt_numlen(pktns);
++}
++
++/*
+  * conn_cwnd_is_zero returns nonzero if the number of bytes the local
+  * endpoint can sent at this time is zero.
+  */
+@@ -2270,7 +2285,9 @@
+ }
+ 
+ static uint8_t conn_pkt_flags_long(const ngtcp2_conn *conn) {
+-  return NGTCP2_PKT_FLAG_LONG_FORM | conn_pkt_flags(conn);
++  return (uint8_t)(NGTCP2_PKT_FLAG_LONG_FORM | conn_pkt_flags(conn) |
++                   (conn->local.wire.openssl_client ? NGTCP2_PKT_FLAG_LENGTH2
++                                                    : 0));
+ }
+ 
+ static uint8_t conn_pkt_flags_short(const ngtcp2_conn *conn) {
+@@ -2578,7 +2595,7 @@
+ 
+   ngtcp2_pkt_hd_init(
+     &hd, conn_pkt_flags_long(conn), type, &conn->dcid.current.cid, &conn->oscid,
+-    pktns->tx.last_pkt_num + 1, pktns_select_pkt_numlen(pktns), version);
++    pktns->tx.last_pkt_num + 1, conn_select_pkt_numlen(conn, pktns), version);
+ 
+   if (!conn->server && type == NGTCP2_PKT_INITIAL &&
+       conn->local.settings.tokenlen) {
+@@ -3701,7 +3718,7 @@
+ 
+     ngtcp2_pkt_hd_init(hd, hd_flags, type, &conn->dcid.current.cid, scid,
+                        pktns->tx.last_pkt_num + 1,
+-                       pktns_select_pkt_numlen(pktns), version);
++                       conn_select_pkt_numlen(conn, pktns), version);
+ 
+     ngtcp2_ppe_init(ppe, dest, destlen, dgram_offset, cc);
+ 
+@@ -4688,7 +4705,7 @@
+   cc.hp_mask = conn->callbacks.hp_mask;
+ 
+   ngtcp2_pkt_hd_init(&hd, hd_flags, type, dcid, scid,
+-                     pktns->tx.last_pkt_num + 1, pktns_select_pkt_numlen(pktns),
++                     pktns->tx.last_pkt_num + 1, conn_select_pkt_numlen(conn, pktns),
+                      version);
+ 
+   ngtcp2_ppe_init(&ppe, dest, destlen, 0, &cc);
+@@ -12013,10 +12030,41 @@
+ ngtcp2_ssize ngtcp2_conn_encode_local_transport_params2(const ngtcp2_conn *conn,
+                                                         uint8_t *dest,
+                                                         size_t destlen) {
++  if (conn->local.wire.openssl_client) {
++    return ngtcp2_transport_params_encode_openssl_client(
++      dest, destlen, &conn->local.transport_params,
++      conn->local.wire.active_connection_id_limit);
++  }
++
+   return ngtcp2_transport_params_encode(dest, destlen,
+                                         &conn->local.transport_params);
+ }
+ 
++void ngtcp2_conn_set_openssl_client_wire(
++  ngtcp2_conn *conn, uint64_t wire_active_connection_id_limit) {
++  assert(!conn->server);
++  assert(wire_active_connection_id_limit >=
++         NGTCP2_DEFAULT_ACTIVE_CONNECTION_ID_LIMIT);
++  assert(wire_active_connection_id_limit <=
++         conn->local.transport_params.active_connection_id_limit);
++
++  conn->local.wire.openssl_client = 1;
++  conn->local.wire.active_connection_id_limit =
++    wire_active_connection_id_limit;
++  conn->flags &= (uint32_t)~NGTCP2_CONN_FLAG_CRUMBLE_INITIAL_CRYPTO;
++}
++
++int ngtcp2_conn_set_remote_max_datagram_frame_size(ngtcp2_conn *conn,
++                                                   uint64_t size) {
++  if (conn->remote.transport_params == NULL) {
++    return NGTCP2_ERR_INVALID_STATE;
++  }
++
++  conn->remote.transport_params->max_datagram_frame_size = size;
++
++  return 0;
++}
++
+ int ngtcp2_conn_open_bidi_stream(ngtcp2_conn *conn, int64_t *pstream_id,
+                                  void *stream_user_data) {
+   int rv;
+--- a/lib/ngtcp2_conn.h
++++ b/lib/ngtcp2_conn.h
+@@ -484,6 +484,15 @@
+          local endpoint opens next. */
+       int64_t next_stream_id;
+     } uni;
++    /* wire is set by ngtcp2_conn_set_openssl_client_wire. */
++    struct {
++      /* openssl_client is nonzero if the local transport parameters
++         are encoded as OpenSSL's QUIC client encodes its own. */
++      int openssl_client;
++      /* active_connection_id_limit is the value written on the wire
++         instead of the local one. */
++      uint64_t active_connection_id_limit;
++    } wire;
+   } local;
+ 
+   struct {
+--- a/lib/ngtcp2_pkt.c
++++ b/lib/ngtcp2_pkt.c
+@@ -394,7 +394,7 @@
+                      len and 1 byte for packet number. */
+ 
+   if (hd->type != NGTCP2_PKT_RETRY) {
+-    len += NGTCP2_PKT_LENGTHLEN /* Length */ + hd->pkt_numlen;
++    len += ngtcp2_pkt_lengthlen(hd->flags) /* Length */ + hd->pkt_numlen;
+   }
+ 
+   if (hd->type == NGTCP2_PKT_INITIAL) {
+@@ -440,7 +440,13 @@
+   }
+ 
+   if (hd->type != NGTCP2_PKT_RETRY) {
+-    p = ngtcp2_put_uvarint30(p, (uint32_t)hd->len);
++    if (hd->flags & NGTCP2_PKT_FLAG_LENGTH2) {
++      assert(hd->len < 16384);
++      *p++ = (uint8_t)(0x40 | (hd->len >> 8));
++      *p++ = (uint8_t)(hd->len & 0xff);
++    } else {
++      p = ngtcp2_put_uvarint30(p, (uint32_t)hd->len);
++    }
+     p = ngtcp2_put_pkt_num(p, hd->pkt_num, hd->pkt_numlen);
+   }
+ 
+--- a/lib/ngtcp2_pkt.h
++++ b/lib/ngtcp2_pkt.h
+@@ -107,6 +107,17 @@
+    Length field in Long packet header. */
+ #define NGTCP2_PKT_LENGTHLEN 4
+ 
++/* NGTCP2_PKT_FLAG_LENGTH2, set in ngtcp2_pkt_hd.flags of a Long
++   packet, encodes its Length field in 2 bytes, as OpenSSL does,
++   instead of NGTCP2_PKT_LENGTHLEN.  The packet must be shorter than
++   16384 bytes.  Internal: not one of the public NGTCP2_PKT_FLAG_*. */
++#define NGTCP2_PKT_FLAG_LENGTH2 0x80U
++
++/* ngtcp2_pkt_lengthlen returns the number of bytes the Length field
++   of a Long packet with |flags| occupies. */
++#define ngtcp2_pkt_lengthlen(flags)                                           \
++  (((flags) & NGTCP2_PKT_FLAG_LENGTH2) ? 2 : NGTCP2_PKT_LENGTHLEN)
++
+ /* NGTCP2_PKT_TYPE_INITIAL_V1 is Initial long header packet type for
+    QUIC v1. */
+ #define NGTCP2_PKT_TYPE_INITIAL_V1 0x0U
+--- a/lib/ngtcp2_ppe.c
++++ b/lib/ngtcp2_ppe.c
+@@ -38,6 +38,7 @@
+   ppe->dgram_offset = dgram_offset;
+   ppe->hdlen = 0;
+   ppe->len_offset = 0;
++  ppe->lengthlen = 0;
+   ppe->pkt_num_offset = 0;
+   ppe->pkt_numlen = 0;
+   ppe->pkt_num = 0;
+@@ -69,7 +70,8 @@
+       ppe->len_offset += ngtcp2_put_uvarintlen(hd->tokenlen) + hd->tokenlen;
+     }
+ 
+-    ppe->pkt_num_offset = ppe->len_offset + NGTCP2_PKT_LENGTHLEN;
++    ppe->lengthlen = ngtcp2_pkt_lengthlen(hd->flags);
++    ppe->pkt_num_offset = ppe->len_offset + ppe->lengthlen;
+ 
+     rv = ngtcp2_pkt_encode_hd_long(buf->last, buf_left - cc->aead.max_overhead,
+                                    hd);
+@@ -131,9 +133,15 @@
+   assert(cc->hp_mask);
+ 
+   if (ppe->len_offset) {
+-    ngtcp2_put_uvarint30(
+-      buf->begin + ppe->len_offset,
+-      (uint16_t)(payloadlen + ppe->pkt_numlen + cc->aead.max_overhead));
++    size_t n = payloadlen + ppe->pkt_numlen + cc->aead.max_overhead;
++
++    if (ppe->lengthlen == 2) {
++      assert(n < 16384);
++      buf->begin[ppe->len_offset] = (uint8_t)(0x40 | (n >> 8));
++      buf->begin[ppe->len_offset + 1] = (uint8_t)(n & 0xff);
++    } else {
++      ngtcp2_put_uvarint30(buf->begin + ppe->len_offset, (uint16_t)n);
++    }
+   }
+ 
+   ngtcp2_crypto_create_nonce(ppe->nonce, cc->ckm->iv.base, cc->ckm->iv.len,
+--- a/lib/ngtcp2_ppe.h
++++ b/lib/ngtcp2_ppe.h
+@@ -51,6 +51,8 @@
+   size_t hdlen;
+   /* len_offset is the offset to Length field. */
+   size_t len_offset;
++  /* lengthlen is the number of bytes of Length field. */
++  size_t lengthlen;
+   /* pkt_num_offset is the offset to packet number field. */
+   size_t pkt_num_offset;
+   /* pkt_numlen is the number of bytes used to encode a packet
+--- a/lib/ngtcp2_transport_params.c
++++ b/lib/ngtcp2_transport_params.c
+@@ -393,6 +393,82 @@
+   return (ngtcp2_ssize)len;
+ }
+ 
++ngtcp2_ssize ngtcp2_transport_params_encode_openssl_client(
++  uint8_t *dest, size_t destlen, const ngtcp2_transport_params *params,
++  uint64_t active_connection_id_limit) {
++  uint8_t *p;
++  size_t len = 0;
++  size_t i;
++  /* OpenSSL 3.5, ssl/quic/quic_channel.c ch_generate_transport_params */
++  const struct {
++    ngtcp2_transport_param_id id;
++    uint64_t value;
++    int present;
++  } varints[] = {
++    {NGTCP2_TRANSPORT_PARAM_MAX_IDLE_TIMEOUT,
++     params->max_idle_timeout / NGTCP2_MILLISECONDS,
++     params->max_idle_timeout != 0},
++    {NGTCP2_TRANSPORT_PARAM_MAX_UDP_PAYLOAD_SIZE,
++     params->max_udp_payload_size,
++     params->max_udp_payload_size != NGTCP2_DEFAULT_MAX_RECV_UDP_PAYLOAD_SIZE},
++    {NGTCP2_TRANSPORT_PARAM_ACTIVE_CONNECTION_ID_LIMIT,
++     active_connection_id_limit, 1},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_DATA, params->initial_max_data,
++     params->initial_max_data != 0},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL,
++     params->initial_max_stream_data_bidi_local,
++     params->initial_max_stream_data_bidi_local != 0},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE,
++     params->initial_max_stream_data_bidi_remote,
++     params->initial_max_stream_data_bidi_remote != 0},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAM_DATA_UNI,
++     params->initial_max_stream_data_uni,
++     params->initial_max_stream_data_uni != 0},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAMS_BIDI,
++     params->initial_max_streams_bidi, params->initial_max_streams_bidi != 0},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAMS_UNI,
++     params->initial_max_streams_uni, params->initial_max_streams_uni != 0},
++  };
++
++  assert(params->initial_scid_present);
++
++  if (params->disable_active_migration) {
++    len += zero_paramlen(NGTCP2_TRANSPORT_PARAM_DISABLE_ACTIVE_MIGRATION);
++  }
++  len += cid_paramlen(NGTCP2_TRANSPORT_PARAM_INITIAL_SOURCE_CONNECTION_ID,
++                      &params->initial_scid);
++  for (i = 0; i < sizeof(varints) / sizeof(varints[0]); ++i) {
++    if (varints[i].present) {
++      len += varint_paramlen(varints[i].id, varints[i].value);
++    }
++  }
++
++  if (dest == NULL && destlen == 0) {
++    return (ngtcp2_ssize)len;
++  }
++
++  if (destlen < len) {
++    return NGTCP2_ERR_NOBUF;
++  }
++
++  p = dest;
++
++  if (params->disable_active_migration) {
++    p = write_zero_param(p, NGTCP2_TRANSPORT_PARAM_DISABLE_ACTIVE_MIGRATION);
++  }
++  p = write_cid_param(p, NGTCP2_TRANSPORT_PARAM_INITIAL_SOURCE_CONNECTION_ID,
++                      &params->initial_scid);
++  for (i = 0; i < sizeof(varints) / sizeof(varints[0]); ++i) {
++    if (varints[i].present) {
++      p = write_varint_param(p, varints[i].id, varints[i].value);
++    }
++  }
++
++  assert((size_t)(p - dest) == len);
++
++  return (ngtcp2_ssize)len;
++}
++
+ /*
+  * decode_varint decodes a single varint from the buffer pointed by
+  * |*pp| of length |end - *pp|.  If it decodes an integer
+--- a/lib/ngtcp2_transport_params.h
++++ b/lib/ngtcp2_transport_params.h
+@@ -111,6 +111,17 @@
+  * This function copies all valid fields in version
+  * |transport_params_version| from |src| to |dest|.
+  */
++/*
++ * ngtcp2_transport_params_encode_openssl_client encodes |params| as
++ * OpenSSL 3.5's QUIC client encodes its own transport parameters: its
++ * set and order, active_connection_id_limit written as
++ * |active_connection_id_limit|.  See
++ * ngtcp2_conn_set_openssl_client_wire.
++ */
++ngtcp2_ssize ngtcp2_transport_params_encode_openssl_client(
++  uint8_t *dest, size_t destlen, const ngtcp2_transport_params *params,
++  uint64_t active_connection_id_limit);
++
+ void ngtcp2_transport_params_convert_to_old(int transport_params_version,
+                                             ngtcp2_transport_params *dest,
+                                             const ngtcp2_transport_params *src);

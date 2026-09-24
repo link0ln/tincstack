@@ -1,0 +1,40 @@
+build dev-test rc=0
+quic-wire rc=0
+front-port rc=0
+h3-interop rc=0
+https-carrier rc=0
+quic-carrier rc=0
+tls-front rc=0
+plain-refuse rc=0
+classify rc=0
+cert-repin rc=0
+carrier-switch rc=0
+invitee-mesh rc=0
+obfs rc=0
+same-nat-meta rc=0
+singleflow rc=0
+obfs-restart rc=0
+obfs-confirmed-peer rc=0
+decoy rc=0
+mixed-pre-tp rc=0
+mixed-pre-deb13 rc=0
+matrix rc=0
+acme rc=0
+cert-lifecycle rc=0
+ping-interval rc=0
+zeroconf-pool rc=0
+fingerprint rc=0
+retry-carrier rc=0
+windows-wine rc=0
+android-emulator rc=0
+node-build rc=0
+app-https rc=0
+app-quic rc=1
+smoke rc=0
+done
+# app-quic rc=1 above: join-on-emulator.sh's default inviter image (tincstack/node:wsy,
+# built once, never rebuilt) carried a GnuTLS-era core; the current phone correctly gave
+# quic up against it (plain, tunnel up). Script fixed to run the tree's core; re-run:
+app-quic (inviter tincstack/node:dev) rc=0
+app-https (inviter tincstack/node:dev) rc=0
+windows-wine (with transport-parameter comparison) rc=0
