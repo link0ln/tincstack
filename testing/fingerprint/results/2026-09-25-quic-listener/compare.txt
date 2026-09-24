@@ -1,0 +1,119 @@
+the answers to one-datagram probes
+listener
+vn-1200	silence
+vn-1200-ids20	silence
+vn-1199	silence
+vn-draft29	silence
+vn-v2	silence
+v1-initial-junk-1200	silence
+v1-initial-junk-600	silence
+short-unknown-1200	silence
+short-unknown-100	silence
+short-unknown-40	silence
+zeros-1200	silence
+http-get	silence
+nginx
+vn-1200	version negotiation 27 B, ids echoed, versions 00000001
+vn-1200-ids20	version negotiation 51 B, ids echoed, versions 00000001
+vn-1199	version negotiation 27 B, ids echoed, versions 00000001
+vn-draft29	version negotiation 27 B, ids echoed, versions 00000001
+vn-v2	version negotiation 27 B, ids echoed, versions 00000001
+v1-initial-junk-1200	silence
+v1-initial-junk-600	silence
+short-unknown-1200	short header (stateless reset?), >= 43 B
+short-unknown-100	short header (stateless reset?), >= 43 B
+short-unknown-40	short header (stateless reset?), < 43 B
+zeros-1200	silence
+http-get	short header (stateless reset?), < 43 B
+
+the CONNECTION_CLOSE for a wrong ALPN (udp length, error, frame type, reason)
+listener
+50	376	0	
+nginx
+75	376	0	handshake failed
+
+the server's connection id length
+listener
+8
+nginx
+20
+
+the server's handshake flight (udp length, packets, Lengths, frames)
+listener
+50	0	22	02
+1208	0	1180	02,06
+1208	0,2	45,674	06,06,18,00
+nginx
+59	0	22	02
+1208	0	1170	02,06
+1208	0,2	55,1087	06,06,06,06,06,00
+
+the server's transport parameters
+listener
+Parameter: original_destination_connection_id
+Parameter: stateless_reset_token
+Parameter: initial_source_connection_id
+Parameter: initial_max_stream_data_bidi_local (len=4) 524288
+Parameter: initial_max_stream_data_bidi_remote (len=4) 524288
+Parameter: initial_max_stream_data_uni (len=4) 524288
+Parameter: initial_max_data (len=4) 786432
+Parameter: initial_max_streams_bidi (len=2) 100
+Parameter: initial_max_streams_uni (len=1) 3
+Parameter: max_idle_timeout (len=4) 30000 ms
+Parameter: active_connection_id_limit (len=1) 8
+Parameter: max_datagram_frame_size (len=4) 65536
+Parameter: version_information (len=8)
+nginx
+Parameter: initial_max_data (len=4) 8585216
+Parameter: initial_max_streams_uni (len=1) 3
+Parameter: initial_max_streams_bidi (len=2) 128
+Parameter: initial_max_stream_data_bidi_local (len=4) 65536
+Parameter: initial_max_stream_data_bidi_remote (len=4) 65536
+Parameter: initial_max_stream_data_uni (len=4) 65536
+Parameter: max_idle_timeout (len=4) 75000 ms
+Parameter: max_udp_payload_size (len=4) 65527
+Parameter: active_connection_id_limit (len=1) 2
+Parameter: max_ack_delay (len=1) 25
+Parameter: ack_delay_exponent (len=1)
+Parameter: original_destination_connection_id
+Parameter: initial_source_connection_id
+Parameter: stateless_reset_token
+
+the server's first 1-RTT datagrams (udp length, frames)
+listener
+514	1e,06,0a
+38	0a,00
+nginx
+596	06,06,1e,18,0e,0e,0e
+31	02
+
+the session tickets (lifetime, length)
+listener
+7200,7200	208,208
+nginx
+300,300	224,224
+
+the HTTP/3 SETTINGS
+listener
+Settings Identifier: Max Table Capacity (0x0000000000000001) Settings Value: 0
+Settings Identifier: Blocked Streams (0x0000000000000007) Settings Value: 0
+Settings Identifier: Max Field Section Size (0x0000000000000006) Settings Value: 65536
+Settings Identifier: Enable Datagram (0x0000000000000033) Settings Value: 1
+nginx
+Settings Identifier: Max Table Capacity (0x0000000000000001) Settings Value: 4096
+Settings Identifier: Blocked Streams (0x0000000000000007) Settings Value: 128
+
+the HTTP/3 answers (status, body size, header names)
+listener
+GET /	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+GET /nope	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+HEAD /	000 0 B []
+POST /	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+DELETE /	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+nginx
+GET /	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+GET /nope	404 146 B [server,date,content-type,content-length]
+HEAD /	200 0 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+POST /	405 150 B [server,date,content-type,content-length]
+DELETE /	405 150 B [server,date,content-type,content-length]
+

@@ -1654,9 +1654,33 @@ What an observer can still tell (testing/fingerprint, re-measured
   55, 40, 40 and 69 from curl (re-measured 2026-09-24, late):
   another SETTINGS, and a POST carrying the authenticator where curl sends a
   GET. Encrypted, but their sizes show;
-- the listener's side of QUIC (its Initial and Handshake packets, its
-  transport parameters -- `max_datagram_frame_size`, 1-byte packet numbers)
-  has not been compared with nginx's;
+- **the listener's side of QUIC is not nginx's** (first measured
+  2026-09-25 by `testing/transports/quic-listener-wire-test.sh`, next to
+  Debian 13's nginx 1.26.3 on OpenSSL 3.5.7 -- the same TLS stack, so both
+  answer curl's `X25519MLKEM768`; `nginx:1.27`, OpenSSL 3.0, does not and
+  is the wrong reference for this):
+  - one datagram suffices: nginx answers an unknown QUIC version with
+    Version Negotiation and a short-header datagram for an unknown
+    connection with a stateless reset (even a 27-byte `GET /` line); the
+    listener answers neither;
+  - its HTTP/3 decoy returns 200 and the page for any path and method,
+    and a body to `HEAD` (curl: `ERR_MALFORMED_HTTP_MESSAGING`); nginx 404,
+    405, and no body. The TCP decoy gets these right; the HTTP/3 one does
+    not use it;
+  - in the clear: 8-byte connection ids (nginx 20), 4-byte long-header
+    Length fields (nginx minimal), and a handshake flight whose third
+    datagram carries the whole server flight in one unpadded CRYPTO frame
+    plus a 1-RTT packet (NEW_CONNECTION_ID, PADDING), where nginx sends one
+    CRYPTO frame per TLS message in a Handshake packet padded to fill the
+    datagram and nothing in 1-RTT;
+  - after a handshake: transport parameters (set, order, values,
+    `max_datagram_frame_size`, `version_information`), HTTP/3 SETTINGS
+    (`H3_DATAGRAM`, QPACK 0/0 vs 4096/128), session tickets (7200 s vs
+    300 s), the packing of the first 1-RTT packets, and a wrong-ALPN close
+    without nginx's reason phrase.
+  Details and priorities: PLAN.md, "The listener's QUIC side is not
+  nginx's"; raw results in
+  `testing/fingerprint/results/2026-09-25-quic-listener/`;
 - until 2026-09-23 the ClientHello was GnuTLS 3.7.9's (JA4
   `q13d0315h3_55b375c5d22e_84684a673e38`: `status_request`,
   `record_size_limit`, `session_ticket`, `renegotiation_info`, SHA-1

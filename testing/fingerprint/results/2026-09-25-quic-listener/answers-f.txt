@@ -1,0 +1,5 @@
+GET /	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+GET /nope	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+HEAD /	000 0 B []
+POST /	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
+DELETE /	200 615 B [server,date,content-type,content-length,last-modified,etag,accept-ranges]
