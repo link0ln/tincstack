@@ -225,6 +225,21 @@ for p in t13:https q13:quic; do
 	fi
 done
 
+# The datagram with the client's Finished (Initial padded to fill it, Handshake, 1-RTT ACK, the
+# connection ID the server issued) is the Linux dialler's, which quic-wire-test.sh holds to curl's.
+python3 -B "$HERE/quic_initial.py" "$RUN/cap/capf.pcap" > "$RUN/datagrams.txt" 2>/dev/null
+second() { # <client ip>: udp length, packets, Lengths, Initial frames, DCID moved or kept
+	awk -F'\t' -v ip="$1" '$1 != ip { next }
+		$3 ~ /^IH/ { printf "%s\t%s\t%s\t%s\t%s\n", $2, $3, $4, $5, ($6 != prev[$7] ? "moved" : "kept"); exit }
+		{ prev[$7] = $6 }' "$RUN/datagrams.txt"
+}
+s_plat=$(second "$D_IP"); s_lin=$(second "$C_IP")
+if [[ -n $s_lin && $s_plat == "$s_lin" ]]; then
+	ok "the Windows quic second flight is the Linux one: $(awk -F'\t' '{printf "%s B of %s, Lengths %s, Initial %s, dcid %s", $1, $2, $3, $4, $5}' <<<"$s_plat")"
+else
+	bad "the Windows quic second flight differs from the Linux one: windows '$s_plat', linux '$s_lin'"
+fi
+
 # ---- a hanging dial must not stall the daemon ----------------------------------------------------
 docker exec "$PFX-f" iptables -A INPUT -p tcp --dport 443 -j DROP
 wt d set PreferredTransports https >/dev/null

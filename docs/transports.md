@@ -1624,16 +1624,34 @@ What an observer can still tell (testing/fingerprint, re-measured
   SNI, and a fingerprint of its own). Consequences: packets of 1200 bytes at
   most both ways (§9.4 ceiling), and datagrams negotiated inside the tunnel
   (§9.4);
-- **the dialler's second flight is not curl's**: the Initial that carries
-  the ACK for the server's Initial, coalesced with the Handshake packet
-  (Finished) and a 1-RTT packet, is padded by OpenSSL to fill the 1200 bytes
-  (Length 1051) while ngtcp2 pads the 1-RTT packet and leaves the Initial at
-  25 bytes. The Length field of a long header is not header-protected: this
-  is readable without decrypting anything. Fixing it means writing the whole
-  datagram before padding its first packet, which ngtcp2 does not do
-  (PLAN.md Known Issues);
-- the first 1-RTT packets (HTTP/3 control and QPACK streams, the request)
-  are 41, 41 and 315 bytes from the dialler, 55, 40, 40 and 69 from curl:
+- **the dialler's second flight is curl's** since 2026-09-24, late: the
+  datagram that carries the client's Finished is, from both, an Initial
+  with ACK and 1026 bytes of PADDING (Length 1051), the Handshake packet
+  (Length 80) and a 34-byte 1-RTT packet with an ACK -- 1200 bytes. Stock
+  ngtcp2 padded the 1-RTT packet and left the Initial at Length 25; the
+  Length field of a long header is not header-protected, so that was
+  readable without decrypting anything. OpenSSL also moves to the connection
+  ID the server issues in its first 1-RTT packet (NEW_CONNECTION_ID, seq 1)
+  as soon as it has it, so the Destination Connection ID of that datagram
+  and every later one differs from the one before; stock ngtcp2 kept the
+  original. And ngtcp2 added a PING to an ACK-only Initial when the server's
+  flight took longer than the RTT estimate (seen in the lab, timing-bound),
+  which OpenSSL never does. The patch now does all three as OpenSSL
+  (`conn_write_openssl_client_flight`: the Handshake and 1-RTT packets are
+  written first, then the Initial padded to what is left).
+  `quic-wire-test.sh` requires the datagram's size, packets, Length fields,
+  the Initial's frames and the moved DCID to equal curl's; tshark cannot
+  follow a connection across that move without the TLS secrets, so the
+  Initials are decrypted by `testing/transports/quic_initial.py` (standard
+  library, keys from the client's first DCID as any observer derives them).
+  Windows (Wine) sends the same datagram. The Android emulator, which needs
+  ~25 ms per server datagram, mostly does not: its Finished leaves without
+  an Initial, unpadded (146 bytes), the server's last Initial unacknowledged
+  -- by all signs ngtcp2's PTO firing first on a slow client; what OpenSSL
+  does in that timing is unmeasured (PLAN.md);
+- the first 1-RTT packets after that datagram (HTTP/3 control and QPACK
+  streams, the request) are 54, 41, 41 and 315 UDP bytes from the dialler,
+  55, 40, 40 and 69 from curl (re-measured 2026-09-24, late):
   another SETTINGS, and a POST carrying the authenticator where curl sends a
   GET. Encrypted, but their sizes show;
 - the listener's side of QUIC (its Initial and Handshake packets, its

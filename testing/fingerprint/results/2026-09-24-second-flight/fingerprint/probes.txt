@@ -1,0 +1,64 @@
+== curl -> B https ==
+HTTP/1.1 200 OK
+Server: nginx
+Date: Thu, 24 Sep 2026 20:01:10 GMT
+Content-Type: text/html
+Content-Length: 615
+Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT
+Connection: keep-alive
+ETag: "67ff9c07-267"
+Accept-Ranges: bytes
+
+<!DOCTYPE html>
+<html>
+== curl -> N https ==
+HTTP/2 200 
+server: nginx/1.27.5
+date: Thu, 24 Sep 2026 20:01:11 GMT
+content-type: text/html
+content-length: 615
+last-modified: Wed, 16 Apr 2025 12:01:11 GMT
+etag: "67ff9c07-267"
+alt-svc: h3=":443"; ma=86400
+accept-ranges: bytes
+
+<!DOCTYPE html>
+<html>
+== curl -> B garbage over TLS ==
+HTTP/1.1 400 Bad Request
+Server: nginx
+Date: Thu, 24 Sep 2026 20:01:11 GMT
+Content-Type: text/html
+Content-Length: 150
+== curl -> N garbage over TLS ==
+HTTP/1.1 400 Bad Request
+Server: nginx/1.27.5
+Date: Thu, 24 Sep 2026 20:01:12 GMT
+Content-Type: text/html
+Content-Length: 157
+== curl -> B http3 ==
+HTTP/3 200 
+server: nginx
+date: Thu, 24 Sep 2026 20:01:12 GMT
+content-type: text/html
+content-length: 615
+last-modified: Wed, 16 Apr 2025 12:01:11 GMT
+etag: "67ff9c07-267"
+accept-ranges: bytes
+
+<!DOCTYPE html>
+<html>
+<head>
+== curl -> N http3 ==
+HTTP/3 200 
+server: nginx/1.27.5
+date: Thu, 24 Sep 2026 20:01:13 GMT
+content-type: text/html
+content-length: 615
+last-modified: Wed, 16 Apr 2025 12:01:11 GMT
+etag: "67ff9c07-267"
+alt-svc: h3=":443"; ma=86400
+accept-ranges: bytes
+
+<!DOCTYPE html>
+<html>

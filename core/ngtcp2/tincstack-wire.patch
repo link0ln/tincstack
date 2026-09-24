@@ -1,6 +1,6 @@
 --- a/lib/includes/ngtcp2/ngtcp2.h
 +++ b/lib/includes/ngtcp2/ngtcp2.h
-@@ -4984,6 +4984,65 @@
+@@ -4984,6 +4984,72 @@
    ngtcp2_conn *conn, uint8_t *dest, size_t destlen);
  
  /**
@@ -36,7 +36,14 @@
 + *   of a long header in 2;
 + * - the ClientHello goes into the Initial packets in order, in as few
 + *   CRYPTO frames as fit, without the interleaved PING and PADDING
-+ *   frames ngtcp2 adds by default.
++ *   frames ngtcp2 adds by default;
++ * - the datagram that carries the client's Finished holds an Initial
++ *   with ACK and PADDING, the Handshake packet and a 1RTT packet with
++ *   ACK only; the Initial, not the last packet, is padded so that the
++ *   datagram is full, and the ACK-only Initial and Handshake packets
++ *   never get a PING;
++ * - the client moves to the first connection ID the server issues as
++ *   soon as it gets it, without retiring the one it leaves.
 + *
 + * Call it right after `ngtcp2_conn_client_new`, before the first packet
 + * is written.
@@ -110,7 +117,144 @@
  
    if (!conn->server && type == NGTCP2_PKT_INITIAL &&
        conn->local.settings.tokenlen) {
-@@ -3701,7 +3718,7 @@
+@@ -2758,7 +2775,11 @@
+ 
+     if (!pkt_empty) {
+       if (!(rtb_entry_flags & NGTCP2_RTB_ENTRY_FLAG_ACK_ELICITING)) {
+-        if (ngtcp2_tstamp_elapsed(pktns->tx.non_ack_pkt_start_ts,
++        /* OpenSSL's QUIC client does not make an Initial or Handshake
++           packet with ACK only ack-eliciting; these packet number
++           spaces are discarded soon anyway. */
++        if (!conn->local.wire.openssl_client &&
++            ngtcp2_tstamp_elapsed(pktns->tx.non_ack_pkt_start_ts,
+                                   conn->cstat.smoothed_rtt, ts)) {
+           lfr.ping.type = NGTCP2_FRAME_PING;
+ 
+@@ -2783,9 +2804,13 @@
+     return 0;
+   }
+ 
+-  /* If we cannot write another packet, then we need to add padding to
+-     Initial here. */
+-  if (conn_should_pad_pkt(
++  if (type == NGTCP2_PKT_INITIAL && conn->local.wire.initial_dgramlen) {
++    /* OpenSSL client: the Initial takes the padding of the whole
++       datagram; the packets after it are already written. */
++    lfr.padding.type = NGTCP2_FRAME_PADDING;
++    lfr.padding.len =
++      ngtcp2_ppe_dgram_padding_size(&ppe, conn->local.wire.initial_dgramlen);
++  } else if (conn_should_pad_pkt(
+         conn, type, ngtcp2_ppe_left(&ppe), write_datalen,
+         (rtb_entry_flags & NGTCP2_RTB_ENTRY_FLAG_ACK_ELICITING) != 0,
+         require_padding)) {
+@@ -3127,6 +3152,91 @@
+  * NGTCP2_ERR_CALLBACK_FAILURE
+  *     User-defined callback function failed.
+  */
++/*
++ * conn_write_openssl_client_flight writes the datagram that carries
++ * the client's Handshake flight as OpenSSL's QUIC client does: an
++ * Initial packet with ACK and PADDING, then a Handshake packet, then
++ * a 1RTT packet with ACK only, if any is due.  OpenSSL pads the
++ * Initial packet so that the datagram is full, ngtcp2 pads the last
++ * packet.  The packets after the Initial are written first into a
++ * scratch buffer, so that the Initial knows how much it has to pad.
++ * The client must have Handshake keys and owe an ACK in Initial
++ * packet number space.
++ */
++static ngtcp2_ssize conn_write_openssl_client_flight(ngtcp2_conn *conn,
++                                                     ngtcp2_pkt_info *pi,
++                                                     uint8_t *dest,
++                                                     size_t destlen,
++                                                     uint64_t write_datalen,
++                                                     ngtcp2_tstamp ts) {
++  uint8_t tail[NGTCP2_MAX_UDP_PAYLOAD_SIZE];
++  size_t dgramlen = ngtcp2_min(destlen, sizeof(tail));
++  size_t taillen = 0;
++  /* Room kept for the Initial packet: long header, token, ACK and
++     AEAD tag. */
++  size_t reserve = NGTCP2_MIN_LONG_HEADERLEN + conn->dcid.current.cid.datalen +
++                   conn->oscid.datalen + conn->local.settings.tokenlen + 128;
++  ngtcp2_ssize nwrite, hs_nwrite, in_nwrite;
++  ngtcp2_ack_range ack_ranges[NGTCP2_MAX_ACK_RANGES];
++  ngtcp2_frame fr;
++
++  if (dgramlen <= reserve) {
++    return 0;
++  }
++
++  hs_nwrite = conn_write_handshake_pkt(conn, pi, tail, dgramlen - reserve, 0,
++                                       NGTCP2_PKT_HANDSHAKE,
++                                       NGTCP2_WRITE_PKT_FLAG_NONE,
++                                       write_datalen, ts);
++  if (hs_nwrite < 0) {
++    assert(hs_nwrite != NGTCP2_ERR_NOBUF);
++    return hs_nwrite;
++  }
++
++  taillen += (size_t)hs_nwrite;
++
++  if (conn->pktns.crypto.tx.ckm) {
++    fr.ack.ranges = ack_ranges;
++    if (ngtcp2_acktr_create_ack_frame(
++          &conn->pktns.acktr, &fr.ack, NGTCP2_PKT_1RTT, ts,
++          /* ack_delay = */ 0,
++          conn->local.transport_params.ack_delay_exponent) == 0) {
++      /* OpenSSL acknowledges these packets with ACK Delay 0. */
++      fr.ack.ack_delay_unscaled = 0;
++      fr.ack.ack_delay = 0;
++      nwrite = ngtcp2_conn_write_single_frame_pkt(
++        conn, pi, tail + taillen, dgramlen - reserve - taillen,
++        NGTCP2_PKT_1RTT, NGTCP2_WRITE_PKT_FLAG_NONE, &conn->dcid.current.cid,
++        &fr, NGTCP2_RTB_ENTRY_FLAG_NONE, NULL, ts);
++      if (nwrite < 0) {
++        assert(nwrite != NGTCP2_ERR_NOBUF);
++        return nwrite;
++      }
++
++      conn->dcid.current.bytes_sent += (uint64_t)nwrite;
++      taillen += (size_t)nwrite;
++    }
++  }
++
++  conn->local.wire.initial_dgramlen = dgramlen - taillen;
++  in_nwrite = conn_write_handshake_pkt(
++    conn, pi, dest, dgramlen - taillen, 0, NGTCP2_PKT_INITIAL,
++    NGTCP2_WRITE_PKT_FLAG_NONE, write_datalen, ts);
++  conn->local.wire.initial_dgramlen = 0;
++  if (in_nwrite < 0) {
++    assert(in_nwrite != NGTCP2_ERR_NOBUF);
++    return in_nwrite;
++  }
++
++  memcpy(dest + in_nwrite, tail, taillen);
++
++  if (hs_nwrite) {
++    ngtcp2_conn_discard_initial_state(conn, ts);
++  }
++
++  return in_nwrite + (ngtcp2_ssize)taillen;
++}
++
+ static ngtcp2_ssize conn_write_handshake_pkts(ngtcp2_conn *conn,
+                                               ngtcp2_pkt_info *pi,
+                                               uint8_t *dest, size_t destlen,
+@@ -3151,6 +3261,14 @@
+      pending Initial ACK, Initial packet number space is discarded
+      after writing the first Handshake packet.
+    */
++  if (conn->local.wire.openssl_client && !conn->server &&
++      conn->hs_pktns->crypto.tx.ckm && conn->in_pktns &&
++      ngtcp2_acktr_require_active_ack(&conn->in_pktns->acktr,
++                                      /* max_ack_delay = */ 0, ts)) {
++    return conn_write_openssl_client_flight(conn, pi, dest, destlen,
++                                            write_datalen, ts);
++  }
++
+   if (!conn->server && conn->hs_pktns->crypto.tx.ckm && conn->in_pktns &&
+       !ngtcp2_acktr_require_active_ack(&conn->in_pktns->acktr,
+                                        /* max_ack_delay = */ 0, ts) &&
+@@ -3701,7 +3819,7 @@
  
      ngtcp2_pkt_hd_init(hd, hd_flags, type, &conn->dcid.current.cid, scid,
                         pktns->tx.last_pkt_num + 1,
@@ -119,7 +263,7 @@
  
      ngtcp2_ppe_init(ppe, dest, destlen, dgram_offset, cc);
  
-@@ -4688,7 +4705,7 @@
+@@ -4688,7 +4806,7 @@
    cc.hp_mask = conn->callbacks.hp_mask;
  
    ngtcp2_pkt_hd_init(&hd, hd_flags, type, dcid, scid,
@@ -128,7 +272,30 @@
                       version);
  
    ngtcp2_ppe_init(&ppe, dest, destlen, 0, &cc);
-@@ -12013,10 +12030,41 @@
+@@ -8259,6 +8377,22 @@
+   ngtcp2_dcid dcid;
+   int rv;
+ 
++  if (conn->local.wire.openssl_client && !conn->server &&
++      !conn->local.wire.dcid_switched && !pv && conn->dcid.current.seq == 0 &&
++      !ngtcp2_dcidtr_unused_empty(&conn->dcid.dtr)) {
++    /* OpenSSL's QUIC client moves to the first connection ID the
++       server issues as soon as it gets it, the packets of its last
++       Handshake flight included, and does not retire the one it
++       leaves.  The packets' Destination Connection ID is in the
++       clear. */
++    ngtcp2_dcidtr_pop_unused_cid_token(&conn->dcid.dtr, &dcid);
++    ngtcp2_dcid_copy_cid_token(&conn->dcid.current, &dcid);
++    conn->local.wire.dcid_switched = 1;
++
++    ngtcp2_log_info(&conn->log, NGTCP2_LOG_EVENT_CON,
++                    "switched to the first issued connection ID");
++  }
++
+   if (conn->dcid.current.seq < conn->dcid.retire_prior_to) {
+     if (ngtcp2_dcidtr_unused_empty(&conn->dcid.dtr)) {
+       return 0;
+@@ -12013,10 +12147,41 @@
  ngtcp2_ssize ngtcp2_conn_encode_local_transport_params2(const ngtcp2_conn *conn,
                                                          uint8_t *dest,
                                                          size_t destlen) {
@@ -170,9 +337,22 @@
  int ngtcp2_conn_open_bidi_stream(ngtcp2_conn *conn, int64_t *pstream_id,
                                   void *stream_user_data) {
    int rv;
+@@ -12339,6 +12504,12 @@
+ 
+       if (ngtcp2_pkt_get_type_long(conn->negotiated_version, dest[0]) ==
+           NGTCP2_PKT_INITIAL) {
++        /* conn_write_openssl_client_flight has filled the datagram
++           already. */
++        if (conn->local.wire.openssl_client && (size_t)nwrite >= destlen) {
++          return nwrite;
++        }
++
+         wflags |= NGTCP2_WRITE_PKT_FLAG_REQUIRE_PADDING;
+       }
+ 
 --- a/lib/ngtcp2_conn.h
 +++ b/lib/ngtcp2_conn.h
-@@ -484,6 +484,15 @@
+@@ -484,6 +484,23 @@
           local endpoint opens next. */
        int64_t next_stream_id;
      } uni;
@@ -184,6 +364,14 @@
 +      /* active_connection_id_limit is the value written on the wire
 +         instead of the local one. */
 +      uint64_t active_connection_id_limit;
++      /* initial_dgramlen, if nonzero, is the length of UDP datagram
++         payload the next Initial packet is padded up to.  It is only
++         set while the client writes the datagram that carries its
++         Handshake flight. */
++      size_t initial_dgramlen;
++      /* dcid_switched is nonzero once the client has moved to the
++         first connection ID the server issued. */
++      int dcid_switched;
 +    } wire;
    } local;
  

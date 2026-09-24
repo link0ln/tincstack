@@ -698,9 +698,20 @@ behind it stalled until the ping timeout. It now uses the path's limit,
 reports the overshoot so tinc's MTU discovery converges in one step, and the
 flush drops a queued datagram that no longer fits.
 
-Proof: `testing/transports/quic-wire-test.sh` (the old core fails it),
-`quic-carrier-test.sh` (b) with a second NAT rebind,
-`mixed-version-test.sh` (docs/transports.md §9.4, §9.8, §9.9).
+The second flight (2026-09-24, late), same mode: the datagram with the
+client's Finished is written as OpenSSL writes it -- the Handshake packet
+and an ACK-only 1-RTT packet first into a scratch buffer, then the Initial
+(ACK + PADDING) padded to what is left, so the Initial's Length is 1051 like
+curl's instead of 25; an ACK-only Initial or Handshake packet never gets
+ngtcp2's ack-eliciting PING; and the client moves to the first connection
+ID the server issues as soon as it has it, without retiring seq 0 -- the
+Destination Connection ID is in the clear, and OpenSSL moves.
+
+Proof: `testing/transports/quic-wire-test.sh` (the old core fails it; its
+second-flight check decrypts the Initials with
+`testing/transports/quic_initial.py`, because tshark loses the connection
+across the connection-ID move), `quic-carrier-test.sh` (b) with a second
+NAT rebind, `mixed-version-test.sh` (docs/transports.md §9.4, §9.8, §9.9).
 
 ---
 

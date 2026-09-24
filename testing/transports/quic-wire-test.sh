@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The quic dialler's first flight is curl's.
+# The quic dialler's handshake flights are curl's.
 #
 # curl 8.14 on Debian 13 speaks QUIC through OpenSSL 3.5's own stack; our
 # dialler runs ngtcp2. Its Initial -- which anyone can decrypt, its keys come
@@ -15,14 +15,13 @@
 #   * its ClientHello is curl's: JA4_r and length;
 #   * its two Initial packets are curl's: sizes, packet-number length, Length
 #     field, frames, CRYPTO offsets and lengths, PADDING;
+#   * the datagram with its Finished is curl's: OpenSSL pads the Initial in
+#     front of the Handshake packet, not the 1-RTT packet after it, and has
+#     moved to the connection ID the server issued -- Length fields and
+#     Destination Connection ID are in the clear;
 #   * the link is on quic and the tunnel carries 1400-byte pings both ways
 #     (the dialler takes and sends 1200-byte packets at most, as curl does, so
 #     tinc's path MTU on quic is smaller: printed).
-#
-# Printed, not required: the second flight. OpenSSL pads the Initial that
-# acknowledges the server's; ngtcp2 pads the 1-RTT packet after it, so that
-# Initial's Length field -- readable without decrypting anything -- differs
-# (PLAN.md Known Issues).
 #
 # Usage: [CORE_IMAGE=...] [KEEP=1] testing/transports/quic-wire-test.sh
 set -uo pipefail
@@ -121,9 +120,28 @@ else
 	diff <(echo "$f_ours") <(echo "$f_curl") >&2 || true
 fi
 
-# ---- printed: the Initial coalesced with the client's Handshake flight ---------------------------------
-fourth() { tshark -Y "quic.long.packet_type == 0 && $1" -T fields -e quic.length | sed -n 4p | cut -d, -f1; }
-log "     the Initial before the client's Finished has Length $(fourth "ip.src == $L_IP") here, $(fourth "ip.src != $L_IP && ip.src != $F_IP") from curl (known difference, not required)"
+# ---- the second flight: Initial + Handshake (+ 1-RTT) in one datagram ------------------------------
+# The client's first datagram carrying both an Initial and a Handshake packet. In the clear: its
+# UDP length, its packets, their Length fields and Destination Connection ID; readable by anyone:
+# the Initial's frames. OpenSSL pads the Initial so that the datagram is full (stock ngtcp2 pads
+# the 1-RTT packet after it: Initial Length 25 instead of 1051) and has already moved to the
+# connection ID the server issued in its first 1-RTT packet (stock ngtcp2 keeps the original).
+# tshark loses a connection across that move without the TLS secrets; quic_initial.py keys the
+# Initials by the client's first DCID, as an observer does.
+python3 -B "$HERE/quic_initial.py" "$RUN/c.pcap" > "$RUN/datagrams.txt"
+second() { # <client ip>: udp length, packets, Lengths, Initial frames, DCID moved or kept
+	awk -F'\t' -v ip="$1" '$1 != ip { next }
+		$3 ~ /^IH/ { printf "%s\t%s\t%s\t%s\t%s\n", $2, $3, $4, $5, ($6 != prev[$7] ? "moved" : "kept"); exit }
+		{ prev[$7] = $6 }' "$RUN/datagrams.txt"
+}
+s_ours=$(second "$L_IP")
+s_curl=$(second "$(awk -F'\t' -v l="$L_IP" '$1 != l { print $1; exit }' "$RUN/datagrams.txt")")
+printf 'leaf\n%s\ncurl\n%s\n' "$s_ours" "$s_curl" > "$RUN/second-flight.txt"
+if [[ -n $s_ours && $s_ours == "$s_curl" ]]; then
+	ok "the second flight is curl's: $(awk -F'\t' '{printf "%s B of %s, Lengths %s, Initial %s, destination connection id %s", $1, $2, $3, $4, $5}' <<<"$s_ours")"
+else
+	bad "the second flight differs (udp length, packets, Lengths, Initial frames, dcid): ours '$s_ours', curl '$s_curl'"
+fi
 
 # ---- the tunnel ----------------------------------------------------------------------------------
 lab_ip() { docker exec "$PFX-$1" ip -4 -br addr show lab | awk '{print $3}' | cut -d/ -f1; }

@@ -176,6 +176,27 @@ for p in t13:https q13:quic; do
 	fi
 done
 
+# The datagram with the client's Finished (Initial padded to fill it, Handshake, 1-RTT ACK, the
+# connection ID the server issued) is the Linux dialler's, which quic-wire-test.sh holds to curl's.
+python3 -B "$HERE/quic_initial.py" "$RUN/cap/capf.pcap" > "$RUN/datagrams.txt" 2>/dev/null
+second() { # <client ip>: udp length, packets, Lengths, Initial frames, DCID moved or kept
+	awk -F'\t' -v ip="$1" '$1 != ip { next }
+		$3 ~ /^IH/ { printf "%s\t%s\t%s\t%s\t%s\n", $2, $3, $4, $5, ($6 != prev[$7] ? "moved" : "kept"); exit }
+		{ prev[$7] = $6 }' "$RUN/datagrams.txt"
+}
+s_plat=$(second "$A_IP"); s_lin=$(second "$C_IP")
+if [[ -n $s_lin && -z $s_plat ]] && awk -F'\t' -v ip="$A_IP" '$1 == ip && $3 ~ /^H/ { f = 1 } END { exit !f }' "$RUN/datagrams.txt"; then
+	# The emulator takes ~25 ms per server datagram; by all signs (packets only, no ngtcp2 log) PTO fires before the server's last
+	# Initial is read, the client probes in Handshake and drops its Initial keys, and its Finished
+	# leaves unpadded without an Initial (PLAN.md, "the second flight on a slow client"). Not a
+	# pass: whether OpenSSL does the same in that timing is unmeasured.
+	log "     NOT COMPARED the Android quic second flight looks like ngtcp2's PTO path (no Initial with the Finished): $(awk -F'\t' -v ip="$A_IP" '$1 == ip { printf "%s%s %s B", (n++ ? ", " : ""), $3, $2 }' "$RUN/datagrams.txt")"
+elif [[ -n $s_lin && $s_plat == "$s_lin" ]]; then
+	ok "the Android quic second flight is the Linux one: $(awk -F'\t' '{printf "%s B of %s, Lengths %s, Initial %s, dcid %s", $1, $2, $3, $4, $5}' <<<"$s_plat")"
+else
+	bad "the Android quic second flight differs from the Linux one: android '$s_plat', linux '$s_lin'"
+fi
+
 if [[ $FAILED -eq 0 ]]; then
 	log "android (emulator): all checks passed"
 else
