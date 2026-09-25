@@ -207,12 +207,12 @@ static bool store_result(const acme_result_t *res, const char *fp, char **why) {
 		yamlconf_set_key_pem(yamlconf_global, netname, "acme_account", res->account_key_pem);
 	}
 
-	const char *myname = yamlconf_get_option(yamlconf_global, netname, "Name");
+	const char *self = yamlconf_get_option(yamlconf_global, netname, "Name");
 
-	if(myname && yamlconf_has_host(yamlconf_global, netname, myname)) {
-		char *text = yamlconf_host_text(yamlconf_global, netname, myname);
+	if(self && yamlconf_has_host(yamlconf_global, netname, self)) {
+		char *text = yamlconf_host_text(yamlconf_global, netname, self);
 		char *updated = host_text_set_var(text, "TlsFingerprint", fp);
-		yamlconf_host_set_text(yamlconf_global, netname, myname, updated);
+		yamlconf_host_set_text(yamlconf_global, netname, self, updated);
 		free(text);
 		free(updated);
 	}
@@ -243,7 +243,7 @@ static void report(acme_rc_t rc, const acme_result_t *res) {
 	}
 }
 
-static int issue(bool staging, bool force, bool renew_only) {
+static int issue(bool staging, bool forced, bool renew_only) {
 	if(!yamlconf_path || !yamlconf_global) {
 		fprintf(stderr, "tinc cert needs a YAML config; this network uses a confbase tree.\n");
 		return 1;
@@ -270,7 +270,7 @@ static int issue(bool staging, bool force, bool renew_only) {
 				margin = RENEW_DAYS_DEFAULT;
 			}
 
-			if(covers && ca_issued && d != INT_MIN && d > margin && !force) {
+			if(covers && ca_issued && d != INT_MIN && d > margin && !forced) {
 				printf("The certificate for %s is valid for another %d days; nothing to do.\n", domain, d);
 				printf("Use `tinc cert issue --force' to replace it anyway.\n");
 				free(domain);
@@ -367,14 +367,14 @@ static int check(void) {
 }
 
 int cert_command(int argc, char *argv[]) {
-	bool staging = false, force = false;
+	bool staging = false, forced = false;
 	const char *sub = NULL;
 
 	for(int i = 1; i < argc; i++) {
 		if(!strcmp(argv[i], "--staging")) {
 			staging = true;
 		} else if(!strcmp(argv[i], "--force")) {
-			force = true;
+			forced = true;
 		} else if(!sub) {
 			sub = argv[i];
 		} else {
@@ -392,11 +392,11 @@ int cert_command(int argc, char *argv[]) {
 	}
 
 	if(!strcmp(sub, "issue")) {
-		return issue(staging, force, false);
+		return issue(staging, forced, false);
 	}
 
 	if(!strcmp(sub, "renew")) {
-		return issue(staging, force, true);
+		return issue(staging, forced, true);
 	}
 
 	fprintf(stderr, "Usage: tinc cert [status | check | issue | renew] [--staging] [--force]\n");
