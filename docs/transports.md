@@ -1243,10 +1243,11 @@ M5-10):
   is resolved once when the config is (re)loaded, never per probe; on any
   failure or timeout the static page is served instead, so the port never breaks
   character and a black-holed upstream costs the loop nothing;
-- the request forwarded to the upstream has `Host:` rewritten,
-  `Connection: close` forced, and `Cookie`, `Upgrade`, `Sec-WebSocket-*` and
-  `Authorization` stripped, so a failed tinc authenticator (e.g. a clock-skewed
-  peer) never reaches the upstream in the clear;
+- the request forwarded to the upstream is rewritten as nginx's `proxy_pass`
+  writes it (HTTP/1.0, `Host:` and `Connection: close` first, §8.5.1), and
+  `Cookie`, `Upgrade`, `Sec-WebSocket-*` and `Authorization` are stripped, so
+  a failed tinc authenticator (e.g. a clock-skewed peer) never reaches the
+  upstream in the clear;
 - the plain-HTTP path reads the request head and writes the response on
   readiness, never busy-waiting on a client that does not read; an exchange
   that does not finish is reaped by the web front's timeouts (§8.5.1), on the
@@ -1258,30 +1259,58 @@ answers anything other than `101`, `https_dial`'s connection dies before it
 activates and the outbound selector advances to the next carrier (ending at
 `plain`, §2).
 
-### 8.5.1 The decoy answers as nginx does (2026-09-23)
+### 8.5.1 The decoy answers as nginx does (2026-09-23, Debian 13 persona 2026-09-26)
 
 The fingerprint audit found a decoy no web server resembles: `200` with the
 same page for every path, for `POST` and for garbage; no `Date`; silence for
 plain bytes on the TLS port; a bare FIN without `close_notify`; and a client
 that sends nothing kept open for ever (tinc's tarpit) -- and `Server: nginx`
-over Apache's "It works!" page. The decoy now imitates nginx 1.27 with
-`server_tokens off`, measured probe by probe against a real one. The
-built-in page is nginx's own welcome page, byte for byte, with the stock
-`nginx:1.27.5` file's `Last-Modified` and `ETag` (`"67ff9c07-267"`), not the
-daemon's start time.
+over Apache's "It works!" page. The decoy now imitates one concrete server,
+measured probe by probe against a real one: **Debian 13's nginx 1.26.3**
+(the owner's choice of persona, 2026-09-26) with Debian's own `nginx.conf`
+(`server_tokens off`, `gzip on`, no `keepalive_timeout` or
+`client_header_timeout`, so nginx's 75 s / 60 s) and a site that also serves
+HTTP/3 on 443 and advertises it the usual way:
+
+    listen 443 quic reuseport;
+    listen 443 ssl;
+    add_header Alt-Svc 'h3=":443"; ma=86400';
+
+The reference image is `testing/transports/nginx-deb13` (OpenSSL 3.5, like
+ours). The built-in page is the nginx welcome page Debian ships in
+`/usr/share/nginx/html/index.html`, byte for byte, with that file's
+`Last-Modified` (`Wed, 05 Feb 2025 11:07:30 GMT`) and `ETag`
+(`"67a34672-267"`), not the daemon's start time. (Until 2026-09-26 the
+persona was the official `nginx:1.27` image: `"67ff9c07-267"`.)
+
+The responder (`decoy_answer()`) is nginx's static module and filter chain
+in miniature -- request parser, not-modified, headers (`add_header`), gzip,
+range, then the HTTP/1 framing (`decoy_answer_http1()`) -- and the answer is
+a structure (status, fixed headers, header list, body) before it is bytes,
+so another framing (HTTP/3 today, h2 later) reuses it.
 
 | Probe | Answer (as nginx) |
 | --- | --- |
-| `GET`/`HEAD` of a file that exists (`/`, or under `HttpsDecoyRoot`) | `200`, headers `Server: nginx`, `Date`, `Content-Type` (nginx's `mime.types`), `Content-Length`, `Last-Modified`, `Connection`, `ETag: "<mtime>-<len>"` (hex), `Accept-Ranges: bytes`, in that order; `HEAD` without the body |
-| an unknown path, or one that climbs out of the root (the latter not in the lab) | `404` with nginx's page |
-| any other method | `405 Not Allowed` with nginx's page |
-| a request line nginx cannot parse, or HTTP/1.1 without `Host` | `400` with nginx's page, answered at the first line |
-| HTTP/1.1 without `Connection: close` | keep-alive: the next request on the same connection is answered too, pipelined ones included |
-| `Connection: close`, HTTP/1.0, any error | TLS `close_notify`, then the FIN |
+| `GET`/`HEAD` of a file that exists (`/`, or under `HttpsDecoyRoot`) | `200`: `Server: nginx`, `Date`, `Content-Type` (nginx's `mime.types`), `Content-Length`, `Last-Modified`, `Connection`, `ETag: "<mtime>-<len>"` (hex), `Alt-Svc` (when the node serves quic), `Accept-Ranges: bytes`, in that order; `HEAD` without the body |
+| `Accept-Encoding` with a `gzip` token (q > 0), HTTP/1.1, no `Via`, `text/html`, status 200/403/404 | gzip level 1 (nginx's window for the body size), chunked, weak `ETag`, no `Accept-Ranges`, `Content-Encoding: gzip`; `HEAD` gets the same head |
+| `If-Modified-Since` equal to the file's date, or a matching `If-None-Match` (weak comparison) | `304` (`Server`, `Date`, `Last-Modified`, `Connection`, `ETag`, `Alt-Svc`) |
+| `If-Match` that does not match, `If-Unmodified-Since` before the file's date | `412` with nginx's page |
+| `Range: bytes=...` (one range, a suffix, several) | `206` with `Content-Range`, or `multipart/byteranges` with nginx's 20-digit boundary counter; `If-Range` honoured |
+| an unsatisfiable or malformed range | `416` with `Content-Range: bytes */<len>` |
+| a directory without its slash (`HttpsDecoyRoot`) | `301` to `https://<Host>[:port]/dir/[?args]` (the local port, not the one in `Host`) |
+| a directory without `index.html`, or `/` of a root without one | `403` with nginx's page |
+| an unknown path | `404` with nginx's page |
+| any other method (`POST` to a file, `DELETE`, ...) | `405 Not Allowed` with nginx's page (`POST` to a missing path: `404`) |
+| a request line nginx cannot parse, HTTP/1.1 without `Host`, two `Host`s, a bad `%XX`, `..` above the root | `400` with nginx's page, answered at the first line |
+| `HTTP/2.0` in the request line / a request line over 8 KiB / a header line over 8 KiB or a head over 32 KiB | `505` / `414` / `400 Request Header Or Cookie Too Large` |
+| HTTP/0.9 (`GET /`) | the body alone, and close |
+| HTTP/1.1 without `Connection: close`, HTTP/1.0 with `Connection: keep-alive` | keep-alive: the next request on the same connection is answered too, pipelined ones included |
+| `Connection: close`, HTTP/1.0, any error that closes | TLS `close_notify`, then the FIN |
 | plain HTTP (or a tinc ID line) on `HttpsPort` | `400 The plain HTTP request was sent to HTTPS port` / `400 Bad Request`, nginx's pages, and close |
 | a first byte `0x80`+ that is not TLS on `HttpsPort` | closed without an answer |
-| nothing at all | closed after 60 s (`client_header_timeout`); an idle kept-alive connection after 75 s (`keepalive_timeout`; set, not measured by the lab) |
+| nothing at all | closed after 60 s (`client_header_timeout`); an idle kept-alive connection after 75 s (`keepalive_timeout`) |
 | 30 connections at once from one address | all answered |
+| TLS session tickets | the same NewSessionTicket length and lifetime as nginx's, TLS 1.3 and 1.2 (measured before: ours 245/198 B and 7200 s, nginx 261/214 B and 300 s). `tls.c` now does what nginx does: accepts SNI in a servername callback (so the name is acknowledged and kept in the session, 16 bytes of the ticket for `web.lab.test`), sets a session id context (SHA-1 over "HTTP" and the certificate) and `ssl_session_timeout`'s 300 s |
 
 Connections on the fronts (TCP `HttpsPort`, UDP `QuicPort`, TLS on any port
 until the peer authenticates, and the plain-HTTP decoy) carry
@@ -1294,26 +1323,58 @@ eleven connections in a second used to get a socket that never answered).
 They are capped at `DECOY_MAX_WEB_CLIENTS` (256) concurrent unauthenticated
 clients instead -- the equivalent of nginx's `worker_connections`; past it a
 new TCP connection is closed and a new QUIC Initial dropped. The tinc port
-keeps `MaxConnectionBurst` and the tarpit.
+keeps `MaxConnectionBurst` and the tinc tarpit.
 
-With `HttpsDecoyUpstream` set the upstream's own answer is relayed, as before;
-only the first request of a pipelined burst is forwarded.
+**`Alt-Svc`.** A site that serves HTTP/3 advertises it on its TCP answers;
+the reference does (`add_header` adds it to 200, 201, 204, 206, 301, 302,
+303, 304, 307 and 308 -- and it survives into a 416, which nginx's range
+filter makes after the headers filter ran). A node whose quic front is up
+(`QuicPort`, 443 by default) now says `Alt-Svc: h3=":<QuicPort>";
+ma=86400` on the same statuses; a node without quic says nothing.
 
-Proof: `testing/transports/decoy-conformance-test.sh` sends the same probes to
-a tinc node and to `nginx:1.27` side by side and compares status lines, header
-names in order, error pages byte for byte, keep-alive, the TLS-port answers,
-the burst, the silent-client timing and, from decrypted captures,
-`close_notify` before the FIN. All 20 checks pass; on the core before this
-change (`tincstack/core:pre-h3`) 19 fail -- only the high-byte case matched
-(`testing/fingerprint/results/2026-09-23-decoy/conformance*.txt`).
+**With `HttpsDecoyUpstream`** the decoy is nginx with `proxy_pass`, as
+measured: the upstream gets an HTTP/1.0 request with `Host` and
+`Connection: close` first (`Cookie`, `Authorization`, `Upgrade`,
+`Sec-WebSocket-*` are never forwarded, review M5-10); the client gets the
+upstream's status line and headers with nginx's own `Server` and `Date`,
+`Content-Type`/`Content-Length` in nginx's slots, the upstream's other
+headers in their order, a `Location` under the upstream's URL made
+absolute (a relative one passes as it came, in its place), gzip applied as for a file, and a body without a length re-framed
+as chunked -- and the connection kept alive, as nginx keeps it, instead of
+closed after one answer. The HTTP/3 decoy now relays the upstream too
+(`transport_quic.c` hands the request to `decoy_fetch_start()` and frames
+the answer as HTTP/3); until 2026-09-26 it always served the static page.
 
-Not imitated (open, PLAN): ALPN `h2` (an nginx with `http2 on` selects it; we
-offer `http/1.1` only, which matches nginx's default but not every site's),
-`Range` requests, `If-Modified-Since`/`304`, directory redirects (`/dir` →
-`301`), the TLS session-ticket size, and `Alt-Svc`: a site that serves
-HTTP/3 normally advertises it on its TCP answers (the fingerprint lab's
-nginx does), ours never does. The HTTP/3 decoy always serves the `/` page
-and never uses `HttpsDecoyUpstream`.
+Proof: `testing/transports/decoy-conformance-test.sh` sends the same bytes
+to three tinc nodes (built-in page, `HttpsDecoyRoot`, `HttpsDecoyUpstream`)
+and three Debian 13 nginx side by side, and compares every answer byte for
+byte (only `Date` and the multipart boundary counter masked), what the
+upstream received, the TLS-port answers, the burst, the silent-client and
+idle keep-alive timing, the session tickets and, from decrypted captures,
+`close_notify` before the FIN. All 78 checks pass on this core; on the core
+before it (`tincstack/core:ww-e-pre`, the nginx 1.27 imitation) 63 fail --
+the persona's page dates, gzip, 304/412, ranges, 301/403, 505/414/494,
+Alt-Svc, the proxy's framing and forwarded request, the session tickets.
+The idle keep-alive close (75 s, both, measured from the answer to the
+server's FIN) already matched
+(`testing/fingerprint/results/2026-09-26-deb13-persona/conformance-test*.txt`,
+answers under `conformance/`).
+`testing/transports/h3-interop-test.sh` checks that `curl --http3-only`
+gets the upstream's page through the HTTP/3 decoy.
+
+Not imitated (open, PLAN):
+
+- ALPN `h2` (an nginx with `http2 on` selects it; we offer `http/1.1`,
+  nginx's default) -- stream G;
+- the Windows build has no zlib (`-Dzlib=disabled`), so its decoy never
+  gzips: a Windows node answers `Accept-Encoding: gzip` with the plain page;
+- files over nginx's output buffer (32 KiB) gzipped: nginx flushes chunks at
+  its buffer boundaries, ours is one chunk;
+- the HTTP/3 decoy hands the responder method, path and authority only, so
+  over HTTP/3 `If-*`, `Range` and `Accept-Encoding` are ignored (nginx
+  honours them);
+- an upstream that fails or times out gets the static page, where nginx
+  answers `502`/`504`; the upstream deadline is 3 s, nginx's 60 s.
 
 ### 8.6 What a middlebox sees
 
@@ -1479,7 +1540,8 @@ other and fall back to the next carrier):
   reaches `receive_meta_bytes()` before that.
 - **Anyone else** -- a browser, curl, a prober, a POST whose body is not an
   authenticator (`quic: authenticator from <host> rejected`) -- gets the
-  static decoy page (`decoy_respond_static()`, the https front's page) as an
+  https front's decoy answer (`decoy_respond()`; with `HttpsDecoyUpstream`
+  the upstream's, since 2026-09-26, §8.5.1) as an
   HTTP/3 response on each request stream: HEADERS + DATA + FIN. The
   connection stays open; tinc's authentication timeout ends it later with
   `H3_NO_ERROR`. Up to 8 request streams are answered per connection, more

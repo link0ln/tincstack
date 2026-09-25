@@ -1,0 +1,80 @@
+01:08:37 PASS absolute: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS delete: HTTP/1.1 405 Not Allowed, byte for byte
+01:08:37 PASS dotdot: HTTP/1.1 400 Bad Request, byte for byte
+01:08:37 PASS garbage: HTTP/1.1 400 Bad Request, byte for byte
+01:08:37 PASS get: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS get12: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS get_close: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS gzip: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS gzip10: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS gzip404: HTTP/1.1 404 Not Found, byte for byte
+01:08:37 PASS gziphead: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS gzipka: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS gzipq0: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS gzipvia: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS head: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS http09: <!DOCTYPE html>, byte for byte
+01:08:37 PASS http10: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS http10ka: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS http2: HTTP/1.1 505 HTTP Version Not Supported, byte for byte
+01:08:37 PASS idxslash: HTTP/1.1 404 Not Found, byte for byte
+01:08:37 PASS ifmatch: HTTP/1.1 412 Precondition Failed, byte for byte
+01:08:37 PASS ifrange: HTTP/1.1 206 Partial Content, byte for byte
+01:08:37 PASS ifrange_no: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS ims: HTTP/1.1 304 Not Modified, byte for byte
+01:08:37 PASS ims_gzip: HTTP/1.1 304 Not Modified, byte for byte
+01:08:37 PASS ims_other: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS inm: HTTP/1.1 304 Not Modified, byte for byte
+01:08:37 PASS inm_other: HTTP/1.1 200 OK, byte for byte
+01:08:37 PASS ius: HTTP/1.1 412 Precondition Failed, byte for byte
+01:08:37 PASS longhdr: HTTP/1.1 400 Bad Request, byte for byte
+01:08:37 PASS longline: HTTP/1.1 414 Request-URI Too Large, byte for byte
+01:08:37 PASS multi: HTTP/1.1 206 Partial Content, byte for byte
+01:08:37 PASS nohost: HTTP/1.1 400 Bad Request, byte for byte
+01:08:38 PASS nope: HTTP/1.1 404 Not Found, byte for byte
+01:08:38 PASS plain: HTTP/1.1 400 Bad Request, byte for byte
+01:08:38 PASS post: HTTP/1.1 405 Not Allowed, byte for byte
+01:08:38 PASS postnope: HTTP/1.1 404 Not Found, byte for byte
+01:08:38 PASS r416: HTTP/1.1 416 Requested Range Not Satisfiable, byte for byte
+01:08:38 PASS r416ka: HTTP/1.1 416 Requested Range Not Satisfiable, byte for byte
+01:08:38 PASS range: HTTP/1.1 206 Partial Content, byte for byte
+01:08:38 PASS rgzip: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS rhead: HTTP/1.1 206 Partial Content, byte for byte
+01:08:38 PASS rsyntax: HTTP/1.1 416 Requested Range Not Satisfiable, byte for byte
+01:08:38 PASS spellings: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS suffix: HTTP/1.1 206 Partial Content, byte for byte
+01:08:38 PASS tincid: HTTP/1.1 400 Bad Request, byte for byte
+01:08:38 PASS twice: HTTP/1.1 404 Not Found, byte for byte
+01:08:38 PASS twohosts: HTTP/1.1 400 Bad Request, byte for byte
+01:08:38 PASS root: css: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS root: dir: HTTP/1.1 301 Moved Permanently, byte for byte
+01:08:38 PASS root: dir10: HTTP/1.1 301 Moved Permanently, byte for byte
+01:08:38 PASS root: dirhead: HTTP/1.1 301 Moved Permanently, byte for byte
+01:08:38 PASS root: dirquery: HTTP/1.1 301 Moved Permanently, byte for byte
+01:08:38 PASS root: dirslash: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS root: empty: HTTP/1.1 403 Forbidden, byte for byte
+01:08:38 PASS root: nodir: HTTP/1.1 404 Not Found, byte for byte
+01:08:38 PASS root: page: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS root: rootidx: HTTP/1.1 403 Forbidden, byte for byte
+01:08:38 PASS proxy: chunked: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: garbage: HTTP/1.1 400 Bad Request, byte for byte
+01:08:38 PASS proxy: get: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: gzip: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: head: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: http10: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: missing: HTTP/1.1 404 Nope, byte for byte
+01:08:38 PASS proxy: moved: HTTP/1.1 302 Found, byte for byte
+01:08:38 PASS proxy: nolen: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: nolen10: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: nolen_ka: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: post: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: twice: HTTP/1.1 200 OK, byte for byte
+01:08:38 PASS proxy: the upstream received the same requests from both (14)
+01:08:38 PASS a non-ASCII first byte: closed without an answer by both
+01:08:38 PASS 30 simultaneous connections from one address: all 30 answered (as nginx)
+01:10:28 PASS a silent client is closed after 60 s (nginx: 60 s)
+01:10:28 PASS an idle kept-alive connection is closed after 75 s (nginx: 75 s)
+01:10:31 PASS close_notify before the FIN (ours 43/67 TLS closes, nginx 43/72)
+01:10:31 PASS session tickets (TLS 1.3 and 1.2; length/lifetime): 261 B/300s, 214 B/300s, 12 B/s, as nginx's
+01:10:31 decoy conformance: all checks passed
+exit 0

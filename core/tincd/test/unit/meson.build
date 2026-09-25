@@ -71,6 +71,9 @@ tests = {
     'code': 'test_json.c',
     'link': link_tinc,
   },
+  'decoy': {
+    'code': 'test_decoy.c',
+  },
 }
 
 # httpc.c is compiled only with OpenSSL (it is the ACME client's transport).

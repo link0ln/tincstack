@@ -1,0 +1,60 @@
+=====
+GET / HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+User-Agent: probe/1
+Accept: */*
+=====
+GET / HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+Accept-Encoding: gzip
+=====
+GET / HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET /missing HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET /nolen HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET /nolen HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET /missing HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET /chunked HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET /missing HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET /moved HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+POST /p HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+Content-Length: 3
+=====
+HEAD / HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET / HTTP/1.0
+Host: 10.47.9.20
+Connection: close
+=====
+GET /nolen HTTP/1.0
+Host: 10.47.9.20
+Connection: close

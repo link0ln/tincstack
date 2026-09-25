@@ -1,0 +1,21 @@
+HTTP/1.1 200 OK
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:37 GMT
+Content-Type: text/plain
+Transfer-Encoding: chunked
+Connection: keep-alive
+X-Up: 1
+Alt-Svc: h3=":443"; ma=86400
+
+b
+hello-nolen
+0
+
+HTTP/1.1 404 Nope
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:37 GMT
+Content-Type: text/html
+Content-Length: 8
+Connection: close
+
+not here

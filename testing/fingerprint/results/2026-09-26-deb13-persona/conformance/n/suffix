@@ -1,0 +1,16 @@
+HTTP/1.1 206 Partial Content
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:27 GMT
+Content-Type: text/html
+Content-Length: 100
+Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT
+Connection: close
+ETag: "67a34672-267"
+Alt-Svc: h3=":443"; ma=86400
+Content-Range: bytes 515-614/615
+
+="http://nginx.com/">nginx.com</a>.</p>
+
+<p><em>Thank you for using nginx.</em></p>
+</body>
+</html>

@@ -17,7 +17,9 @@
 #     falls back;
 #   * two tinc nodes still build a tunnel over the carrier, and the dialler's
 #     Initial announces what curl's does (100 bidi / 100 uni streams, an empty
-#     source connection id).
+#     source connection id);
+#   * with HttpsDecoyUpstream the HTTP/3 decoy relays the upstream's answer
+#     (decoy_upstream.py), as the TCP one does.
 #
 # Usage: [CORE_IMAGE=...] testing/transports/h3-interop-test.sh
 set -euo pipefail
@@ -26,6 +28,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 IMG="${CORE_IMAGE:-tincstack/core:${TINCSTACK_TAG:-dev}}"
 TOOLS="${TOOLS_IMAGE:-tincstack/fp-tools:dev}"
 NGINX="${NGINX_IMAGE:-nginx:1.27}"
+PY="${PYTHON_IMAGE:-python:3.12-slim}"
 RUN="$HERE/run-h3"
 PFX=h3i
 NET=${PFX}net
@@ -33,6 +36,7 @@ SUBNET=10.47.6
 F_IP=$SUBNET.10
 L_IP=$SUBNET.11
 N_IP=$SUBNET.12
+UP_IP=$SUBNET.20
 NETNAME=lab
 YAML=/c/tinc.yaml
 FAILED=0
@@ -42,7 +46,7 @@ ok()  { log "PASS $1"; }
 bad() { log "FAIL $1"; FAILED=1; }
 
 cleanup() {
-	docker rm -f "$PFX-f" "$PFX-l" "$PFX-n" "$PFX-cap" >/dev/null 2>&1 || true
+	docker rm -f "$PFX-f" "$PFX-l" "$PFX-n" "$PFX-cap" "$PFX-up" >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 	docker run --rm -v "$RUN:/r" "$IMG" sh -c 'rm -rf /r/*' >/dev/null 2>&1 || true
 	rm -rf "$RUN" 2>/dev/null || true
@@ -200,6 +204,21 @@ if logged l "webby .*answered like a web server"; then
 else
 	bad "our dialler recognises a web server's answer and gives up on it"
 	grep -i "webby\|quic" "$RUN/l/tincd.log" | tail -8 >&2
+fi
+
+# ---- the HTTP/3 decoy relays HttpsDecoyUpstream, as the TCP one does ---------------------------
+docker run -d --name "$PFX-up" --network "$NET" --ip "$UP_IP" -v "$HERE:/h:ro" \
+	"$PY" python3 /h/decoy_upstream.py /tmp/requests.txt >/dev/null
+tnc f set HttpsDecoyUpstream "$UP_IP:80"
+tnc f reload >/dev/null 2>&1 || true
+sleep 2
+tools "curl -sS -k -m 8 -i --http3-only https://$F_IP/" > "$RUN/curl-up.txt" || true
+if head -1 "$RUN/curl-up.txt" | grep -q "^HTTP/3 200" && grep -qi "^x-up: 1" "$RUN/curl-up.txt" &&
+		grep -q "upstream page" "$RUN/curl-up.txt"; then
+	ok "with HttpsDecoyUpstream, curl --http3-only gets the upstream's page"
+else
+	bad "with HttpsDecoyUpstream, curl --http3-only gets the upstream's page"
+	head -12 "$RUN/curl-up.txt" >&2
 fi
 
 if [[ $FAILED -eq 0 ]]; then
