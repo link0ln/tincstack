@@ -13,7 +13,7 @@ plain, fast tinc.
 ## Start here
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — design and the non-negotiable principles.
-- [`PLAN.md`](PLAN.md) — the phased implementation plan (M0–M9). This is the
+- [`PLAN.md`](PLAN.md) — the phased implementation plan (M0–M10). This is the
   execution contract.
 - [`docs/config-schema.md`](docs/config-schema.md) — the one YAML schema.
 - [`docs/source-inventory.md`](docs/source-inventory.md) — what each prior
@@ -45,7 +45,7 @@ From a release, pulling the published image (nothing is compiled):
 ```
 export COMPOSE_FILE=compose.release.yml
 cd platforms/linux/docker
-TINCSTACK_VERSION=v0.1.0 docker compose up -d
+TINCSTACK_VERSION=vX.Y.Z docker compose up -d   # a published tag; unset = latest
 ./invite.sh laptop                   # one-line invitation for a new peer
 ./join.sh '<invitation>'             # on the other host
 ```
@@ -69,7 +69,7 @@ the GitHub release. The images are built, loaded and smoke-tested in the
 workflow *before* they are pushed, so a published tag is one that ran.
 
 ```
-git tag -a v0.1.0 -m "…" && git push origin v0.1.0
+git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z
 ```
 
 To prove the pipeline without publishing anything, run the `release` workflow
@@ -77,8 +77,9 @@ manually from the Actions tab: it builds and tests everything and attaches the
 artefacts to the run, but pushes no image and creates no release.
 
 Optional repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`,
-`ANDROID_KEY_PASSWORD` and `ANDROID_STORE_PASSWORD` sign the APK; without them
-the asset is published as `-unsigned`.
+`ANDROID_KEY_PASSWORD` and `ANDROID_STORE_PASSWORD` sign the APK. Without them
+the APK is not "less trusted" but uninstallable -- Android refuses an unsigned
+APK outright -- and the asset is published as `-UNSIGNED-WILL-NOT-INSTALL`.
 
 ## Windows client
 
@@ -91,8 +92,12 @@ platforms/windows/build-core-win.sh      # core/Dockerfile.build-win → platfor
 
 The GUI (invite/join dialogs, transports editor, atomic YAML save, rotating
 daemon log, all `tinc.exe` calls off the Qt thread) is tested headless in Docker
-(`QT_QPA_PLATFORM=offscreen`); the onefile `.exe` itself is built on a Windows
-host with PyInstaller — see `platforms/windows/build-windows.md`.
+(`QT_QPA_PLATFORM=offscreen`). `platforms/windows/build-exe.sh` builds the
+`.exe` with a Windows CPython + PyInstaller under Wine, in Docker: the onefile
+`tincmgr.exe` users run, which installs a onedir copy under
+`%ProgramFiles%\tincmgr\app` for run-at-startup (a onefile unpacks into the
+user's `%TEMP%`, so it is never what the logon task starts elevated). See
+`platforms/windows/build-windows.md`.
 
 ## Build the Android app
 
@@ -118,5 +123,5 @@ app and written into that file.
 
 ## Status
 
-Foundation (M0) complete: core selected, vendored and building. See `PLAN.md` for
-the current milestone.
+Milestones M0–M10 and what is still open in each: `PLAN.md` (the source of
+truth; this README does not track it).
