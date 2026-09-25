@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # obfs_probe.py -- a stand-in for a malicious mesh member (security review R,
 # proof for finding M5-2). It knows both endpoints' Ed25519 *public* keys (every
-# member does), derives the obfs v2 *bootstrap* key exactly as core/tincd/src/
-# obfs.c does, and tries to unseal captured obfs datagrams with it.
+# member does), derives the obfs *bootstrap* key exactly as core/tincd/src/
+# obfs.c does, and tries to unseal captured obfs datagrams with it -- frame v2
+# (header in the clear) and frame v3 (header protected by a ChaCha20 block over
+# a 16-byte ciphertext sample, keyed by the bootstrap header-protection key).
 #
 # The point: bootstrap frames (the first few, cold-start) unseal -- proving the
 # derivation is correct and that a third party CAN read those. Steady-state
@@ -14,7 +16,7 @@
 #
 # Usage:
 #   obfs_probe.py decrypt <pcap> <pubkeyA_b64> <pubkeyB_b64>
-#       -> prints "decryptable=<n> total=<m>"
+#       -> prints "decryptable=<n> total=<m> v3=<k>" (k of the n were frame v3)
 #   obfs_probe.py dump <pcap> <dst_ip> <count>
 #       -> prints hex of the first <count> UDP payloads destined to <dst_ip>
 import sys
@@ -116,27 +118,40 @@ def boot_keys(pa, pb):
     for dirlabel in (b"l2h", b"h2l"):
         k = kdf(b"tincstack-obfs-key", dirlabel, base)
         mask = kdf(b"tincstack-obfs-iv", dirlabel, base)[:8]
-        keys.append((k, mask))
+        hp = kdf(b"tincstack-obfs-hp", dirlabel, base)[:32]
+        keys.append((k, mask, hp))
     return keys
 
 
+def hp_mask(hp, sample):
+    # chacha_ivsetup(hp, iv = sample[8:16], ctr = sample[0:8]): the counter
+    # words are sample[0:8] little-endian, the nonce words sample[8:16].
+    return chacha20_block(hp, int.from_bytes(sample[0:8], "little"), sample[8:16])
+
+
 def try_unseal(payload, keys):
-    # try both directions and both magic-prefix lengths (0 and 4)
+    # try both directions, both magic-prefix lengths (0 and 4) and both frame
+    # versions; returns 0 (not unsealed), 2 or 3 (the version that verified)
     for mlen in (0, 4):
         if len(payload) < mlen + 10 + 16:
             continue
-        for (k, mask) in keys:
-            nb = payload[mlen:mlen + 8]
-            counter = 0
-            for i in range(8):
-                counter = (counter << 8) | (nb[i] ^ mask[i])
-            clen = (payload[mlen + 8] << 8) | payload[mlen + 9]
-            if clen < 16 or mlen + 10 + clen > len(payload):
-                continue
-            sealed = payload[mlen + 10:mlen + 10 + clen]
-            if tinc_open(k, counter, sealed) is not None:
-                return True
-    return False
+        for (k, mask, hp) in keys:
+            for ver in (3, 2):
+                hdr = bytearray(payload[mlen:mlen + 10])
+                if ver == 3:
+                    m = hp_mask(hp, payload[mlen + 10:mlen + 26])
+                    for i in range(10):
+                        hdr[i] ^= m[i]
+                counter = 0
+                for i in range(8):
+                    counter = (counter << 8) | (hdr[i] ^ mask[i])
+                clen = (hdr[8] << 8) | hdr[9]
+                if clen < 16 or mlen + 10 + clen > len(payload):
+                    continue
+                sealed = payload[mlen + 10:mlen + 10 + clen]
+                if tinc_open(k, counter, sealed) is not None:
+                    return ver
+    return 0
 
 
 # ---- pcap parsing (DLT_EN10MB) ---------------------------------------------
@@ -207,14 +222,20 @@ def selftest(pa, pb):
     keys = boot_keys(pa, pb)
     ok = True
     for mlen in (0, 4):
-        for (k, mask) in keys:
-            counter = 0x0123456789ab
-            sealed = tinc_seal(k, counter, b"obfs positive control " * 3)
-            nb = bytes((counter >> (8 * (7 - i))) & 0xff ^ mask[i] for i in range(8))
-            clen = len(sealed)
-            frame = (b"\x00" * mlen) + nb + bytes([clen >> 8, clen & 0xff]) + sealed
-            if not try_unseal(frame, keys):
-                ok = False
+        for (k, mask, hp) in keys:
+            for ver in (2, 3):
+                counter = 0x0123456789ab
+                sealed = tinc_seal(k, counter, b"obfs positive control " * 3)
+                nb = bytes((counter >> (8 * (7 - i))) & 0xff ^ mask[i] for i in range(8))
+                clen = len(sealed)
+                hdr = bytearray(nb + bytes([clen >> 8, clen & 0xff]))
+                if ver == 3:
+                    m = hp_mask(hp, sealed[:16])
+                    for i in range(10):
+                        hdr[i] ^= m[i]
+                frame = (b"\x00" * mlen) + bytes(hdr) + sealed + b"tail"
+                if try_unseal(frame, keys) != ver:
+                    ok = False
     print("selftest=%s" % ("ok" if ok else "fail"))
     return ok
 
@@ -228,12 +249,14 @@ def main():
     elif cmd == "decrypt":
         pcap, pa, pb = sys.argv[2], sys.argv[3], sys.argv[4]
         keys = boot_keys(pa, pb)
-        total = dec = 0
+        total = dec = v3 = 0
         for p in pcap_payloads(pcap):
             total += 1
-            if try_unseal(p, keys):
+            ver = try_unseal(p, keys)
+            if ver:
                 dec += 1
-        print("decryptable=%d total=%d" % (dec, total))
+                v3 += ver == 3
+        print("decryptable=%d total=%d v3=%d" % (dec, total, v3))
     elif cmd == "dump":
         pcap, dst, cnt = sys.argv[2], sys.argv[3], int(sys.argv[4])
         n = 0

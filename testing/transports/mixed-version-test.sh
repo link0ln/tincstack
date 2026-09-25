@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Old and new nodes still talk over the TLS carriers.
+# Old and new nodes still talk over the TLS carriers and obfs.
 #
 # A founder on one core image, a leaf on another, `PreferredTransports' set
 # to the carrier under test: the leaf must end up connected over it, in both
@@ -24,11 +24,20 @@
 # same way (the founder says why). Every pair that stays on its carrier must
 # also carry tunnel traffic over it without re-dialling.
 #
-# Usage: OLD_IMAGE=tincstack/core:<tag> [CORE_IMAGE=...] testing/transports/mixed-version-test.sh
+# Since 2026-09-26 obfs seals in frame v3 (header protection); a current node
+# still reads v2 and answers a peer that speaks v2 in v2. So with an OLD_IMAGE
+# from before then, "new founder, old leaf" over obfs must stay on obfs (the
+# founder says it answers in v2), while "old founder, new leaf" cannot: the old
+# founder reads none of the leaf's v3 frames. That pair must fall back once,
+# with the leaf saying why, and carry traffic on the next carrier.
+#
+# Usage: OLD_IMAGE=tincstack/core:<tag> [CORE_IMAGE=...] [CARRIERS="quic https obfs"]
+#        testing/transports/mixed-version-test.sh
 #   OLD_IMAGE: a core image built from an earlier commit (e.g. `git archive
 #   <commit> core | tar x -C /tmp/old && docker build -f /tmp/old/core/Dockerfile.build /tmp/old/core').
 set -uo pipefail
 NEW="${CORE_IMAGE:-tincstack/core:${TINCSTACK_TAG:-dev}}"
+CARRIERS=${CARRIERS:-quic https obfs}
 OLD="${OLD_IMAGE:?set OLD_IMAGE to a core image from an earlier commit}"
 PFX=mvt
 NET=${PFX}net
@@ -73,15 +82,20 @@ pair() { # <founder image> <leaf image> <transport> [fallback]
 		fallback "$fi" "$li" "$tr" f "answering it as a web server" "an older dialler cannot send datagrams to a current listener, which answers it as a web server"
 		return
 	fi
+	if [[ $expect == fallback-obfs-v3 ]]; then
+		fallback "$fi" "$li" "$tr" l "older than obfs frame v3" "an older founder cannot read a current dialler's obfs v3 frames"
+		return
+	fi
 	for _ in $(seq 30); do
 		if t l dump connections 2>/dev/null | grep -q "^founder .*transport $tr"; then
 			carries "$fi" "$li" "$tr"
+			[[ $expect == carrier-obfs-v2 ]] && answers_v2
 			return
 		fi
 		sleep 1
 	done
 	log "FAIL $tr: founder $fi, leaf $li ($(t l dump connections 2>/dev/null | grep -o 'transport [a-z]*' | head -1))"
-	docker exec "$PFX-l" grep -iE "quic|https|web server" /tmp/tincd.log | tail -4 >&2 || true
+	docker exec "$PFX-l" grep -iE "quic|https|obfs|web server" /tmp/tincd.log | tail -4 >&2 || true
 	FAILED=1
 }
 
@@ -99,7 +113,7 @@ carries() { # <founder image> <leaf image> <transport>
 		log "PASS $tr: founder $fi, leaf $li (tunnel carries traffic, $tr dialled once)"
 	else
 		log "FAIL $tr: founder $fi, leaf $li: connected over $tr, but ping=$ok, $dials $tr dial(s), now '$(t l dump connections 2>/dev/null | grep "^founder " | grep -o 'transport [a-z]*' | head -1)'"
-		docker exec "$PFX-l" grep -iE "quic|https|carrier|datagram" /tmp/tincd.log | tail -6 >&2 || true
+		docker exec "$PFX-l" grep -iE "quic|https|obfs|carrier|datagram" /tmp/tincd.log | tail -6 >&2 || true
 		FAILED=1
 	fi
 }
@@ -121,8 +135,20 @@ fallback() { # <founder image> <leaf image> <transport> <node that says why: f|l
 		log "PASS $tr: founder $fi, leaf $li: $what; the leaf gave $tr up once and is on '${got#transport }', tunnel carries traffic"
 	else
 		log "FAIL $tr: founder $fi, leaf $li: expected a clean fallback, got '${got:-nothing}' after $dials $tr dial(s)"
-		docker exec "$PFX-l" grep -iE "quic|carrier|datagrams" /tmp/tincd.log | tail -5 >&2 || true
+		docker exec "$PFX-l" grep -iE "quic|obfs|carrier|datagrams" /tmp/tincd.log | tail -5 >&2 || true
 		docker exec "$PFX-$who" grep -iE "datagrams" /tmp/tincd.log | tail -2 >&2 || true
+		FAILED=1
+	fi
+}
+
+# A current founder that was dialled in obfs frame v2 must say that it
+# answers in v2 (and the pair then carries traffic, checked by carries()).
+answers_v2() {
+	if docker exec "$PFX-f" grep -q "leaf speaks obfs frame v2" /tmp/tincd.log; then
+		log "PASS obfs: the current founder saw frame v2 from the older leaf and answered in v2"
+	else
+		log "FAIL obfs: the current founder never said it answers the older leaf in frame v2"
+		docker exec "$PFX-f" grep -i "obfs" /tmp/tincd.log | tail -4 >&2 || true
 		FAILED=1
 	fi
 }
@@ -135,10 +161,21 @@ docker run --rm "$OLD" sh -c 'grep -q "too old to send datagrams" "$(command -v 
 old_dialler=carrier
 docker run --rm "$OLD" sh -c 'grep -q "answering it as a web server" "$(command -v tincd)"' 2>/dev/null || old_dialler=fallback-old-dialler
 
-for tr in quic https; do
+# One from before 2026-09-26 seals obfs in frame v2 and reads only v2.
+old_obfs=carrier
+new_obfs=carrier
+if ! docker run --rm "$OLD" sh -c 'grep -q "speaks obfs frame v2" "$(command -v tincd)"' 2>/dev/null; then
+	old_obfs=fallback-obfs-v3
+	new_obfs=carrier-obfs-v2
+fi
+
+for tr in $CARRIERS; do
 	if [[ $tr == quic ]]; then
 		pair "$OLD" "$NEW" "$tr" "$old_quic"
 		pair "$NEW" "$OLD" "$tr" "$old_dialler"
+	elif [[ $tr == obfs ]]; then
+		pair "$OLD" "$NEW" "$tr" "$old_obfs"
+		pair "$NEW" "$OLD" "$tr" "$new_obfs"
 	else
 		pair "$OLD" "$NEW" "$tr"
 		pair "$NEW" "$OLD" "$tr"

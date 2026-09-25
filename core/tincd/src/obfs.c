@@ -9,7 +9,10 @@
         [magic] | nonce(8) | clen(2) | ChaCha20-Poly1305(inner) | tail-junk
 
     The nonce is a per-direction strict counter (whitened by a key-derived
-    mask), so it never repeats. Keys are direction-separated. The first
+    mask), so it never repeats. Since frame v3 the nonce and clen are masked
+    per datagram with a ChaCha20 block over a sample of the ciphertext (QUIC's
+    header protection) and the tail length is random, so no wire byte is a
+    counter or a length. Keys are direction-separated. The first
     datagrams use a bootstrap key derived from the two Ed25519 public keys;
     once the connection is up the peers exchange fresh seeds over the SPTPS
     meta channel (OBFS_KEY) and switch to a per-link session key that only they
@@ -29,6 +32,7 @@
 
 #include "system.h"
 
+#include "chacha-poly1305/chacha.h"
 #include "chacha-poly1305/chacha-poly1305.h"
 #include "conf.h"
 #include "ecdsa.h"
@@ -93,6 +97,8 @@ typedef struct obfs_keyset_t {
 	chacha_poly1305_ctx_t *rx;   /* peer's outbound direction (what we receive) */
 	uint8_t mtx[OBFS_NONCE_LEN]; /* nonce whitening mask, tx */
 	uint8_t mrx[OBFS_NONCE_LEN]; /* nonce whitening mask, rx */
+	struct chacha_ctx hptx;      /* header protection + tail padding key, tx (v3) */
+	struct chacha_ctx hprx;      /* header protection key, rx (v3) */
 	uint64_t ctr_tx;             /* our monotone counter for this key */
 	obfs_replay_t rw;            /* replay window on the rx counter */
 	bool valid;
@@ -115,6 +121,19 @@ struct obfs_link_t {
 	bool have_peer_seed;
 	bool ack_sent;              /* we have sent our OBFS_KEY ack (flag 1) */
 	time_t sess_time;          /* when the current session key was promoted / rekey issued */
+
+	/* Frame version toward this peer. We seal v3 unless the peer has shown
+	   that it only speaks v2 (an older tincstack): a fresh v2 frame from it
+	   sets peer_v2, a fresh v3 frame clears it, and so does the peer's
+	   OBFS_KEY when it carries a version >= 3 (peer_v3). Once the peer has
+	   said v3 over the authenticated meta channel, a v2 frame no longer
+	   moves us back (peer_v3 is dropped when the link resets). No version
+	   field goes on the wire: the receiver tells v2 from v3 by which one
+	   verifies. peer_v2 survives a link reset on purpose, so our next dial
+	   to a v2-only peer that once reached us is readable to it. */
+	bool peer_v2;
+	bool peer_v3;
+	bool rx_since_dial;        /* a frame from the peer verified since our last dial */
 
 	bool active;               /* an obfs flow to this node is up */
 	sockaddr_t addr;           /* last verified peer UDP address (fast-path match) */
@@ -179,8 +198,9 @@ static void keyset_free(obfs_keyset_t *ks) {
 	memset(ks, 0, sizeof(*ks));
 }
 
-/* Build a direction-separated keyset from a 64-byte base secret. `kctx'/`ictx'
-   are the context strings for the key and the nonce mask. The tx counter starts
+/* Build a direction-separated keyset from a 64-byte base secret. `kctx'/`ictx'/
+   `hctx' are the context strings for the key, the nonce mask and the frame-v3
+   header protection key. The tx counter starts
    at a random 48-bit value so the wire nonce never looks like a plaintext
    counter.
 
@@ -191,7 +211,7 @@ static void keyset_free(obfs_keyset_t *ks) {
    the bootstrap key -- which outlives both daemons -- that meant a silent
    black-out on most restarts. See obfs_epoch_restart for the measurement and
    the fix. */
-static bool keyset_build(obfs_keyset_t *ks, const uint8_t base[64], const char *kctx, const char *ictx, bool i_am_lo) {
+static bool keyset_build(obfs_keyset_t *ks, const uint8_t base[64], const char *kctx, const char *ictx, const char *hctx, bool i_am_lo) {
 	keyset_free(ks);
 
 	const char *txl = i_am_lo ? "l2h" : "h2l";
@@ -224,6 +244,13 @@ static bool keyset_build(obfs_keyset_t *ks, const uint8_t base[64], const char *
 	memcpy(ks->mtx, k, OBFS_NONCE_LEN);
 	obfs_kdf(ictx, rxl, base, 64, k);
 	memcpy(ks->mrx, k, OBFS_NONCE_LEN);
+
+	/* Header protection keys: separate from the AEAD key (label and output
+	   both differ), 256 bits each, one per direction like everything else. */
+	obfs_kdf(hctx, txl, base, 64, k);
+	chacha_keysetup(&ks->hptx, k, 256);
+	obfs_kdf(hctx, rxl, base, 64, k);
+	chacha_keysetup(&ks->hprx, k, 256);
 	memset(k, 0, sizeof(k));
 
 	randomize(&ks->ctr_tx, sizeof(ks->ctr_tx));
@@ -298,7 +325,7 @@ obfs_link_t *obfs_link_for_node(node_t *n) {
 	memcpy(l->base, base, sizeof(l->base));
 	memset(base, 0, sizeof(base));
 
-	if(!keyset_build(&l->boot, l->base, "tincstack-obfs-key", "tincstack-obfs-iv", i_am_lo)) {
+	if(!keyset_build(&l->boot, l->base, "tincstack-obfs-key", "tincstack-obfs-iv", "tincstack-obfs-hp", i_am_lo)) {
 		obfs_link_free(l);
 		return NULL;
 	}
@@ -338,9 +365,21 @@ void obfs_link_reset_for_test(node_t *n) {
 			l->have_local_seed = false;
 			l->need_selfheal = false;
 			l->last_selfheal = 0;
+			l->peer_v2 = false;
+			l->peer_v3 = false;
+			l->rx_since_dial = false;
 			return;
 		}
 	}
+}
+
+int obfs_link_frame_version(const obfs_link_t *l) {
+	return l->peer_v2 ? OBFS_FRAME_V2 : OBFS_FRAME_V3;
+}
+
+void obfs_link_force_v2_for_test(obfs_link_t *l, bool v2) {
+	l->peer_v2 = v2;
+	l->peer_v3 = !v2;
 }
 
 void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr) {
@@ -447,7 +486,9 @@ static size_t obfs_base_overhead(bool init) {
 	return (magic ? OBFS_MAGIC_LEN : 0) + OBFS_HDR_LEN + OBFS_TAG_LEN;
 }
 
-/* Configured tail junk for that phase, clamped to the sane range. */
+/* Configured tail junk for that phase, clamped to the sane range. This is
+   what the MTU arithmetic reserves; the tail a frame actually carries is
+   random, up to obfs_pad_max(). */
 static size_t obfs_header_junk(bool init) {
 	int junk = init ? obfs_init_header_junk : obfs_transport_header_junk;
 
@@ -456,6 +497,15 @@ static size_t obfs_header_junk(bool init) {
 	}
 
 	return junk > OBFS_MAX_JUNK ? OBFS_MAX_JUNK : (size_t)junk;
+}
+
+/* Upper bound of the random tail for that phase: the configured junk, but
+   never less than the built-in floor. The floor is NOT reserved in the MTU:
+   it only fills room the path has left, so it never costs a datagram. */
+static size_t obfs_pad_max(bool init) {
+	size_t junk = obfs_header_junk(init);
+	size_t floor = init ? OBFS_PAD_INIT : OBFS_PAD_DATA;
+	return junk > floor ? junk : floor;
 }
 
 size_t obfs_max_inner(obfs_link_t *l, bool init) {
@@ -511,7 +561,7 @@ static bool obfs_build_session(obfs_link_t *l) {
 	sha512_update(&md, hi_seed, OBFS_SEED_LEN);
 	sha512_final(&md, base);
 
-	bool ok = keyset_build(&l->next, base, "tincstack-obfs-skey", "tincstack-obfs-siv", l->i_am_lo);
+	bool ok = keyset_build(&l->next, base, "tincstack-obfs-skey", "tincstack-obfs-siv", "tincstack-obfs-shp", l->i_am_lo);
 	memset(base, 0, sizeof(base));
 	return ok;
 }
@@ -523,9 +573,14 @@ static void obfs_send_key(obfs_link_t *l, int flag) {
 		return;   /* not activated yet: obfs_session_start will run at ack_h */
 	}
 
+	/* The trailing token is the highest obfs frame version we read. An older
+	   tincstack's parser (`%*d %d <seed>') stops before it, so it costs
+	   nothing there; a peer that understands it knows over the authenticated
+	   meta channel that it may seal for us in v3, whatever it inferred from
+	   our frames. */
 	char b64[OBFS_SEED_LEN * 2];
 	b64encode_tinc(l->local_seed, b64, OBFS_SEED_LEN);
-	send_request(c, "%d %d %s", OBFS_KEY, flag, b64);
+	send_request(c, "%d %d %s %d", OBFS_KEY, flag, b64, OBFS_FRAME_VERSION);
 }
 
 void obfs_session_start(connection_t *c) {
@@ -566,9 +621,10 @@ static void obfs_rekey_start(obfs_link_t *l) {
 
 bool obfs_key_h(connection_t *c, const char *request) {
 	int flag;
+	int ver = 0;
 	char b64[MAX_STRING_SIZE];
 
-	if(sscanf(request, "%*d %d " MAX_STRING, &flag, b64) != 2) {
+	if(sscanf(request, "%*d %d " MAX_STRING " %d", &flag, b64, &ver) < 2) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "OBFS_KEY", c->name, c->hostname);
 		return false;
 	}
@@ -596,6 +652,17 @@ bool obfs_key_h(connection_t *c, const char *request) {
 	obfs_ensure_local_seed(l);
 	memcpy(l->peer_seed, seed, sizeof(seed));
 	l->have_peer_seed = true;
+
+	/* The peer says it reads frame v3 (an older one sends no version). From
+	   here on a stray v2 frame does not move this link back to v2. */
+	if(ver >= OBFS_FRAME_V3 && !l->peer_v3) {
+		l->peer_v3 = true;
+
+		if(l->peer_v2) {
+			l->peer_v2 = false;
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "%s reads obfs frame v%d: sealing for it with header protection", c->name, ver);
+		}
+	}
 
 	/* An offer (flag 0) opens a NEW negotiation, so this round's ack is still
 	   owed even though we acked the previous one. Without this reset a peer
@@ -652,6 +719,19 @@ static void obfs_arm_selfheal(void) {
 	}
 }
 
+/* Frame-v3 header protection (RFC 9001 5.4, with DJB ChaCha20's 64-bit
+   counter and 64-bit nonce taking the 16-byte sample where RFC 9001 splits it
+   32/96). The keystream block over the sample masks the ten header bytes;
+   the same block supplies the random tail length, and the blocks after it the
+   tail bytes. The sample is ciphertext, so it differs for every datagram and
+   the mask with it; the receiver computes the same mask from the same bytes
+   before it knows anything else about the frame. */
+static void obfs_hp_block(struct chacha_ctx *hp, const uint8_t *sample, uint8_t *mask, size_t masklen) {
+	memset(mask, 0, masklen);
+	chacha_ivsetup(hp, sample + 8, sample);
+	chacha_encrypt_bytes(hp, mask, mask, (uint32_t)masklen);
+}
+
 size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init) {
 	if(!l) {
 		return 0;
@@ -673,31 +753,42 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 		obfs_arm_selfheal();
 	}
 
-	size_t header_junk = obfs_header_junk(init);
 	uint32_t magic = init ? obfs_init_magic : obfs_transport_magic;
 
 	size_t mlen = magic ? OBFS_MAGIC_LEN : 0;
 	size_t clen = inlen + OBFS_TAG_LEN;
+	size_t base = mlen + OBFS_HDR_LEN + clen;
 
-	if(clen > 0xffff || mlen + OBFS_HDR_LEN + clen + header_junk > outcap) {
+	if(clen > 0xffff || base > outcap) {
 		return 0;
 	}
 
-	/* Tail junk must fit the PATH, not just the buffer. A datagram over the
-	   path MTU is refused by the kernel with EMSGSIZE (tinc sets DF), and the
-	   junk options were clamped only against the constant OBFS_MAX_JUNK, so a
-	   configured ObfsInitHeaderJunkSize could make every handshake frame
-	   unsendable and hang the dial until the SYN retries ran out. Shrink the
-	   junk to what is left of the budget rather than dropping the datagram:
-	   callers that can chunk (the single-flow carrier, via obfs_max_inner)
-	   have already reserved room for the full junk, so this only bites the
-	   SPTPS data path, where the overshoot is reported instead (see
-	   obfs_wrap_send) and tinc's PMTU discovery lowers the packet size. */
-	size_t base = mlen + OBFS_HDR_LEN + clen;
-	size_t budget = obfs_link_budget(l);
+	/* The tail must fit the PATH, not just the buffer. A datagram over the
+	   path MTU is refused by the kernel with EMSGSIZE (tinc sets DF), so the
+	   tail is bounded by what is left of the budget after the frame, and a
+	   frame that fills the budget gets none -- the datagram is never dropped
+	   for its padding. Callers that can chunk (the single-flow carrier, via
+	   obfs_max_inner) have already reserved room for the configured junk; the
+	   SPTPS data path checks the configured junk against the budget before it
+	   gets here (obfs_wrap_send) and tinc's PMTU discovery lowers the packet
+	   size. The floor above the configured junk only ever fills leftover room.
 
-	if(base + header_junk > budget) {
-		header_junk = base < budget ? budget - base : 0;
+	   Before frame v3 the tail was exactly the configured size, so every
+	   datagram was its inner size plus a constant and shaping only shifted the
+	   histogram (wire audit 2026-09-26: 62/50/65/50/118 B opening every dial,
+	   two sizes for 4000 bulk datagrams). Now its length is uniform over
+	   [0, cap] per datagram. */
+	size_t budget = obfs_link_budget(l);
+	size_t room = base < budget ? budget - base : 0;
+
+	if(room > outcap - base) {
+		room = outcap - base;
+	}
+
+	size_t cap = obfs_pad_max(init);
+
+	if(cap > room) {
+		cap = room;
 	}
 
 	uint64_t counter = ks->ctr_tx++;
@@ -712,41 +803,77 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 	}
 
 	/* Wire nonce = counter (big-endian) XOR the key-derived whitening mask. */
-	uint8_t *nonce = out + mlen;
+	uint8_t *hdr = out + mlen;
 
 	for(int i = 0; i < OBFS_NONCE_LEN; i++) {
-		nonce[i] = (uint8_t)(counter >> (8 * (7 - i))) ^ ks->mtx[i];
+		hdr[i] = (uint8_t)(counter >> (8 * (7 - i))) ^ ks->mtx[i];
 	}
 
-	out[mlen + OBFS_NONCE_LEN] = (uint8_t)(clen >> 8);
-	out[mlen + OBFS_NONCE_LEN + 1] = (uint8_t)(clen);
+	hdr[OBFS_NONCE_LEN] = (uint8_t)(clen >> 8);
+	hdr[OBFS_NONCE_LEN + 1] = (uint8_t)(clen);
 
-	if(!chacha_poly1305_encrypt(ks->tx, counter, in, inlen, out + mlen + OBFS_HDR_LEN, NULL)) {
+	uint8_t *ct = out + mlen + OBFS_HDR_LEN;
+
+	if(!chacha_poly1305_encrypt(ks->tx, counter, in, inlen, ct, NULL)) {
 		return 0;
 	}
 
-	if(header_junk) {
-		randomize(out + mlen + OBFS_HDR_LEN + clen, header_junk);
+	/* Mask over the first OBFS_HP_SAMPLE_LEN ciphertext bytes: ten bytes for
+	   the header, two for the tail length. A peer that only speaks v2 gets the
+	   header in the clear (it could not read it otherwise) but the same random
+	   tail: v2 delimits the ciphertext by clen and ignores what follows. */
+	uint8_t mask[OBFS_HDR_LEN + 2];
+	obfs_hp_block(&ks->hptx, ct, mask, sizeof(mask));
+
+	if(!l->peer_v2) {
+		for(int i = 0; i < OBFS_HDR_LEN; i++) {
+			hdr[i] ^= mask[i];
+		}
 	}
 
-	return mlen + OBFS_HDR_LEN + clen + header_junk;
+	size_t tail = cap ? (((size_t)mask[OBFS_HDR_LEN] << 8) | mask[OBFS_HDR_LEN + 1]) % (cap + 1) : 0;
+
+	if(tail) {
+		/* The keystream continues into the next block: tail bytes are as
+		   unpredictable as the mask, without a getentropy() per datagram. */
+		memset(ct + clen, 0, tail);
+		chacha_encrypt_bytes(&ks->hptx, ct + clen, ct + clen, (uint32_t)tail);
+	}
+
+	return base + tail;
 }
 
 /* Try to unseal one datagram with keyset `ks' assuming a `mlen'-byte magic
-   prefix. On success writes the inner datagram to `out' and returns its
-   length, storing the recovered counter in *seq; on failure returns -1. */
-static ssize_t ks_open(obfs_keyset_t *ks, size_t mlen, const uint8_t *buf, size_t len, uint8_t *out, size_t outcap, uint64_t *seq) {
+   prefix and frame version `ver'. On success writes the inner datagram to
+   `out' and returns its length, storing the recovered counter in *seq; on
+   failure returns -1. The Poly1305 tag gates everything: an unmasked header
+   that happens to parse under the wrong key or version still fails it. */
+static ssize_t ks_open(obfs_keyset_t *ks, size_t mlen, int ver, const uint8_t *buf, size_t len, uint8_t *out, size_t outcap, uint64_t *seq) {
 	if(!ks->valid || !ks->rx || len < mlen + OBFS_MIN_FRAME) {
 		return -1;
+	}
+
+	uint8_t hdr[OBFS_HDR_LEN];
+	memcpy(hdr, buf + mlen, OBFS_HDR_LEN);
+
+	if(ver >= OBFS_FRAME_V3) {
+		/* OBFS_MIN_FRAME guarantees the sample: the ciphertext always holds
+		   at least the tag. */
+		uint8_t mask[OBFS_HDR_LEN];
+		obfs_hp_block(&ks->hprx, buf + mlen + OBFS_HDR_LEN, mask, sizeof(mask));
+
+		for(int i = 0; i < OBFS_HDR_LEN; i++) {
+			hdr[i] ^= mask[i];
+		}
 	}
 
 	uint64_t counter = 0;
 
 	for(int i = 0; i < OBFS_NONCE_LEN; i++) {
-		counter = (counter << 8) | (uint8_t)(buf[mlen + i] ^ ks->mrx[i]);
+		counter = (counter << 8) | (uint8_t)(hdr[i] ^ ks->mrx[i]);
 	}
 
-	size_t clen = ((size_t)buf[mlen + OBFS_NONCE_LEN] << 8) | buf[mlen + OBFS_NONCE_LEN + 1];
+	size_t clen = ((size_t)hdr[OBFS_NONCE_LEN] << 8) | hdr[OBFS_NONCE_LEN + 1];
 
 	if(clen < OBFS_TAG_LEN || mlen + OBFS_HDR_LEN + clen > len) {
 		return -1;
@@ -768,10 +895,13 @@ static ssize_t ks_open(obfs_keyset_t *ks, size_t mlen, const uint8_t *buf, size_
 	return (ssize_t)outlen;
 }
 
-/* Try every keyset (pending session, current session, bootstrap) and every
-   possible magic-prefix length. On success returns the inner length and sets
-   *which to the keyset that verified and *seq to the counter. */
-static ssize_t obfs_open(obfs_link_t *l, const uint8_t *buf, size_t len, uint8_t *out, size_t outcap, obfs_keyset_t **which, uint64_t *seq) {
+/* Try every keyset (pending session, current session, bootstrap), every
+   possible magic-prefix length and both frame versions, v3 first. On success
+   returns the inner length and sets *which to the keyset that verified, *seq
+   to the counter and *ver to the frame version. Cost per keyset and prefix: one
+   ChaCha20 block for the v3 mask; a Poly1305 run only when the unmasked clen
+   fits the datagram, which for a stranger's bytes is rare. */
+static ssize_t obfs_open(obfs_link_t *l, const uint8_t *buf, size_t len, uint8_t *out, size_t outcap, obfs_keyset_t **which, uint64_t *seq, int *ver) {
 	size_t mlens[2];
 	int nm = 0;
 	mlens[nm++] = 0;
@@ -793,13 +923,18 @@ static ssize_t obfs_open(obfs_link_t *l, const uint8_t *buf, size_t len, uint8_t
 
 	order[no++] = &l->boot;
 
+	static const int versions[2] = { OBFS_FRAME_V3, OBFS_FRAME_V2 };
+
 	for(int o = 0; o < no; o++) {
 		for(int m = 0; m < nm; m++) {
-			ssize_t n = ks_open(order[o], mlens[m], buf, len, out, outcap, seq);
+			for(int v = 0; v < 2; v++) {
+				ssize_t n = ks_open(order[o], mlens[m], versions[v], buf, len, out, outcap, seq);
 
-			if(n >= 0) {
-				*which = order[o];
-				return n;
+				if(n >= 0) {
+					*which = order[o];
+					*ver = versions[v];
+					return n;
+				}
 			}
 		}
 	}
@@ -1070,9 +1205,25 @@ static bool obfs_epoch_restart(obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, 
 	return true;
 }
 
+/* Follow the frame version of a verified, fresh datagram (see peer_v2 in
+   obfs_link_t). Called before the inner frame is re-injected, so the replies
+   it provokes -- a SYN's SYN-ACK above all -- already go out in a version
+   the peer reads. */
+static void obfs_follow_version(obfs_link_t *l, int ver) {
+	const char *name = l->node ? l->node->name : "(unknown)";
+
+	if(ver == OBFS_FRAME_V2 && !l->peer_v2 && !l->peer_v3) {
+		l->peer_v2 = true;
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "%s speaks obfs frame v2 (an older tincstack): sealing for it in v2, with the header in the clear", name);
+	} else if(ver >= OBFS_FRAME_V3 && l->peer_v2) {
+		l->peer_v2 = false;
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "%s speaks obfs frame v%d: sealing for it with header protection again", name, ver);
+	}
+}
+
 /* On a verified, fresh datagram: move the remembered peer address, then
    re-inject. Returns true (the datagram was claimed by obfs). */
-static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, const uint8_t *inner, size_t innerlen, const sockaddr_t *addr) {
+static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, int ver, const uint8_t *inner, size_t innerlen, const sockaddr_t *addr) {
 	if(!obfs_replay_ok(&ks->rw, seq) && !obfs_epoch_restart(l, ks, seq, inner, innerlen)) {
 		/* Replayed or too-old datagram: drop it and, crucially, do NOT move the
 		   link's remembered address (finding M5-4). It is still an obfs frame,
@@ -1092,6 +1243,8 @@ static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, 
 		return true;
 	}
 
+	obfs_follow_version(l, ver);
+	l->rx_since_dial = true;
 	obfs_link_activate(l, addr);
 	return obfs_inject(ls, inner, innerlen, addr, l);
 }
@@ -1107,14 +1260,15 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 	uint8_t inner[MAXSIZE];
 	obfs_keyset_t *ks = NULL;
 	uint64_t seq = 0;
+	int ver = 0;
 
 	/* Fast path: a link that is already up for this source address. */
 	for list_each(obfs_link_t, l, &obfs_links) {
 		if(l->active && l->have_addr && !sockaddrcmp(&addr, &l->addr)) {
-			ssize_t n = obfs_open(l, buf, len, inner, sizeof(inner), &ks, &seq);
+			ssize_t n = obfs_open(l, buf, len, inner, sizeof(inner), &ks, &seq, &ver);
 
 			if(n >= 0) {
-				return obfs_accept(ls, l, ks, seq, inner, (size_t)n, &addr);
+				return obfs_accept(ls, l, ks, seq, ver, inner, (size_t)n, &addr);
 			}
 
 			return false; /* junk around a handshake, or a still-plain datagram */
@@ -1212,7 +1366,7 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 				continue;
 			}
 
-			ssize_t nlen = obfs_open(l, buf, len, inner, sizeof(inner), &ks, &seq);
+			ssize_t nlen = obfs_open(l, buf, len, inner, sizeof(inner), &ks, &seq, &ver);
 
 			if(nlen >= 0) {
 				if(debug_level >= DEBUG_CONNECTIONS) {
@@ -1221,7 +1375,7 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 					free(hostname);
 				}
 
-				return obfs_accept(ls, l, ks, seq, inner, (size_t)nlen, &addr);
+				return obfs_accept(ls, l, ks, seq, ver, inner, (size_t)nlen, &addr);
 			}
 		}
 	}
@@ -1262,6 +1416,7 @@ bool obfs_dial(connection_t *c) {
 	}
 
 	obfs_link_activate(l, &c->address);
+	l->rx_since_dial = false;
 	obfs_send_junk((size_t)sock, &c->address);
 
 	return sf_dial_obfs(c, l);
@@ -1311,6 +1466,17 @@ void obfs_close(connection_t *c) {
 	   send-path self-heal (see obfs_encode) renegotiates within a second. */
 	bool superseded = obfs_node_has_other_connection(c->node, c);
 
+	/* Our dial ended and not one frame from the peer verified in the whole
+	   attempt. Among the possible reasons (peer down, UDP blocked) is one
+	   that only obfs can name: a tincstack older than frame v3 reads none of
+	   our v3 frames and drops them in silence. Say so once per failed dial;
+	   the carrier walk moves on as for any other failure, and once such a
+	   peer reaches us itself (in v2) we remember it and dial it in v2. */
+	if(l && c->outgoing && !l->rx_since_dial && !superseded && !l->peer_v2) {
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "No obfs frame from %s (%s) verified during the dial; if it runs a tincstack older than obfs frame v%d it cannot read ours",
+		       c->name, c->hostname, OBFS_FRAME_VERSION);
+	}
+
 	if(l && !superseded) {
 		l->active = false;
 		l->have_addr = false;
@@ -1323,6 +1489,10 @@ void obfs_close(connection_t *c) {
 		l->ack_sent = false;
 		l->have_peer_seed = false;
 		l->have_local_seed = false;
+		/* The next connection may be to a different build of the peer (it
+		   was upgraded or downgraded): re-learn v3 from its OBFS_KEY. peer_v2
+		   is kept, see obfs_link_t. */
+		l->peer_v3 = false;
 	}
 
 	sf_close(c);

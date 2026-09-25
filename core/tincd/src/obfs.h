@@ -11,7 +11,7 @@
     (a Poly1305 tag, not a cleartext flag) and hides tinc's fingerprint; SPTPS
     inside still provides identity and confidentiality and is never touched.
 
-    Key schedule (frame format "v2"):
+    Key schedule (frame format "v2", header protection added in "v3"):
 
       * a per-direction BOOTSTRAP key is derived from the two nodes' Ed25519
         public keys. Both peers already hold those, so it is available before
@@ -39,6 +39,14 @@
       * a sliding replay window on the counter rejects replayed datagrams, and
         the remembered peer address is moved only AFTER a datagram both
         verifies and is fresh (finding M5-4).
+
+      * frame v3 protects the header as QUIC does (RFC 9001 5.4): nonce and
+        clen are XORed with a ChaCha20 block keyed by a separate per-direction
+        header key over a 16-byte sample of the ciphertext, and the tail
+        padding length is drawn from the same block. Nothing on the wire is
+        then constant or a length (wire audit 2026-09-26). The receiver also
+        accepts v2 and answers a v2-only peer in v2; there is no version
+        field on the wire.
 
     Junk is emitted only around a handshake (ObfsJunkPacket*), never per data
     packet. On a relay the frame is stripped on receive and re-applied per hop,
@@ -69,7 +77,10 @@ typedef struct obfs_link_t obfs_link_t;
 
 /* magic(0 or 4) | nonce(8) | clen(2) | ChaCha20-Poly1305(inner) | tail-junk.
    The nonce is the whitened counter; clen is the ciphertext length (network
-   order). The smallest real frame wraps a zero-length inner payload. */
+   order). The smallest real frame wraps a zero-length inner payload. In frame
+   v3 the ten header bytes are masked (see OBFS_HP_SAMPLE_LEN); the ciphertext
+   is always at least OBFS_TAG_LEN bytes, so the sample exists for the
+   smallest frame too. */
 #define OBFS_MAGIC_LEN 4
 #define OBFS_NONCE_LEN 8
 #define OBFS_CLEN_LEN  2
@@ -78,6 +89,25 @@ typedef struct obfs_link_t obfs_link_t;
 #define OBFS_MIN_FRAME (OBFS_HDR_LEN + OBFS_TAG_LEN)
 #define OBFS_MAX_OVERHEAD (OBFS_MAGIC_LEN + OBFS_HDR_LEN + OBFS_TAG_LEN)
 #define OBFS_MAX_JUNK  1400
+
+/* Frame versions. v2: header in the clear. v3: header protection. What we
+   send to a peer is v3 unless that peer has only ever spoken v2 to us (an
+   older tincstack); what we accept is both. */
+#define OBFS_FRAME_V2      2
+#define OBFS_FRAME_V3      3
+#define OBFS_FRAME_VERSION OBFS_FRAME_V3
+
+/* Header protection sample: the first 16 ciphertext bytes, i.e. the bytes
+   right after the (masked) header. */
+#define OBFS_HP_SAMPLE_LEN 16
+
+/* Per-datagram random tail padding (wire audit 2026-09-26: sizes were the
+   inner sizes plus a constant). Every frame gets a tail of a length drawn
+   uniformly from [0, max(configured header junk, floor)], never beyond the
+   path budget. The floor is larger for handshake-phase frames: there are few
+   of them and their inner sizes are the most characteristic. */
+#define OBFS_PAD_INIT 256
+#define OBFS_PAD_DATA 64
 
 /* ---- path budget ---------------------------------------------------------
 
@@ -107,8 +137,8 @@ typedef struct obfs_link_t obfs_link_t;
 extern int obfs_junk_count;        /* ObfsJunkPacketCount: junk datagrams around the handshake */
 extern int obfs_junk_min;          /* ObfsJunkPacketMinSize */
 extern int obfs_junk_max;          /* ObfsJunkPacketMaxSize */
-extern int obfs_init_header_junk;  /* ObfsInitHeaderJunkSize: tail padding on handshake frames */
-extern int obfs_transport_header_junk; /* ObfsTransportHeaderJunkSize: tail padding on steady frames */
+extern int obfs_init_header_junk;  /* ObfsInitHeaderJunkSize: max tail padding on handshake frames (reserved in the MTU) */
+extern int obfs_transport_header_junk; /* ObfsTransportHeaderJunkSize: max tail padding on steady frames (reserved in the MTU) */
 extern uint32_t obfs_init_magic;   /* ObfsInitMagicHeader: plaintext prefix on handshake frames */
 extern uint32_t obfs_transport_magic;  /* ObfsTransportMagicHeader */
 
@@ -144,6 +174,11 @@ bool obfs_link_has_session(node_t *n);
 /* Restore a node's link to its freshly-created state (bootstrap key only).
    Test-only helper (see fuzz_obfs.c). */
 void obfs_link_reset_for_test(node_t *n);
+
+/* Frame version this link currently seals with (OBFS_FRAME_V2 or _V3), and a
+   test-only override that makes it seal as a v2-only (older) peer would. */
+int obfs_link_frame_version(const obfs_link_t *l);
+void obfs_link_force_v2_for_test(obfs_link_t *l, bool v2);
 
 /* ---- session key handshake (over the authenticated meta channel) --------- */
 

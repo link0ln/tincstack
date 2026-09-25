@@ -12,7 +12,15 @@
              magic is a separate prefix and steals no nonce entropy);
       (M5-5) direction separation / reflection: a frame WE encode (our tx
              direction) never verifies when fed back into our own receive path,
-             because the receive key is the peer->us direction key.
+             because the receive key is the peer->us direction key;
+      (v3)   header protection and random padding (wire audit 2026-09-26): over
+             a flood of frames no wire field is the length, bytes 0-5 never
+             repeat between consecutive frames, sizes vary, the tail stays in
+             its bounds; frames the PEER seals (a second link built from the
+             peer's point of view) round-trip in v3 and in v2, the receiver
+             answers a v2-only peer in v2 and returns to v3, a tampered
+             sample or a replay is not delivered, and the shortest frame
+             (empty inner) round-trips.
 
     The fuzzed input then drives obfs_udp_try() with two node keys installed, so
     the fast path, cold-start key scan and replay window are all exercised on
@@ -83,11 +91,19 @@ void __wrap_finish_connecting(connection_t *c) {
 	(void)c;
 }
 
+static unsigned decap_count;     /* inner datagrams delivered to the SPTPS path */
+static size_t decap_len;
+static uint8_t decap_buf[2048];
+
 void __wrap_handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr) {
 	(void)ls;
-	(void)buf;
-	(void)len;
 	(void)addr;
+	decap_count++;
+	decap_len = len;
+
+	if(len <= sizeof(decap_buf)) {
+		memcpy(decap_buf, buf, len);
+	}
 }
 
 static sockaddr_t peers[2];
@@ -202,6 +218,221 @@ static void selftest_reflection(obfs_link_t *l) {
    must decide "another connection survives" from that list, not from
    node->connection -- otherwise it drops the link back to the mesh-wide
    bootstrap key. On the pre-fix code (node->connection check) this aborts. */
+/* The peer's own link toward us: its keys are ours mirrored (tx <-> rx), so
+   what it seals is what our receive path must open. Built by pretending, for
+   the duration of obfs_link_for_node(), that `myself' is the peer. The node
+   it points at is NOT in node_tree, so our cold scan never tries it. */
+static obfs_link_t *peer_view;
+static node_t *as_peer;   /* kept reachable: it lives as long as the process */
+
+static obfs_link_t *build_peer_view(void) {
+	node_t *saved = myself;
+	as_peer = new_node("peer-self");
+	as_peer->connection = new_connection();
+	as_peer->connection->name = xstrdup("peer-self");
+	as_peer->connection->ecdsa = peer->ecdsa;
+	node_t *me_remote = new_node("me-remote");
+	me_remote->ecdsa = saved->connection->ecdsa;
+
+	myself = as_peer;
+	obfs_link_t *pl = obfs_link_for_node(me_remote);
+	myself = saved;
+
+	if(!pl) {
+		fprintf(stderr, "SELFTEST: could not build the peer's view of the link\n");
+		abort();
+	}
+
+	return pl;
+}
+
+static void fail(const char *what) {
+	fprintf(stderr, "SELFTEST: %s\n", what);
+	abort();
+}
+
+/* Hand a frame to the receive path from the peer's address; the cold scan
+   budget is per second, so step the clock for every datagram. */
+static bool deliver(const uint8_t *frame, size_t len) {
+	now.tv_sec++;
+	return obfs_udp_try(&listen_socket[0], frame, len, &peers[0]);
+}
+
+/* (v3) What an observer of our frames can count: the length field, a
+   constant prefix, a small size set. Bounds are loose on purpose (the
+   expected counts for random bytes are well under 1); the old v2 wire failed
+   each of them on every single frame. */
+static void selftest_wire_random(obfs_link_t *l) {
+	enum { N = 20000 };
+	static const size_t inner_sizes[2] = { 125, 1061 };
+	uint8_t payload[1100];
+	uint8_t frame[1600];
+	uint8_t prev[6] = { 0 };
+	unsigned len_rule = 0, same6 = 0;
+	unsigned seen[2][OBFS_PAD_DATA + 1];
+	memset(seen, 0, sizeof(seen));
+	memset(payload, 0x42, sizeof(payload));
+
+	for(int i = 0; i < N; i++) {
+		size_t in = inner_sizes[i & 1];
+		size_t flen = obfs_encode(l, payload, in, frame, sizeof(frame), false);
+		size_t min = OBFS_MIN_FRAME + in;
+
+		if(flen < min || flen > min + OBFS_PAD_DATA) {
+			fail("steady-state frame outside [inner + seal, inner + seal + OBFS_PAD_DATA]");
+		}
+
+		seen[i & 1][flen - min]++;
+		len_rule += (size_t)((frame[8] << 8) | frame[9]) == flen - OBFS_HDR_LEN;
+		len_rule += (size_t)((frame[8] << 8) | frame[9]) == in + OBFS_TAG_LEN;
+
+		if(i && !memcmp(prev, frame, 6)) {
+			same6++;
+		}
+
+		memcpy(prev, frame, 6);
+	}
+
+	if(len_rule > 10) {
+		fprintf(stderr, "SELFTEST: bytes 8-9 carry the length in %u of %d frames\n", len_rule, N);
+		abort();
+	}
+
+	if(same6) {
+		fprintf(stderr, "SELFTEST: %u consecutive frames share bytes 0-5\n", same6);
+		abort();
+	}
+
+	for(int k = 0; k < 2; k++) {
+		unsigned distinct = 0;
+
+		for(int t = 0; t <= OBFS_PAD_DATA; t++) {
+			distinct += seen[k][t] != 0;
+		}
+
+		if(distinct < OBFS_PAD_DATA) {
+			fprintf(stderr, "SELFTEST: only %u distinct tail lengths for one inner size\n", distinct);
+			abort();
+		}
+	}
+
+	/* Handshake-phase frames get the larger floor. */
+	unsigned init_max = 0;
+
+	for(int i = 0; i < 2000; i++) {
+		size_t flen = obfs_encode(l, payload, 36, frame, sizeof(frame), true);
+
+		if(flen < OBFS_MIN_FRAME + 36 || flen > OBFS_MIN_FRAME + 36 + OBFS_PAD_INIT) {
+			fail("handshake frame outside its padding bounds");
+		}
+
+		if(flen - OBFS_MIN_FRAME - 36 > init_max) {
+			init_max = (unsigned)(flen - OBFS_MIN_FRAME - 36);
+		}
+	}
+
+	if(init_max < OBFS_PAD_INIT / 2) {
+		fail("handshake frames are not padded over the handshake range");
+	}
+}
+
+/* (v3) Frames sealed by the peer, in v3 and in v2, open on our side; we
+   answer a v2-only peer in v2 and go back to v3 when it does. */
+static void selftest_roundtrip(obfs_link_t *l) {
+	uint8_t payload[200];
+	uint8_t frame[1600];
+
+	for(size_t i = 0; i < sizeof(payload); i++) {
+		payload[i] = (uint8_t)(i * 7 + 1);   /* not the SF magic: SPTPS path */
+	}
+
+	/* v3, including the empty inner (the frame is exactly the seal, and the
+	   sample is the bare tag). */
+	static const size_t sizes[3] = { 0, 1, sizeof(payload) };
+
+	for(int i = 0; i < 3; i++) {
+		unsigned before = decap_count;
+		size_t flen = obfs_encode(peer_view, payload, sizes[i], frame, sizeof(frame), false);
+
+		if(!deliver(frame, flen) || decap_count != before + 1 || decap_len != sizes[i] || memcmp(decap_buf, payload, sizes[i])) {
+			fail("a v3 frame from the peer did not round-trip");
+		}
+
+		if(obfs_link_frame_version(l) != OBFS_FRAME_V3) {
+			fail("a v3 peer moved our sealing off v3");
+		}
+
+		/* The same datagram again is a replay: claimed, not delivered. */
+		if(!deliver(frame, flen) || decap_count != before + 1) {
+			fail("a replayed v3 frame was delivered");
+		}
+	}
+
+	/* A flipped bit in the sample changes the mask and the tag input: the
+	   frame no longer opens under any key or version. */
+	{
+		unsigned before = decap_count;
+		size_t flen = obfs_encode(peer_view, payload, 64, frame, sizeof(frame), false);
+		frame[OBFS_HDR_LEN + 3] ^= 0x10;
+		deliver(frame, flen);
+
+		if(decap_count != before) {
+			fail("a frame with a tampered sample was delivered");
+		}
+	}
+
+	/* The peer turns into an older build: v2 frames, header in the clear. */
+	obfs_link_force_v2_for_test(peer_view, true);
+	{
+		unsigned before = decap_count;
+		size_t flen = obfs_encode(peer_view, payload, 64, frame, sizeof(frame), false);
+
+		if((size_t)((frame[8] << 8) | frame[9]) != 64 + OBFS_TAG_LEN) {
+			fail("a v2 frame does not carry clen in the clear");
+		}
+
+		if(!deliver(frame, flen) || decap_count != before + 1 || decap_len != 64) {
+			fail("a v2 frame from an older peer did not open");
+		}
+
+		if(obfs_link_frame_version(l) != OBFS_FRAME_V2) {
+			fail("we do not answer a v2-only peer in v2");
+		}
+
+		/* ...and our v2 answer is what an older peer reads: clen in clear. */
+		flen = obfs_encode(l, payload, 64, frame, sizeof(frame), false);
+
+		if((size_t)((frame[8] << 8) | frame[9]) != 64 + OBFS_TAG_LEN) {
+			fail("our answer to a v2 peer is not a v2 frame");
+		}
+	}
+
+	/* The peer is upgraded again: its first v3 frame moves us back. */
+	obfs_link_force_v2_for_test(peer_view, false);
+	{
+		size_t flen = obfs_encode(peer_view, payload, 64, frame, sizeof(frame), false);
+
+		if(!deliver(frame, flen) || obfs_link_frame_version(l) != OBFS_FRAME_V3) {
+			fail("a v3 frame did not move a v2 link back to v3");
+		}
+	}
+
+	/* A magic prefix still works in front of a protected header. */
+	{
+		extern uint32_t obfs_transport_magic;
+		uint32_t saved = obfs_transport_magic;
+		obfs_transport_magic = 0x17030300u;
+		unsigned before = decap_count;
+		size_t flen = obfs_encode(peer_view, payload, 64, frame, sizeof(frame), false);
+		bool ok = frame[0] == 0x17 && deliver(frame, flen) && decap_count == before + 1;
+		obfs_transport_magic = saved;
+
+		if(!ok) {
+			fail("a v3 frame behind a magic prefix did not round-trip");
+		}
+	}
+}
+
 static void selftest_close_preserves_session(void) {
 	/* Owner connection over the obfs carrier, dialled so it owns an sf session
 	   whose ->obfs points at the shared link (obfs_close finds it that way). */
@@ -309,7 +540,15 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 	selftest_nonce_unique(l);
 	selftest_magic_prefix(l);
 	selftest_reflection(l);
+	selftest_wire_random(l);
+
+	peer_view = build_peer_view();
+	selftest_roundtrip(l);
+	obfs_link_reset_for_test(peer);
+	obfs_link_force_v2_for_test(peer_view, false);
+
 	selftest_close_preserves_session();
+	decap_count = 0;
 	return 0;
 }
 
