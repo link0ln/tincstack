@@ -328,6 +328,18 @@ static void quic_fail(quic_session_t *s, bool send_cc) {
 	schedule_reap();
 }
 
+/* The CONNECTION_CLOSE for a failed TLS handshake. The listener's carries
+   nginx's reason phrase: in an Initial packet, anyone can read it. */
+static void set_tls_alert(quic_session_t *s) {
+	static const char reason[] = "handshake failed";
+
+	if(s->is_server) {
+		ngtcp2_ccerr_set_tls_alert(&s->ccerr, ngtcp2_conn_get_tls_alert(s->conn), (const uint8_t *)reason, sizeof(reason) - 1);
+	} else {
+		ngtcp2_ccerr_set_tls_alert(&s->ccerr, ngtcp2_conn_get_tls_alert(s->conn), NULL, 0);
+	}
+}
+
 /* ---- ngtcp2 callbacks ---------------------------------------------------- */
 
 static ngtcp2_conn *get_conn(ngtcp2_crypto_conn_ref *ref) {
@@ -1380,7 +1392,10 @@ static void quic_flush(quic_session_t *s) {
 		} else {
 			/* One stream per packet, in this order: our unidirectional
 			   preambles, decoy answers, the meta stream; with none pending,
-			   sid -1 lets ngtcp2 send ACKs and control frames. */
+			   sid -1 lets ngtcp2 send ACKs and control frames. The
+			   listener, as nginx, packs its unidirectional streams into
+			   one packet (the one with the session tickets), the stream
+			   type in a STREAM frame of its own. */
 			ngtcp2_vec v = {NULL, 0};
 			size_t cnt = 0;
 			int64_t sid = -1;
@@ -1395,6 +1410,17 @@ static void quic_flush(quic_session_t *s) {
 					cnt = 1;
 					sid = s->uni_id[i];
 					uni = i;
+
+					if(s->is_server) {
+						uint8_t tb[8];
+						size_t tlen = h3_varint_put(tb, s->uni_type[i]);
+
+						if(s->uni_sent[i] < tlen) {
+							v.len = tlen - s->uni_sent[i];
+						}
+
+						wflags = NGTCP2_WRITE_STREAM_FLAG_MORE;
+					}
 				}
 			}
 
@@ -1426,6 +1452,15 @@ static void quic_flush(quic_session_t *s) {
 					s->req[req].blocked = true;
 				} else {
 					s->stream_blocked = true;
+				}
+
+				continue;
+			}
+
+			/* The packet has room for more: the next stream goes in too. */
+			if(nwrite == NGTCP2_ERR_WRITE_MORE) {
+				if(uni >= 0 && pdatalen > 0) {
+					s->uni_sent[uni] += (size_t)pdatalen;
 				}
 
 				continue;
@@ -1689,7 +1724,7 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 
 	if(rv) {
 		if(rv == NGTCP2_ERR_CRYPTO) {
-			ngtcp2_ccerr_set_tls_alert(&s->ccerr, ngtcp2_conn_get_tls_alert(s->conn), NULL, 0);
+			set_tls_alert(s);
 		} else {
 			ngtcp2_ccerr_set_liberr(&s->ccerr, rv, NULL, 0);
 		}
@@ -1726,7 +1761,7 @@ static void session_read(quic_session_t *s, const uint8_t *buf, size_t len, cons
 		if(rv == NGTCP2_ERR_DRAINING || rv == NGTCP2_ERR_CLOSING || rv == NGTCP2_ERR_DROP_CONN) {
 			quic_fail(s, false);
 		} else if(rv == NGTCP2_ERR_CRYPTO) {
-			ngtcp2_ccerr_set_tls_alert(&s->ccerr, ngtcp2_conn_get_tls_alert(s->conn), NULL, 0);
+			set_tls_alert(s);
 			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "quic: TLS alert from %s", s->c->hostname);
 			quic_fail(s, true);
 		} else {

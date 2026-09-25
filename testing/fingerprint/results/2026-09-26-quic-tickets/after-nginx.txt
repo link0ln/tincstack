@@ -1,0 +1,70 @@
+# curl's first connection, every datagram (decrypted with curl's key log; ids and tokens left out)
+# udp.srcport udp.length quic.long.packet_type quic.length quic.frame_type quic.stream.stream_id quic.stream.offset quic.stream.length quic.crypto.offset quic.crypto.length tls.handshake.type
+54468	1208	0	1182	06				0	1158	
+54468	1208	0	1182	06,00				1158	323	1
+443	59	0	22	02						
+443	1208	0	1170	02,06				0	1144	
+443	1208	0,2	55,1087	06,06,06,06,06,00				1144,0,121,529,607	34,121,408,78,52	2,8,11,15,20
+54468	1208	0	1170	02,00						
+443	57	0	20	01,00						
+54468	1208	0,2	1061,80	02,00,02,06				0	52	20
+443	57	0	20	01,00						
+443	56	2	20	01,00						
+443	56	2	20	01,00						
+54468	103	2	25	02,01						
+54468	120	2	25	02,08	2					
+54468	52			08	10					
+54468	52			08	6					
+54468	81			0b	0		29			
+443	596			06,06,1e,18,0e,0e,0e	3,3,7	0,1,0	1,8,1	0,249	249,249	4,4
+443	31			02						
+54468	54			02						
+443	31			02						
+
+# session tickets: lifetime, length, nonce length
+300,300	224,224	8,8
+
+# the server's first 1-RTT datagram, frames
+    QUIC Connection information
+    [Packet Length: 588]
+    QUIC Short Header PKN=0
+        [.... ..00 = Packet Number Length: 1 bytes (0)]
+    CRYPTO
+        Frame Type: CRYPTO (0x0000000000000006)
+        Offset: 0
+        Length: 249
+                Length: 245
+                    Session Ticket Nonce Length: 8
+                    Session Ticket Length: 224
+                    Extensions Length: 0
+    CRYPTO
+        Frame Type: CRYPTO (0x0000000000000006)
+        Offset: 249
+        Length: 249
+                Length: 245
+                    Session Ticket Nonce Length: 8
+                    Session Ticket Length: 224
+                    Extensions Length: 0
+    HANDSHAKE_DONE
+        Frame Type: HANDSHAKE_DONE (0x000000000000001e)
+    NEW_CONNECTION_ID
+        Frame Type: NEW_CONNECTION_ID (0x0000000000000018)
+        Sequence: 1
+        Retire Prior To: 0
+        Connection ID Length: 20
+    STREAM id=3 fin=0 off=0 len=1 dir=Unidirectional origin=Server-initiated
+        Frame Type: STREAM (0x000000000000000e)
+        Offset: 0
+        Length: 1
+    STREAM id=3 fin=0 off=1 len=8 dir=Unidirectional origin=Server-initiated
+        Frame Type: STREAM (0x000000000000000e)
+        Offset: 1
+        Length: 8
+    STREAM id=7 fin=0 off=0 len=1 dir=Unidirectional origin=Server-initiated
+        Frame Type: STREAM (0x000000000000000e)
+        Offset: 0
+        Length: 1
+    UNI STREAM: Control Stream off=0
+
+# the CONNECTION_CLOSE to hq-interop: udp length, packet type, Length, error code, frame type, reason
+75	0	38	376	0	handshake failed

@@ -1,0 +1,70 @@
+# Regression runs of c9b916d (tincstack/core:ww-a), one lab-lock hold each; exit codes:
+listener exit 0
+quicwire exit 0
+h3 exit 0
+carrier exit 0
+front exit 0
+mixed-tps exit 0
+mixed-deb13 exit 0
+
+# unit tests (meson test --suite unit, -Dtests=enabled): Ok 13, Expected Fail 2, Fail 0
+# Windows core: docker build -f core/Dockerfile.build-win -t tincstack/core-win:ww-a core -> exit 0
+# make lint -> exit 0
+
+== quicwire
+PASS the leaf is on quic
+PASS transport parameters are curl's: disable_active_migration,initial_source_connection_id,max_idle_timeout,max_udp_payload_size,active_connection_id_limit,initial_max_data,initial_max_stream_data_bidi_local,initial_max_stream_data_bidi_remote,initial_max_stream_data_uni,initial_max_streams_bidi,initial_max_streams_uni
+PASS the ClientHello is curl's: q13i0311h3_1301,1302,1303_000a,000b,000d..., 1477 bytes
+PASS the first flight is curl's: 1208 B (Length 1182, CRYPTO 0+1158, PADDING 0); 1208 B (Length 1182, CRYPTO 1158+323, PADDING 834)
+PASS the second flight is curl's: 1208 B of IH, Lengths 1061,80, Initial ACK,PADDING1036, destination connection id kept
+PASS the tunnel carries 56- and 1400-byte pings both ways, datagrams confirmed; PMTU: 1119
+quic wire: all checks passed
+
+== h3
+PASS two tinc nodes connect over the HTTP/3 carrier
+PASS ... and the tunnel carries traffic (10.92.172.1)
+PASS curl --http3-only gets the decoy page over HTTP/3
+PASS Chromium loads the decoy page over QUIC (2 HTTP/3 request(s) answered)
+PASS our server sends SETTINGS on its control stream (decrypted, 2 client flows)
+PASS the dialler's Initial announces 100/100 streams and an empty source connection id, as curl's does
+PASS nginx parses our request: POST / HTTP/3.0 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) A...
+PASS our dialler recognises a web server's answer and gives up on it
+h3 interop: all checks passed
+
+== carrier
+PASS: quic carrier negotiates, survives NAT rebind, falls back, rejects bad auth, relays, keeps its carrier across link drops
+
+== front
+PASS a listening node opens the https and quic fronts on 443 by default
+PASS ... and advertises them in its own host record
+PASS the invitation carries the front ports to the invitee
+PASS the leaf connects via https
+PASS the leaf connects via quic
+PASS TLS on TCP 443 reaches the https front (decoy answers)
+PASS a tinc ID line on TCP 443 gets nginx's 400, not tinc
+PASS the https dial went to TCP 443 (and nowhere else)
+PASS the quic dial went to UDP 443
+PASS ... from an ephemeral source port (44783 )
+PASS random bytes on UDP 443 get no answer
+PASS without an advertised HttpsPort the https dial still gets in on the tinc port
+PASS a node that cannot bind 443 says so
+PASS ... and stops advertising the front ports
+PASS a quic front does not share UDP 443 with another server
+PASS ... and advertises only the https front
+front ports: all checks passed
+
+== mixed-tps
+PASS quic: founder tincstack/core:pre-tps, leaf tincstack/core:ww-a (tunnel carries traffic, quic dialled once)
+PASS quic: founder tincstack/core:ww-a, leaf tincstack/core:pre-tps: an older dialler cannot send datagrams to a current listener, which answers it as a web server; the leaf gave quic up once and is on 'plain', tunnel carries traffic
+PASS quic: founder tincstack/core:ww-a, leaf tincstack/core:ww-a (tunnel carries traffic, quic dialled once)
+PASS https: founder tincstack/core:pre-tps, leaf tincstack/core:ww-a (tunnel carries traffic, https dialled once)
+PASS https: founder tincstack/core:ww-a, leaf tincstack/core:pre-tps (tunnel carries traffic, https dialled once)
+PASS https: founder tincstack/core:ww-a, leaf tincstack/core:ww-a (tunnel carries traffic, https dialled once)
+
+== mixed-deb13
+PASS quic: founder tincstack/core:pre-deb13, leaf tincstack/core:ww-a: an older listener cannot send datagrams to a current dialler; the leaf gave quic up once and is on 'plain', tunnel carries traffic
+PASS quic: founder tincstack/core:ww-a, leaf tincstack/core:pre-deb13: an older dialler cannot send datagrams to a current listener, which answers it as a web server; the leaf gave quic up once and is on 'plain', tunnel carries traffic
+PASS quic: founder tincstack/core:ww-a, leaf tincstack/core:ww-a (tunnel carries traffic, quic dialled once)
+PASS https: founder tincstack/core:pre-deb13, leaf tincstack/core:ww-a (tunnel carries traffic, https dialled once)
+PASS https: founder tincstack/core:ww-a, leaf tincstack/core:pre-deb13 (tunnel carries traffic, https dialled once)
+PASS https: founder tincstack/core:ww-a, leaf tincstack/core:ww-a (tunnel carries traffic, https dialled once)

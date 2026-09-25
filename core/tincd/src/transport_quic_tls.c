@@ -29,6 +29,7 @@
 #ifdef HAVE_QUIC
 
 #include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
@@ -149,6 +150,39 @@ void quic_tls_global_deinit(void) {
 	quic_tls_free_server_cert();
 }
 
+/* The session tickets as nginx 1.26 issues them with its defaults
+   (ngx_ssl_session_cache: ssl_session_cache none, ssl_session_timeout 5m):
+   a 300 s lifetime, and the session id context -- SHA-1 of "HTTP" and of
+   each certificate's SHA-1 -- inside every ticket. A client reads the
+   lifetime and the ticket's length (quic-listener-wire-test.sh: 7200 s and
+   208 B without this, nginx's 300 s and 224 B). Tickets stay OpenSSL's own
+   stateless ones, as nginx's without ssl_session_ticket_key. */
+static bool nginx_session_cache(SSL_CTX *ctx) {
+	static const char sess_ctx[] = "HTTP";
+	unsigned char md[EVP_MAX_MD_SIZE], cmd[EVP_MAX_MD_SIZE];
+	unsigned int mdlen = 0, cmdlen = 0;
+	X509 *cert = SSL_CTX_get0_certificate(ctx);
+	EVP_MD_CTX *h = EVP_MD_CTX_new();
+	bool ok = h && cert &&
+	          EVP_DigestInit_ex(h, EVP_sha1(), NULL) == 1 &&
+	          EVP_DigestUpdate(h, sess_ctx, sizeof(sess_ctx) - 1) == 1 &&
+	          X509_digest(cert, EVP_sha1(), cmd, &cmdlen) == 1 &&
+	          EVP_DigestUpdate(h, cmd, cmdlen) == 1 &&
+	          EVP_DigestFinal_ex(h, md, &mdlen) == 1 &&
+	          SSL_CTX_set_session_id_context(ctx, md, mdlen) == 1;
+
+	EVP_MD_CTX_free(h);
+
+	if(!ok) {
+		return false;
+	}
+
+	SSL_CTX_set_timeout(ctx, 300);
+	SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_SERVER | SSL_SESS_CACHE_NO_AUTO_CLEAR | SSL_SESS_CACHE_NO_INTERNAL_STORE);
+	SSL_CTX_sess_set_cache_size(ctx, 1);
+	return true;
+}
+
 bool quic_tls_set_server_cert(const char *cert_pem, const char *key_pem) {
 	SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
 
@@ -191,6 +225,12 @@ bool quic_tls_set_server_cert(const char *cert_pem, const char *key_pem) {
 	}
 
 	SSL_CTX_set_alpn_select_cb(ctx, alpn_select, NULL);
+
+	if(!nginx_session_cache(ctx)) {
+		log_ossl_errors("session cache");
+		SSL_CTX_free(ctx);
+		return false;
+	}
 
 	quic_tls_free_server_cert();
 	server_ctx = ctx;

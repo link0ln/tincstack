@@ -1,0 +1,43 @@
+# The quic carrier's meta stream under 10% loss both ways (netem, +10 ms), TCPOnly on both nodes so every
+# tunnel packet rides the meta stream; 2000 pings of 1200 B through the tunnel (testing lab, ww-a images).
+# ringexp = ww-a with a meta TX buffer that never moves or shrinks (an experiment, not committed).
+
+== lm-quic0
+founder transport quic
+3 packets transmitted, 3 received, 0% packet loss, time 2035ms
+rtt min/avg/max/mdev = 0.215/0.223/0.237/0.009 ms
+loss 0% both ways; 2000 pings of 1200 B, 20 ms apart
+2000 packets transmitted, 2000 received, 0% packet loss, time 40346ms
+rtt min/avg/max/mdev = 20.100/20.181/23.509/0.091 ms, pipe 2
+3 packets transmitted, 3 received, 0% packet loss, time 2073ms
+rtt min/avg/max/mdev = 0.294/0.348/0.415/0.050 ms
+
+== lm-quic10
+founder transport quic
+3 packets transmitted, 3 received, 0% packet loss, time 2040ms
+rtt min/avg/max/mdev = 0.212/0.218/0.223/0.004 ms
+loss 10% both ways; 2000 pings of 1200 B, 20 ms apart
+2000 packets transmitted, 0 received, 100% packet loss, time 42403ms
+
+3 packets transmitted, 0 received, 100% packet loss, time 2069ms
+
+
+== lm-https10
+founder transport https
+3 packets transmitted, 3 received, 0% packet loss, time 2000ms
+rtt min/avg/max/mdev = 41.062/41.462/42.165/0.498 ms
+loss 10% both ways; 2000 pings of 1200 B, 20 ms apart
+2000 packets transmitted, 2000 received, 0% packet loss, time 42678ms
+rtt min/avg/max/mdev = 20.337/106.130/1032.086/134.355 ms, pipe 49
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 40.454/40.925/41.188/0.334 ms
+
+== lm-ringexp10
+founder transport quic
+3 packets transmitted, 3 received, 0% packet loss, time 2019ms
+rtt min/avg/max/mdev = 0.212/0.862/1.197/0.460 ms
+loss 10% both ways; 2000 pings of 1200 B, 20 ms apart
+2000 packets transmitted, 2000 received, 0% packet loss, time 42484ms
+rtt min/avg/max/mdev = 20.317/55.127/219.588/30.276 ms, pipe 11
+3 packets transmitted, 3 received, 0% packet loss, time 2082ms
+rtt min/avg/max/mdev = 0.552/0.571/0.585/0.014 ms

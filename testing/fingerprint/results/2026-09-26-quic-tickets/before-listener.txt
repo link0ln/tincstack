@@ -1,0 +1,68 @@
+# curl's first connection, every datagram (decrypted with curl's key log; ids and tokens left out)
+# udp.srcport udp.length quic.long.packet_type quic.length quic.frame_type quic.stream.stream_id quic.stream.offset quic.stream.length quic.crypto.offset quic.crypto.length tls.handshake.type
+35074	1208	0	1182	06				0	1158	
+35074	1208	0	1182	06,00				1158	323	1
+443	59	0	22	02						
+443	1208	0	1170	02,06				0	1144	
+443	1208	0,2	55,1087	06,06,06,06,06,00				1144,0,121,530,608	34,121,409,78,52	2,8,11,15,20
+35074	1208	0	1170	02,00						
+35074	1208	0,2	1061,80	02,00,02,06				0	52	20
+35074	67			08	2					
+35074	52			08	10					
+35074	52			08	6					
+35074	81			0b	0		29			
+443	549			18,1e,06,0a	3		9	0	466	4,4
+443	50			0a,00	7		1			
+443	50			02,00						
+35074	54			02						
+443	837			02,0b	0		802			
+35074	54			02						
+35074	52			1d						
+
+# session tickets: lifetime, length, nonce length
+7200,7200	208,208	8,8
+
+# the server's first 1-RTT datagram, frames
+    QUIC Connection information
+    [Packet Length: 541]
+    QUIC Short Header PKN=0
+        [.... ..00 = Packet Number Length: 1 bytes (0)]
+    NEW_CONNECTION_ID
+        Frame Type: NEW_CONNECTION_ID (0x0000000000000018)
+        Sequence: 1
+        Retire Prior To: 0
+        Connection ID Length: 20
+    HANDSHAKE_DONE
+        Frame Type: HANDSHAKE_DONE (0x000000000000001e)
+    CRYPTO
+        Frame Type: CRYPTO (0x0000000000000006)
+        Offset: 0
+        Length: 466
+                Length: 229
+                    Session Ticket Nonce Length: 8
+                    Session Ticket Length: 208
+                    Extensions Length: 0
+                Length: 229
+                    Session Ticket Nonce Length: 8
+                    Session Ticket Length: 208
+                    Extensions Length: 0
+    STREAM id=3 fin=0 off=0 len=9 dir=Unidirectional origin=Server-initiated
+        Frame Type: STREAM (0x000000000000000a)
+        Length: 9
+    UNI STREAM: Control Stream off=0
+            Length: 6
+    QUIC Connection information
+    [Packet Length: 42]
+    QUIC Short Header PKN=1
+        [.... ..00 = Packet Number Length: 1 bytes (0)]
+    STREAM id=7 fin=0 off=0 len=1 dir=Unidirectional origin=Server-initiated
+        Frame Type: STREAM (0x000000000000000a)
+        Length: 1
+    PADDING Length: 20
+        Frame Type: PADDING (0x0000000000000000)
+        [Padding Length: 20]
+    UNI STREAM: QPACK Decoder Stream off=0
+    QUIC Connection information
+
+# the CONNECTION_CLOSE to hq-interop: udp length, packet type, Length, error code, frame type, reason
+59	0	22	376	0	
