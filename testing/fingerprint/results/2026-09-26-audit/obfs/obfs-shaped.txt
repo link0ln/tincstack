@@ -1,0 +1,105 @@
+obfs capture: 9332 UDP datagrams, 9315 between founder and leaf
+
+== sizes per phase (payload bytes; top sizes with counts) ==
+handshake F>L                      n=64    distinct=16   top: 66 x30, 91 x7, 103 x6, 207 x5, 134 x3, 115 x2
+handshake L>F                      n=64    distinct=16   top: 66 x30, 91 x12, 103 x6, 134 x3, 113 x2, 131 x1
+ping      F>L                      n=93    distinct=8    top: 66 x26, 1103 x20, 91 x13, 183 x12, 93 x12, 159 x8
+ping      L>F                      n=93    distinct=8    top: 66 x26, 1103 x20, 91 x13, 183 x13, 93 x12, 159 x7
+bulk      F>L                      n=4000  distinct=2    top: 1103 x2000, 167 x2000
+bulk      L>F                      n=4000  distinct=2    top: 1103 x2000, 167 x2000
+idle      F>L                      n=139   distinct=11   top: 93 x45, 66 x43, 228 x10, 227 x10, 141 x10, 134 x6
+idle      L>F                      n=140   distinct=10   top: 93 x45, 66 x45, 228 x10, 227 x10, 141 x10, 134 x6
+restarts  F>L                      n=297   distinct=32   top: 66 x155, 207 x30, 134 x18, 116 x12, 205 x12, 93 x10
+restarts  L>F                      n=297   distinct=33   top: 66 x108, 91 x47, 103 x36, 134 x18, 113 x13, 93 x10
+probes    10.49.66.20>10.49.66.10  n=11    distinct=8    top: 100 x4, 1 x1, 16 x1, 40 x1, 200 x1, 600 x1
+probes    F>L                      n=11    distinct=2    top: 93 x8, 66 x3
+probes    L>F                      n=11    distinct=4    top: 93 x7, 91 x2, 147 x1, 1472 x1
+replay    10.49.66.20>10.49.66.10  n=6     distinct=6    top: 132 x1, 89 x1, 48 x1, 76 x1, 126 x1, 66 x1
+replay    F>L                      n=52    distinct=11   top: 66 x17, 93 x13, 228 x4, 227 x4, 141 x4, 87 x3
+replay    L>F                      n=54    distinct=9    top: 66 x21, 93 x14, 228 x4, 227 x4, 141 x4, 123 x2
+
+== handshakes: the first 14 datagrams after each dial (dir size +ms) ==
+handshake  >131+0 >161+0 >146+0 >197+0 >126+0 <127+0 <70+0 <98+0 <89+0 <66+0 <81+0 >66+0 <134+0 >134+0
+restart1   >113+0 >81+0 >142+0 >182+0 >126+0 <144+0 <109+0 <162+0 <70+0 <66+0 <81+0 >66+0 <134+0 >134+0
+restart2   >114+0 >40+0 >156+0 >195+0 >126+0 <146+0 <138+0 <112+0 <146+0 <66+0 <81+1 >66+1 <134+1 >134+1
+restart3   >45+0 >111+0 >65+0 >63+0 >126+0 <195+0 <70+0 <151+0 <114+0 <66+0 <81+0 >66+0 <134+0 >134+0
+restart4   >197+0 >116+0 >112+0 >147+0 >126+0 <103+0 <46+0 <110+0 <105+0 <66+0 <81+0 >66+0 <134+1 >134+1
+restart5   >77+0 >150+0 >75+0 >132+0 >126+0 <126+0 <194+0 <164+0 <137+0 <66+0 <81+0 >66+0 <134+0 >134+0
+restart6   >132+0 >89+0 >48+0 >76+0 >126+0 <154+0 <173+0 <54+0 <200+0 <66+0 <81+0 >66+0 <134+0 >134+1
+identical first-10 size sequences: 1 of 7 handshakes share the most common one
+handshake positions whose (direction, size) never varied: [4, 9]
+
+== structural rules over the 9315 tunnel datagrams ==
+bytes 8-9 (big-endian) == payload length - 10  : 0/9315 = 0.0000  (uniform random: 0.000015)
+16 <= bytes 8-9 <= payload length - 10          : 9259/9315 = 0.9940  (uniform random, 1000 B: 0.0149)
+bytes 12-13 == payload length - 14 (magic form) : 0/9315 = 0.0000
+payload length - 10 - bytes 8-9 (the tail junk, if bytes 8-9 are the length): 16 x9252, 64 x7, -65119 x1, -34844 x1, -55836 x1, -12251 x1
+datagrams >= 400 B outside the ping/bulk phases (PMTU probes?): 4: idle F>L 1472, idle L>F 1472, probes L>F 1472, replay F>L 1472
+L>F: consecutive datagrams with equal bytes 0-5: 4607/4658; equal bytes 0-1: 4607/4658; distinct 0-1 prefixes: 40, distinct 0-5 prefixes: 46 (random: every pair differs)
+    most common bytes 0-5: e4f350863360 x4170, 9807182ee276 x51, 85fb9a8b0e0a x48, 0728cc71358b x43
+F>L: consecutive datagrams with equal bytes 0-5: 4609/4655; equal bytes 0-1: 4610/4655; distinct 0-1 prefixes: 40, distinct 0-5 prefixes: 41 (random: every pair differs)
+    most common bytes 0-5: 408a07978558 x2752, 408a0797855b x1417, 6b8b0887082e x132, bca02f0eee26 x50
+
+== per-position byte chi-square vs uniform (255 dof; p < 1e-6 is a tell) ==
+sample: 9315 tunnel datagrams of >= 32 bytes (expected 36.4 per byte value)
+  byte  0: chi2   947936.9  p 0.00e+00  TELL  top e4 x4170, 40 x4169, 37 x138
+  byte  1: chi2   948001.8  p 0.00e+00  TELL  top f3 x4170, 8a x4169, 1d x138
+  byte  2: chi2   947518.0  p 0.00e+00  TELL  top 50 x4170, 07 x4169, 08 x132
+  byte  3: chi2   947705.1  p 0.00e+00  TELL  top 86 x4171, 97 x4169, 87 x132
+  byte  4: chi2   947696.8  p 0.00e+00  TELL  top 33 x4171, 85 x4169, 08 x132
+  byte  5: chi2   735307.0  p 0.00e+00  TELL  top 60 x4170, 58 x2753, 5b x1442
+  byte  6: chi2    51592.0  p 0.00e+00  TELL  top 34 x305, ad x299, 52 x276
+  byte  7: chi2       29.8  p 1.00e+00  ok    top f1 x41, f0 x41, fd x41
+  byte  8: chi2  1186317.9  p 0.00e+00  TELL  top 00 x5213, 04 x4041, 05 x6
+  byte  9: chi2   887612.5  p 0.00e+00  TELL  top 35 x4040, 8d x4001, 28 x504
+  byte 10: chi2      284.0  p 1.02e-01  ok    top 51 x55, f3 x53, 71 x51
+  byte 11: chi2      237.9  p 7.72e-01  ok    top 87 x54, 93 x51, 8b x50
+  byte 12: chi2      265.8  p 3.08e-01  ok    top 9e x53, b9 x52, 3b x50
+  byte 13: chi2      235.5  p 8.04e-01  ok    top 1d x58, 4b x56, c3 x53
+  byte 14: chi2      224.7  p 9.14e-01  ok    top 23 x52, 73 x51, 2b x50
+  byte 15: chi2      282.4  p 1.14e-01  ok    top 36 x58, 7f x56, 5d x54
+  bytes 16..end pooled (5115619 bytes): chi2 242.4 p 7.05e-01
+  their Shannon entropy: 8.0000 bits/byte
+
+== idle phase: every datagram (offset s, dir, size) and the gaps between them ==
+  279 datagrams in 153 s
+  0.4<123 3.0>93 3.4<93 4.1>93 4.1<93 4.5>123 4.5<93 4.5>93 12.5>93 13.1<93 14.7>93 14.7<93 15.1<93 15.1>93 17.8<105 17.8>66 17.8<228 17.8>66 17.8>228 17.8<66 17.8>227 17.8<66 17.8<227 17.8<141 17.8>66 17.8>141 17.8>66 17.8<66 17.8<123 21.5>102 21.5<66 21.5>228 21.5<66 21.5<228 21.5>66 21.5>227 21.5<66 21.5<227 21.5<141 21.5>66 21.5>141 21.5<66 21.5>66 21.9>123 21.9>93 22.7<93 25.5>93 25.5<93 25.9<93 25.9>93 30.8>93 32.2<93 36.3>93 36.3<93 36.3<93 36.3>93 40.6>93 41.6<93 46.8>93 46.8<93 46.9<93 46.9>93 47.7<134 47.7>66 47.7>134 47.7<66 47.7>134 47.7<134 47.7>66 47.8<105 47.8<228 47.8>66 47.8>66 47.8>228 47.8<66 47.8>227 47.8<66 47.8<227 47.8<141 47.8>66
+  55 bursts (datagrams < 0.5 s apart), starting at 0.4, 3.0, 4.1, 12.5, 13.1, 14.7, 17.8, 21.5, 22.7, 25.5, 30.8, 32.2, 36.3, 40.6, 41.6, 46.8, 47.7, 49.9, 51.2, 54.1, 57.3, 58.2, 59.4, 60.8, 68.0, 69.0, 70.0, 77.8, 78.6, 79.6, 81.5, 88.2, 89.2, 97.8, 98.7, 99.9, 107.5, 108.6, 110.6, 111.6, 117.1, 118.1, 121.2, 123.8, 126.5, 127.6, 131.8, 136.1, 137.2, 137.7, 141.6, 142.4, 145.6, 146.7, 150.1 s
+  gaps between bursts: 2.6, 1.0, 8.4, 0.6, 1.6, 3.1, 3.7, 1.2, 2.8, 5.3, 1.4, 4.1, 4.3, 1.0, 5.2, 0.9, 2.2, 1.3, 2.9, 3.2, 0.9, 1.2, 1.3, 7.2, 1.0, 1.0, 7.8, 0.7, 1.0, 1.9, 6.7, 1.0, 8.6, 0.9, 1.1, 7.6, 1.1, 2.0, 1.0, 5.5, 1.0, 3.0, 2.6, 2.8, 1.1, 4.2, 4.3, 1.0, 0.6, 3.9, 0.8, 3.1, 1.2, 3.3 s (median 2.0)
+  burst size patterns: [93] x25; [93, 93, 93, 93] x10; [123] x3; [66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 105, 134, 134, 134, 134, 141, 141, 227, 227, 228, 228] x2; [93, 93, 93, 93, 93] x2; [93, 93] x1
+
+== answers to strangers (datagrams from the founder to anyone but the leaf) ==
+  0 datagrams: none
+--- probes (a stranger at 10.49.66.20) ---
+udp random-1               silence
+udp random-16              silence
+udp random-40              silence
+udp random-100             silence
+udp random-200             silence
+udp random-600             silence
+udp random-1200            silence
+udp random-1400            silence
+udp zeros-100              silence
+udp sptps-shaped-100       silence
+udp obfs-shaped-100        silence
+tcp silent                 b'<TimeoutError>'
+tcp tinc-id                b'<TimeoutError>'
+tcp http-get               b'HTTP/1.1 200 OK\r\nServer: nginx\r\nDate: Fri, 25 Sep 2026 22:00'
+udp replay-1-132B silence
+udp replay-2-89B silence
+udp replay-3-48B silence
+udp replay-4-76B silence
+udp replay-5-126B silence
+udp replay-6-66B silence
+--- leaf's connection at the end ---
+founder at 10.49.66.10 port 655 options 700000c socket -1 status 100 transport obfs
+<control> at localhost port unix options 0 socket 12 status 200 transport plain
+--- ping summary ---
+20 packets transmitted, 20 received, 0% packet loss, time 3951ms
+rtt min/avg/max/mdev = 0.122/0.302/0.622/0.159 ms
+20 packets transmitted, 20 received, 0% packet loss, time 3945ms
+rtt min/avg/max/mdev = 0.135/0.329/0.711/0.203 ms
+2000 packets transmitted, 2000 received, 0% packet loss, time 146ms
+rtt min/avg/max/mdev = 0.056/0.066/0.144/0.005 ms, ipg/ewma 0.072/0.062 ms
+2000 packets transmitted, 2000 received, 0% packet loss, time 115ms
+rtt min/avg/max/mdev = 0.045/0.051/0.120/0.005 ms, ipg/ewma 0.057/0.052 ms

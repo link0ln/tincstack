@@ -1,0 +1,37 @@
+== CPU quota 0.03: client datagrams up to the first with a Handshake packet, per connection ==
+   (udp length:packet types:Length fields; a fast client sends ... 1200:IHS or IH as the Finished)
+ours	H(NO Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 62:H:25
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	H(NO Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 62:H:25
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	H(NO Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 62:H:25
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	H(NO Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 62:H:25
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+-- tally: who, first Handshake-carrying datagram --
+      6 curl Initial+Handshake
+      4 ours Handshake-only
+      2 ours Initial+Handshake
+
+== CPU quota 1: client datagrams up to the first with a Handshake packet, per connection ==
+   (udp length:packet types:Length fields; a fast client sends ... 1200:IHS or IH as the Finished)
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+-- tally: who, first Handshake-carrying datagram --
+      6 curl Initial+Handshake
+      6 ours Initial+Handshake
+
