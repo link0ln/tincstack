@@ -1,0 +1,102 @@
+== CPU quota 0.03: client datagrams up to the first with a Handshake packet, per connection ==
+   (udp length:packet types:Length fields; a fast client sends ... 1200:IHS or IH as the Finished)
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	H(NO Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 62:H:25
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	H(NO Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 62:H:25
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	H(NO Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 62:H:25
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	H(NO Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 62:H:25
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+-- tally: who, first Handshake-carrying datagram --
+     20 curl Initial+Handshake
+      4 ours Handshake-only
+     16 ours Initial+Handshake
+-- tally: who, Initial-only datagrams before the first Handshake-carrying one --
+      3 curl 2 Initial-only datagrams
+     17 curl 3 Initial-only datagrams
+     18 ours 3 Initial-only datagrams
+      2 ours 4 Initial-only datagrams
+
+== CPU quota 1: client datagrams up to the first with a Handshake packet, per connection ==
+   (udp length:packet types:Length fields; a fast client sends ... 1200:IHS or IH as the Finished)
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+ours	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+curl	IH(with Initial)	 1208:I:1182 1208:I:1182 1208:I:1170 1208:IH:1061,80
+-- tally: who, first Handshake-carrying datagram --
+     20 curl Initial+Handshake
+     20 ours Initial+Handshake
+-- tally: who, Initial-only datagrams before the first Handshake-carrying one --
+      1 curl 2 Initial-only datagrams
+     19 curl 3 Initial-only datagrams
+     20 ours 3 Initial-only datagrams
+

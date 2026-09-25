@@ -76,3 +76,4 @@ testing/dpi-proof/results/**/*.txt
 !testing/nat-sim/results/*/pair-restricted-symmetric/core/gw-gwb.txt
 !testing/nat-sim/results/*/pair-masq-portrestricted/baseline/gw-gwa.txt
 testing/fingerprint/run/
+testing/fingerprint/run-*/

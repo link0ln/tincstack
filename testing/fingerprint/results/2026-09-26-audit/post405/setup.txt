@@ -1,0 +1,3 @@
+image	tincstack/core:dev	sha256:80354c6b6aad85c3ee00e7621681979d64026aad186be06cbc43141655f97a4b
+nginx	tincstack/nginx-deb13:dev	nginx version: nginx/1.26.3
+prober	h3	get	200	1.1	-
