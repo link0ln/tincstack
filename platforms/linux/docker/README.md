@@ -33,6 +33,15 @@ Set `PUBLIC_ADDRESS` in `.env` (copy `.env.example`) on any node that issues
 invitations, so the invitation carries the address peers can actually reach
 and `tinc invite` never has to guess or phone home.
 
+A node that joins with `PORT` unset only dials out, so `join.sh` publishes no
+host port for it: it adds `compose.leaf.yml` (`ports: !reset []`) to
+`COMPOSE_FILE` and records that in `.env`, so a later plain `docker compose
+up -d` keeps it. Without this the invitee reserved host 443 and 655 for
+nothing, and `compose up` failed on a host with a web server. An invitee that
+others should dial sets `PORT` and publishes like a founding node. If you
+`export COMPOSE_FILE` yourself (the release flow), that overrides `.env`:
+append `:compose.leaf.yml` to it on such a node.
+
 Useful afterwards:
 
 ```sh
@@ -49,7 +58,8 @@ docker compose down -v                             # destroy the node incl. keys
 | `NODE_NAME` | node name, honoured on the first start only | derived from the hostname by the daemon |
 | `PUBLIC_ADDRESS` | `host` or `host:port` written to the node's own host record as `Address`; used verbatim in invitations | unset: the CLI falls back to a local-address guess and warns |
 | `PORT` | listen port and the port published on the host; written to `options.Port` with `tinc set Port` | unset: daemon rule (655 founding node, ephemeral invitee) |
-| `FRONT_PORT` | port of the `https` (TCP) and `quic` (UDP) fronts and the port published for them; written to `options.HttpsPort` and `options.QuicPort`. A listening node advertises it to peers, so it must be reachable from outside as is (no remapping) | unset: `443` |
+| `FRONT_PORT` | port of the `https` (TCP) and `quic` (UDP) fronts and the port published for them; written to `options.HttpsPort` and `options.QuicPort`. A listening node advertises it to peers, so it must be reachable from outside as is, unless `FRONT_PORT_PUBLIC` says otherwise | unset: `443` |
+| `FRONT_PORT_PUBLIC` | the port peers reach the fronts on when a router forwards another external port to `FRONT_PORT` (e.g. 8443 → 443); written to `options.HttpsPortPublic` and `options.QuicPortPublic`. The node advertises it and still listens on `FRONT_PORT`. Unsetting it later leaves the options in place (`tincstack-cli del HttpsPortPublic`) | unset: advertise `FRONT_PORT` |
 | `INVITE` | invitation string, `tinc join` on the first start only (`join.sh` sets it) | unset |
 | `LOG_LEVEL` | `tincd -d` | `1` |
 | `CERT_RENEW` | `1`: run `tinc cert renew` on a timer when `CertDomain` and `CloudflareToken` are set. Peers follow a renewed certificate on their own (they re-pin it after SPTPS authenticates this node). `0` turns it off | `1` |
@@ -96,6 +106,8 @@ full bring-up.
   removed on start so it cannot shadow the built-in.
 - `tincstack-cli` — `tinc -n $NETNAME -c /etc/tincstack/tinc.yaml "$@"`.
 - `invite.sh`, `join.sh` — the two onboarding commands.
+- `compose.leaf.yml` — publishes no host port; `join.sh` adds it for a node
+  that only dials out (`PORT` unset).
 - `compose.lab.yml` + `two-nodes.sh` (bash only: `sh two-nodes.sh` exits 2
   with a message instead of dying on `set -o pipefail`) — PLAN.md M6 proof (b): two projects on
   one docker network, invite on a, join on b, ping across the tunnel, one

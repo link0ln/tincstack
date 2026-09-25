@@ -1775,6 +1775,10 @@ const var_t variables[] = {
 	/* quic carrier (M5, G3) */
 	{"HttpsPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"QuicPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
+	/* The front ports peers reach from outside when they differ from the
+	   bound ones (a port forward). Per node: not VAR_SAFE, not propagated. */
+	{"HttpsPortPublic", VAR_SERVER},
+	{"QuicPortPublic", VAR_SERVER},
 	{"QuicSni", VAR_SERVER | VAR_SAFE},
 	{"QuicAlpn", VAR_SERVER | VAR_SAFE},
 	{"TunnelServer", VAR_SERVER | VAR_SAFE},

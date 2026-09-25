@@ -13,7 +13,9 @@
 #     * curl gets the decoy page over TLS and over HTTP/3, and a plain HTTP
 #       request on 443 gets nginx's 400 -- the Windows front answers like the
 #       Linux one;
-#     * its ServerHellos carry the Linux build's JA3S.
+#     * its ServerHellos carry the Linux build's JA3S;
+#     * another process cannot bind its ports with SO_REUSEADDR (Wine models
+#       that for UDP only, see below).
 #   Windows as the dialler, a Linux founder:
 #     * it connects over `https' and over `quic';
 #     * its ClientHellos are the Linux dialler's, extension for extension
@@ -130,6 +132,28 @@ else
 	bad "tincd.exe listens with https and quic on 443"
 	grep -iE "quic|https|tls" "$RUN/w/tincd.log" | head -5 >&2
 fi
+
+# Nobody else may bind the ports it listens on. Windows lets a later socket
+# with SO_REUSEADDR bind a port another process holds unless the holder set
+# SO_EXCLUSIVEADDRUSE; tincd.exe used to set SO_REUSEADDR itself (upstream
+# tinc). Wine models this for UDP -- a SO_REUSEADDR holder's port is taken --
+# but refuses the second TCP listener as Linux does, so here the tinc UDP port
+# is the case that tells builds apart; TCP needs real Windows.
+cp "$HERE/win-bind-probe.py" "$RUN/w/"
+bindprobe() { docker exec "$PFX-w" wine 'C:\Python312\python.exe' 'Z:\c\win-bind-probe.py' "$1" "$2" 2>/dev/null | tr -d '\r' | tail -1; }
+if [[ $(bindprobe udp 6553) == TAKEN ]]; then
+	for pp in udp:655 tcp:655 udp:443 tcp:443; do
+		r=$(bindprobe "${pp%%:*}" "${pp#*:}")
+		if [[ $r == REFUSED* ]]; then
+			ok "a second Windows process cannot bind tincd.exe's ${pp%%:*} ${pp#*:} with SO_REUSEADDR ($r)"
+		else
+			bad "a second Windows process cannot bind tincd.exe's ${pp%%:*} ${pp#*:} with SO_REUSEADDR (got '$r')"
+		fi
+	done
+else
+	bad "the bind probe runs and can bind a free port (got '$(bindprobe udp 6553)')"
+fi
+
 wt w set wfounder.Address "$W_IP" >/dev/null
 inv=$(wt w invite leaf | grep -m1 "^$W_IP")
 linux l "$L_IP"

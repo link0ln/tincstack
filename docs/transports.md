@@ -468,12 +468,31 @@ tinc to anyone who looks at the port, however good the TLS is. Now:
   every QUIC client, instead of from the node's listening socket (source port
   655 or 443 is a server's port, not a client's).
 - `HttpsPort = 0` / `QuicPort = 0` turns a front listener off.
+- **Behind a port forward** to another external port (a router forwarding
+  8443 to the node's 443), `HttpsPortPublic` / `QuicPortPublic` (server
+  options, per node, never propagated by invitations) are what the node
+  advertises instead of the bound port; it still listens on
+  `HttpsPort` / `QuicPort`. They only replace a port the front actually
+  bound: a front that could not listen stays unadvertised, since the forward
+  would lead nowhere. A value outside 1-65535 is ignored with a warning.
+  Read at start, like `HttpsPort`. Until 2026-09-25 there was no such option
+  and the bound port overwrote any hand-written advertisement on every start.
+  Linux compose: `FRONT_PORT_PUBLIC`.
+- **Windows:** every listener (tinc TCP/UDP port, both fronts) sets
+  `SO_EXCLUSIVEADDRUSE` instead of `SO_REUSEADDR` (`set_bind_policy()` in
+  `net_socket.c`). On Windows `SO_REUSEADDR` means that any later socket that
+  sets it too may bind a port somebody already holds and take over its
+  connections or datagrams; upstream tinc set it on its listeners there as on
+  POSIX. POSIX is unchanged: `SO_REUSEADDR` on the TCP listeners and the
+  tinc UDP port, none on the UDP front.
 
-Limits: the advertised port is the port bound, so an operator port-forward that
-maps a different external port is overwritten on every start (publish the
-same port; the Linux compose files do, `FRONT_PORT`). `tinc join` is still
-cleartext tinc on the tinc port. Non-TLS bytes on `HttpsPort` get nginx's
-answer since the decoy step (§8.5.1); until then they were closed without one.
+Limits: `tinc join` is still cleartext tinc on the tinc port. Windows'
+exclusive bind has a documented cost that is unmeasured here: Microsoft
+writes that a port bound with `SO_EXCLUSIVEADDRUSE` may stay unavailable
+after the socket is closed while its accepted connections are not fully shut
+down, so a quick `tincd` restart could fail to bind (Wine does not model
+this). Non-TLS bytes on `HttpsPort` get nginx's answer since the decoy step
+(§8.5.1); until then they were closed without one.
 
 Proof: `testing/transports/front-port-test.sh` -- listeners and
 advertisement, the invitation carrying the ports, https and quic joins over
@@ -1049,6 +1068,7 @@ dies before it activates advances to the next candidate automatically (§2).
 | `HttpsDecoyUpstream` | (unset) | `host:port` to proxy probers to instead |
 | `HttpsPort` | `443` on a listening node, none with `Port = 0` | TCP listener for the https front only (§3.1); advertised in the own host record, where it is the port peers dial; `0` = off |
 | `QuicPort` | `443` on a listening node, none with `Port = 0` | UDP listener for the quic front only (§3.1); advertised like `HttpsPort`; `0` = off |
+| `HttpsPortPublic` / `QuicPortPublic` | (unset) = advertise the bound port | the port advertised for a listening front behind a port forward to another external port (§3.1); per node, not propagated |
 | `QuicSni` | `HttpsSni`, else peer `Address` if a name | SNI the quic dial presents |
 | `QuicAlpn` | `h3` | ALPN offered/required by the quic carrier |
 

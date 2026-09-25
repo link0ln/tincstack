@@ -192,6 +192,33 @@ static bool try_bind(int nfd, const sockaddr_t *sa, const char *type) {
 	return false;
 }
 
+/* Who else may bind a port a listener holds. On POSIX, SO_REUSEADDR lets a
+   restarted daemon bind past its old connections in TIME_WAIT (TCP), and a
+   second TCP listener on the same address and port is still refused. Windows
+   gives SO_REUSEADDR another meaning: any later socket that sets it may bind
+   a port somebody already holds and take over its connections or datagrams
+   (Microsoft, "Using SO_REUSEADDR and SO_EXCLUSIVEADDRUSE"). There every
+   listener sets SO_EXCLUSIVEADDRUSE instead, which refuses those later binds,
+   SO_REUSEADDR or not. `reuse' is the POSIX choice. */
+static void set_bind_policy(int nfd, bool reuse) {
+	int option = 1;
+
+#ifdef HAVE_WINDOWS
+	(void)reuse;
+
+	if(setsockopt(nfd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (void *)&option, sizeof(option))) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "Can't set %s: %s", "SO_EXCLUSIVEADDRUSE", sockstrerror(sockerrno));
+	}
+
+#else
+
+	if(reuse) {
+		setsockopt(nfd, SOL_SOCKET, SO_REUSEADDR, (void *)&option, sizeof(option));
+	}
+
+#endif
+}
+
 int setup_listen_socket(const sockaddr_t *sa) {
 	int nfd;
 	int option;
@@ -210,8 +237,8 @@ int setup_listen_socket(const sockaddr_t *sa) {
 
 	/* Optimize TCP settings */
 
+	set_bind_policy(nfd, true);
 	option = 1;
-	setsockopt(nfd, SOL_SOCKET, SO_REUSEADDR, (void *)&option, sizeof(option));
 
 #if defined(IPV6_V6ONLY)
 
@@ -300,7 +327,8 @@ int setup_vpn_in_socket(const sockaddr_t *sa) {
 /* shared = false: no SO_REUSEADDR. On Linux two UDP sockets that both set it
    share the port, and the kernel splits the datagrams between them -- a front
    on 443 would silently take part of another QUIC server's traffic instead of
-   failing to bind. */
+   failing to bind. On Windows every UDP listener is exclusive
+   (set_bind_policy). */
 int setup_udp_socket(const sockaddr_t *sa, bool shared) {
 	int nfd;
 	int option;
@@ -339,12 +367,8 @@ int setup_udp_socket(const sockaddr_t *sa, bool shared) {
 	}
 #endif
 
+	set_bind_policy(nfd, shared);
 	option = 1;
-
-	if(shared) {
-		setsockopt(nfd, SOL_SOCKET, SO_REUSEADDR, (void *)&option, sizeof(option));
-	}
-
 	setsockopt(nfd, SOL_SOCKET, SO_BROADCAST, (void *)&option, sizeof(option));
 
 	set_udp_buffer(nfd, SO_RCVBUF, "SO_RCVBUF", udp_rcvbuf, udp_rcvbuf_warnings);

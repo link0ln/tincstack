@@ -252,7 +252,8 @@ int transport_front_port(const char *option, bool *configured);
 
 /* Write `key = port' into this node's own host record (drop the line when
    port is 0), only if it changed, so invitations tell peers where the front
-   listens. */
+   listens. A listening front advertises `<key>Public' instead of the bound
+   port when the operator set it (a port forward to another external port). */
 void transport_advertise_port(const char *key, int port);
 
 /* Inbound UDP: true if the datagram was consumed by a carrier. */

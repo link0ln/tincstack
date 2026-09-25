@@ -13,7 +13,10 @@
 #     tells the invitee where to dial;
 #   * the quic dial uses a fresh socket on an ephemeral port;
 #   * a node that cannot bind 443 says so, advertises nothing, and peers keep
-#     reaching the fronts on the tinc port.
+#     reaching the fronts on the tinc port;
+#   * behind a port forward to another external port, HttpsPortPublic /
+#     QuicPortPublic are what it advertises (and keeps advertising across
+#     restarts) while it still listens on 443, and peers dial through it.
 #
 # Founder F and leaf L, joined by a real `tinc invite' / `tinc join'. L is a
 # listening node too (Port 655), so a dial from its listening socket would
@@ -221,6 +224,9 @@ docker run -d --name "$PFX-f" --network "$NET" --ip "$F_IP" --cap-add NET_ADMIN 
 	--cap-drop NET_BIND_SERVICE --sysctl net.ipv4.ip_unprivileged_port_start=1024 \
 	-v "$RUN/f:/c" "$IMG" sleep infinity >/dev/null
 tnc_f2 set Port 6550
+# A port forward configured for a front that cannot listen has nothing to
+# forward to: HttpsPortPublic must not bring the advertisement back.
+tnc_f2 set HttpsPortPublic 8443
 : > "$RUN/f/tincd.log"
 start f
 ready f
@@ -236,6 +242,7 @@ if ! tnc f get founder.HttpsPort >/dev/null 2>&1 && ! tnc f get founder.QuicPort
 else
 	bad "... and stops advertising the front ports ($(tnc f get founder.HttpsPort 2>&1) / $(tnc f get founder.QuicPort 2>&1))"
 fi
+tnc_f2 del HttpsPortPublic >/dev/null
 
 # ---- UDP 443 taken by another QUIC server -------------------------------------------
 # openssl s_server sets SO_REUSEADDR, as nginx and most servers do. So did the
@@ -271,6 +278,89 @@ if [[ $(tnc f get founder.HttpsPort 2>/dev/null) == 443 ]] && ! tnc f get founde
 	ok "... and advertises only the https front"
 else
 	bad "... and advertises only the https front ($(tnc f get founder.HttpsPort 2>&1) / $(tnc f get founder.QuicPort 2>&1))"
+fi
+
+# ---- a port forward to another external port ------------------------------------------
+# A router forwards 8443 (TCP and UDP) to the node's 443. The node keeps
+# listening on 443 and advertises 8443 (HttpsPortPublic / QuicPortPublic);
+# before those options it wrote its bound 443 over any such advertisement on
+# every start. The forward is a DNAT in the founder's own namespace: nothing
+# listens on 8443 there, so a dial to it gets in through the DNAT or not at all.
+stop f
+docker rm -f "$PFX-f" "$PFX-occ" "$PFX-l" >/dev/null
+docker run --rm -v "$RUN:/r" "$IMG" sh -c 'rm -rf /r/f/* /r/l/* /r/cap/*' >/dev/null
+node f "$F_IP"
+docker exec "$PFX-f" sh -c "install -m600 /dev/null $YAML && tinc -n $NETNAME -c $YAML set Name founder && tinc -n $NETNAME -c $YAML set Port 655 &&
+	tinc -n $NETNAME -c $YAML set HttpsPortPublic 8443 && tinc -n $NETNAME -c $YAML set QuicPortPublic 8443"
+for p in tcp udp; do
+	docker exec "$PFX-f" iptables -t nat -A PREROUTING -p "$p" --dport 8443 -j REDIRECT --to-ports 443
+done
+start f
+ready f
+sleep 2
+if logged f "listening on .*port 443 (HttpsPort)" && logged f "listening on .*port 443 (QuicPort)" &&
+	! docker exec "$PFX-f" sh -c 'cat /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6' | grep -q ':20FB '; then
+	ok "with HttpsPortPublic/QuicPortPublic 8443 the fronts still listen on 443, and nothing on 8443"
+else
+	bad "with HttpsPortPublic/QuicPortPublic 8443 the fronts still listen on 443, and nothing on 8443"
+	grep -iE "443|listen" "$RUN/f/tincd.log" | head >&2
+fi
+if [[ $(tnc f get founder.HttpsPort 2>/dev/null) == 8443 && $(tnc f get founder.QuicPort 2>/dev/null) == 8443 ]] &&
+	logged f "Advertising HttpsPort 8443 (HttpsPortPublic)"; then
+	ok "... and advertise 8443 in the node's own host record"
+else
+	bad "... and advertise 8443 in the node's own host record (HttpsPort=$(tnc f get founder.HttpsPort 2>&1) QuicPort=$(tnc f get founder.QuicPort 2>&1))"
+fi
+
+# A restart must keep the advertisement: this is what used to overwrite it.
+stop f
+start f
+ready f
+sleep 2
+if [[ $(tnc f get founder.HttpsPort 2>/dev/null) == 8443 && $(tnc f get founder.QuicPort 2>/dev/null) == 8443 ]]; then
+	ok "... also after a restart"
+else
+	bad "... also after a restart (HttpsPort=$(tnc f get founder.HttpsPort 2>&1) QuicPort=$(tnc f get founder.QuicPort 2>&1))"
+fi
+
+tnc f set founder.Address "$F_IP"
+inv=$(tnc f invite leaf)
+node l "$L_IP"
+tnc l join "$inv" >/dev/null 2>&1
+if [[ $(tnc l get founder.HttpsPort 2>/dev/null) == 8443 && $(tnc l get founder.QuicPort 2>/dev/null) == 8443 ]]; then
+	ok "the invitation carries the public port 8443"
+else
+	bad "the invitation carries the public port 8443 ($(tnc l get founder.HttpsPort 2>&1) / $(tnc l get founder.QuicPort 2>&1))"
+fi
+if ! tnc l get HttpsPortPublic >/dev/null 2>&1 && ! tnc l get QuicPortPublic >/dev/null 2>&1; then
+	ok "... and not the founder's port-forward options"
+else
+	bad "... and not the founder's port-forward options"
+fi
+
+docker run -d --name "$PFX-cap" --network "container:$PFX-f" --cap-add NET_ADMIN --cap-add NET_RAW \
+	-v "$RUN/cap:/cap" "$TOOLS" tcpdump -U --immediate-mode -i any -s 0 -w /cap/f.pcap 'tcp or udp' >/dev/null
+sleep 2
+for tr in https quic; do
+	tnc l set PreferredTransports "$tr"
+	start l
+	ready l
+	if wait_connected "$tr" 40; then
+		ok "the leaf connects via $tr through the forward"
+	else
+		bad "the leaf connects via $tr through the forward"
+		tail -15 "$RUN/l/tincd.log" >&2
+	fi
+	stop l
+done
+docker rm -f "$PFX-cap" >/dev/null
+sleep 1
+tcp_dports=$(pcap "ip.src == $L_IP && tcp.flags.syn == 1 && tcp.flags.ack == 0" -e tcp.dstport | sort -u | tr '\n' ' ')
+quic_dports=$(pcap "ip.src == $L_IP && quic" -d udp.port==8443,quic -e udp.dstport | sort -u | tr '\n' ' ')
+if [[ $tcp_dports == "8443 "&& $quic_dports == "8443 " ]]; then
+	ok "the https and quic dials went to the advertised port 8443 only"
+else
+	bad "the https and quic dials went to the advertised port 8443 only: tcp '$tcp_dports' quic '$quic_dports'"
 fi
 
 if [[ $FAILED -eq 0 ]]; then
