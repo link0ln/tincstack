@@ -368,6 +368,85 @@ static json_t *parse_array(jparse_t *j) {
 	return NULL;
 }
 
+static bool is_digit(char c) {
+	return c >= '0' && c <= '9';
+}
+
+/* One or more digits at *q, not past end. False (nothing consumed) if there
+   is none. */
+static bool digits(const char **q, const char *end) {
+	if(*q >= end || !is_digit(**q)) {
+		return false;
+	}
+
+	while(*q < end && is_digit(**q)) {
+		(*q)++;
+	}
+
+	return true;
+}
+
+/* A JSON number (RFC 8259 section 6), scanned against j->end before anything
+   converts it. strtod() on j->p would run to the first byte that cannot be
+   part of a number -- past `end' whenever the caller's buffer is not
+   NUL-terminated there -- and it accepts "inf", "nan", hex and a leading '+',
+   none of which is JSON. The scanned bytes are copied and converted from the
+   copy. */
+static json_t *parse_number(jparse_t *j) {
+	const char *q = j->p;
+
+	if(q < j->end && *q == '-') {
+		q++;
+	}
+
+	if(q < j->end && *q == '0') {
+		q++;
+	} else if(!digits(&q, j->end)) {
+		j->error = true;
+		return NULL;
+	}
+
+	if(q < j->end && *q == '.') {
+		q++;
+
+		if(!digits(&q, j->end)) {
+			j->error = true;
+			return NULL;
+		}
+	}
+
+	if(q < j->end && (*q == 'e' || *q == 'E')) {
+		q++;
+
+		if(q < j->end && (*q == '+' || *q == '-')) {
+			q++;
+		}
+
+		if(!digits(&q, j->end)) {
+			j->error = true;
+			return NULL;
+		}
+	}
+
+	/* No field of these APIs needs anywhere near this many characters; a
+	   longer number is refused rather than allocated for. */
+	char buf[64];
+	size_t n = (size_t)(q - j->p);
+
+	if(n >= sizeof(buf)) {
+		j->error = true;
+		return NULL;
+	}
+
+	memcpy(buf, j->p, n);
+	buf[n] = 0;
+	j->p = q;
+
+	json_t *v = node_new(JSON_NUMBER);
+	v->num = strtod(buf, NULL);
+	return v;
+}
+
 static json_t *parse_value(jparse_t *j) {
 	if(j->error || ++j->depth > JSON_MAX_DEPTH) {
 		j->error = true;
@@ -400,18 +479,7 @@ static json_t *parse_value(jparse_t *j) {
 	} else if(literal(j, "null")) {
 		v = node_new(JSON_NULL);
 	} else {
-		char *endp = NULL;
-		/* The buffer the caller hands us is NUL-terminated (http bodies are),
-		   so strtod cannot run past it. */
-		double d = strtod(j->p, &endp);
-
-		if(endp && endp > j->p && endp <= j->end) {
-			j->p = endp;
-			v = node_new(JSON_NUMBER);
-			v->num = d;
-		} else {
-			j->error = true;
-		}
+		v = parse_number(j);
 	}
 
 	j->depth--;
@@ -432,16 +500,13 @@ json_t *json_parse(const char *text, size_t len) {
 
 	skip_ws(&j);
 
-	if(j.error) {
+	/* One value and nothing after it: `{"a":1}garbage' is not a document. */
+	if(j.error || j.p != j.end) {
 		json_free(v);
 		return NULL;
 	}
 
 	return v;
-}
-
-json_type_t json_type(const json_t *v) {
-	return v ? v->type : JSON_NULL;
 }
 
 const json_t *json_member(const json_t *obj, const char *key) {

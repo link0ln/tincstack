@@ -25,13 +25,13 @@ typedef enum {
 
 typedef struct json_t json_t;
 
-/* Parse `len` bytes. NULL when the text is not one complete JSON value, when
+/* Parse exactly `len` bytes; `text` need not be NUL-terminated and nothing at
+   or past text + len is read. NULL when those bytes are not one complete JSON
+   value (whitespace around it is allowed, anything else after it is not), when
    it nests deeper than 32, or when an object or array has more than 4096
    members. Caller frees with json_free(). */
 json_t *json_parse(const char *text, size_t len);
 void json_free(json_t *v);
-
-json_type_t json_type(const json_t *v);
 
 /* Object member / array element, or NULL when absent or the wrong type. The
    returned node belongs to its parent: do not free it. */

@@ -36,6 +36,15 @@ typedef struct {
    status is a success here -- the caller decides what 4xx means. */
 bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, size_t errlen);
 
+/* The response half of httpc_request(), split out so it can be tested
+   without a socket: `len' bytes of a raw HTTP/1.1 response (need not be
+   NUL-terminated) into `res'. `head' says the request was a HEAD, whose
+   answer has no body whatever its Content-Length says. False, with `res'
+   freed and the reason in `err', on a malformed response, a chunked body
+   without its last chunk, or a body shorter than its Content-Length. */
+bool httpc_parse_response(const char *buf, size_t len, bool head, const char *host,
+                          http_response_t *res, char *err, size_t errlen);
+
 /* Header value by name, case-insensitive; caller frees. NULL when absent. */
 char *httpc_header(const http_response_t *res, const char *name);
 
