@@ -22,8 +22,14 @@
 #                   compose publishes for them; unset = the daemon's default,
 #                   443. Stored as options.HttpsPort and options.QuicPort. A
 #                   listening node advertises it in its own host record, so it
-#                   must be the port peers reach from outside.
-#   INVITE          invitation string: `tinc join` on the first start only
+#                   must be the port peers reach from outside, unless:
+#   FRONT_PORT_PUBLIC  the port peers reach the fronts on when a router
+#                   forwards another external port to FRONT_PORT. Stored as
+#                   options.HttpsPortPublic and options.QuicPortPublic; the
+#                   node then advertises this one and still listens on
+#                   FRONT_PORT. Like FRONT_PORT, unsetting it later does not
+#                   remove the option (`tincstack-cli del HttpsPortPublic`).
+#   INVITE         invitation string: `tinc join` on the first start only
 #                   (CONNECT_TO is accepted as an alias)
 #   LOG_LEVEL       tincd -d level (default 1)
 #   CERT_RENEW      1 (default): check periodically whether the ACME certificate
@@ -43,6 +49,7 @@ NODE_NAME=${NODE_NAME:-}
 PUBLIC_ADDRESS=${PUBLIC_ADDRESS:-}
 PORT=${PORT:-}
 FRONT_PORT=${FRONT_PORT:-}
+FRONT_PORT_PUBLIC=${FRONT_PORT_PUBLIC:-}
 INVITE=${INVITE:-${CONNECT_TO:-}}
 LOG_LEVEL=${LOG_LEVEL:-1}
 CERT_RENEW=${CERT_RENEW:-1}
@@ -117,6 +124,12 @@ if [[ -n $FRONT_PORT ]]; then
     cli set HttpsPort "$FRONT_PORT"
     cli set QuicPort "$FRONT_PORT"
     log "options.HttpsPort = options.QuicPort = $FRONT_PORT"
+fi
+
+if [[ -n $FRONT_PORT_PUBLIC ]]; then
+    cli set HttpsPortPublic "$FRONT_PORT_PUBLIC"
+    cli set QuicPortPublic "$FRONT_PORT_PUBLIC"
+    log "options.HttpsPortPublic = options.QuicPortPublic = $FRONT_PORT_PUBLIC"
 fi
 
 address=

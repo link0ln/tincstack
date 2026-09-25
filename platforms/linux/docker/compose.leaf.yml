@@ -1,0 +1,16 @@
+# Override for a node that only dials out: an invitee with PORT unset. Such a
+# node listens on no fixed port (the daemon gives it Port 0) and opens no
+# front, so publishing host ports for it only reserves them -- host 443 above
+# all, which fails `compose up' on any host that runs a web server.
+#
+# join.sh adds this file on its own when PORT is unset and records the choice
+# in .env (COMPOSE_FILE), so later `docker compose up' runs keep it:
+#
+#   COMPOSE_FILE=docker-compose.yml:compose.leaf.yml docker compose up -d
+#   COMPOSE_FILE=compose.release.yml:compose.leaf.yml docker compose up -d
+#
+# A node meant to be dialled (a founder, or an invitee with PORT set) does not
+# use it and publishes PORT and FRONT_PORT as before.
+services:
+  node:
+    ports: !reset []

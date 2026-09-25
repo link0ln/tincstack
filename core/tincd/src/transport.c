@@ -420,7 +420,34 @@ int transport_front_port(const char *option, bool *configured) {
 	return inbound ? FRONT_PORT_DEFAULT : 0;
 }
 
+/* <key>Public (HttpsPortPublic, QuicPortPublic): the port peers reach the
+   front on when it is not the one bound -- a router forwarding 8443 to the
+   node's 443, say. It only replaces a port the front actually bound: a front
+   that is not listening has nothing to forward to and stays unadvertised. */
+static int public_front_port(const char *key, int bound) {
+	char option[32];
+	snprintf(option, sizeof(option), "%sPublic", key);
+	config_t *cfg = lookup_option_not_host(option);
+	int port = 0;
+
+	if(!cfg || !bound) {
+		return bound;
+	}
+
+	if(!get_config_int(cfg, &port) || port < 1 || port > 65535) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "%s must be a port number (1-65535); advertising the bound port %d", option, bound);
+		return bound;
+	}
+
+	if(port != bound) {
+		logger(DEBUG_ALWAYS, LOG_INFO, "Advertising %s %d (%s); the front listens on %d", key, port, option, bound);
+	}
+
+	return port;
+}
+
 void transport_advertise_port(const char *key, int port) {
+	port = public_front_port(key, port);
 	splay_tree_t *tree = create_configuration();
 	int current = 0;
 

@@ -158,6 +158,12 @@ networks:
                                     # own host record; that is where peers dial.
       QuicPort: 443                 # UDP listener for the quic front only; same
                                     # default and advertisement as HttpsPort.
+      HttpsPortPublic: 8443         # behind a port forward to another external
+      QuicPortPublic: 8443          # port: advertise this instead of the bound
+                                    # port (the node still listens on HttpsPort /
+                                    # QuicPort). Unset = advertise the bound port.
+                                    # Only for a front that is listening; per
+                                    # node, never carried by an invitation.
       QuicSni: cdn.example.net      # SNI the quic DIAL presents; default = HttpsSni,
                                     # else the peer's Address if it is a hostname,
                                     # else none
@@ -429,7 +435,8 @@ carries, beyond upstream tinc's `Name`/`NetName`/`ConnectTo`:
   both ends must agree on and that cannot make the invitee read, serve or
   execute anything qualify. `HttpsDecoyRoot`, `HttpsDecoyUpstream`,
   `TlsCert`/`TlsKey` and per-node settings (`Port`, `ConnectTo`,
-  `PreferredTransports`, `AllowPlainMeta`, …) are deliberately not propagated;
+  `PreferredTransports`, `AllowPlainMeta`, `HttpsPortPublic`,
+  `QuicPortPublic`, …) are deliberately not propagated;
 - the invitee's address from the pool: `Subnet = a.b.c.d/32` (its host record)
   and `Ifconfig = a.b.c.d/<pool prefix>` (its interface address);
 - the inviter's own host record, with a `Port` line guaranteed (the inviter's
