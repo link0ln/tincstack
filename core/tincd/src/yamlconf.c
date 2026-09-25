@@ -497,7 +497,19 @@ static yval_t *parse_text(char *text) {
    the directory that already holds the keys, with an ACL that admits only
    the calling user and SYSTEM, opened without sharing, marked temporary and
    delete-on-close, so it has no name to reach for once the FILE* is gone.
-   %TEMP% is used only when there is no config path at all (no keys then). */
+   %TEMP% is used only when there is no config path at all (no keys then).
+
+   private_sd() is also the descriptor the config itself is written with
+   (write_atomic), so it decides who may read tls_key, acme_account and
+   CloudflareToken. A protected DACL (no inherited ACEs: Program Files would
+   otherwise hand Users read access) for SYSTEM and Administrators, and:
+     - unelevated: the calling user too -- it is that user's own config;
+     - elevated: NOT the user, and owned by Administrators. An elevated
+       admin's token carries the same user SID as that user's unelevated
+       processes, so an ACE for it -- or ownership by it, which implies
+       WRITE_DAC -- would let any medium-integrity process of the user read
+       the keys and rewrite the config the elevated daemon obeys. The
+       Administrators group is deny-only in the unelevated token. */
 static PSECURITY_DESCRIPTOR private_sd(void) {
 	HANDLE tok;
 	PSECURITY_DESCRIPTOR sd = NULL;
@@ -506,7 +518,18 @@ static PSECURITY_DESCRIPTOR private_sd(void) {
 		return NULL;
 	}
 
+	TOKEN_ELEVATION elev = {0};
 	DWORD n = 0;
+	bool elevated = GetTokenInformation(tok, TokenElevation, &elev, sizeof(elev), &n) && elev.TokenIsElevated;
+
+	if(elevated) {
+		ConvertStringSecurityDescriptorToSecurityDescriptorA("O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)",
+		                SDDL_REVISION_1, &sd, NULL);
+		CloseHandle(tok);
+		return sd;
+	}
+
+	n = 0;
 	GetTokenInformation(tok, TokenUser, NULL, 0, &n);
 	TOKEN_USER *tu = n ? malloc(n) : NULL;
 
@@ -515,7 +538,7 @@ static PSECURITY_DESCRIPTOR private_sd(void) {
 
 		if(ConvertSidToStringSidA(tu->User.Sid, &sid)) {
 			char sddl[256];
-			snprintf(sddl, sizeof(sddl), "D:P(A;;FA;;;%s)(A;;FA;;;SY)", sid);
+			snprintf(sddl, sizeof(sddl), "D:P(A;;FA;;;%s)(A;;FA;;;SY)(A;;FA;;;BA)", sid);
 			ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl, SDDL_REVISION_1, &sd, NULL);
 			LocalFree(sid);
 		}
@@ -1266,24 +1289,48 @@ void yamlconf_unlock(void) {
 /* ---- save ---------------------------------------------------------------- */
 
 /* Serialise and replace `path` atomically. Private keys live in this file, so
-   it is created 0600 (POSIX), the temporary is never a symlink target
-   (O_NOFOLLOW) and its data is on disk before it replaces the config. */
+   it is created 0600 (POSIX) or with private_sd()'s protected DACL (Windows),
+   the temporary is never a symlink target (O_NOFOLLOW) and its data is on
+   disk before it replaces the config. */
 static bool write_atomic(const char *path, const char *data, size_t len) {
 	size_t n = strlen(path) + 5;
 	char *tmp = malloc(n);
 	if(!tmp) return false;
 	snprintf(tmp, n, "%s.tmp", path);
+	/* A leftover temporary (a crash between write and rename) is removed and
+	   the new one created exclusively: opening an existing file keeps its
+	   mode on POSIX, and on Windows CreateFile ignores the security
+	   attributes for a file that already exists. */
 #ifdef _WIN32
-	FILE *f = fopen(tmp, "wb");
+	FILE *f = NULL;
+	DeleteFileA(tmp);
+	PSECURITY_DESCRIPTOR sd = private_sd();
+	if(sd) {
+		/* private_sd(): protected DACL, SYSTEM + Administrators (+ the user
+		   when not elevated); the rename below keeps it on the config. */
+		SECURITY_ATTRIBUTES sa = { sizeof(sa), sd, FALSE };
+		HANDLE h = CreateFileA(tmp, GENERIC_WRITE, 0, &sa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+		LocalFree(sd);
+		if(h != INVALID_HANDLE_VALUE) {
+			int fd = _open_osfhandle((intptr_t) h, _O_WRONLY | _O_BINARY);
+			if(fd < 0) CloseHandle(h);
+			else if(!(f = _fdopen(fd, "wb"))) _close(fd);
+		}
+	} else {
+		errno = EACCES;               /* never fall back to an inherited ACL */
+	}
 #else
-	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+	unlink(tmp);
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
 	FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
 	if(!f && fd >= 0) close(fd);
 #endif
 	if(!f) { free(tmp); return false; }
 	bool ok = fwrite(data, 1, len, f) == len;
 	ok = !fflush(f) && ok;
-#ifndef _WIN32
+#ifdef _WIN32
+	ok = !_commit(_fileno(f)) && ok;
+#else
 	ok = !fsync(fileno(f)) && ok;
 #endif
 	ok = !fclose(f) && ok;

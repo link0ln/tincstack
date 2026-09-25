@@ -34,11 +34,24 @@ That's it — two files to start with. Where things end up:
   `C:\Program Files\tincmgr\bin` and run from there (a stable path, so one
   firewall rule survives restarts). They are compared by SHA-256 on every
   start, so an upgrade always replaces them.
-* **Run at startup** registers `C:\Program Files\tincmgr\tincmgr.exe`, a copy
-  of the exe you enabled it from, never the exe in your Downloads — the task
-  starts it elevated without a prompt. Every elevated start refreshes that copy
-  from the exe you ran, and moves a task created by tincmgr 0.4.1 or older off
-  its old path.
+* The config is written with its own DACL — SYSTEM and Administrators (plus
+  you when not elevated), nothing inherited — by the app and by `tinc.exe` /
+  `tincd.exe` alike: it holds `tls_key`, `acme_account` and `CloudflareToken`
+  in clear, and Program Files would otherwise let every user read it.
+* **Run at startup** registers `C:\Program Files\tincmgr\app\tincmgr.exe`:
+  the downloaded `tincmgr.exe` installs a *onedir* copy of itself there
+  (`tincmgr.exe` + `_internal\`), never the exe in your Downloads — the task
+  starts it elevated without a prompt. It is not the single-file exe either:
+  that one unpacks its Python and Qt DLLs into your `%TEMP%\_MEI…`, which any
+  unelevated program of yours can write to before they are loaded. The onedir
+  copy loads everything from Program Files and unpacks nothing. Each file is
+  checked against a SHA-256 manifest built into the exe while it is copied.
+  Every elevated start of a *newer* build refreshes that copy (an older build
+  leaves a newer install alone; turning run-at-startup off and on installs
+  the one you run, whatever its version), and moves a task created by an
+  older tincmgr — pointing at Downloads, or at the old single-file copy in
+  `C:\Program Files\tincmgr\tincmgr.exe` — onto it. While the installed copy
+  is itself running it cannot be replaced; the status bar says so.
 * Runtime side-files (`<net>/`, `<net>-tincd.log`) are written next to the
   config.
 
@@ -132,12 +145,13 @@ gui/
   dialogs.py             Invite / Join / raw YAML dialogs
   transports_panel.py    the Transports editor widgets
 resources/               tincd.exe, tinc.exe, wintun.dll (gitignored; from the cross-build)
-tincmgr.spec             PyInstaller onefile spec
+tincmgr.spec             PyInstaller spec: the onefile + the onedir tree it installs
 build-core-win.sh        core cross-build → resources/
 build-exe.sh             tincmgr.exe from Linux via Docker + Wine → dist/
 Dockerfile.build-exe     that image (Wine + Windows CPython + PyInstaller)
 pyinstaller-in-wine.sh   its entrypoint (build + Wine smoke test)
 build-windows.md         the exact build commands
 tools/import_from_disk.py   migrate a classic tinc tree into one tinc.yaml
+tools/file_sddl.py       print a file's DACL as SDDL (Wine has no working icacls)
 tests/                   pytest suite + manual Windows selftest
 ```

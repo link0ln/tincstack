@@ -24,7 +24,6 @@ from __future__ import annotations
 import ipaddress
 import os
 import subprocess
-from typing import Any
 
 OPTION = "InterfaceRoute"
 
@@ -206,24 +205,43 @@ def _netsh(args: list[str], timeout: float = 15.0) -> tuple[bool, str]:
     return p.returncode == 0, msg
 
 
+def route_args(verb: str, alias: str, subnet: str, via: str = "") -> list[str]:
+    """`netsh interface ipvX <verb> route ...` arguments. ValueError if
+    `subnet` is not a subnet or `via` (the next hop) is not an address of the
+    same family: it reaches netsh as a value, not through a shell, but a bad
+    value there is a failed or wrong route, so it is refused here."""
+    net = parse_subnet(subnet)
+    if net is None:
+        raise ValueError(f"{subnet} is not a subnet")
+    family = "ipv6" if net.version == 6 else "ipv4"
+    args = ["interface", family, verb, "route", str(net), f"interface={alias}"]
+    if via:
+        try:
+            hop = ipaddress.ip_address(via.strip())
+        except ValueError:
+            raise ValueError(f"next hop {via!r} is not an IP address") from None
+        if hop.version != net.version:
+            raise ValueError(f"next hop {hop} is not an IPv{net.version} address")
+        args.append(f"nexthop={hop}")
+    return args + ["store=active"]
+
+
 def apply_now(alias: str, subnet: str, via: str = "") -> tuple[bool, str]:
     """Install the route on the live adapter so the tick takes effect without a
     restart. `store=active` on purpose: the config is what survives a reboot."""
     if os.name != "nt":
         return False, "live routes are only applied on Windows"
-    net = parse_subnet(subnet)
-    if net is None:
-        return False, f"{subnet} is not a subnet"
-    family = "ipv6" if net.version == 6 else "ipv4"
-    args = ["interface", family, "add", "route", str(net), f"interface={alias}", "store=active"]
-    if via:
-        args.insert(5, f"nexthop={via}")
-    ok, msg = _netsh(args)
+    try:
+        add = route_args("add", alias, subnet, via)
+        update = route_args("set", alias, subnet, via)
+    except ValueError as e:
+        return False, str(e)
+    ok, msg = _netsh(add)
     if not ok:
         # An existing route is not a failure: the daemon may have installed it
-        # already, or the operator may be re-ticking a box.
-        ok2, msg2 = _netsh(["interface", family, "set", "route", str(net),
-                            f"interface={alias}", "store=active"])
+        # already, or the operator may be re-ticking a box. `set` carries the
+        # same next hop; without it the route kept whatever hop it had.
+        ok2, msg2 = _netsh(update)
         if ok2:
             return True, msg2
         return False, msg

@@ -895,6 +895,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def status(self, msg: str) -> None:
         self.statusBar().showMessage(msg)
 
+    def refresh_startup_async(self, exe: str) -> None:
+        """management.refresh_startup_task() on a worker: it runs schtasks
+        (one /query, /create and PowerShell when migrating) and may copy the
+        whole app tree into Program Files -- seconds the window must not
+        freeze for at every start."""
+        self.pool.run(management.refresh_startup_task, exe, tag="startup-task",
+                      on_done=lambda n: self.status(n) if n else None,
+                      on_error=lambda m: self.status(f"run-at-startup: {m[:100]}"))
+
     def save_config(self, msg: str = "") -> bool:
         try:
             yaml_config.save(self.app)
@@ -1177,7 +1186,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._lifecycle(self.rt.restart, net, "restart")
 
     def _sync_startup_radio(self) -> None:
-        on = management.startup_task_enabled()
+        # `schtasks /query` is a subprocess: ask on a worker, show on return
+        if not self.startup_radio.text():
+            self.startup_radio.setText("  Run at Windows startup: …  ")
+        self.pool.run(management.startup_task_enabled, on_done=self._show_startup_state)
+
+    def _show_startup_state(self, on: bool) -> None:
         self.startup_radio.blockSignals(True)
         self.startup_radio.setChecked(on)
         self.startup_radio.blockSignals(False)
@@ -1198,9 +1212,19 @@ class MainWindow(QtWidgets.QMainWindow):
         if not exe:
             self.status("Run-at-startup only works for the built tincmgr.exe.")
             self._sync_startup_radio(); return
-        ok, msg = management.set_startup_task(checked, exe)
-        self.status(("enabled" if checked else "disabled") + f" run-at-startup: {'ok' if ok else msg[:80]}")
-        self._sync_startup_radio()
+        # schtasks, and installing the app tree into Program Files: not on the Qt thread
+        def done(res: tuple[bool, str]) -> None:
+            ok, msg = res
+            self.status(("enabled" if checked else "disabled") + f" run-at-startup: {'ok' if ok else msg[:80]}")
+            self._sync_startup_radio()
+
+        def failed(msg: str) -> None:
+            self.status(f"run-at-startup failed: {msg[:80]}")
+            self._sync_startup_radio()
+
+        self.status(("enabling" if checked else "disabling") + " run-at-startup…")
+        self.pool.run(management.set_startup_task, checked, exe, tag="startup-task",
+                      on_done=done, on_error=failed)
 
     def _elevate(self) -> None:
         if management.relaunch_self_elevated():
@@ -1277,7 +1301,34 @@ def _ensure_config() -> tuple[str | None, str]:
         return None, str(e)
 
 
+def _selftest_report(w: "MainWindow", cfg: str, note: str, extra: list[str]) -> None:
+    """TINCMGR_SELFTEST_MS: the headless probe (build-exe.sh, and on Windows)."""
+    import glob
+    import tempfile
+    b = paths.bundle()
+    temp = tempfile.gettempdir()
+    lines = ["SELFTEST OK", f"frozen={paths.is_frozen()}", f"admin={w.admin}",
+             f"exe={sys.executable}", f"meipass={getattr(sys, '_MEIPASS', None)}",
+             f"bundle_version={b.version if b else None}",
+             f"temp_mei={sorted(os.path.basename(p) for p in glob.glob(os.path.join(temp, '_MEI*')))}",
+             f"config={cfg}", f"networks={list(w.app.networks)}",
+             f"load_error={w.load_error!r}", f"tincd={paths.tincd_exe()}",
+             f"tincd_exists={os.path.isfile(paths.tincd_exe())}",
+             f"staged_tincd={w.rt.tincd}", f"note={note!r}"] + extra
+    logp = os.environ.get("TINCMGR_SELFTEST_LOG") or os.path.join(temp, "tincmgr_selftest.log")
+    try:
+        with open(logp, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+    print("\n".join(lines), flush=True)
+
+
 def main() -> None:
+    # The install manifest is compiled into the onefile's archive, which is
+    # read from the exe on disk lazily: import it now, before a long-running
+    # session gives anyone time to swap the exe under us (paths.bundle()).
+    paths.bundle()
     # always run elevated on Windows: relaunch via UAC if we're not (the built
     # exe is uac_admin so this only fires for a dev/python run)
     if sys.platform == "win32" and not management.is_admin() and not os.environ.get("TINCMGR_SELFTEST_MS"):
@@ -1294,29 +1345,26 @@ def main() -> None:
         sys.exit(1)
     w = MainWindow(cfg)
     w.show()
-    if sys.platform == "win32" and w.admin and paths.is_frozen():
-        note = "; ".join(n for n in (note, management.refresh_startup_task(sys.executable)) if n)
     note = "; ".join(n for n in (note, w.rt.stage_note) if n)
     ok, msg = paths.binaries_present()
     if not ok:
         w.status(msg)
     elif note:
         w.status(note)
+    if sys.platform == "win32" and w.admin and paths.is_frozen():
+        w.refresh_startup_async(sys.executable)
     selftest = os.environ.get("TINCMGR_SELFTEST_MS")
     if selftest:
-        import tempfile
-        logp = os.environ.get("TINCMGR_SELFTEST_LOG") or os.path.join(tempfile.gettempdir(), "tincmgr_selftest.log")
-        lines = ["SELFTEST OK", f"frozen={paths.is_frozen()}", f"admin={w.admin}",
-                 f"config={cfg}", f"networks={list(w.app.networks)}",
-                 f"load_error={w.load_error!r}", f"tincd={paths.tincd_exe()}",
-                 f"tincd_exists={os.path.isfile(paths.tincd_exe())}",
-                 f"staged_tincd={w.rt.tincd}", f"note={note!r}"]
-        try:
-            with open(logp, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
-        except OSError:
-            pass
-        print("\n".join(lines), flush=True)
+        extra: list[str] = []
+        if os.environ.get("TINCMGR_SELFTEST_INSTALL") == "1":
+            # build-exe.sh: install this build the way run-at-startup does,
+            # then the smoke test runs the installed onedir copy
+            try:
+                extra.append(f"installed={management.install_self(sys.executable)}")
+                extra.append(f"installed_version={management.installed_version()}")
+            except OSError as e:
+                extra.append(f"install_error={e}")
+        _selftest_report(w, cfg, note, extra)
         QtCore.QTimer.singleShot(int(selftest), w._quit_app)
     sys.exit(app.exec())
 

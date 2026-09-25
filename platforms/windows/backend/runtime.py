@@ -173,16 +173,31 @@ class Runtime:
         import management
         names = ["tincd.exe", "tinc.exe", "wintun.dll"]
         bindir = paths.bin_stage_dir(management.is_admin())
+        # The onefile carries a manifest of its own files (paths.bundle()):
+        # its unpack dir is writable by the user's unelevated processes, and
+        # tincd.exe there is not even open, so it is checked, not trusted.
+        b = paths.bundle()
         try:
             for n in names:
                 src = os.path.join(paths.resource_dir(), n)
                 if os.path.isfile(src):
-                    paths.stage_file(src, os.path.join(bindir, n))
+                    want = b.files.get("_internal/" + n) if b else None
+                    if want:
+                        paths.stage_verified(src, os.path.join(bindir, n), want[0])
+                    else:
+                        paths.stage_file(src, os.path.join(bindir, n))
             if not os.path.isfile(os.path.join(bindir, "tincd.exe")):
                 raise OSError("tincd not staged")
             self.tincd = os.path.join(bindir, "tincd.exe")
             self.tinc = os.path.join(bindir, "tinc.exe")
             self.bindir = bindir
+        except paths.IntegrityError as e:
+            # Never fall back to the file that failed the check: keep what is
+            # staged (it passed the check when it was staged), or nothing.
+            self.tincd = os.path.join(bindir, "tincd.exe")
+            self.tinc = os.path.join(bindir, "tinc.exe")
+            self.bindir = bindir
+            self.stage_note = f"refused to stage the bundled core: {e}"
         except OSError as e:
             # Most likely a daemon from the previous version still runs from
             # bindir and holds the file. Run the bundled copy instead of the
@@ -288,7 +303,12 @@ class Runtime:
             ok, msg = netmtu.set_interface_mtu(aliases, mtu)
         except Exception as e:
             ok, msg = False, f"exception: {e}"
-        self._log_line(net_name, f"[tincmgr] wintun MTU: {msg}")
+        if ok:
+            self._log_line(net_name, f"[tincmgr] wintun MTU: {msg}")
+        else:
+            # not the same line as a success: the adapter keeps Wintun's MTU
+            # 65535, Windows advertises a huge MSS and large packets fragment
+            self._log_line(net_name, f"[tincmgr] wintun MTU clamp to {mtu} FAILED: {msg}")
 
     def stop(self, net_name: str, timeout: float = 8.0) -> tuple[bool, str]:
         # graceful: tincd removes its Wintun adapter on a clean stop

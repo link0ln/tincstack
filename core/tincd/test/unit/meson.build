@@ -67,7 +67,21 @@ tests = {
     'code': 'test_splay_tree.c',
     'link': link_tinc,
   },
+  'json': {
+    'code': 'test_json.c',
+    'link': link_tinc,
+  },
 }
+
+# httpc.c is compiled only with OpenSSL (it is the ACME client's transport).
+if cdata.has('HAVE_OPENSSL')
+  tests += {
+    'httpc': {
+      'code': 'test_httpc.c',
+      'link': link_tinc,
+    },
+  }
+endif
 
 # The HTTP/3 layer exists only in a quic build.
 if 'h3.c' in src_tincd

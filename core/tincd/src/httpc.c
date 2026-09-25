@@ -241,35 +241,194 @@ static bool header_has(const char *value, const char *word) {
 	return false;
 }
 
-/* Dechunk in place; returns the new length. */
-static size_t dechunk(char *body, size_t len) {
+static int hexval(char c) {
+	if(c >= '0' && c <= '9') {
+		return c - '0';
+	}
+
+	if(c >= 'a' && c <= 'f') {
+		return c - 'a' + 10;
+	}
+
+	if(c >= 'A' && c <= 'F') {
+		return c - 'A' + 10;
+	}
+
+	return -1;
+}
+
+/* Dechunk in place. False when the body is not a complete chunked body: a
+   chunk that runs past the data, a malformed size line, or no last (size 0)
+   chunk -- i.e. the connection closed early. The chunk size is parsed here
+   with an overflow check and compared as `chunk > len - in', so a size of
+   ffffffffffffffff can neither wrap the bound nor reach memmove() (it did,
+   with strtoul and `in + chunk > len'). */
+static bool dechunk(char *body, size_t len, size_t *outlen) {
 	size_t in = 0, out = 0;
 
-	while(in < len) {
+	for(;;) {
 		char *eol = memchr(body + in, '\n', len - in);
 
 		if(!eol) {
-			break;
+			return false;
 		}
 
-		size_t chunk = (size_t) strtoul(body + in, NULL, 16);
+		size_t chunk = 0;
+		const char *p = body + in;
+		int h;
+
+		if(hexval(*p) < 0) {
+			return false;
+		}
+
+		for(; p < eol && (h = hexval(*p)) >= 0; p++) {
+			if(chunk > (SIZE_MAX >> 4)) {
+				return false;
+			}
+
+			chunk = (chunk << 4) | (size_t) h;
+		}
+
 		in = (size_t)(eol - body) + 1;
 
-		if(!chunk || in + chunk > len) {
-			break;
+		if(!chunk) {
+			break;                        /* the last chunk; trailers ignored */
+		}
+
+		if(chunk > len - in) {
+			return false;
 		}
 
 		memmove(body + out, body + in, chunk);
 		out += chunk;
 		in += chunk;
 
-		while(in < len && (body[in] == '\r' || body[in] == '\n')) {
+		if(in < len && body[in] == '\r') {
 			in++;
 		}
+
+		if(in >= len || body[in] != '\n') {
+			return false;
+		}
+
+		in++;
 	}
 
 	body[out] = 0;
-	return out;
+	*outlen = out;
+	return true;
+}
+
+/* A status whose response never has a body (RFC 9110 section 6.4.1). */
+static bool bodiless_status(int status) {
+	return (status >= 100 && status < 200) || status == 204 || status == 304;
+}
+
+bool httpc_parse_response(const char *buf, size_t len, bool head, const char *host,
+                          http_response_t *res, char *err, size_t errlen) {
+	memset(res, 0, sizeof(*res));
+
+	/* The header block ends at the first empty line; searched with a bound,
+	   so `buf' need not be NUL-terminated. */
+	size_t headlen = 0, seplen = 0;
+
+	for(size_t i = 0; i < len; i++) {
+		if(buf[i] != '\n') {
+			continue;
+		}
+
+		if(i + 1 < len && buf[i + 1] == '\n') {
+			headlen = i;
+			seplen = 2;
+			break;
+		}
+
+		if(i + 2 < len && buf[i + 1] == '\r' && buf[i + 2] == '\n') {
+			headlen = i > 0 && buf[i - 1] == '\r' ? i - 1 : i;
+			seplen = i + 3 - headlen;
+			break;
+		}
+	}
+
+	/* "HTTP/1.1 200": the version, one space, three digits. */
+	if(!seplen || headlen < 12 || strncmp(buf, "HTTP/", 5) || buf[8] != ' '
+	                || !isdigit((unsigned char) buf[9]) || !isdigit((unsigned char) buf[10])
+	                || !isdigit((unsigned char) buf[11])) {
+		snprintf(err, errlen, "malformed HTTP response from %s", host);
+		return false;
+	}
+
+	res->status = (buf[9] - '0') * 100 + (buf[10] - '0') * 10 + (buf[11] - '0');
+	res->headers = xmalloc(headlen + 1);
+	memcpy(res->headers, buf, headlen);
+	res->headers[headlen] = 0;
+
+	size_t bodylen = len - headlen - seplen;
+	res->body = xmalloc(bodylen + 1);
+	memcpy(res->body, buf + headlen + seplen, bodylen);
+	res->body[bodylen] = 0;
+	res->body_len = bodylen;
+
+	/* A HEAD answer and a 1xx/204/304 carry the headers of a body that is
+	   not sent: nothing to check. */
+	if(head || bodiless_status(res->status)) {
+		return true;
+	}
+
+	char *te = httpc_header(res, "Transfer-Encoding");
+
+	if(te) {
+		bool chunked = header_has(te, "chunked");
+		free(te);
+
+		if(chunked && !dechunk(res->body, res->body_len, &res->body_len)) {
+			snprintf(err, errlen, "truncated or malformed chunked response from %s", host);
+			httpc_free(res);
+			return false;
+		}
+
+		return true;
+	}
+
+	char *cl = httpc_header(res, "Content-Length");
+
+	if(!cl) {
+		return true;                      /* delimited by the close */
+	}
+
+	/* Digits only: strtoul would take "-1", " 12", "12abc" and overflow. */
+	size_t want = 0;
+	bool ok = *cl != 0;
+
+	for(const char *p = cl; ok && *p; p++) {
+		if(!isdigit((unsigned char) *p) || want > (SIZE_MAX - 9) / 10) {
+			ok = false;
+		} else {
+			want = want * 10 + (size_t)(*p - '0');
+		}
+	}
+
+	free(cl);
+
+	if(!ok) {
+		snprintf(err, errlen, "malformed Content-Length from %s", host);
+		httpc_free(res);
+		return false;
+	}
+
+	if(want > res->body_len) {
+		snprintf(err, errlen, "truncated response from %s: Content-Length %lu, received %lu bytes",
+		         host, (unsigned long) want, (unsigned long) res->body_len);
+		httpc_free(res);
+		return false;
+	}
+
+	if(want < res->body_len) {
+		res->body_len = want;
+		res->body[want] = 0;
+	}
+
+	return true;
 }
 
 bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, size_t errlen) {
@@ -434,56 +593,11 @@ bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, 
 		break;
 	}
 
-	buf[len] = 0;
-
-	char *sep = strstr(buf, "\r\n\r\n");
-	size_t seplen = 4;
-
-	if(!sep) {
-		sep = strstr(buf, "\n\n");
-		seplen = 2;
-	}
-
-	if(!sep || strncmp(buf, "HTTP/", 5)) {
-		snprintf(err, errlen, "malformed HTTP response from %s", host);
-		free(buf);
-		goto fail;
-	}
-
-	res->status = atoi(buf + 9);
-	size_t headlen = (size_t)(sep - buf);
-	res->headers = xmalloc(headlen + 1);
-	memcpy(res->headers, buf, headlen);
-	res->headers[headlen] = 0;
-
-	size_t bodylen = len - headlen - seplen;
-	res->body = xmalloc(bodylen + 1);
-	memcpy(res->body, sep + seplen, bodylen);
-	res->body[bodylen] = 0;
-	res->body_len = bodylen;
+	bool parsed = httpc_parse_response(buf, len, !strcmp(req->method, "HEAD"), host, res, err, errlen);
 	free(buf);
 
-	char *te = httpc_header(res, "Transfer-Encoding");
-
-	if(te) {
-		if(header_has(te, "chunked")) {
-			res->body_len = dechunk(res->body, res->body_len);
-		}
-
-		free(te);
-	} else {
-		char *cl = httpc_header(res, "Content-Length");
-
-		if(cl) {
-			size_t want = (size_t) strtoul(cl, NULL, 10);
-
-			if(want < res->body_len) {
-				res->body_len = want;
-				res->body[want] = 0;
-			}
-
-			free(cl);
-		}
+	if(!parsed) {
+		goto fail;
 	}
 
 	SSL_shutdown(ssl);
