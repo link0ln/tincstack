@@ -139,8 +139,10 @@ typedef struct quic_session_t {
 
 	/* Server: request streams that are not (yet) the tinc session. Each gets
 	   an HTTP/3 answer -- the decoy -- like any web server would give. */
-	struct {
+	struct quic_req {
 		int64_t id;
+		struct quic_session_t *owner;   /* for the upstream's callback */
+		decoy_fetch_t *fetch;   /* HttpsDecoyUpstream: the answer on its way */
 		h3_parser_t rx;
 		uint8_t *hdr;           /* the request's HEADERS payload, until decoded */
 		size_t hdr_len;
@@ -543,6 +545,21 @@ static char *req_as_http1(const h3_req_fields_t *f) {
 	return r;
 }
 
+static void req_decoy_fetched(void *data, char *resp, size_t len) {
+	struct quic_req *q = data;
+	quic_session_t *s = q->owner;
+	q->fetch = NULL;
+	q->resp = h3_from_http1(resp, len, &q->resp_len);
+	free(resp);
+
+	if(!q->resp) {
+		q->done = true;
+		ngtcp2_conn_shutdown_stream(s->conn, 0, q->id, H3_REQUEST_REJECTED);
+	}
+
+	quic_flush(s);
+}
+
 static void req_respond_decoy(quic_session_t *s, int i) {
 	if(s->req[i].responded) {
 		return;
@@ -555,11 +572,23 @@ static void req_respond_decoy(quic_session_t *s, int i) {
 
 	char *request = req_as_http1(s->req[i].fields);
 	size_t rl;
-	char *r = decoy_respond_static(request, strlen(request), &rl);
+	s->req[i].responded = true;
+
+	/* With HttpsDecoyUpstream the upstream answers, as through the TCP
+	   front (nginx proxies HTTP/3 requests like any other). */
+	decoy_origin_t at = {.tls = true, .h3 = true, .port = quic_port ? quic_port : 443};
+	s->req[i].owner = s;
+	s->req[i].fetch = decoy_fetch_start(request, strlen(request), &at, req_decoy_fetched, &s->req[i]);
+
+	if(s->req[i].fetch) {
+		free(request);
+		return;
+	}
+
+	char *r = decoy_respond(request, strlen(request), &at, &rl);
 	free(request);
 	s->req[i].resp = h3_from_http1(r, rl, &s->req[i].resp_len);
 	free(r);
-	s->req[i].responded = true;
 
 	if(!s->req[i].resp) {
 		s->req[i].done = true;
@@ -1538,6 +1567,7 @@ static void free_session(quic_session_t *s) {
 	quic_tls_session_free(&s->tls);
 
 	for(int i = 0; i < s->nreq; i++) {
+		decoy_fetch_cancel(s->req[i].fetch);
 		free(s->req[i].resp);
 		free(s->req[i].hdr);
 		free(s->req[i].fields);
@@ -2351,6 +2381,7 @@ bool quic_init(void) {
 		}
 
 		transport_advertise_port("QuicPort", quic_port);
+		decoy_set_h3_port(quic_port);   /* Alt-Svc on the TCP front's answers */
 		logger(DEBUG_ALWAYS, LOG_INFO, "QUIC carrier ready (ngtcp2 %s, %s)%s", ngtcp2_version(0)->version_str,
 		       OpenSSL_version(OPENSSL_VERSION), quic_port ? "" : ", on the tinc port");
 	}

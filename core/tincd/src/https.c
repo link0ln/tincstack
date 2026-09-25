@@ -316,6 +316,9 @@ static int flush_wbuf(https_session_t *s) {
 
 /* Append available decrypted head bytes into rbuf until "\r\n\r\n" or cap.
    Returns 1 = head complete, 0 = need more (io set), -1 = error/eof. */
+/* Returns 1 when there is a head to answer: a complete one, or one the
+   decoy answers without the rest (a request line nginx refuses at once, a
+   head too long for nginx's buffers). */
 static int read_head(https_session_t *s) {
 	/* A pipelined request may already be here (decoy keep-alive). */
 	if(s->rlen >= 4 && memmem(s->rbuf, s->rlen, "\r\n\r\n", 4)) {
@@ -324,8 +327,9 @@ static int read_head(https_session_t *s) {
 
 	for(;;) {
 		if(s->rlen + 1 >= s->rcap) {
-			if(s->rcap >= HTTPS_MAX_HEAD) {
-				return -1;
+			if(s->rcap >= (s->is_server ? DECOY_HEAD_MAX : HTTPS_MAX_HEAD)) {
+				/* the decoy's 400 "Request Header Or Cookie Too Large" */
+				return s->is_server ? 1 : -1;
 			}
 
 			s->rcap = s->rcap ? s->rcap * 2 : 2048;
@@ -339,6 +343,12 @@ static int read_head(https_session_t *s) {
 			s->rbuf[s->rlen] = 0;
 
 			if(s->rlen >= 4 && memmem(s->rbuf, s->rlen, "\r\n\r\n", 4)) {
+				return 1;
+			}
+
+			/* nginx answers a request line it cannot parse at once, without
+			   waiting for the rest of a head that will never come. */
+			if(s->is_server && decoy_request_refused(s->rbuf, s->rlen)) {
 				return 1;
 			}
 
@@ -786,16 +796,18 @@ static void serve_decoy(https_session_t *s) {
 
 	/* With HttpsDecoyUpstream set the fetch is asynchronous (M5-1): the loop
 	   keeps running; nothing happens on this socket until the callback. */
+	decoy_origin_t at;
+	decoy_origin_of(s->c->socket, true, &at);
 	s->state = HS_SERVER_FETCH_DECOY;
 	set_io(s, 0);
-	s->fetch = decoy_fetch_start(req, s->rlen, decoy_fetched, s);
+	s->fetch = decoy_fetch_start(req, s->rlen, &at, decoy_fetched, s);
 
 	if(s->fetch) {
 		return;
 	}
 
 	size_t resplen = 0;
-	char *resp = decoy_respond_static(req, s->rlen, &resplen);
+	char *resp = decoy_respond(req, s->rlen, &at, &resplen);
 	write_decoy(s, resp, resplen);
 }
 

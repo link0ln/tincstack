@@ -1,0 +1,14 @@
+HTTP/1.1 414 Request-URI Too Large
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:26 GMT
+Content-Type: text/html
+Content-Length: 170
+Connection: close
+
+<html>
+<head><title>414 Request-URI Too Large</title></head>
+<body>
+<center><h1>414 Request-URI Too Large</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>

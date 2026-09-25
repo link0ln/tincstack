@@ -1,0 +1,16 @@
+HTTP/1.1 416 Requested Range Not Satisfiable
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:27 GMT
+Content-Type: text/html
+Content-Length: 190
+Connection: keep-alive
+Alt-Svc: h3=":443"; ma=86400
+Content-Range: bytes */615
+
+<html>
+<head><title>416 Requested Range Not Satisfiable</title></head>
+<body>
+<center><h1>416 Requested Range Not Satisfiable</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>

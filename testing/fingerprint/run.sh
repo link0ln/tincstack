@@ -6,8 +6,11 @@
 # asserting it. One server certificate, two servers, three clients, one
 # dissector:
 #
-#   servers  B = our tincd (https front + quic on the tinc port)
-#            N = nginx (official image, TLS + HTTP/3 on 443) -- the reference
+#   servers  B = our tincd (https and quic fronts on 443)
+#            N = nginx, TLS + HTTP/3 on 443 -- the reference: Debian 13's own
+#                nginx 1.26.3 on OpenSSL 3.5 (testing/transports/nginx-deb13),
+#                the persona the decoy imitates (since 2026-09-26; before it,
+#                the official nginx:1.27 image on Debian 12 / OpenSSL 3.0)
 #   clients  A = our tincd dialling B (https, then quic)
 #            curl (OpenSSL 3.5, h2 / --http3-only) and Chromium (headless)
 #            against both servers
@@ -27,7 +30,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMG="${CORE_IMAGE:-tincstack/core:${TINCSTACK_TAG:-dev}}"
 TOOLS="${TOOLS_IMAGE:-tincstack/fp-tools:dev}"
-NGINX="${NGINX_IMAGE:-nginx:1.27}"
+NGINX="${NGINX_IMAGE:-tincstack/nginx-deb13:dev}"
 RUN="$HERE/run"
 OUT="$HERE/results/$(date +%Y%m%d-%H%M%S)"
 PFX=fp
@@ -58,6 +61,10 @@ if ! docker image inspect "$TOOLS" >/dev/null 2>&1; then
 	log "building $TOOLS"
 	docker build -q --build-arg http_proxy="${HTTP_PROXY:-}" --build-arg https_proxy="${HTTP_PROXY:-}" \
 		-t "$TOOLS" "$HERE" >/dev/null
+fi
+if ! docker image inspect "$NGINX" >/dev/null 2>&1; then
+	docker build -q --build-arg http_proxy="${HTTP_PROXY:-}" --build-arg https_proxy="${HTTP_PROXY:-}" \
+		-t "$NGINX" "$HERE/../transports/nginx-deb13" >/dev/null
 fi
 
 # ---- one certificate for both servers, from a throwaway CA -------------------

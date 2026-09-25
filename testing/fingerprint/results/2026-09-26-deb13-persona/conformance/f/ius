@@ -1,0 +1,14 @@
+HTTP/1.1 412 Precondition Failed
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:02 GMT
+Content-Type: text/html
+Content-Length: 166
+Connection: close
+
+<html>
+<head><title>412 Precondition Failed</title></head>
+<body>
+<center><h1>412 Precondition Failed</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>

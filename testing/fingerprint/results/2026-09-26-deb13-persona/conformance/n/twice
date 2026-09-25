@@ -1,0 +1,28 @@
+HTTP/1.1 404 Not Found
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:26 GMT
+Content-Type: text/html
+Content-Length: 146
+Connection: keep-alive
+
+<html>
+<head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+HTTP/1.1 404 Not Found
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:26 GMT
+Content-Type: text/html
+Content-Length: 146
+Connection: close
+
+<html>
+<head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>

@@ -1,0 +1,570 @@
+01:17:11 FAIL absolute: ours 'HTTP/1.1 400 Bad Request' vs nginx 'HTTP/1.1 200 OK'
+1c1
+< HTTP/1.1 400 Bad Request^M$
+---
+> HTTP/1.1 200 OK^M$
+5c5,6
+< Content-Length: 150^M$
+---
+> Content-Length: 615^M$
+01:17:12 PASS delete: HTTP/1.1 405 Not Allowed, byte for byte
+01:17:12 FAIL dotdot: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 400 Bad Request'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 400 Bad Request^M$
+5c5
+< Content-Length: 146^M$
+---
+> Content-Length: 150^M$
+01:17:12 PASS garbage: HTTP/1.1 400 Bad Request, byte for byte
+01:17:12 FAIL get: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL get12: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL get_close: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL gzip: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+5,6c5,6
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+> Transfer-Encoding: chunked^M$
+8,9c8,18
+< ETag: "67ff9c07-267"^M$
+01:17:12 FAIL gzip10: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL gzip404: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 404 Not Found'
+5c5
+< Content-Length: 146^M$
+---
+> Transfer-Encoding: chunked^M$
+6a7,11
+> Content-Encoding: gzip^M$
+> ^M$
+> 6b^M$
+01:17:12 FAIL gziphead: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+5,6c5
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8,9c7,9
+< ETag: "67ff9c07-267"^M$
+< Accept-Ranges: bytes^M$
+01:17:12 FAIL gzipka: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+5,6c5,6
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+> Transfer-Encoding: chunked^M$
+8,9c8,18
+< ETag: "67ff9c07-267"^M$
+01:17:12 FAIL gzipq0: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL gzipvia: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL head: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL http09: ours '' vs nginx '<!DOCTYPE html>'
+0a1,23
+> <!DOCTYPE html>$
+> <html>$
+> <head>$
+> <title>Welcome to nginx!</title>$
+> <style>$
+> html { color-scheme: light dark; }$
+> body { width: 35em; margin: 0 auto;$
+01:17:12 FAIL http10: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL http10ka: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6,8c6,9
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+< Connection: close^M$
+< ETag: "67ff9c07-267"^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+> Connection: keep-alive^M$
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL http2: ours 'HTTP/1.1 400 Bad Request' vs nginx 'HTTP/1.1 505 HTTP Version Not Supported'
+1c1
+< HTTP/1.1 400 Bad Request^M$
+---
+> HTTP/1.1 505 HTTP Version Not Supported^M$
+5c5
+< Content-Length: 150^M$
+---
+> Content-Length: 180^M$
+01:17:12 PASS idxslash: HTTP/1.1 404 Not Found, byte for byte
+01:17:12 FAIL ifmatch: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 412 Precondition Failed'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 412 Precondition Failed^M$
+5,6c5
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL ifrange: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 206 Partial Content'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 206 Partial Content^M$
+5,6c5,6
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL ifrange_no: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL ims: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 304 Not Modified'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 304 Not Modified^M$
+4,6c4
+< Content-Type: text/html^M$
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+01:17:12 FAIL ims_gzip: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 304 Not Modified'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 304 Not Modified^M$
+4,6c4
+< Content-Type: text/html^M$
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+01:17:12 FAIL ims_other: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL inm: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 304 Not Modified'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 304 Not Modified^M$
+4,6c4
+< Content-Type: text/html^M$
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+01:17:12 FAIL inm_other: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+6c6
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+8c8,9
+< ETag: "67ff9c07-267"^M$
+---
+> ETag: "67a34672-267"^M$
+01:17:12 FAIL ius: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 412 Precondition Failed'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 412 Precondition Failed^M$
+5,6c5
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL longhdr: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 400 Bad Request'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 400 Bad Request^M$
+5,6c5
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL longline: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 414 Request-URI Too Large'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 414 Request-URI Too Large^M$
+5c5
+< Content-Length: 146^M$
+---
+> Content-Length: 170^M$
+01:17:12 FAIL multi: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 206 Partial Content'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 206 Partial Content^M$
+4,6c4,6
+< Content-Type: text/html^M$
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+01:17:12 PASS nohost: HTTP/1.1 400 Bad Request, byte for byte
+01:17:12 PASS nope: HTTP/1.1 404 Not Found, byte for byte
+01:17:12 PASS plain: HTTP/1.1 400 Bad Request, byte for byte
+01:17:12 PASS post: HTTP/1.1 405 Not Allowed, byte for byte
+01:17:12 FAIL postnope: ours 'HTTP/1.1 405 Not Allowed' vs nginx 'HTTP/1.1 404 Not Found'
+1c1
+< HTTP/1.1 405 Not Allowed^M$
+---
+> HTTP/1.1 404 Not Found^M$
+5c5
+< Content-Length: 150^M$
+---
+> Content-Length: 146^M$
+01:17:12 FAIL r416: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 416 Requested Range Not Satisfiable'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 416 Requested Range Not Satisfiable^M$
+5,6c5
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL r416ka: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 416 Requested Range Not Satisfiable'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 416 Requested Range Not Satisfiable^M$
+5,6c5
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL range: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 206 Partial Content'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 206 Partial Content^M$
+5,6c5,6
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL rgzip: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+5,6c5,6
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+> Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT^M$
+> Transfer-Encoding: chunked^M$
+8,9c8,18
+< ETag: "67ff9c07-267"^M$
+01:17:12 FAIL rhead: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 206 Partial Content'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 206 Partial Content^M$
+5,6c5,6
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL rsyntax: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 416 Requested Range Not Satisfiable'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 416 Requested Range Not Satisfiable^M$
+5,6c5
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL spellings: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 200 OK'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 200 OK^M$
+5c5,6
+< Content-Length: 146^M$
+---
+> Content-Length: 615^M$
+01:17:12 FAIL suffix: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 206 Partial Content'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 206 Partial Content^M$
+5,6c5,6
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 PASS tincid: HTTP/1.1 400 Bad Request, byte for byte
+01:17:12 PASS twice: HTTP/1.1 404 Not Found, byte for byte
+01:17:12 FAIL twohosts: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 400 Bad Request'
+1c1
+< HTTP/1.1 200 OK^M$
+---
+> HTTP/1.1 400 Bad Request^M$
+5,6c5
+< Content-Length: 615^M$
+< Last-Modified: Wed, 16 Apr 2025 12:01:11 GMT^M$
+---
+01:17:12 FAIL root: css: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+8a9
+> Alt-Svc: h3=":443"; ma=86400^M$
+01:17:12 FAIL root: dir: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 301 Moved Permanently'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 301 Moved Permanently^M$
+5c5,6
+< Content-Length: 146^M$
+---
+> Content-Length: 162^M$
+01:17:12 FAIL root: dir10: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 301 Moved Permanently'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 301 Moved Permanently^M$
+5c5,6
+< Content-Length: 146^M$
+---
+> Content-Length: 162^M$
+01:17:12 FAIL root: dirhead: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 301 Moved Permanently'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 301 Moved Permanently^M$
+5c5,6
+< Content-Length: 146^M$
+---
+> Content-Length: 162^M$
+01:17:12 FAIL root: dirquery: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 301 Moved Permanently'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 301 Moved Permanently^M$
+5c5,6
+< Content-Length: 146^M$
+---
+> Content-Length: 162^M$
+01:17:12 FAIL root: dirslash: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 200 OK'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 200 OK^M$
+5c5,6
+< Content-Length: 146^M$
+---
+> Content-Length: 6^M$
+01:17:12 FAIL root: empty: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 403 Forbidden'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 403 Forbidden^M$
+9c9
+< <head><title>404 Not Found</title></head>^M$
+---
+> <head><title>403 Forbidden</title></head>^M$
+01:17:12 PASS root: nodir: HTTP/1.1 404 Not Found, byte for byte
+01:17:12 FAIL root: page: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+5d4
+< Content-Length: 514^M$
+6a6
+> Transfer-Encoding: chunked^M$
+8,9c8,14
+< ETag: "67c2daa0-202"^M$
+< Accept-Ranges: bytes^M$
+---
+01:17:12 FAIL root: rootidx: ours 'HTTP/1.1 404 Not Found' vs nginx 'HTTP/1.1 403 Forbidden'
+1c1
+< HTTP/1.1 404 Not Found^M$
+---
+> HTTP/1.1 403 Forbidden^M$
+9c9
+< <head><title>404 Not Found</title></head>^M$
+---
+> <head><title>403 Forbidden</title></head>^M$
+01:17:12 FAIL proxy: chunked: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+5a6
+> Connection: close^M$
+6a8
+> Alt-Svc: h3=":443"; ma=86400^M$
+01:17:12 FAIL proxy: garbage: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 400 Bad Request'
+1,2c1,2
+< HTTP/1.1 200 OK^M$
+< Server: upstream/1^M$
+---
+> HTTP/1.1 400 Bad Request^M$
+> Server: nginx^M$
+4,11c4,6
+< Content-Type: text/html; charset=utf-8^M$
+01:17:12 FAIL proxy: get: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+5a6
+> Connection: close^M$
+10,11c11
+< Connection: keep-alive^M$
+01:17:12 FAIL proxy: gzip: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+5c5,6
+< Content-Length: 57^M$
+---
+> Transfer-Encoding: chunked^M$
+01:17:12 FAIL proxy: head: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+5a6
+> Connection: close^M$
+10,11c11
+< Connection: keep-alive^M$
+01:17:12 FAIL proxy: http10: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+5a6
+> Connection: close^M$
+10,11c11
+< Connection: keep-alive^M$
+01:17:12 FAIL proxy: missing: ours 'HTTP/1.1 404 Nope' vs nginx 'HTTP/1.1 404 Nope'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+5a6
+> Connection: close^M$
+01:17:12 FAIL proxy: moved: ours 'HTTP/1.1 302 Found' vs nginx 'HTTP/1.1 302 Found'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+4d3
+< Location: /elsewhere^M$
+5a5,7
+> Connection: close^M$
+01:17:12 FAIL proxy: nolen: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+4a5,6
+> Transfer-Encoding: chunked^M$
+> Connection: close^M$
+5a8,12
+01:17:12 FAIL proxy: nolen10: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+4a5
+> Connection: close^M$
+5a7
+> Alt-Svc: h3=":443"; ma=86400^M$
+01:17:12 FAIL proxy: nolen_ka: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+4a5,6
+> Transfer-Encoding: chunked^M$
+> Connection: keep-alive^M$
+5a8
+01:17:12 FAIL proxy: post: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+5a6
+> Connection: close^M$
+10,11c11
+< Connection: keep-alive^M$
+01:17:12 FAIL proxy: twice: ours 'HTTP/1.1 200 OK' vs nginx 'HTTP/1.1 200 OK'
+2c2
+< Server: upstream/1^M$
+---
+> Server: nginx^M$
+5a6
+> Connection: keep-alive^M$
+10,11c11
+< Connection: keep-alive^M$
+01:17:12 FAIL proxy: the upstream received different requests
+2c2
+< GET / HTTP/1.1
+---
+> GET / HTTP/1.0
+8c8
+< GET / HTTP/1.1
+---
+> GET / HTTP/1.0
+13c13
+< GET / HTTP/1.1
+01:17:12 PASS a non-ASCII first byte: closed without an answer by both
+01:17:12 PASS 30 simultaneous connections from one address: all 30 answered (as nginx)
+01:19:03 PASS a silent client is closed after 59 s (nginx: 61 s)
+01:19:03 PASS an idle kept-alive connection is closed after 75 s (nginx: 75 s)
+01:19:05 PASS close_notify before the FIN (ours 43/71 TLS closes, nginx 42/71)
+01:19:05 FAIL session tickets (length/lifetime): ours 229 B/7200s, 166 B/7200s, 12 B/s, nginx 261 B/300s, 214 B/300s, 12 B/s
+01:19:05 decoy conformance: FAILURES above
+exit 1

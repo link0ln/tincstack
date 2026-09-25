@@ -324,6 +324,18 @@ static int alpn_select_cb(SSL *ssl, const uint8_t **out, uint8_t *outlen,
 	return SSL_TLSEXT_ERR_NOACK;
 }
 
+/* nginx's ngx_http_ssl_servername() accepts any name (it only picks a
+   server block). Accepting it is visible: the server acknowledges SNI with
+   an empty server_name extension, and OpenSSL keeps the name in the session,
+   so in every ticket -- without this callback ours were 16 bytes shorter
+   than nginx's for "web.lab.test" (measured). */
+static int servername_cb(SSL *ssl, int *alert, void *arg) {
+	(void)ssl;
+	(void)alert;
+	(void)arg;
+	return SSL_TLSEXT_ERR_OK;
+}
+
 static SSL_CTX *build_server_ctx(const char *cert_pem, const char *key_pem) {
 	SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
 
@@ -379,6 +391,29 @@ static SSL_CTX *build_server_ctx(const char *cert_pem, const char *key_pem) {
 		}
 
 		SSL_CTX_set_alpn_select_cb(ctx, alpn_select_cb, NULL);
+		SSL_CTX_set_tlsext_servername_callback(ctx, servername_cb);
+
+		/* ssl_session_timeout 5m: the ticket lifetime (hint) nginx sends,
+		   300 s, not OpenSSL's 7200 (measured). */
+		SSL_CTX_set_timeout(ctx, 300);
+
+		/* nginx always sets a session id context (ngx_ssl_session_id_context:
+		   SHA-1 over "HTTP" and each certificate's SHA-1). It is carried in
+		   every session, so it is inside every ticket and its length
+		   shows in the ticket's. */
+		unsigned char sid_ctx[EVP_MAX_MD_SIZE], digest[EVP_MAX_MD_SIZE];
+		unsigned int sid_len = 0, dlen = 0;
+		EVP_MD_CTX *md = EVP_MD_CTX_new();
+
+		if(md && EVP_DigestInit_ex(md, EVP_sha1(), NULL) == 1
+		                && EVP_DigestUpdate(md, "HTTP", 4) == 1
+		                && X509_digest(cert, EVP_sha1(), digest, &dlen) == 1
+		                && EVP_DigestUpdate(md, digest, dlen) == 1
+		                && EVP_DigestFinal_ex(md, sid_ctx, &sid_len) == 1) {
+			SSL_CTX_set_session_id_context(ctx, sid_ctx, sid_len);
+		}
+
+		EVP_MD_CTX_free(md);
 	}
 
 	if(cert) {

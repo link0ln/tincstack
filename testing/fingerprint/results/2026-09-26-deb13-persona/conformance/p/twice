@@ -1,0 +1,21 @@
+HTTP/1.1 200 OK
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:37 GMT
+Content-Type: text/html; charset=utf-8
+Content-Length: 57
+Connection: keep-alive
+Last-Modified: Wed, 05 Feb 2025 11:07:30 GMT
+ETag: "up-1"
+X-Up: 1
+Set-Cookie: a=b
+Alt-Svc: h3=":443"; ma=86400
+
+<html>upstream page, long enough to be compressed</html>
+HTTP/1.1 404 Nope
+Server: nginx
+Date: Fri, 25 Sep 2026 22:08:37 GMT
+Content-Type: text/html
+Content-Length: 8
+Connection: close
+
+not here

@@ -67,6 +67,9 @@ tests = {
     'code': 'test_splay_tree.c',
     'link': link_tinc,
   },
+  'decoy': {
+    'code': 'test_decoy.c',
+  },
 }
 
 # The HTTP/3 layer exists only in a quic build.

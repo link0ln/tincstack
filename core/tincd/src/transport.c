@@ -466,6 +466,7 @@ bool transport_init(void) {
 
 	if(!(transport_init_done & TRANSPORT_BIT(TRANSPORT_QUIC))) {
 		transport_advertise_port("QuicPort", 0);
+		decoy_set_h3_port(0);
 	}
 
 	/* From here on transport_read_config() (i.e. every reload) initialises a
