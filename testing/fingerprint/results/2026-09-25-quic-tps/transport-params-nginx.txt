@@ -1,0 +1,60 @@
+    Type: IPv4 (0x0800)
+    Length: 1208
+    Length: 55
+        Length: 34
+                Length: 1174
+                Extension: supported_versions (len=2) TLS 1.3
+                    Type: supported_versions (43)
+                    Length: 2
+                Extension: key_share (len=1124) X25519MLKEM768
+                    Type: key_share (51)
+                    Length: 1124
+    Length: 1087
+        Length: 121
+                Length: 117
+                Extension: quic_transport_parameters (len=102)
+                    Type: quic_transport_parameters (57)
+                    Length: 102
+                    Parameter: initial_max_data (len=4) 8585216
+                        Type: initial_max_data (0x04)
+                        Length: 4
+                    Parameter: initial_max_streams_uni (len=1) 3
+                        Type: initial_max_streams_uni (0x09)
+                        Length: 1
+                    Parameter: initial_max_streams_bidi (len=2) 128
+                        Type: initial_max_streams_bidi (0x08)
+                        Length: 2
+                    Parameter: initial_max_stream_data_bidi_local (len=4) 65536
+                        Type: initial_max_stream_data_bidi_local (0x05)
+                        Length: 4
+                    Parameter: initial_max_stream_data_bidi_remote (len=4) 65536
+                        Type: initial_max_stream_data_bidi_remote (0x06)
+                        Length: 4
+                    Parameter: initial_max_stream_data_uni (len=4) 65536
+                        Type: initial_max_stream_data_uni (0x07)
+                        Length: 4
+                    Parameter: max_idle_timeout (len=4) 75000 ms
+                        Type: max_idle_timeout (0x01)
+                        Length: 4
+                    Parameter: max_udp_payload_size (len=4) 65527
+                        Type: max_udp_payload_size (0x03)
+                        Length: 4
+                    Parameter: active_connection_id_limit (len=1) 2
+                        Type: active_connection_id_limit (0x0e)
+                        Length: 1
+                    Parameter: max_ack_delay (len=1) 25
+                        Type: max_ack_delay (0x0b)
+                        Length: 1
+                    Parameter: ack_delay_exponent (len=1)
+                        Type: ack_delay_exponent (0x0a)
+                        Length: 1
+                    Parameter: original_destination_connection_id (len=8)
+                        Type: original_destination_connection_id (0x00)
+                        Length: 8
+                    Parameter: initial_source_connection_id (len=20)
+                        Type: initial_source_connection_id (0x0f)
+                        Length: 20
+                    Parameter: stateless_reset_token (len=16)
+                        Type: stateless_reset_token (0x02)
+                        Length: 16
+                Extension: application_layer_protocol_negotiation (len=5)

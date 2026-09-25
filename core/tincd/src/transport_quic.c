@@ -70,6 +70,7 @@
 #define QUIC_CID_SLOTS 16               /* issued connection ids we track per session */
 #define QUIC_AUTH_CAP AUTHN_MAX_LEN     /* server-side authenticator accumulation buffer */
 #define QUIC_UNI_STREAMS 3              /* control, QPACK encoder, QPACK decoder */
+#define QUIC_PEER_UNI 3                 /* the peer's: our initial_max_streams_uni (server) */
 #define QUIC_REQ_SLOTS 8                /* request streams a server answers per connection */
 #define QUIC_OK_HDR_CAP 64              /* client: the listener's response HEADERS, kept to check */
 #define QUIC_DGRAM_FRAME_MAX 65536      /* max_datagram_frame_size we accept */
@@ -80,6 +81,7 @@
    4-byte packet number, frame type, 2-byte length, AEAD tag -- with slack. */
 #define QUIC_DGRAM_OVERHEAD (1 + TRANSPORT_QUIC_CIDLEN + 4 + 1 + 2 + 16 + 3)
 #define QUIC_IDLE_MIN 30                /* s; what curl and Chromium announce */
+#define QUIC_NGINX_IDLE 75              /* s; nginx's max_idle_timeout */
 
 typedef struct quic_cid_t {
 	uint8_t data[NGTCP2_MAX_CIDLEN];
@@ -107,13 +109,33 @@ typedef struct quic_session_t {
 	bool ok_checked;                /* client: the answer is a tinc listener's */
 	bool dgram_marked;              /* client: the listener sent H3_FRAME_TINC_DGRAM */
 
-	/* Our unidirectional streams (control + SETTINGS, QPACK encoder and
-	   decoder). Their bytes are constant (h3_uni_preamble), so nothing needs
-	   to be kept for retransmission. */
+	/* Our unidirectional streams: control + SETTINGS, and the QPACK
+	   streams (the dialler: encoder and decoder; the listener, as nginx:
+	   decoder only). Each one's bytes stay in uni_buf until the session
+	   ends, as ngtcp2 needs them until acknowledged; only the listener's
+	   decoder stream grows (Section Acknowledgment, Insert Count Increment,
+	   Stream Cancellation). */
 	int64_t uni_id[QUIC_UNI_STREAMS];
+	uint64_t uni_type[QUIC_UNI_STREAMS];
+	uint8_t *uni_buf[QUIC_UNI_STREAMS];
+	size_t uni_len[QUIC_UNI_STREAMS];
 	size_t uni_sent[QUIC_UNI_STREAMS];
 	bool uni_blocked[QUIC_UNI_STREAMS];
 	int nuni;
+
+	/* The peer's unidirectional streams, by type once its first bytes have
+	   come. The listener reads a client's QPACK encoder stream into its
+	   dynamic table; everything else on them is consumed unread. */
+	struct {
+		int64_t id;
+		uint8_t type_buf[8];
+		size_t type_len;
+		bool typed;
+		uint64_t type;
+	} peer_uni[QUIC_PEER_UNI];
+	int npeer_uni;
+	h3_qpack_t *qpack;              /* server: the client's dynamic table */
+	int nblocked;                   /* server: requests waiting for it */
 
 	/* Server: request streams that are not (yet) the tinc session. Each gets
 	   an HTTP/3 answer -- the decoy -- like any web server would give. */
@@ -124,6 +146,9 @@ typedef struct quic_session_t {
 		size_t hdr_len;
 		h3_req_fields_t *fields;        /* decoded; NULL if not (yet) */
 		bool hdr_seen, hdr_bad;
+		bool hdr_blocked;       /* HEADERS whole, waiting for the dynamic table */
+		bool respond_pending;   /* answer as soon as they are decoded */
+		bool tinc_mark;         /* H3_FRAME_TINC_DGRAM came before the body */
 		uint8_t *resp;          /* HEADERS + DATA; kept until the session ends */
 		size_t resp_len, resp_sent;
 		bool responded, blocked, done;
@@ -373,7 +398,10 @@ static bool deliver_meta(quic_session_t *s, const uint8_t *data, size_t len) {
 
 /* ---- HTTP/3 streams (h3.h) ------------------------------------------------ */
 
-static const uint64_t uni_types[QUIC_UNI_STREAMS] = {H3_STREAM_CONTROL, H3_STREAM_QPACK_ENCODER, H3_STREAM_QPACK_DECODER};
+/* The dialler's, as curl's; the listener's, as nginx's (no encoder stream:
+   it never uses a dynamic table of its own). */
+static const uint64_t uni_types_client[] = {H3_STREAM_CONTROL, H3_STREAM_QPACK_ENCODER, H3_STREAM_QPACK_DECODER};
+static const uint64_t uni_types_server[] = {H3_STREAM_CONTROL, H3_STREAM_QPACK_DECODER};
 
 static bool stream_is_uni(int64_t id) {
 	return id & 0x2;
@@ -400,15 +428,37 @@ static void tx_append_data(quic_session_t *s, const void *data, size_t len) {
 /* Our control stream (SETTINGS) and QPACK streams, which every HTTP/3
    endpoint opens as soon as it can. */
 static bool open_uni_streams(quic_session_t *s) {
-	for(int i = 0; i < QUIC_UNI_STREAMS; i++) {
+	const uint64_t *types = s->is_server ? uni_types_server : uni_types_client;
+	int n = s->is_server ? (int)(sizeof(uni_types_server) / sizeof(uni_types_server[0]))
+	        : (int)(sizeof(uni_types_client) / sizeof(uni_types_client[0]));
+
+	for(int i = 0; i < n; i++) {
 		if(ngtcp2_conn_open_uni_stream(s->conn, &s->uni_id[i], NULL)) {
 			return false;
 		}
 
+		size_t plen;
+		const uint8_t *pre = h3_uni_preamble(types[i], s->is_server, &plen);
+		s->uni_type[i] = types[i];
+		s->uni_buf[i] = xmalloc(plen);
+		memcpy(s->uni_buf[i], pre, plen);
+		s->uni_len[i] = plen;
 		s->nuni = i + 1;
 	}
 
 	return true;
+}
+
+/* Server: queue a QPACK decoder instruction on our decoder stream. */
+static void decoder_append(quic_session_t *s, const uint8_t *data, size_t len) {
+	for(int i = 0; i < s->nuni; i++) {
+		if(s->uni_type[i] == H3_STREAM_QPACK_DECODER) {
+			s->uni_buf[i] = xrealloc(s->uni_buf[i], s->uni_len[i] + len);
+			memcpy(s->uni_buf[i] + s->uni_len[i], data, len);
+			s->uni_len[i] += len;
+			return;
+		}
+	}
 }
 
 /* The HEADERS payload a tinc listener answers with (h3_response_ok without
@@ -498,6 +548,11 @@ static void req_respond_decoy(quic_session_t *s, int i) {
 		return;
 	}
 
+	if(s->req[i].hdr_blocked) {
+		s->req[i].respond_pending = true;       /* once its HEADERS decode */
+		return;
+	}
+
 	char *request = req_as_http1(s->req[i].fields);
 	size_t rl;
 	char *r = decoy_respond_static(request, strlen(request), &rl);
@@ -577,6 +632,69 @@ static size_t server_auth(quic_session_t *s, const uint8_t *p, size_t remain, in
 	return used;
 }
 
+/* Server: decode slot i's whole HEADERS with the client's dynamic table.
+   A section that needs entries not here yet waits (up to the 128 blocked
+   streams our SETTINGS allow, as nginx); one that references the table is
+   acknowledged on our decoder stream. */
+static void req_decode(quic_session_t *s, int i) {
+	h3_req_fields_t *f = xzalloc(sizeof(*f));
+	uint64_t ric = 0;
+	h3_decode_t r = s->req[i].hdr_bad ? H3_DECODE_ERROR :
+	                h3_decode_request(s->qpack, s->req[i].hdr, s->req[i].hdr_len, f, &ric);
+
+	if(r == H3_DECODE_BLOCKED) {
+		free(f);
+
+		if(!s->req[i].hdr_blocked) {
+			if(s->nblocked == H3_QPACK_BLOCKED_STREAMS) {
+				ngtcp2_ccerr_set_application_error(&s->ccerr, H3_QPACK_DECOMPRESSION_FAILED, NULL, 0);
+				quic_fail(s, true);
+				return;
+			}
+
+			s->req[i].hdr_blocked = true;
+			s->nblocked++;
+		}
+
+		return;
+	}
+
+	if(s->req[i].hdr_blocked) {
+		s->req[i].hdr_blocked = false;
+		s->nblocked--;
+	}
+
+	if(r == H3_DECODE_OK) {
+		s->req[i].fields = f;
+
+		if(ric) {
+			uint8_t ack[16];
+			decoder_append(s, ack, h3_qpack_section_ack(s->qpack, ric, s->req[i].id, ack));
+		}
+	} else {
+		free(f);
+	}
+
+	free(s->req[i].hdr);
+	s->req[i].hdr = NULL;
+	s->req[i].hdr_len = 0;
+
+	/* Undecoded: answered (400) when the body or FIN comes, as before --
+	   never early, so a dialler's POST is never answered by mistake. */
+	if(s->req[i].respond_pending || (s->req[i].fields && strcmp(s->req[i].fields->method, "POST"))) {
+		req_respond_decoy(s, i);
+	}
+}
+
+/* Server: requests blocked on the dynamic table, after it grew. */
+static void req_unblock(quic_session_t *s) {
+	for(int i = 0; i < s->nreq && s->nblocked && !s->dead; i++) {
+		if(s->req[i].hdr_blocked) {
+			req_decode(s, i);
+		}
+	}
+}
+
 /* Server: a piece of a request stream's first HEADERS frame. Once it is
    whole, the request is decoded, and anything but a POST -- the only method
    a tinc dialler uses -- is answered at once, as nginx answers it without
@@ -606,23 +724,7 @@ static void server_headers(quic_session_t *s, int i, const uint8_t *payload, siz
 	}
 
 	s->req[i].hdr_seen = true;
-	h3_req_fields_t *f = xzalloc(sizeof(*f));
-
-	if(!s->req[i].hdr_bad && h3_decode_request(s->req[i].hdr, s->req[i].hdr_len, f)) {
-		s->req[i].fields = f;
-	} else {
-		free(f);
-	}
-
-	free(s->req[i].hdr);
-	s->req[i].hdr = NULL;
-	s->req[i].hdr_len = 0;
-
-	/* Undecoded: answered (400) when the body or FIN comes, as before --
-	   never early, so a dialler's POST is never answered by mistake. */
-	if(s->req[i].fields && strcmp(s->req[i].fields->method, "POST")) {
-		req_respond_decoy(s, i);
-	}
+	req_decode(s, i);
 }
 
 static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size_t len) {
@@ -635,6 +737,11 @@ static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size
 
 	if(type == H3_FRAME_HEADERS && x->id != s->stream_id) {
 		server_headers(s, x->slot, payload, len);
+		return true;
+	}
+
+	if(type == H3_FRAME_TINC_DGRAM && x->id != s->stream_id) {
+		s->req[x->slot].tinc_mark = true;
 		return true;
 	}
 
@@ -658,6 +765,24 @@ static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size
 	if(verdict < 0) {
 		/* Not a tinc peer: an HTTP/3 client POSTing something. Answer it like
 		   a web server; its later requests get the same. */
+		s->authlen = 0;
+		s->auth_slot_taken = false;
+		req_respond_decoy(s, x->slot);
+		return true;
+	}
+
+	if(verdict > 0 && !s->req[x->slot].tinc_mark) {
+		/* A tinc dialler from before 2026-09-25: it sends DATAGRAM frames
+		   only to a listener whose transport parameters announce them, and
+		   ours, nginx's, do not -- its first tunnel packet would kill the
+		   connection, and it would dial quic again and again. Answer it as
+		   a web server does, before anything is activated: it gives quic up
+		   and tries its next carrier (as with any web server). */
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "quic: %s (%s) runs a tinc too old to send datagrams to this one; answering it as a web server so it tries another carrier",
+		       s->c->name, s->c->hostname);
+		s->authenticated = false;
+		free(s->c->name);
+		s->c->name = xstrdup("<unknown>");
 		s->authlen = 0;
 		s->auth_slot_taken = false;
 		req_respond_decoy(s, x->slot);
@@ -716,7 +841,17 @@ static bool client_frame(void *data, uint64_t type, const uint8_t *payload, size
 	}
 
 	if(type == H3_FRAME_TINC_DGRAM) {
+		/* The listener takes DATAGRAM frames from us. Since 2026-09-25 its
+		   transport parameters do not say so (nginx's have no
+		   max_datagram_frame_size); this frame, which only an authenticated
+		   peer sees, does. */
 		s->dgram_marked = true;
+		const ngtcp2_transport_params *rp = ngtcp2_conn_get_remote_transport_params(s->conn);
+
+		if(rp && !rp->max_datagram_frame_size) {
+			ngtcp2_conn_set_remote_max_datagram_frame_size(s->conn, QUIC_DGRAM_FRAME_MAX);
+		}
+
 		return true;
 	}
 
@@ -754,9 +889,53 @@ static bool client_frame(void *data, uint64_t type, const uint8_t *payload, size
 	return deliver_meta(s, payload, len);
 }
 
+/* Server: bytes of one of the client's unidirectional streams. Its type
+   comes first; an encoder stream feeds the dynamic table, and requests
+   waiting for it are decoded as soon as they can be. */
+static void peer_uni_data(quic_session_t *s, int64_t id, const uint8_t *data, size_t len) {
+	int k;
+
+	for(k = 0; k < s->npeer_uni && s->peer_uni[k].id != id; k++) {
+	}
+
+	if(k == s->npeer_uni) {
+		if(k == QUIC_PEER_UNI) {
+			return;         /* ngtcp2 enforces our stream limit; not reached */
+		}
+
+		memset(&s->peer_uni[k], 0, sizeof(s->peer_uni[k]));
+		s->peer_uni[k].id = id;
+		s->npeer_uni++;
+	}
+
+	while(len && !s->peer_uni[k].typed) {
+		if(s->peer_uni[k].type_len == sizeof(s->peer_uni[k].type_buf)) {
+			return;
+		}
+
+		s->peer_uni[k].type_buf[s->peer_uni[k].type_len++] = *data++;
+		len--;
+
+		if(h3_varint_get(s->peer_uni[k].type_buf, s->peer_uni[k].type_len, &s->peer_uni[k].type)) {
+			s->peer_uni[k].typed = true;
+		}
+	}
+
+	if(!len || s->peer_uni[k].type != H3_STREAM_QPACK_ENCODER || !s->qpack) {
+		return;
+	}
+
+	if(!h3_qpack_encoder_data(s->qpack, data, len)) {
+		ngtcp2_ccerr_set_application_error(&s->ccerr, H3_QPACK_ENCODER_STREAM_ERROR, NULL, 0);
+		quic_fail(s, true);
+		return;
+	}
+
+	req_unblock(s);
+}
+
 static int cb_recv_stream_data(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset,
                                const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
-	(void)offset;
 	(void)stream_user_data;
 	quic_session_t *s = user_data;
 	bool fin = flags & NGTCP2_STREAM_DATA_FLAG_FIN;
@@ -767,8 +946,12 @@ static int cb_recv_stream_data(ngtcp2_conn *conn, uint32_t flags, int64_t stream
 
 	if(stream_is_uni(stream_id)) {
 		/* The peer's control and QPACK streams: SETTINGS we accept as they
-		   are, and no QPACK instructions can come (our dynamic table
-		   capacity is 0). Consumed and credited. */
+		   are; the dialler announces no dynamic table, so only the
+		   listener reads a client's encoder stream. Consumed and
+		   credited. */
+		if(s->is_server) {
+			peer_uni_data(s, stream_id, data, datalen);
+		}
 	} else if(!s->is_server) {
 		if(stream_id != s->stream_id) {
 			ngtcp2_conn_shutdown_stream(conn, 0, stream_id, H3_GENERAL_PROTOCOL_ERROR);
@@ -789,6 +972,12 @@ static int cb_recv_stream_data(ngtcp2_conn *conn, uint32_t flags, int64_t stream
 		int i = req_slot(s, stream_id);
 
 		if(i < 0) {
+			/* nginx tells the encoder when it drops an unread stream. */
+			if(!offset) {
+				uint8_t cancel[16];
+				decoder_append(s, cancel, h3_qpack_stream_cancel(stream_id, cancel));
+			}
+
 			ngtcp2_conn_shutdown_stream(conn, 0, stream_id, H3_REQUEST_REJECTED);
 		} else {
 			rx_ctx_t x = {s, i, stream_id};
@@ -1004,6 +1193,13 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 	tx_append(s, h, hlen);
 	free(h);
 
+	/* "Send me datagrams without my announcing them; I send you mine
+	   without yours": see H3_FRAME_TINC_DGRAM. A web server ignores it. */
+	uint8_t mark[16];
+	size_t mlen = h3_varint_put(mark, H3_FRAME_TINC_DGRAM);
+	mlen += h3_varint_put(mark + mlen, 0);
+	tx_append(s, mark, mlen);
+
 	uint8_t exporter[AUTHN_EXPORTER_LEN];
 	uint8_t auth[AUTHN_MAX_LEN];
 	size_t authlen;
@@ -1078,7 +1274,29 @@ static void quic_settings(ngtcp2_settings *settings, ngtcp2_transport_params *pa
 	   on the wire (quic_dial); 8 is only what it accepts. */
 	params->active_connection_id_limit = 8;
 
-	if(!server) {
+	if(server) {
+		/* nginx 1.26's transport parameters (quic-listener-wire-test.sh);
+		   ngtcp2_conn_set_nginx_server_wire writes them in its order, and
+		   leaves max_datagram_frame_size out: the dialler learns from
+		   H3_FRAME_TINC_DGRAM that we take datagrams. The windows are
+		   starting values; ngtcp2 grows them as data flows. The idle
+		   timeout is nginx's 75 s unless tinc's PingTimeout asks for
+		   more. */
+		params->initial_max_data = 8585216;
+		params->initial_max_streams_uni = 3;
+		params->initial_max_streams_bidi = 128;
+		params->initial_max_stream_data_bidi_local = 65536;
+		params->initial_max_stream_data_bidi_remote = 65536;
+		params->initial_max_stream_data_uni = 65536;
+		params->max_idle_timeout = (idle > QUIC_NGINX_IDLE ? idle : QUIC_NGINX_IDLE) * NGTCP2_SECONDS;
+		params->max_udp_payload_size = NGTCP2_DEFAULT_MAX_RECV_UDP_PAYLOAD_SIZE;
+		/* How many ids the client may give us: ours has an empty source
+		   id and gives none, so 2 cannot bite (the 8 above is for the
+		   dialler, which does take new ids from the listener). */
+		params->active_connection_id_limit = 2;
+		params->max_ack_delay = NGTCP2_DEFAULT_MAX_ACK_DELAY;
+		params->ack_delay_exponent = NGTCP2_DEFAULT_ACK_DELAY_EXPONENT;
+	} else {
 		/* The rest of curl's Initial (OpenSSL 3.5's QUIC client): it forbids
 		   migration towards it, takes and sends packets of 1200 bytes at
 		   most, and never probes for more. An observer who decrypts the
@@ -1142,12 +1360,9 @@ static void quic_flush(quic_session_t *s) {
 			ngtcp2_ssize pdatalen = 0;
 
 			for(int i = 0; i < s->nuni && sid < 0; i++) {
-				size_t plen;
-				const uint8_t *pre = h3_uni_preamble(uni_types[i], &plen);
-
-				if(!s->uni_blocked[i] && s->uni_sent[i] < plen) {
-					v.base = (uint8_t *)pre + s->uni_sent[i];
-					v.len = plen - s->uni_sent[i];
+				if(!s->uni_blocked[i] && s->uni_sent[i] < s->uni_len[i]) {
+					v.base = s->uni_buf[i] + s->uni_sent[i];
+					v.len = s->uni_len[i] - s->uni_sent[i];
 					cnt = 1;
 					sid = s->uni_id[i];
 					uni = i;
@@ -1328,6 +1543,12 @@ static void free_session(quic_session_t *s) {
 		free(s->req[i].fields);
 	}
 
+	for(int i = 0; i < s->nuni; i++) {
+		free(s->uni_buf[i]);
+	}
+
+	h3_qpack_free(s->qpack);
+
 	free(s->authority);
 	free(s->tx);
 	list_delete(&quic_sessions, s);
@@ -1419,6 +1640,7 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	/* The handshake as nginx writes it: minimal Length fields, a CRYPTO
 	   frame per TLS message, nothing in 1-RTT before it completes. */
 	ngtcp2_conn_set_nginx_server_wire(s->conn);
+	s->qpack = h3_qpack_new(H3_QPACK_CAPACITY);
 
 	/* Register the CIDs a peer can reach us by: our chosen scid, and the
 	   client's original dcid so its Initial retransmits map here. */
@@ -1483,6 +1705,17 @@ static void session_read(quic_session_t *s, const uint8_t *buf, size_t len, cons
 		}
 
 		return;
+	}
+
+	/* What the encoder stream inserted and no Section Acknowledgment has
+	   covered, told once per datagram (nginx: once per read event). */
+	if(!s->dead && s->qpack) {
+		uint8_t inc[16];
+		size_t n = h3_qpack_increment(s->qpack, inc);
+
+		if(n) {
+			decoder_append(s, inc, n);
+		}
 	}
 
 	if(!s->dead) {

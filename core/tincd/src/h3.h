@@ -13,10 +13,11 @@
     direction the same way. A client that is not a tinc peer -- a browser, a
     prober -- gets the decoy page as an ordinary HTTP/3 response.
 
-    Only the static QPACK table is used, and SETTINGS announce a dynamic table
-    capacity of 0, so no peer may reference one. The listener decodes a
-    request's pseudo-headers (h3_decode_request) to answer it as nginx would;
-    nothing else is decoded.
+    Our encoder uses only the static QPACK table. The dialler's SETTINGS
+    announce a dynamic table capacity of 0; the listener's announce nginx's
+    4096 and 128 blocked streams, and it keeps the dynamic table a client
+    builds, to decode a request's pseudo-headers (h3_decode_request) and
+    answer it as nginx would.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -35,8 +36,13 @@
 #define H3_FRAME_HEADERS 0x01
 #define H3_FRAME_SETTINGS 0x04
 /* A reserved frame type (RFC 9114 §7.2.8: 0x1f * N + 0x21, N = 467), which
-   HTTP/3 endpoints ignore. A listener sends it, empty, after its answer to an
-   authenticated tinc dialler: "I send you datagrams you did not announce". */
+   HTTP/3 endpoints ignore; sent empty, and only inside a tinc session's
+   request stream. A listener sends it after its answer to an authenticated
+   dialler: "I send you datagrams you did not announce". Since 2026-09-25 a
+   dialler sends it between its HEADERS and the authenticator: "you may
+   announce none either" -- the listener's transport parameters are nginx's,
+   without max_datagram_frame_size, and a dialler from before cannot send
+   DATAGRAM frames to it. */
 #define H3_FRAME_TINC_DGRAM 0x38ae
 
 #define H3_STREAM_CONTROL 0x00
@@ -59,9 +65,10 @@ size_t h3_varint_put(uint8_t *out, uint64_t v);
 size_t h3_varint_get(const uint8_t *buf, size_t len, uint64_t *v);
 
 /* The bytes a unidirectional stream of `type' starts with: the stream type,
-   and for the control stream its SETTINGS frame. Constant for the life of the
+   and for the control stream its SETTINGS frame -- the listener's (nginx's
+   QPACK table, no datagrams) when `server', the dialler's otherwise. Constant for the life of the
    process (ngtcp2 needs stream data to stay valid until acknowledged). */
-const uint8_t *h3_uni_preamble(uint64_t type, size_t *len);
+const uint8_t *h3_uni_preamble(uint64_t type, bool server, size_t *len);
 
 /* A DATA frame header for a payload of `len' bytes. Returns its length. */
 size_t h3_data_header(uint8_t *out, uint64_t len);
@@ -81,20 +88,54 @@ uint8_t *h3_response_ok(size_t *outlen);
 uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen);
 
 /* What a web server answers a request by: its pseudo-header fields, decoded
-   from a HEADERS frame's field section (RFC 9204: static table references
-   and literals, Huffman-coded or not). NUL-terminated; a field that is
-   missing stays empty. */
+   from a HEADERS frame's field section (RFC 9204). NUL-terminated; a field
+   that is missing stays empty. */
 typedef struct h3_req_fields_t {
 	char method[32];
 	char path[8192];
 	char authority[256];
 } h3_req_fields_t;
 
-/* Decode the field section `fs' (a HEADERS frame's payload). Returns false if
-   it cannot be decoded: a reference to a dynamic table (we announce a
-   capacity of 0, so a peer may not make one), a malformed integer, string or
-   Huffman code, or a pseudo-header value longer than its buffer. */
-bool h3_decode_request(const uint8_t *fs, size_t len, h3_req_fields_t *out);
+/* The listener's QPACK decoder: the dynamic table a client builds with its
+   encoder stream, up to the capacity our SETTINGS announce (nginx's 4096). */
+typedef struct h3_qpack_t h3_qpack_t;
+
+#define H3_QPACK_CAPACITY 4096
+#define H3_QPACK_BLOCKED_STREAMS 128
+#define H3_QPACK_DECOMPRESSION_FAILED 0x200
+#define H3_QPACK_ENCODER_STREAM_ERROR 0x201
+
+h3_qpack_t *h3_qpack_new(uint64_t max_capacity);
+void h3_qpack_free(h3_qpack_t *q);
+
+/* Feed bytes of the peer's encoder stream (after its type byte). Returns
+   false on an encoder stream error. */
+bool h3_qpack_encoder_data(h3_qpack_t *q, const uint8_t *data, size_t len);
+
+/* Entries inserted so far. */
+uint64_t h3_qpack_inserts(const h3_qpack_t *q);
+
+/* Decoder stream instructions, written to `out' (16 bytes suffice); each
+   returns their length. Insert Count Increment for what the encoder has not
+   been told yet (0 if nothing); Section Acknowledgment for a field section
+   with Required Insert Count `ric' on `stream_id'; Stream Cancellation. */
+size_t h3_qpack_increment(h3_qpack_t *q, uint8_t *out);
+size_t h3_qpack_section_ack(h3_qpack_t *q, uint64_t ric, int64_t stream_id, uint8_t *out);
+size_t h3_qpack_stream_cancel(int64_t stream_id, uint8_t *out);
+
+typedef enum h3_decode_t {
+	H3_DECODE_OK,
+	H3_DECODE_BLOCKED,      /* needs entries the encoder stream has not brought yet */
+	H3_DECODE_ERROR,
+} h3_decode_t;
+
+/* Decode the field section `fs' (a HEADERS frame's payload) with the
+   dynamic table `q' (NULL: static table only). Sets *ric to its Required
+   Insert Count. Fails on malformed integers, strings or Huffman codes, on a
+   reference outside the table, or on a pseudo-header value longer than its
+   buffer. */
+h3_decode_t h3_decode_request(const h3_qpack_t *q, const uint8_t *fs, size_t len,
+                              h3_req_fields_t *out, uint64_t *ric);
 
 /* Incremental frame parser for one stream. Frame headers may arrive split
    across packets; payloads are handed out in whatever pieces arrive. */

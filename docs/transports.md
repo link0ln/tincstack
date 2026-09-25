@@ -1420,11 +1420,19 @@ short-header rule (§9.5).
 | `local_address(c, sa)` | `getsockname()` on the session's socket. |
 
 Settings / transport parameters (`quic_settings()`): 100 bidirectional
-streams, 100 unidirectional (a listener: 3, as nginx), 512 KiB stream
-windows, 768 KiB connection window, `max_datagram_frame_size = 65536`,
-`active_connection_id_limit = 8`, `max_idle_timeout = 3 x PingTimeout`
-(at least 30 s), `handshake_timeout = PingTimeout` (so the library gives up
-in step with tinc's reaper, §2 step 3). The dialler, as curl: also
+streams, 100 unidirectional, 512 KiB stream windows, 768 KiB connection
+window, `max_datagram_frame_size = 65536`, `active_connection_id_limit = 8`,
+`max_idle_timeout = 3 x PingTimeout` (at least 30 s), `handshake_timeout =
+PingTimeout` (so the library gives up in step with tinc's reaper, §2 step
+3). The listener, since 2026-09-25, announces nginx 1.26's instead, in
+nginx's order (`ngtcp2_conn_set_nginx_server_wire`, §9.8):
+`initial_max_data 8585216`, 3 unidirectional and 128 bidirectional streams,
+64 KiB stream windows (starting values; they grow as data flows),
+`max_idle_timeout` 75 s (more if 3 x PingTimeout is), `max_udp_payload_size
+65527`, `active_connection_id_limit 2`, `max_ack_delay 25`,
+`ack_delay_exponent 3`, then the connection ids and the reset token -- and
+no `max_datagram_frame_size` and no `version_information`, which nginx does
+not send (datagrams: §9.4). The dialler, as curl: also
 `disable_active_migration`, `max_udp_payload_size = 1200`, sends 1200-byte
 packets at most and never probes the path MTU; on the wire it writes its
 parameters as curl does (§9.8): `active_connection_id_limit` 2 and no
@@ -1437,13 +1445,20 @@ included (`h3.c`; before 2026-09-23 it announced ALPN `h3` and then spoke raw
 tinc on stream 0 -- a new node and an older one do not speak `quic` to each
 other and fall back to the next carrier):
 
-- **Both ends**, right after the handshake, open their three
-  unidirectional streams, as HTTP/3 endpoints do: a control stream with
+- **Both ends**, right after the handshake, open their unidirectional
+  streams, as HTTP/3 endpoints do. The dialler: a control stream with
   SETTINGS (`QPACK_MAX_TABLE_CAPACITY 0`, `QPACK_BLOCKED_STREAMS 0`,
   `MAX_FIELD_SECTION_SIZE 65536`, `H3_DATAGRAM 1`) and the QPACK encoder and
-  decoder streams. What the peer sends on its unidirectional streams is
-  consumed and credited; with a dynamic table capacity of 0 no QPACK
-  instruction can arrive.
+  decoder streams. The listener, since 2026-09-25, as nginx 1.26: SETTINGS
+  `QPACK_MAX_TABLE_CAPACITY 4096`, `QPACK_BLOCKED_STREAMS 128` and nothing
+  else, and a QPACK decoder stream only. Until then it sent the dialler's
+  SETTINGS, which no web server sends (`H3_DATAGRAM`, a table of 0). A
+  table of 4096 is a promise: a client may use it, and Chromium does, so
+  the listener keeps a real QPACK dynamic table (`h3.c`: the encoder
+  stream's four instructions, blocked sections up to 128 streams, Section
+  Acknowledgment, Insert Count Increment and Stream Cancellation on its
+  decoder stream, the errors nginx closes with -- `test_h3.c`). The
+  dialler's own tables stay at 0, as curl's.
 - **The dialler** sends one request on its first bidirectional stream:
   HEADERS `POST https://<authority>/` (`:authority` = the SNI, else the
   address; `content-type: application/octet-stream`, a browser
@@ -1453,7 +1468,9 @@ other and fall back to the next carrier):
   over `"tincstack-authn-v2\0" || server-cert-fp(32) || TLS-exporter(32) ||
   nonce || ts`, exporter label `EXPORTER-tincstack-https-v1` via
   `SSL_export_keying_material`); every later DATA frame is tinc meta: the `ID` line
-  from `finish_connecting()` and everything after it.
+  from `finish_connecting()` and everything after it. Between the HEADERS
+  and the authenticator, since 2026-09-25, an empty reserved frame
+  (`H3_FRAME_TINC_DGRAM`, below), which a web server ignores.
 - **The listener** parses every request stream's frames. The first stream
   whose DATA carries a valid authenticator (`authn_verify()` against its own
   certificate fingerprint and exporter, same replay cache and +/-90 s skew as
@@ -1516,9 +1533,23 @@ endpoints ignore, RFC 9114 §7.2.8). Only an authenticated tinc peer ever
 sees it, encrypted. A dialler whose listener's answer lacks it -- a tinc from
 before -- gives `quic` up before the link activates (`quic: <peer> runs a
 tinc too old to send datagrams to this one; not using quic`) and the next
-carrier is tried (§9.9). An older dialler announces the frame size itself
-and ignores the reserved frame, so a current listener serves it as before
-(`mixed-version-test.sh`).
+carrier is tried (§9.9).
+
+The other direction, since 2026-09-25: the listener's transport parameters
+are nginx's and announce no `max_datagram_frame_size` either, so ngtcp2
+would refuse the dialler's DATAGRAM frames on its side
+(`NGTCP2_ERR_INVALID_STATE`). A current dialler sends the same reserved frame,
+empty, between its HEADERS and its authenticator, and when the listener's
+mark arrives it sets the listener's limit itself. A dialler from before
+sends no mark -- and would fail on its first tunnel packet, after the link
+activated, and dial `quic` again for ever (measured against the first build
+of this change: 7 dials in 80 s, the tunnel losing packets). So a listener
+that authenticates a dialler without the mark answers it as a web server
+(405, `quic: <peer> runs a tinc too old to send datagrams to this one;
+answering it as a web server so it tries another carrier`), and the old
+dialler, which gives up on any web server's answer, falls back cleanly
+(`mixed-version-test.sh`). The price: a node from before 2026-09-25 no longer
+reaches an upgraded listener over `quic`, only over its other carriers.
 
 ### 9.5 Classifier (what G3 changed in §3)
 
@@ -1697,11 +1728,17 @@ What an observer can still tell (testing/fingerprint, re-measured
     parameters, below), which only the client can decrypt. A side effect:
     curl's datagram with its Finished no longer carries a 1-RTT ACK, as
     towards nginx; our dialler follows it (`quic-wire-test.sh`);
-  - after a handshake: transport parameters (set, order, values,
-    `max_datagram_frame_size`, `version_information`), HTTP/3 SETTINGS
-    (`H3_DATAGRAM`, QPACK 0/0 vs 4096/128), session tickets (7200 s vs
-    300 s), the packing of the first 1-RTT packets, and a wrong-ALPN close
-    without nginx's reason phrase.
+  - after a handshake, until 2026-09-25: transport parameters (set, order,
+    values, `max_datagram_frame_size`, `version_information`) and HTTP/3
+    SETTINGS (`H3_DATAGRAM`, QPACK 0/0 vs 4096/128). Since then both are
+    nginx 1.26's byte for byte (EE 121 B, as nginx's; SETTINGS
+    `04 06 01 5000 07 4080`), and the listener opens a QPACK decoder stream
+    and no encoder stream, as nginx (§9.4). Left: session tickets (7200 s,
+    208 B vs 300 s, 224 B), the packing of the first 1-RTT packets (ours
+    549 B with STREAM frames only + the decoder stream in a 50 B datagram,
+    nginx 596 B with two tickets, HANDSHAKE_DONE, NEW_CONNECTION_ID and
+    all three streams, then 31 B), and a wrong-ALPN close without nginx's
+    reason phrase (59 vs 75 B).
   Details and priorities: PLAN.md, "The listener's QUIC side is not
   nginx's"; raw results in
   `testing/fingerprint/results/2026-09-25-quic-listener/`;
@@ -1737,6 +1774,7 @@ because the connection dies before it activates:
 | Version Negotiation packet | `decode_version_cid` | v1 only: not claimed, session times out as above |
 | authenticator rejected (acceptor) | §9.4 | generic close, `quic: authenticator from <host> rejected`; the dialler logs `Carrier quic failed ..., falling back to plain` and dials plain, where the wrong key fails SPTPS too (d) |
 | the listener is a tinc from before 2026-09-24 (cannot send datagrams to a dialler that does not announce them, §9.4) | no `H3_FRAME_TINC_DGRAM` after the listener's 200 answer | `quic: <peer> runs a tinc too old to send datagrams to this one; not using quic`, closed before activation => next candidate, dialled once (`mixed-version-test.sh`) |
+| the dialler is a tinc from before 2026-09-25 (cannot send datagrams to a listener whose transport parameters do not announce them, §9.4) | no `H3_FRAME_TINC_DGRAM` before the dialler's authenticator | the listener logs `quic: <peer> runs a tinc too old ...; answering it as a web server ...` and answers 405; the old dialler logs `answered like a web server`, closes before activation => next candidate (`mixed-version-test.sh`) |
 | mid-session: idle timeout, peer close, library error | `read_pkt` / `handle_expiry` errors | `terminate_connection` on an *activated* link => the reconnect starts from the first preference again, i.e. quic is re-dialled, and it is abandoned only after three consecutive pre-activation failures (§2 steps 3-5; `quic-carrier-test.sh` (l): reload, UDP black-hole, `kill -9` + restart all come back as quic) |
 
 **NAT rebind** needs no code on the dialling side: tinc's socket does not

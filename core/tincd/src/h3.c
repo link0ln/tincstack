@@ -90,44 +90,53 @@ size_t h3_varint_get(const uint8_t *buf, size_t len, uint64_t *v) {
 
 /* ---- unidirectional stream preambles ---------------------------------------- */
 
-static uint8_t control_preamble[32];
-static size_t control_preamble_len;
+static uint8_t control_preamble[2][32];
+static size_t control_preamble_len[2];
 
-static void build_control_preamble(void) {
-	static const uint64_t settings[][2] = {
+static void build_control_preamble(bool server) {
+	/* The dialler's; nginx's for the listener (ngx_http_v3_send_settings:
+	   its QPACK table and blocked streams, nothing else). */
+	static const uint64_t dialler[][2] = {
 		{H3_SETTINGS_QPACK_MAX_TABLE_CAPACITY, 0},
 		{H3_SETTINGS_QPACK_BLOCKED_STREAMS, 0},
 		{H3_SETTINGS_MAX_FIELD_SECTION_SIZE, 65536},
 		{H3_SETTINGS_H3_DATAGRAM, 1},
 	};
+	static const uint64_t listener[][2] = {
+		{H3_SETTINGS_QPACK_MAX_TABLE_CAPACITY, H3_QPACK_CAPACITY},
+		{H3_SETTINGS_QPACK_BLOCKED_STREAMS, H3_QPACK_BLOCKED_STREAMS},
+	};
+	const uint64_t (*settings)[2] = server ? listener : dialler;
+	size_t n = server ? sizeof(listener) / sizeof(listener[0]) : sizeof(dialler) / sizeof(dialler[0]);
 	uint8_t body[24];
 	size_t blen = 0;
 
-	for(size_t i = 0; i < sizeof(settings) / sizeof(settings[0]); i++) {
+	for(size_t i = 0; i < n; i++) {
 		blen += h3_varint_put(body + blen, settings[i][0]);
 		blen += h3_varint_put(body + blen, settings[i][1]);
 	}
 
+	uint8_t *p = control_preamble[server];
 	size_t o = 0;
-	control_preamble[o++] = H3_STREAM_CONTROL;
-	control_preamble[o++] = H3_FRAME_SETTINGS;
-	o += h3_varint_put(control_preamble + o, blen);
-	memcpy(control_preamble + o, body, blen);
-	control_preamble_len = o + blen;
+	p[o++] = H3_STREAM_CONTROL;
+	p[o++] = H3_FRAME_SETTINGS;
+	o += h3_varint_put(p + o, blen);
+	memcpy(p + o, body, blen);
+	control_preamble_len[server] = o + blen;
 }
 
-const uint8_t *h3_uni_preamble(uint64_t type, size_t *len) {
+const uint8_t *h3_uni_preamble(uint64_t type, bool server, size_t *len) {
 	static const uint8_t encoder[] = {H3_STREAM_QPACK_ENCODER};
 	static const uint8_t decoder[] = {H3_STREAM_QPACK_DECODER};
 
 	switch(type) {
 	case H3_STREAM_CONTROL:
-		if(!control_preamble_len) {
-			build_control_preamble();
+		if(!control_preamble_len[server]) {
+			build_control_preamble(server);
 		}
 
-		*len = control_preamble_len;
-		return control_preamble;
+		*len = control_preamble_len[server];
+		return control_preamble[server];
 
 	case H3_STREAM_QPACK_ENCODER:
 		*len = sizeof(encoder);
@@ -516,89 +525,555 @@ static bool qd_string(const uint8_t *buf, size_t len, size_t *i, int bits, char 
 	return true;
 }
 
-/* Where a field goes: its buffer in `out', by static-table name index or by
-   literal name; NULL for a field the decoy does not need. */
-static char *qd_target(h3_req_fields_t *out, int idx, const char *name, size_t *cap) {
-	if(idx == 0 || (name && !strcmp(name, ":authority"))) {
-		*cap = sizeof(out->authority);
-		return out->authority;
-	}
+/* RFC 9204 Appendix A: the QPACK static table, generated from nginx 1.26.3's
+   src/http/v3/ngx_http_v3_table.c (99 entries), values as nginx has them.
+   Only the names, and the values of :method, :path and :authority, are ever
+   used here. */
+static const struct {
+	const char *name;
+	const char *value;
+} qpack_static[] = {
+	{":authority", ""},
+	{":path", "/"},
+	{"age", "0"},
+	{"content-disposition", ""},
+	{"content-length", "0"},
+	{"cookie", ""},
+	{"date", ""},
+	{"etag", ""},
+	{"if-modified-since", ""},
+	{"if-none-match", ""},
+	{"last-modified", ""},
+	{"link", ""},
+	{"location", ""},
+	{"referer", ""},
+	{"set-cookie", ""},
+	{":method", "CONNECT"},
+	{":method", "DELETE"},
+	{":method", "GET"},
+	{":method", "HEAD"},
+	{":method", "OPTIONS"},
+	{":method", "POST"},
+	{":method", "PUT"},
+	{":scheme", "http"},
+	{":scheme", "https"},
+	{":status", "103"},
+	{":status", "200"},
+	{":status", "304"},
+	{":status", "404"},
+	{":status", "503"},
+	{"accept", "*/*"},
+	{"accept", "application/dns-message"},
+	{"accept-encoding", "gzip, deflate, br"},
+	{"accept-ranges", "bytes"},
+	{"access-control-allow-headers", "cache-control"},
+	{"access-control-allow-headers", "content-type"},
+	{"access-control-allow-origin", "*"},
+	{"cache-control", "max-age=0"},
+	{"cache-control", "max-age=2592000"},
+	{"cache-control", "max-age=604800"},
+	{"cache-control", "no-cache"},
+	{"cache-control", "no-store"},
+	{"cache-control", "public, max-age=31536000"},
+	{"content-encoding", "br"},
+	{"content-encoding", "gzip"},
+	{"content-type", "application/dns-message"},
+	{"content-type", "application/javascript"},
+	{"content-type", "application/json"},
+	{"content-type", "application/x-www-form-urlencoded"},
+	{"content-type", "image/gif"},
+	{"content-type", "image/jpeg"},
+	{"content-type", "image/png"},
+	{"content-type", "text/css"},
+	{"content-type", "text/html;charset=utf-8"},
+	{"content-type", "text/plain"},
+	{"content-type", "text/plain;charset=utf-8"},
+	{"range", "bytes=0-"},
+	{"strict-transport-security", "max-age=31536000"},
+	{"strict-transport-security", "max-age=31536000;includesubdomains"},
+	{"strict-transport-security", "max-age=31536000;includesubdomains;preload"},
+	{"vary", "accept-encoding"},
+	{"vary", "origin"},
+	{"x-content-type-options", "nosniff"},
+	{"x-xss-protection", "1;mode=block"},
+	{":status", "100"},
+	{":status", "204"},
+	{":status", "206"},
+	{":status", "302"},
+	{":status", "400"},
+	{":status", "403"},
+	{":status", "421"},
+	{":status", "425"},
+	{":status", "500"},
+	{"accept-language", ""},
+	{"access-control-allow-credentials", "FALSE"},
+	{"access-control-allow-credentials", "TRUE"},
+	{"access-control-allow-headers", "*"},
+	{"access-control-allow-methods", "get"},
+	{"access-control-allow-methods", "get, post, options"},
+	{"access-control-allow-methods", "options"},
+	{"access-control-expose-headers", "content-length"},
+	{"access-control-request-headers", "content-type"},
+	{"access-control-request-method", "get"},
+	{"access-control-request-method", "post"},
+	{"alt-svc", "clear"},
+	{"authorization", ""},
+	{"content-security-policy", "script-src 'none';object-src 'none';base-uri 'none'"},
+	{"early-data", "1"},
+	{"expect-ct", ""},
+	{"forwarded", ""},
+	{"if-range", ""},
+	{"origin", ""},
+	{"purpose", "prefetch"},
+	{"server", ""},
+	{"timing-allow-origin", "*"},
+	{"upgrade-insecure-requests", "1"},
+	{"user-agent", ""},
+	{"x-forwarded-for", ""},
+	{"x-frame-options", "deny"},
+	{"x-frame-options", "sameorigin"},
+};
 
-	if(idx == 1 || (name && !strcmp(name, ":path"))) {
-		*cap = sizeof(out->path);
-		return out->path;
-	}
+#define QPACK_STATIC_N (sizeof(qpack_static) / sizeof(qpack_static[0]))
 
-	if((idx >= 15 && idx <= 21) || (name && !strcmp(name, ":method"))) {
-		*cap = sizeof(out->method);
-		return out->method;
-	}
+/* Largest name or value kept: the table's capacity is 4096. */
+#define QPACK_STR_MAX 4096
 
-	return NULL;
+typedef struct qpack_entry_t {
+	char *name;
+	char *value;
+	size_t size;            /* name + value + 32 (RFC 9204 3.2.1) */
+} qpack_entry_t;
+
+struct h3_qpack_t {
+	uint64_t max_capacity;  /* what our SETTINGS announce */
+	uint64_t capacity;      /* what the encoder set */
+	uint64_t size;
+	uint64_t inserts;       /* entries ever inserted: the next absolute index */
+	uint64_t acked;         /* the encoder knows we have this many */
+	qpack_entry_t *e;       /* e[k] has absolute index inserts - n + k */
+	size_t n;
+	uint8_t *in;            /* encoder stream bytes not yet a whole instruction */
+	size_t inlen;
+};
+
+h3_qpack_t *h3_qpack_new(uint64_t max_capacity) {
+	h3_qpack_t *q = xzalloc(sizeof(*q));
+	q->max_capacity = max_capacity;
+	q->e = xzalloc(sizeof(*q->e) * (max_capacity / 32 + 1));
+	q->in = xmalloc(2 * QPACK_STR_MAX + 64);
+	return q;
 }
 
-bool h3_decode_request(const uint8_t *fs, size_t len, h3_req_fields_t *out) {
-	/* Static table entries a request's pseudo-headers can be indexed by
-	   (RFC 9204 Appendix A). */
-	static const char *const methods[] = {"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"};
-	size_t i = 0;
-	uint64_t v;
+static void qpack_drop_oldest(h3_qpack_t *q) {
+	q->size -= q->e[0].size;
+	free(q->e[0].name);
+	free(q->e[0].value);
+	memmove(q->e, q->e + 1, (q->n - 1) * sizeof(*q->e));
+	q->n--;
+}
 
-	memset(out, 0, sizeof(*out));
+void h3_qpack_free(h3_qpack_t *q) {
+	if(!q) {
+		return;
+	}
 
-	/* Required Insert Count must be 0: no dynamic table exists. Delta Base
-	   is then meaningless, but must parse. */
-	if(!qd_int(fs, len, &i, 8, &v) || v || !qd_int(fs, len, &i, 7, &v)) {
+	while(q->n) {
+		qpack_drop_oldest(q);
+	}
+
+	free(q->e);
+	free(q->in);
+	free(q);
+}
+
+/* The entry with absolute index `abs', or NULL if it is not in the table. */
+static const qpack_entry_t *qpack_get(const h3_qpack_t *q, uint64_t abs) {
+	if(!q || abs >= q->inserts || abs < q->inserts - q->n) {
+		return NULL;
+	}
+
+	return &q->e[abs - (q->inserts - q->n)];
+}
+
+static bool qpack_insert(h3_qpack_t *q, const char *name, const char *value) {
+	size_t size = strlen(name) + strlen(value) + 32;
+
+	if(size > q->capacity) {
 		return false;
 	}
 
-	char scratch[8192];
+	while(q->size + size > q->capacity) {
+		qpack_drop_oldest(q);
+	}
 
-	while(i < len) {
-		uint8_t b = fs[i];
-		size_t cap = 0;
-		char *dst;
+	q->e[q->n].name = xstrdup(name);
+	q->e[q->n].value = xstrdup(value);
+	q->e[q->n].size = size;
+	q->n++;
+	q->size += size;
+	q->inserts++;
+	return true;
+}
 
-		if(b & 0x80) {                          /* 1Txxxxxx: indexed field line */
-			if(!(b & 0x40) || !qd_int(fs, len, &i, 6, &v)) {
-				return false;                   /* dynamic reference */
-			}
+/* How long the prefixed integer at buf[i] is: 0 if more bytes are needed,
+   -1 if it is too large to be valid. */
+static ssize_t qd_int_len(const uint8_t *buf, size_t len, size_t i, int bits, uint64_t *v) {
+	size_t j = i;
 
-			if(v == 0) {
-				out->authority[0] = 0;
-			} else if(v == 1) {
-				strcpy(out->path, "/");
-			} else if(v >= 15 && v <= 21) {
-				strcpy(out->method, methods[v - 15]);
-			}
-		} else if(b & 0x40) {                   /* 01NTxxxx: literal, name reference */
-			if(!(b & 0x10) || !qd_int(fs, len, &i, 4, &v)) {
+	if(qd_int(buf, len, &j, bits, v)) {
+		return (ssize_t)(j - i);
+	}
+
+	/* Truncated, or over 2^32: a complete integer ends with a byte whose
+	   top bit is clear. */
+	for(j = i + 1; j < len && j < i + 6; j++) {
+		if(!(buf[j] & 0x80)) {
+			return -1;
+		}
+	}
+
+	return j < i + 6 ? 0 : -1;
+}
+
+/* How long the string literal at buf[i] is (0: more bytes needed, -1:
+   invalid or longer than any the table can hold). */
+static ssize_t qd_string_len(const uint8_t *buf, size_t len, size_t i, int bits) {
+	uint64_t slen;
+	ssize_t n = qd_int_len(buf, len, i, bits, &slen);
+
+	if(n <= 0) {
+		return n;
+	}
+
+	if(slen > QPACK_STR_MAX) {
+		return -1;
+	}
+
+	return (size_t)n + slen <= len - i ? n + (ssize_t)slen : 0;
+}
+
+/* How long the encoder instruction at buf[0] is (0: more bytes needed,
+   -1: invalid). */
+static ssize_t qpack_insn_len(const uint8_t *buf, size_t len) {
+	uint64_t v;
+	ssize_t a, b;
+
+	if(!len) {
+		return 0;
+	}
+
+	if(buf[0] & 0x80) {                     /* Insert With Name Reference */
+		a = qd_int_len(buf, len, 0, 6, &v);
+		b = a > 0 ? qd_string_len(buf, len, (size_t)a, 7) : a;
+		return b > 0 ? a + b : b;
+	}
+
+	if(buf[0] & 0x40) {                     /* Insert With Literal Name */
+		a = qd_string_len(buf, len, 0, 5);
+		b = a > 0 ? qd_string_len(buf, len, (size_t)a, 7) : a;
+		return b > 0 ? a + b : b;
+	}
+
+	/* Set Dynamic Table Capacity (001), Duplicate (000) */
+	return qd_int_len(buf, len, 0, 5, &v);
+}
+
+/* Carry out one whole encoder instruction. */
+static bool qpack_insn(h3_qpack_t *q, const uint8_t *buf, size_t len) {
+	static char name[QPACK_STR_MAX + 1], value[QPACK_STR_MAX + 1];
+	size_t i = 0;
+	uint64_t v;
+
+	if(buf[0] & 0x80) {                     /* 1Txxxxxx: Insert With Name Reference */
+		bool stat = buf[0] & 0x40;
+
+		if(!qd_int(buf, len, &i, 6, &v) || !qd_string(buf, len, &i, 7, value, sizeof(value))) {
+			return false;
+		}
+
+		if(stat) {
+			if(v >= QPACK_STATIC_N) {
 				return false;
 			}
 
-			dst = qd_target(out, (int)v, NULL, &cap);
+			return qpack_insert(q, qpack_static[v].name, value);
+		}
 
-			if(!qd_string(fs, len, &i, 7, dst ? dst : scratch, dst ? cap : sizeof(scratch))) {
+		const qpack_entry_t *e = v < q->inserts ? qpack_get(q, q->inserts - 1 - v) : NULL;
+
+		if(!e) {
+			return false;
+		}
+
+		snprintf(name, sizeof(name), "%s", e->name);
+		return qpack_insert(q, name, value);
+	}
+
+	if(buf[0] & 0x40) {                     /* 01Hxxxxx: Insert With Literal Name */
+		return qd_string(buf, len, &i, 5, name, sizeof(name)) &&
+		       qd_string(buf, len, &i, 7, value, sizeof(value)) &&
+		       qpack_insert(q, name, value);
+	}
+
+	if(buf[0] & 0x20) {                     /* 001xxxxx: Set Dynamic Table Capacity */
+		if(!qd_int(buf, len, &i, 5, &v) || v > q->max_capacity) {
+			return false;
+		}
+
+		q->capacity = v;
+
+		while(q->size > q->capacity) {
+			qpack_drop_oldest(q);
+		}
+
+		return true;
+	}
+
+	/* 000xxxxx: Duplicate */
+	if(!qd_int(buf, len, &i, 5, &v) || v >= q->inserts) {
+		return false;
+	}
+
+	const qpack_entry_t *e = qpack_get(q, q->inserts - 1 - v);
+
+	if(!e) {
+		return false;
+	}
+
+	snprintf(name, sizeof(name), "%s", e->name);
+	snprintf(value, sizeof(value), "%s", e->value);
+	return qpack_insert(q, name, value);
+}
+
+bool h3_qpack_encoder_data(h3_qpack_t *q, const uint8_t *data, size_t len) {
+	size_t cap = 2 * QPACK_STR_MAX + 64;
+
+	while(len) {
+		size_t take = cap - q->inlen < len ? cap - q->inlen : len;
+		memcpy(q->in + q->inlen, data, take);
+		q->inlen += take;
+		data += take;
+		len -= take;
+
+		size_t off = 0;
+
+		for(;;) {
+			ssize_t n = qpack_insn_len(q->in + off, q->inlen - off);
+
+			if(n < 0 || (n > 0 && !qpack_insn(q, q->in + off, (size_t)n))) {
 				return false;
 			}
-		} else if(b & 0x20) {                   /* 001NHxxx: literal, literal name */
-			char name[128];
 
-			if(!qd_string(fs, len, &i, 3, name, sizeof(name))) {
-				return false;
+			if(n == 0) {
+				break;
 			}
 
-			dst = qd_target(out, -1, name, &cap);
+			off += (size_t)n;
+		}
 
-			if(!qd_string(fs, len, &i, 7, dst ? dst : scratch, dst ? cap : sizeof(scratch))) {
-				return false;
-			}
-		} else {
-			return false;                           /* post-base forms: dynamic */
+		memmove(q->in, q->in + off, q->inlen - off);
+		q->inlen -= off;
+
+		if(q->inlen == cap) {
+			return false;   /* an instruction longer than any valid one */
 		}
 	}
 
 	return true;
+}
+
+uint64_t h3_qpack_inserts(const h3_qpack_t *q) {
+	return q ? q->inserts : 0;
+}
+
+size_t h3_qpack_increment(h3_qpack_t *q, uint8_t *out) {
+	if(!q || q->inserts <= q->acked) {
+		return 0;
+	}
+
+	uint64_t inc = q->inserts - q->acked;
+	q->acked = q->inserts;
+	fbuf_t fb = {out, 0, 16};
+	qp_int(&fb, 0x00, 6, inc);
+	return fb.len;
+}
+
+size_t h3_qpack_section_ack(h3_qpack_t *q, uint64_t ric, int64_t stream_id, uint8_t *out) {
+	if(q && q->acked < ric) {
+		q->acked = ric;
+	}
+
+	fbuf_t fb = {out, 0, 16};
+	qp_int(&fb, 0x80, 7, (uint64_t)stream_id);
+	return fb.len;
+}
+
+size_t h3_qpack_stream_cancel(int64_t stream_id, uint8_t *out) {
+	fbuf_t fb = {out, 0, 16};
+	qp_int(&fb, 0x40, 6, (uint64_t)stream_id);
+	return fb.len;
+}
+
+/* Keep a decoded field if the decoy needs it. */
+static bool qd_keep(h3_req_fields_t *out, const char *name, const char *value) {
+	char *dst;
+	size_t cap;
+
+	if(!strcmp(name, ":authority")) {
+		dst = out->authority;
+		cap = sizeof(out->authority);
+	} else if(!strcmp(name, ":path")) {
+		dst = out->path;
+		cap = sizeof(out->path);
+	} else if(!strcmp(name, ":method")) {
+		dst = out->method;
+		cap = sizeof(out->method);
+	} else {
+		return true;
+	}
+
+	size_t n = strlen(value);
+
+	if(n >= cap) {
+		return false;
+	}
+
+	memcpy(dst, value, n + 1);
+	return true;
+}
+
+/* Required Insert Count from its encoding (RFC 9204 4.5.1.1). */
+static bool qd_ric(const h3_qpack_t *q, uint64_t enc, uint64_t *ric) {
+	if(!enc) {
+		*ric = 0;
+		return true;
+	}
+
+	uint64_t max_entries = q ? q->max_capacity / 32 : 0;
+	uint64_t full = 2 * max_entries;
+
+	if(!full || enc > full) {
+		return false;
+	}
+
+	uint64_t max_value = q->inserts + max_entries;
+	uint64_t wrapped = max_value / full * full;
+	uint64_t r = wrapped + enc - 1;
+
+	if(r > max_value) {
+		if(r <= full) {
+			return false;
+		}
+
+		r -= full;
+	}
+
+	if(!r) {
+		return false;
+	}
+
+	*ric = r;
+	return true;
+}
+
+/* A field by static index, or by dynamic absolute index below `ric'. */
+static bool qd_ref(const h3_qpack_t *q, bool stat, uint64_t abs, uint64_t ric,
+                   const char **name, const char **value) {
+	if(stat) {
+		if(abs >= QPACK_STATIC_N) {
+			return false;
+		}
+
+		*name = qpack_static[abs].name;
+		*value = qpack_static[abs].value;
+		return true;
+	}
+
+	const qpack_entry_t *e = abs < ric ? qpack_get(q, abs) : NULL;
+
+	if(!e) {
+		return false;
+	}
+
+	*name = e->name;
+	*value = e->value;
+	return true;
+}
+
+h3_decode_t h3_decode_request(const h3_qpack_t *q, const uint8_t *fs, size_t len,
+                              h3_req_fields_t *out, uint64_t *ric) {
+	static char name[QPACK_STR_MAX + 1], value[QPACK_STR_MAX + 1];
+	size_t i = 0;
+	uint64_t v, enc;
+
+	memset(out, 0, sizeof(*out));
+
+	if(!qd_int(fs, len, &i, 8, &enc) || !qd_ric(q, enc, ric) || i >= len) {
+		return H3_DECODE_ERROR;
+	}
+
+	/* Base: Required Insert Count plus or minus Delta Base. */
+	bool minus = fs[i] & 0x80;
+
+	if(!qd_int(fs, len, &i, 7, &v) || (minus && v + 1 > *ric)) {
+		return H3_DECODE_ERROR;
+	}
+
+	uint64_t base = minus ? *ric - v - 1 : *ric + v;
+
+	if(*ric > h3_qpack_inserts(q)) {
+		return H3_DECODE_BLOCKED;
+	}
+
+	while(i < len) {
+		uint8_t b = fs[i];
+		const char *n = NULL, *val = NULL;
+
+		if(b & 0x80) {                          /* 1Txxxxxx: indexed */
+			bool stat = b & 0x40;
+
+			if(!qd_int(fs, len, &i, 6, &v) || (!stat && v >= base) ||
+			                !qd_ref(q, stat, stat ? v : base - 1 - v, *ric, &n, &val)) {
+				return H3_DECODE_ERROR;
+			}
+		} else if(b & 0x40) {                   /* 01NTxxxx: literal, name reference */
+			bool stat = b & 0x10;
+
+			if(!qd_int(fs, len, &i, 4, &v) || (!stat && v >= base) ||
+			                !qd_ref(q, stat, stat ? v : base - 1 - v, *ric, &n, &val) ||
+			                !qd_string(fs, len, &i, 7, value, sizeof(value))) {
+				return H3_DECODE_ERROR;
+			}
+
+			val = value;
+		} else if(b & 0x20) {                   /* 001NHxxx: literal, literal name */
+			if(!qd_string(fs, len, &i, 3, name, sizeof(name)) ||
+			                !qd_string(fs, len, &i, 7, value, sizeof(value))) {
+				return H3_DECODE_ERROR;
+			}
+
+			n = name;
+			val = value;
+		} else if(b & 0x10) {                   /* 0001xxxx: indexed, post-base */
+			if(!qd_int(fs, len, &i, 4, &v) || !qd_ref(q, false, base + v, *ric, &n, &val)) {
+				return H3_DECODE_ERROR;
+			}
+		} else {                                /* 0000Nxxx: literal, post-base name */
+			if(!qd_int(fs, len, &i, 3, &v) || !qd_ref(q, false, base + v, *ric, &n, &val) ||
+			                !qd_string(fs, len, &i, 7, value, sizeof(value))) {
+				return H3_DECODE_ERROR;
+			}
+
+			val = value;
+		}
+
+		if(!qd_keep(out, n, val)) {
+			return H3_DECODE_ERROR;
+		}
+	}
+
+	return H3_DECODE_OK;
 }
 
 /* ---- frame parser ------------------------------------------------------------------ */

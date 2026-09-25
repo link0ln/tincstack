@@ -762,6 +762,42 @@ both servers' handshakes decrypted with curl's key log), `quic-wire-test.sh`
 (the dialler still curl's), `mixed-version-test.sh` against four older
 cores, `classify-test.sh`.
 
+## 23. The quic listener's transport parameters and SETTINGS are nginx's (tincstack, 2026-09-25)
+
+`transport_quic.c`, `h3.c`, `h3.h`, `test/unit/test_h3.c`;
+`core/ngtcp2/tincstack-wire.patch`: `ngtcp2_transport_params_encode_nginx_server()`,
+used by `ngtcp2_conn_set_nginx_server_wire()`.
+
+Anyone who completes a handshake reads the server's transport parameters and
+HTTP/3 SETTINGS. Ours were ngtcp2's defaults and the dialler's SETTINGS
+(`H3_DATAGRAM`, QPACK table 0) -- no web server's. Now:
+
+- transport parameters: nginx 1.26.3's values, in nginx's order, every
+  integer written even where it equals the default, no
+  `max_datagram_frame_size`, no `version_information`;
+- SETTINGS: QPACK table 4096, 128 blocked streams, nothing else; a decoder
+  stream and no encoder stream. The table is real: a QPACK dynamic table
+  decoder (encoder-stream instructions, blocked sections, Section
+  Acknowledgment, Insert Count Increment, Stream Cancellation,
+  ENCODER_STREAM_ERROR / DECOMPRESSION_FAILED as nginx closes with), since
+  Chromium uses it;
+- datagrams without announcing them, both ways: a dialler sends the
+  reserved frame `H3_FRAME_TINC_DGRAM` before its authenticator and sets
+  the listener's datagram limit itself when the listener's mark arrives. A
+  dialler from before sends none; the listener answers it as a web server,
+  so it falls back to its next carrier instead of failing on its first
+  tunnel packet and re-dialling quic for ever (measured).
+
+Price: a node from before 2026-09-25 cannot use quic towards an upgraded
+listener (other carriers unaffected).
+
+Proof: `quic-listener-wire-test.sh` (transport parameters and SETTINGS PASS;
+`testing/fingerprint/results/2026-09-25-quic-tps/`), `test_h3.c` (dynamic
+table, RFC 9204 examples), `h3-interop-test.sh` (Chromium, curl, nginx),
+`mixed-version-test.sh`, which now also pings through the carrier (the
+old check -- "connected over quic" once -- passed the first build of this
+change although an old dialler's link died on its first packet).
+
 ---
 
 ## Building

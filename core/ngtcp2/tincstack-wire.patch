@@ -1,6 +1,6 @@
 --- a/lib/includes/ngtcp2/ngtcp2.h
 +++ b/lib/includes/ngtcp2/ngtcp2.h
-@@ -4984,6 +4984,92 @@
+@@ -4984,6 +4984,101 @@
    ngtcp2_conn *conn, uint8_t *dest, size_t destlen);
  
  /**
@@ -65,7 +65,16 @@
 + *   Handshake packets;
 + * - nothing is sent in 1RTT packets before the handshake completes (no
 + *   0.5RTT data, no NEW_CONNECTION_ID), so the Handshake packet, not a
-+ *   1RTT packet, carries the padding of a datagram that must be padded.
++ *   1RTT packet, carries the padding of a datagram that must be padded;
++ * - the local transport parameters are encoded in nginx's set and order
++ *   (initial_max_data, initial_max_streams_uni, initial_max_streams_bidi,
++ *   initial_max_stream_data_bidi_local, initial_max_stream_data_bidi_remote,
++ *   initial_max_stream_data_uni, max_idle_timeout, max_udp_payload_size,
++ *   active_connection_id_limit, max_ack_delay, ack_delay_exponent,
++ *   original_destination_connection_id, initial_source_connection_id,
++ *   stateless_reset_token), each written even at its default; the local
++ *   max_datagram_frame_size keeps governing which DATAGRAM frames are
++ *   accepted, although the peer is not told about it.
 + *
 + * Call it right after `ngtcp2_conn_server_new`, before the first packet
 + * is written.
@@ -435,7 +444,7 @@
    if (conn->dcid.current.seq < conn->dcid.retire_prior_to) {
      if (ngtcp2_dcidtr_unused_empty(&conn->dcid.dtr)) {
        return 0;
-@@ -12013,10 +12223,47 @@
+@@ -12013,10 +12223,52 @@
  ngtcp2_ssize ngtcp2_conn_encode_local_transport_params2(const ngtcp2_conn *conn,
                                                          uint8_t *dest,
                                                          size_t destlen) {
@@ -443,6 +452,11 @@
 +    return ngtcp2_transport_params_encode_openssl_client(
 +      dest, destlen, &conn->local.transport_params,
 +      conn->local.wire.active_connection_id_limit);
++  }
++
++  if (conn->local.wire.nginx_server) {
++    return ngtcp2_transport_params_encode_nginx_server(
++      dest, destlen, &conn->local.transport_params);
 +  }
 +
    return ngtcp2_transport_params_encode(dest, destlen,
@@ -483,7 +497,7 @@
  int ngtcp2_conn_open_bidi_stream(ngtcp2_conn *conn, int64_t *pstream_id,
                                   void *stream_user_data) {
    int rv;
-@@ -12339,6 +12586,12 @@
+@@ -12339,6 +12591,12 @@
  
        if (ngtcp2_pkt_get_type_long(conn->negotiated_version, dest[0]) ==
            NGTCP2_PKT_INITIAL) {
@@ -496,7 +510,7 @@
          wflags |= NGTCP2_WRITE_PKT_FLAG_REQUIRE_PADDING;
        }
  
-@@ -12411,7 +12664,8 @@
+@@ -12411,7 +12669,8 @@
          }
        }
      }
@@ -506,7 +520,7 @@
        return res;
      }
      break;
-@@ -13596,6 +13850,10 @@
+@@ -13596,6 +13855,10 @@
      return rv;
    }
  
@@ -689,7 +703,7 @@
    /* pkt_numlen is the number of bytes used to encode a packet
 --- a/lib/ngtcp2_transport_params.c
 +++ b/lib/ngtcp2_transport_params.c
-@@ -393,6 +393,82 @@
+@@ -393,6 +393,170 @@
    return (ngtcp2_ssize)len;
  }
  
@@ -769,12 +783,100 @@
 +  return (ngtcp2_ssize)len;
 +}
 +
++ngtcp2_ssize
++ngtcp2_transport_params_encode_nginx_server(uint8_t *dest, size_t destlen,
++                                            const ngtcp2_transport_params *params) {
++  uint8_t *p;
++  size_t len = 0;
++  size_t i;
++  /* nginx 1.26, src/event/quic/ngx_event_quic_transport.c
++     ngx_quic_create_transport_params, as measured: every one of these is
++     written, whatever its value. */
++  const struct {
++    ngtcp2_transport_param_id id;
++    uint64_t value;
++  } varints[] = {
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_DATA, params->initial_max_data},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAMS_UNI,
++     params->initial_max_streams_uni},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAMS_BIDI,
++     params->initial_max_streams_bidi},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL,
++     params->initial_max_stream_data_bidi_local},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE,
++     params->initial_max_stream_data_bidi_remote},
++    {NGTCP2_TRANSPORT_PARAM_INITIAL_MAX_STREAM_DATA_UNI,
++     params->initial_max_stream_data_uni},
++    {NGTCP2_TRANSPORT_PARAM_MAX_IDLE_TIMEOUT,
++     params->max_idle_timeout / NGTCP2_MILLISECONDS},
++    {NGTCP2_TRANSPORT_PARAM_MAX_UDP_PAYLOAD_SIZE,
++     params->max_udp_payload_size},
++    {NGTCP2_TRANSPORT_PARAM_ACTIVE_CONNECTION_ID_LIMIT,
++     params->active_connection_id_limit},
++    {NGTCP2_TRANSPORT_PARAM_MAX_ACK_DELAY,
++     params->max_ack_delay / NGTCP2_MILLISECONDS},
++    {NGTCP2_TRANSPORT_PARAM_ACK_DELAY_EXPONENT, params->ack_delay_exponent},
++  };
++
++  assert(params->original_dcid_present);
++  assert(params->initial_scid_present);
++
++  for (i = 0; i < sizeof(varints) / sizeof(varints[0]); ++i) {
++    len += varint_paramlen(varints[i].id, varints[i].value);
++  }
++  len += cid_paramlen(NGTCP2_TRANSPORT_PARAM_ORIGINAL_DESTINATION_CONNECTION_ID,
++                      &params->original_dcid);
++  len += cid_paramlen(NGTCP2_TRANSPORT_PARAM_INITIAL_SOURCE_CONNECTION_ID,
++                      &params->initial_scid);
++  if (params->retry_scid_present) {
++    len += cid_paramlen(NGTCP2_TRANSPORT_PARAM_RETRY_SOURCE_CONNECTION_ID,
++                        &params->retry_scid);
++  }
++  if (params->stateless_reset_token_present) {
++    len += ngtcp2_put_uvarintlen(NGTCP2_TRANSPORT_PARAM_STATELESS_RESET_TOKEN) +
++           ngtcp2_put_uvarintlen(sizeof(params->stateless_reset_token)) +
++           sizeof(params->stateless_reset_token);
++  }
++
++  if (dest == NULL && destlen == 0) {
++    return (ngtcp2_ssize)len;
++  }
++
++  if (destlen < len) {
++    return NGTCP2_ERR_NOBUF;
++  }
++
++  p = dest;
++
++  for (i = 0; i < sizeof(varints) / sizeof(varints[0]); ++i) {
++    p = write_varint_param(p, varints[i].id, varints[i].value);
++  }
++  p = write_cid_param(p, NGTCP2_TRANSPORT_PARAM_ORIGINAL_DESTINATION_CONNECTION_ID,
++                      &params->original_dcid);
++  p = write_cid_param(p, NGTCP2_TRANSPORT_PARAM_INITIAL_SOURCE_CONNECTION_ID,
++                      &params->initial_scid);
++  if (params->retry_scid_present) {
++    p = write_cid_param(p, NGTCP2_TRANSPORT_PARAM_RETRY_SOURCE_CONNECTION_ID,
++                        &params->retry_scid);
++  }
++  if (params->stateless_reset_token_present) {
++    p = ngtcp2_put_uvarint(p, NGTCP2_TRANSPORT_PARAM_STATELESS_RESET_TOKEN);
++    p = ngtcp2_put_uvarint(p, sizeof(params->stateless_reset_token));
++    p = ngtcp2_cpymem(p, params->stateless_reset_token,
++                      sizeof(params->stateless_reset_token));
++  }
++
++  assert((size_t)(p - dest) == len);
++
++  return (ngtcp2_ssize)len;
++}
++
  /*
   * decode_varint decodes a single varint from the buffer pointed by
   * |*pp| of length |end - *pp|.  If it decodes an integer
 --- a/lib/ngtcp2_transport_params.h
 +++ b/lib/ngtcp2_transport_params.h
-@@ -111,6 +111,17 @@
+@@ -111,6 +111,28 @@
   * This function copies all valid fields in version
   * |transport_params_version| from |src| to |dest|.
   */
@@ -788,6 +890,17 @@
 +ngtcp2_ssize ngtcp2_transport_params_encode_openssl_client(
 +  uint8_t *dest, size_t destlen, const ngtcp2_transport_params *params,
 +  uint64_t active_connection_id_limit);
++
++/*
++ * ngtcp2_transport_params_encode_nginx_server encodes a server's
++ * |params| as nginx 1.26 does: its set and order, every parameter
++ * written even at its default; no max_datagram_frame_size (the local
++ * value keeps governing which DATAGRAM frames are accepted), no
++ * version_information.  See ngtcp2_conn_set_nginx_server_wire.
++ */
++ngtcp2_ssize
++ngtcp2_transport_params_encode_nginx_server(uint8_t *dest, size_t destlen,
++                                            const ngtcp2_transport_params *params);
 +
  void ngtcp2_transport_params_convert_to_old(int transport_params_version,
                                              ngtcp2_transport_params *dest,
