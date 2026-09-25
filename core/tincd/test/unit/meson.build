@@ -92,6 +92,9 @@ if 'h3.c' in src_tincd
     'h3': {
       'code': 'test_h3.c',
     },
+    'quic_txq': {
+      'code': 'test_quic_txq.c',
+    },
   }
 endif
 

@@ -54,6 +54,7 @@
 #include "netutl.h"
 #include "node.h"
 #include "protocol.h"
+#include "quic_txq.h"
 #include "tls.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -74,6 +75,7 @@
 #define QUIC_REQ_SLOTS 8                /* request streams a server answers per connection */
 #define QUIC_OK_HDR_CAP 64              /* client: the listener's response HEADERS, kept to check */
 #define QUIC_DGRAM_FRAME_MAX 65536      /* max_datagram_frame_size we accept */
+#define QUIC_TX_VECS 4                  /* send queue pieces offered per packet */
 #define QUIC_CURL_UDP_PAYLOAD 1200      /* curl's max_udp_payload_size, and all it ever sends */
 #define QUIC_CURL_CID_LIMIT 2           /* curl's active_connection_id_limit */
 /* What a DATAGRAM costs in a 1-RTT packet besides its payload: header byte,
@@ -111,15 +113,14 @@ typedef struct quic_session_t {
 
 	/* Our unidirectional streams: control + SETTINGS, and the QPACK
 	   streams (the dialler: encoder and decoder; the listener, as nginx:
-	   decoder only). Each one's bytes stay in uni_buf until the session
-	   ends, as ngtcp2 needs them until acknowledged; only the listener's
-	   decoder stream grows (Section Acknowledgment, Insert Count Increment,
-	   Stream Cancellation). */
+	   decoder only). Only the listener's decoder stream grows (Section
+	   Acknowledgment, Insert Count Increment, Stream Cancellation), and
+	   any HTTP/3 client can make it grow: its bytes, like the meta
+	   stream's, live in a quic_txq_t, where they never move while ngtcp2
+	   may retransmit them. */
 	int64_t uni_id[QUIC_UNI_STREAMS];
 	uint64_t uni_type[QUIC_UNI_STREAMS];
-	uint8_t *uni_buf[QUIC_UNI_STREAMS];
-	size_t uni_len[QUIC_UNI_STREAMS];
-	size_t uni_sent[QUIC_UNI_STREAMS];
+	quic_txq_t uni_tx[QUIC_UNI_STREAMS];
 	bool uni_blocked[QUIC_UNI_STREAMS];
 	int nuni;
 
@@ -151,19 +152,20 @@ typedef struct quic_session_t {
 		bool hdr_blocked;       /* HEADERS whole, waiting for the dynamic table */
 		bool respond_pending;   /* answer as soon as they are decoded */
 		bool tinc_mark;         /* H3_FRAME_TINC_DGRAM came before the body */
-		uint8_t *resp;          /* HEADERS + DATA; kept until the session ends */
+		uint8_t *resp;          /* HEADERS + DATA; one allocation, never moved,
+		                           kept until the session ends */
 		size_t resp_len, resp_sent;
 		bool responded, blocked, done;
 	} req[QUIC_REQ_SLOTS];
 	int nreq;
 
-	/* Meta TX ring: bytes stay valid until acked_stream_data_offset says so,
-	   so the buffer holds [acked, appended); we hand ngtcp2 [sent, appended). */
-	uint8_t *tx;
-	size_t tx_cap;
-	size_t tx_len;                  /* bytes currently in tx[] */
-	uint64_t tx_base;               /* absolute stream offset of tx[0] (== acked) */
-	uint64_t tx_sent;               /* absolute offset handed to ngtcp2 */
+	/* The meta stream's send queue: bytes stay where they are until
+	   acked_stream_data_offset covers them (quic_txq.h). Until 2026-09-26
+	   this was a ring that realloc()ed on growth and memmove()d on every
+	   acknowledgment, under ngtcp2's retransmission pointers: with packet
+	   loss a retransmission carried shifted or freed bytes, and the link
+	   died (testing/transports/quic-loss-test.sh). */
+	quic_txq_t tx;
 	bool stream_blocked;
 
 	/* Data TX queue (DATAGRAM frames). ngtcp2 copies on accept, small ring. */
@@ -421,15 +423,9 @@ static bool stream_is_uni(int64_t id) {
 	return id & 0x2;
 }
 
-/* Append raw bytes to the meta stream's TX ring. */
+/* Append raw bytes to the meta stream's send queue. */
 static void tx_append(quic_session_t *s, const void *data, size_t len) {
-	if(s->tx_len + len > s->tx_cap) {
-		s->tx_cap = s->tx_len + len + 4096;
-		s->tx = xrealloc(s->tx, s->tx_cap);
-	}
-
-	memcpy(s->tx + s->tx_len, data, len);
-	s->tx_len += len;
+	quic_txq_append(&s->tx, data, len);
 }
 
 /* Append one DATA frame carrying `len' bytes of the tinc stream. */
@@ -454,9 +450,7 @@ static bool open_uni_streams(quic_session_t *s) {
 		size_t plen;
 		const uint8_t *pre = h3_uni_preamble(types[i], s->is_server, &plen);
 		s->uni_type[i] = types[i];
-		s->uni_buf[i] = xmalloc(plen);
-		memcpy(s->uni_buf[i], pre, plen);
-		s->uni_len[i] = plen;
+		quic_txq_append(&s->uni_tx[i], pre, plen);
 		s->nuni = i + 1;
 	}
 
@@ -467,9 +461,7 @@ static bool open_uni_streams(quic_session_t *s) {
 static void decoder_append(quic_session_t *s, const uint8_t *data, size_t len) {
 	for(int i = 0; i < s->nuni; i++) {
 		if(s->uni_type[i] == H3_STREAM_QPACK_DECODER) {
-			s->uni_buf[i] = xrealloc(s->uni_buf[i], s->uni_len[i] + len);
-			memcpy(s->uni_buf[i] + s->uni_len[i], data, len);
-			s->uni_len[i] += len;
+			quic_txq_append(&s->uni_tx[i], data, len);
 			return;
 		}
 	}
@@ -832,7 +824,7 @@ static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size
 
 	if(verdict > 0) {
 		s->stream_id = x->id;
-		s->req[x->slot].done = true;    /* its answer is the meta stream's TX ring */
+		s->req[x->slot].done = true;    /* its answer is the meta stream's send queue */
 
 		size_t hlen;
 		uint8_t *h = h3_response_ok(&hlen);
@@ -1058,27 +1050,19 @@ static int cb_acked_stream_data_offset(ngtcp2_conn *conn, int64_t stream_id, uin
 	quic_session_t *s = user_data;
 	uint64_t acked = offset + datalen;
 
-	if(stream_id != s->stream_id) {
-		return 0;       /* uni preambles are static; decoy answers live to session end */
+	if(stream_id == s->stream_id) {
+		quic_txq_ack(&s->tx, acked);
+		return 0;
 	}
 
-	if(acked > s->tx_base) {
-		size_t drop = (size_t)(acked - s->tx_base);
-
-		if(drop > s->tx_len) {
-			drop = s->tx_len;
-		}
-
-		memmove(s->tx, s->tx + drop, s->tx_len - drop);
-		s->tx_len -= drop;
-		s->tx_base += drop;
-
-		if(s->tx_sent < s->tx_base) {
-			s->tx_sent = s->tx_base;
+	for(int i = 0; i < s->nuni; i++) {
+		if(s->uni_id[i] == stream_id) {
+			quic_txq_ack(&s->uni_tx[i], acked);
+			return 0;
 		}
 	}
 
-	return 0;
+	return 0;       /* a decoy answer: one allocation, freed with the session */
 }
 
 static int cb_stream_open(ngtcp2_conn *conn, int64_t stream_id, void *user_data) {
@@ -1351,6 +1335,20 @@ static void quic_settings(ngtcp2_settings *settings, ngtcp2_transport_params *pa
 
 /* ---- flush and timer ----------------------------------------------------- */
 
+/* A stream's pending bytes as ngtcp2 takes them: pointers into the send
+   queue, which stay valid until the peer acknowledges them. */
+static size_t tx_vecs(quic_txq_t *q, ngtcp2_vec *v, size_t max) {
+	quic_txq_vec_t qv[QUIC_TX_VECS];
+	size_t n = quic_txq_pending(q, qv, QUIC_TX_VECS, max);
+
+	for(size_t i = 0; i < n; i++) {
+		v[i].base = qv[i].base;
+		v[i].len = qv[i].len;
+	}
+
+	return n;
+}
+
 static void quic_flush(quic_session_t *s) {
 	if(s->dead || !s->conn) {
 		return;
@@ -1396,7 +1394,7 @@ static void quic_flush(quic_session_t *s) {
 			   listener, as nginx, packs its unidirectional streams into
 			   one packet (the one with the session tickets), the stream
 			   type in a STREAM frame of its own. */
-			ngtcp2_vec v = {NULL, 0};
+			ngtcp2_vec v[QUIC_TX_VECS] = {{NULL, 0}};
 			size_t cnt = 0;
 			int64_t sid = -1;
 			uint32_t wflags = 0;
@@ -1404,10 +1402,8 @@ static void quic_flush(quic_session_t *s) {
 			ngtcp2_ssize pdatalen = 0;
 
 			for(int i = 0; i < s->nuni && sid < 0; i++) {
-				if(!s->uni_blocked[i] && s->uni_sent[i] < s->uni_len[i]) {
-					v.base = s->uni_buf[i] + s->uni_sent[i];
-					v.len = s->uni_len[i] - s->uni_sent[i];
-					cnt = 1;
+				if(!s->uni_blocked[i] && quic_txq_unsent(&s->uni_tx[i])) {
+					size_t max = SIZE_MAX;
 					sid = s->uni_id[i];
 					uni = i;
 
@@ -1415,35 +1411,34 @@ static void quic_flush(quic_session_t *s) {
 						uint8_t tb[8];
 						size_t tlen = h3_varint_put(tb, s->uni_type[i]);
 
-						if(s->uni_sent[i] < tlen) {
-							v.len = tlen - s->uni_sent[i];
+						if(s->uni_tx[i].sent < tlen) {
+							max = tlen - (size_t)s->uni_tx[i].sent;
 						}
 
 						wflags = NGTCP2_WRITE_STREAM_FLAG_MORE;
 					}
+
+					cnt = tx_vecs(&s->uni_tx[i], v, max);
 				}
 			}
 
 			for(int i = 0; i < s->nreq && sid < 0; i++) {
 				if(s->req[i].resp && !s->req[i].done && !s->req[i].blocked) {
-					v.base = s->req[i].resp + s->req[i].resp_sent;
-					v.len = s->req[i].resp_len - s->req[i].resp_sent;
-					cnt = v.len ? 1 : 0;
+					v[0].base = s->req[i].resp + s->req[i].resp_sent;
+					v[0].len = s->req[i].resp_len - s->req[i].resp_sent;
+					cnt = v[0].len ? 1 : 0;
 					sid = s->req[i].id;
 					wflags = NGTCP2_WRITE_STREAM_FLAG_FIN;
 					req = i;
 				}
 			}
 
-			if(sid < 0 && s->stream_id >= 0 && !s->stream_blocked && s->tx_sent < s->tx_base + s->tx_len) {
-				size_t off = (size_t)(s->tx_sent - s->tx_base);
-				v.base = s->tx + off;
-				v.len = s->tx_len - off;
-				cnt = 1;
+			if(sid < 0 && s->stream_id >= 0 && !s->stream_blocked && quic_txq_unsent(&s->tx)) {
+				cnt = tx_vecs(&s->tx, v, SIZE_MAX);
 				sid = s->stream_id;
 			}
 
-			nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, sizeof(buf), &pdatalen, wflags, sid, &v, cnt, ts);
+			nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, sizeof(buf), &pdatalen, wflags, sid, v, cnt, ts);
 
 			if(nwrite == NGTCP2_ERR_STREAM_DATA_BLOCKED) {
 				if(uni >= 0) {
@@ -1460,7 +1455,7 @@ static void quic_flush(quic_session_t *s) {
 			/* The packet has room for more: the next stream goes in too. */
 			if(nwrite == NGTCP2_ERR_WRITE_MORE) {
 				if(uni >= 0 && pdatalen > 0) {
-					s->uni_sent[uni] += (size_t)pdatalen;
+					quic_txq_sent(&s->uni_tx[uni], (size_t)pdatalen);
 				}
 
 				continue;
@@ -1479,7 +1474,7 @@ static void quic_flush(quic_session_t *s) {
 
 			if(pdatalen >= 0 && sid >= 0) {
 				if(uni >= 0) {
-					s->uni_sent[uni] += (size_t)pdatalen;
+					quic_txq_sent(&s->uni_tx[uni], (size_t)pdatalen);
 				} else if(req >= 0) {
 					s->req[req].resp_sent += (size_t)pdatalen;
 
@@ -1488,7 +1483,7 @@ static void quic_flush(quic_session_t *s) {
 						s->req[req].done = true;
 					}
 				} else {
-					s->tx_sent += (uint64_t)pdatalen;
+					quic_txq_sent(&s->tx, (size_t)pdatalen);
 				}
 			}
 
@@ -1609,13 +1604,13 @@ static void free_session(quic_session_t *s) {
 	}
 
 	for(int i = 0; i < s->nuni; i++) {
-		free(s->uni_buf[i]);
+		quic_txq_free(&s->uni_tx[i]);
 	}
 
 	h3_qpack_free(s->qpack);
 
 	free(s->authority);
-	free(s->tx);
+	quic_txq_free(&s->tx);
 	list_delete(&quic_sessions, s);
 	free(s);
 }
