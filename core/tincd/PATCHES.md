@@ -737,6 +737,31 @@ Proof: `quic-listener-wire-test.sh` (probes and HTTP/3 answers now equal
 nginx's; the previous core fails both), `test_h3.c` (RFC 7541 vectors,
 malformed input, the dialler's own request).
 
+## 22. The quic listener's handshake is nginx's in the clear (tincstack, 2026-09-25)
+
+`transport.h` (`TRANSPORT_QUIC_CIDLEN` 8 -> 20), `transport_quic.c`,
+`transport_table.c` (comment), `testing/transports/classify_test.c`;
+`core/ngtcp2/tincstack-wire.patch`: `ngtcp2_conn_set_nginx_server_wire()`.
+
+What anyone on the path reads of the server's handshake -- connection id
+lengths, long-header Length fields, datagram sizes -- was ngtcp2's. Now the
+listener's ids are 20 bytes, and the new server mode writes Length in as few
+bytes as it takes (`NGTCP2_PKT_FLAG_LENGTH_MIN`: 2 reserved, shrunk to 1
+before encryption), one CRYPTO frame per TLS handshake message (message ends
+tracked as the TLS stack submits them), and nothing in 1-RTT until the
+handshake completes, so the Handshake packet, not a 0.5-RTT packet with
+NEW_CONNECTION_ID, fills the datagram. The HTTP/3 control streams and the
+new connection id go out after the client's Finished, as nginx's do.
+
+Price: every dialler packet carries 12 more bytes of id; tinc's PMTU over
+quic 1119 instead of 1131.
+
+Proof: `quic-listener-wire-test.sh` (connection id length and handshake
+flight PASS; `testing/fingerprint/results/2026-09-25-quic-handshake/` has
+both servers' handshakes decrypted with curl's key log), `quic-wire-test.sh`
+(the dialler still curl's), `mixed-version-test.sh` against four older
+cores, `classify-test.sh`.
+
 ---
 
 ## Building

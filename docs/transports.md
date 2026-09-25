@@ -1499,9 +1499,10 @@ with `handle_incoming_vpn_packet_decap(ls, data, len, &session peer)`: the
 classifier is skipped (the bytes came from a carrier) and the unchanged SPTPS
 receive path authenticates, decrypts and forwards relayed packets as today.
 Ceiling: ~1165 bytes, since a dialler takes and sends 1200-byte packets at
-most (§9.8): tinc's path MTU over `quic` is 1131 in the lab (1366 before
-2026-09-24, when PMTUD took it to Ethernet's); `SF_MAX_PAYLOAD` is 1200 for
-comparison.
+most (§9.8): tinc's path MTU over `quic` is 1119 in the lab (1131 until
+2026-09-25, when the listener's connection ids grew from 8 to nginx's 20
+bytes, which every dialler packet carries; 1366 before 2026-09-24, when
+PMTUD took it to Ethernet's); `SF_MAX_PAYLOAD` is 1200 for comparison.
 
 **Datagrams nobody announced** (since 2026-09-24): the dialler's
 transport parameters are curl's, and curl announces no
@@ -1681,12 +1682,21 @@ What an observer can still tell (testing/fingerprint, re-measured
     waits for its body, and one whose authenticator fails gets 405. Left:
     nginx answers a POST's 405 right after the HEADERS, ours after the
     body -- a timing difference, see PLAN.md;
-  - in the clear: 8-byte connection ids (nginx 20), 4-byte long-header
-    Length fields (nginx minimal), and a handshake flight whose third
-    datagram carries the whole server flight in one unpadded CRYPTO frame
-    plus a 1-RTT packet (NEW_CONNECTION_ID, PADDING), where nginx sends one
-    CRYPTO frame per TLS message in a Handshake packet padded to fill the
-    datagram and nothing in 1-RTT;
+  - in the clear, until 2026-09-25: 8-byte connection ids (nginx 20),
+    4-byte long-header Length fields (nginx minimal), and a handshake
+    flight whose third datagram carried the whole server flight in one
+    unpadded CRYPTO frame plus a 1-RTT packet (NEW_CONNECTION_ID, PADDING),
+    where nginx sends one CRYPTO frame per TLS message in a Handshake packet
+    padded to fill the datagram and nothing in 1-RTT. Since then the
+    listener's ids are 20 bytes and `ngtcp2_conn_set_nginx_server_wire`
+    (`core/ngtcp2/tincstack-wire.patch`) writes the rest as nginx does: the
+    handshake datagrams are nginx's in size, packets, Length fields and
+    frames (59 / 1208 / 1208: Initial 55 + Handshake 1087 with EE,
+    Certificate, CertificateVerify and Finished in four CRYPTO frames). The
+    one difference inside is EE's size (125 vs 121 B: the transport
+    parameters, below), which only the client can decrypt. A side effect:
+    curl's datagram with its Finished no longer carries a 1-RTT ACK, as
+    towards nginx; our dialler follows it (`quic-wire-test.sh`);
   - after a handshake: transport parameters (set, order, values,
     `max_datagram_frame_size`, `version_information`), HTTP/3 SETTINGS
     (`H3_DATAGRAM`, QPACK 0/0 vs 4096/128), session tickets (7200 s vs

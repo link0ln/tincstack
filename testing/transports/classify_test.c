@@ -19,8 +19,11 @@
 static int failures = 0;
 static int checks = 0;
 
-/* A fake QUIC session table: exactly one live 8-byte connection id. */
-static const uint8_t live_cid[TRANSPORT_QUIC_CIDLEN] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+/* A fake QUIC session table: exactly one live connection id. */
+static const uint8_t live_cid[TRANSPORT_QUIC_CIDLEN] = {
+	0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
+	0xbb, 0xcc, 0xdd, 0xee, 0xf0, 0x01, 0x02, 0x03, 0x04, 0x05,
+};
 
 static bool fake_cid_matcher(const uint8_t *dcid) {
 	return !memcmp(dcid, live_cid, TRANSPORT_QUIC_CIDLEN);
@@ -162,7 +165,7 @@ int main(void) {
 	initial[5] = 0x08;
 	check_udp("QUIC Initial, 1200 B", initial, sizeof(initial), all, UDP_CLASS_QUIC);
 
-	/* QUIC 1-RTT short header: fixed bit only (0x40..0x7f), then the 8-byte
+	/* QUIC 1-RTT short header: fixed bit only (0x40..0x7f), then the 20-byte
 	   destination CID. Keyed: claimed only when the CID is one we issued
 	   (docs/transports.md §9.6), and only with a matcher registered. */
 	uint8_t shorthdr[1 + TRANSPORT_QUIC_CIDLEN + 20];

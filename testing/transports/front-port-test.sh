@@ -153,7 +153,13 @@ else
 	bad "a tinc ID line on TCP 443 gets nginx's 400, not tinc (got '$(cat "$RUN/tinc-probe")')"
 fi
 
-probe "head -c 120 /dev/urandom > /dev/udp/$F_IP/443; sleep 2" || true
+# Random bytes whose first byte is neither a QUIC long header nor a short
+# header (0x00-0x3f): nginx answers those with nothing, and so must we --
+# SPTPS and obfs stay off the front port. Random QUIC-shaped bytes get
+# Version Negotiation or a stateless reset from both, as they should
+# (quic-listener-wire-test.sh).
+# Built in a file first: /dev/udp sends one datagram per write().
+probe "{ head -c 1 /dev/urandom | tr '\\200-\\377' '\\000-\\177' | tr '\\100-\\177' '\\000-\\077'; head -c 119 /dev/urandom; } > /tmp/junk; cat /tmp/junk > /dev/udp/$F_IP/443; sleep 2" || true
 sleep 2
 docker rm -f "$PFX-cap" >/dev/null
 sleep 1
@@ -180,11 +186,15 @@ else
 	bad "... from an ephemeral source port: sports '$quic_sports'"
 fi
 
+udp_sent=$(pcap "ip.src == $P_IP && udp.dstport == 443" -e udp.length | tr '\n' ' ')
 udp_answers=$(pcap "ip.dst == $P_IP && udp" -e udp.srcport | wc -l)
+[[ $udp_sent == "128 " ]] || bad "the junk probe went out as one 120-byte datagram (udp lengths: $udp_sent)"
 if [[ $udp_answers == 0 ]]; then
 	ok "random bytes on UDP 443 get no answer"
 else
 	bad "random bytes on UDP 443 get no answer ($udp_answers datagrams back)"
+	pcap "ip.dst == $P_IP && udp" -e ip.src -e udp.srcport -e udp.dstport -e udp.length -e _ws.col.Protocol -e data.data |
+		cut -c1-120 | sed 's/^/     /' >&2
 fi
 
 # ---- a peer that knows no front port still gets in, on the tinc port ---------------------

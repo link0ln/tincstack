@@ -94,10 +94,12 @@ typedef enum transport_udp_class_t {
 transport_udp_class_t transport_classify_udp(const uint8_t *buf, size_t len, uint32_t accept_mask);
 
 /* Connection-id length the quic carrier issues and the classifier keys on for
-   1-RTT short-header packets (docs/transports.md §9.6). */
-#define TRANSPORT_QUIC_CIDLEN 8
+   1-RTT short-header packets (docs/transports.md §9.6). 20 bytes, nginx's:
+   the listener's ids are in every long header, in the clear (8 until
+   2026-09-25). */
+#define TRANSPORT_QUIC_CIDLEN 20
 
-/* Register a keyed lookup for QUIC short-header packets: given the 8-byte
+/* Register a keyed lookup for QUIC short-header packets: given the 20-byte
    destination connection id, return true if it belongs to one of our live
    QUIC sessions. transport_quic.c sets a real one; the classifier unit test
    sets a fake. NULL (the default) means no short-header packet is ever

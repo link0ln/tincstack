@@ -279,10 +279,10 @@ transport_udp_class_t transport_classify_udp(const uint8_t *buf, size_t len, uin
 
 	/* 3. QUIC 1-RTT short header: form bit clear, fixed bit set (top two bits
 	      0x40), followed directly by the destination connection id. There is
-	      no version word to key on, so this is a keyed lookup of the 8-byte
+	      no version word to key on, so this is a keyed lookup of the 20-byte
 	      DCID against the CIDs we issued (docs/transports.md §9.6): a data
-	      packet whose first byte is 0x40..0x7f and whose next 8 bytes equal a
-	      live CID is 2^-64 per session, the same class of argument as the SF
+	      packet whose first byte is 0x40..0x7f and whose next 20 bytes equal
+	      a live CID is 2^-160 per session, the same class of argument as the SF
 	      magic. Only ever claimed when quic is accepted and a matcher is set,
 	      so a build without the carrier never mis-routes a data packet. */
 	if((accept_mask & TRANSPORT_BIT(TRANSPORT_QUIC)) && quic_cid_matcher &&

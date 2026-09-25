@@ -78,7 +78,7 @@
 /* What a DATAGRAM costs in a 1-RTT packet besides its payload: header byte,
    destination connection id (TRANSPORT_QUIC_CIDLEN; the dialler's is empty),
    4-byte packet number, frame type, 2-byte length, AEAD tag -- with slack. */
-#define QUIC_DGRAM_OVERHEAD 35
+#define QUIC_DGRAM_OVERHEAD (1 + TRANSPORT_QUIC_CIDLEN + 4 + 1 + 2 + 16 + 3)
 #define QUIC_IDLE_MIN 30                /* s; what curl and Chromium announce */
 
 typedef struct quic_cid_t {
@@ -1415,6 +1415,10 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 		free_connection(c);
 		return;
 	}
+
+	/* The handshake as nginx writes it: minimal Length fields, a CRYPTO
+	   frame per TLS message, nothing in 1-RTT before it completes. */
+	ngtcp2_conn_set_nginx_server_wire(s->conn);
 
 	/* Register the CIDs a peer can reach us by: our chosen scid, and the
 	   client's original dcid so its Initial retransmits map here. */

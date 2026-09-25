@@ -1,6 +1,6 @@
 --- a/lib/includes/ngtcp2/ngtcp2.h
 +++ b/lib/includes/ngtcp2/ngtcp2.h
-@@ -4984,6 +4984,72 @@
+@@ -4984,6 +4984,92 @@
    ngtcp2_conn *conn, uint8_t *dest, size_t destlen);
  
  /**
@@ -8,7 +8,8 @@
 + *
 + * :macro:`NGTCP2_TINCSTACK_WIRE` is defined by tincstack's patch
 + * (core/ngtcp2/tincstack-wire.patch), which adds
-+ * `ngtcp2_conn_set_openssl_client_wire` and
++ * `ngtcp2_conn_set_openssl_client_wire`,
++ * `ngtcp2_conn_set_nginx_server_wire` and
 + * `ngtcp2_conn_set_remote_max_datagram_frame_size`.
 + */
 +#define NGTCP2_TINCSTACK_WIRE 1
@@ -55,6 +56,25 @@
 +/**
 + * @function
 + *
++ * `ngtcp2_conn_set_nginx_server_wire` makes a server's handshake look
++ * like nginx's (1.26 on OpenSSL 3.5) in the clear:
++ *
++ * - the Length field of a long header is encoded in as few bytes as it
++ *   takes (1 or 2);
++ * - each TLS handshake message gets its own CRYPTO frame in Initial and
++ *   Handshake packets;
++ * - nothing is sent in 1RTT packets before the handshake completes (no
++ *   0.5RTT data, no NEW_CONNECTION_ID), so the Handshake packet, not a
++ *   1RTT packet, carries the padding of a datagram that must be padded.
++ *
++ * Call it right after `ngtcp2_conn_server_new`, before the first packet
++ * is written.
++ */
++NGTCP2_EXTERN void ngtcp2_conn_set_nginx_server_wire(ngtcp2_conn *conn);
++
++/**
++ * @function
++ *
 + * `ngtcp2_conn_set_remote_max_datagram_frame_size` overrides the
 + * remote endpoint's max_datagram_frame_size, for a peer that accepts
 + * DATAGRAM frames without announcing it (see
@@ -97,18 +117,127 @@
   * conn_cwnd_is_zero returns nonzero if the number of bytes the local
   * endpoint can sent at this time is zero.
   */
-@@ -2270,7 +2285,9 @@
+@@ -2089,6 +2104,18 @@
+  * buffer.  |write_datalen| is the number of bytes which will be sent
+  * in the next, coalesced 0-RTT packet.
+  */
++/*
++ * conn_half_rtt_tx returns nonzero if a 1RTT packet may follow a long
++ * header packet in the datagram being written.  An nginx-like server
++ * (conn->local.wire.nginx_server) sends nothing in 1RTT before the
++ * handshake completes: its Handshake packet takes the padding.
++ */
++static int conn_half_rtt_tx(const ngtcp2_conn *conn) {
++  return conn->pktns.crypto.tx.ckm &&
++         (!conn->local.wire.nginx_server ||
++          conn->state == NGTCP2_CS_POST_HANDSHAKE);
++}
++
+ static int conn_should_pad_pkt(const ngtcp2_conn *conn, uint8_t type,
+                                size_t left, uint64_t write_datalen,
+                                int ack_eliciting, int require_padding) {
+@@ -2104,7 +2131,7 @@
+            (conn->hs_pktns->rtb.probe_pkt_left ||
+             !ngtcp2_strm_streamfrq_empty(&conn->hs_pktns->crypto.strm) ||
+             !ngtcp2_acktr_empty(&conn->hs_pktns->acktr))) ||
+-          conn->pktns.crypto.tx.ckm) {
++          conn_half_rtt_tx(conn)) {
+         /* If we have something to send in Handshake or 1RTT packet,
+            then add PADDING in that packet. */
+         min_payloadlen = NGTCP2_MIN_COALESCED_PAYLOADLEN;
+@@ -2138,11 +2165,11 @@
+   if (!require_padding) {
+     /* If we have 1RTT key, pad this Handshake packet so that the next
+        1RTT packet can be squeezed into the same GSO buffer. */
+-    return conn->pktns.crypto.tx.ckm &&
++    return conn_half_rtt_tx(conn) &&
+            !conn_can_send_next_pkt(conn, left, NGTCP2_MIN_COALESCED_PAYLOADLEN);
+   }
+ 
+-  if (!conn->pktns.crypto.tx.ckm) {
++  if (!conn_half_rtt_tx(conn)) {
+     return 1;
+   }
+ 
+@@ -2270,7 +2297,15 @@
  }
  
  static uint8_t conn_pkt_flags_long(const ngtcp2_conn *conn) {
 -  return NGTCP2_PKT_FLAG_LONG_FORM | conn_pkt_flags(conn);
-+  return (uint8_t)(NGTCP2_PKT_FLAG_LONG_FORM | conn_pkt_flags(conn) |
-+                   (conn->local.wire.openssl_client ? NGTCP2_PKT_FLAG_LENGTH2
-+                                                    : 0));
++  uint8_t flags = NGTCP2_PKT_FLAG_LONG_FORM | conn_pkt_flags(conn);
++
++  if (conn->local.wire.openssl_client) {
++    flags |= NGTCP2_PKT_FLAG_LENGTH2;
++  } else if (conn->local.wire.nginx_server) {
++    flags |= NGTCP2_PKT_FLAG_LENGTH2 | NGTCP2_PKT_FLAG_LENGTH_MIN;
++  }
++
++  return flags;
  }
  
  static uint8_t conn_pkt_flags_short(const ngtcp2_conn *conn) {
-@@ -2578,7 +2595,7 @@
+@@ -2495,6 +2530,60 @@
+ static size_t conn_min_pktlen(const ngtcp2_conn *conn);
+ 
+ /*
++ * conn_crypto_msg_left returns |left| capped so that a CRYPTO frame
++ * starting at |offset| ends with the TLS handshake message it starts
++ * in: nginx writes one CRYPTO frame per message.
++ */
++static size_t conn_crypto_msg_left(const ngtcp2_pktns *pktns,
++                                   uint64_t offset, size_t left) {
++  size_t i;
++
++  for (i = 0; i < pktns->crypto.tx.msg.nends; ++i) {
++    if (pktns->crypto.tx.msg.ends[i] > offset) {
++      return (size_t)ngtcp2_min((uint64_t)left,
++                                pktns->crypto.tx.msg.ends[i] - offset);
++    }
++  }
++
++  return left;
++}
++
++/*
++ * conn_crypto_msg_track records where the TLS handshake messages in
++ * |data| of length |datalen|, submitted at crypto stream offset
++ * |offset|, end.
++ */
++static void conn_crypto_msg_track(ngtcp2_pktns *pktns, uint64_t offset,
++                                  const uint8_t *data, size_t datalen) {
++  size_t i = 0, n;
++
++  while (i < datalen) {
++    if (pktns->crypto.tx.msg.remain) {
++      n = (size_t)ngtcp2_min((uint64_t)(datalen - i),
++                             pktns->crypto.tx.msg.remain);
++      i += n;
++      pktns->crypto.tx.msg.remain -= n;
++    } else {
++      pktns->crypto.tx.msg.hdr[pktns->crypto.tx.msg.hdrlen++] = data[i++];
++      if (pktns->crypto.tx.msg.hdrlen < 4) {
++        continue;
++      }
++
++      pktns->crypto.tx.msg.hdrlen = 0;
++      pktns->crypto.tx.msg.remain =
++        (uint64_t)pktns->crypto.tx.msg.hdr[1] << 16 |
++        (uint64_t)pktns->crypto.tx.msg.hdr[2] << 8 |
++        pktns->crypto.tx.msg.hdr[3];
++    }
++
++    if (pktns->crypto.tx.msg.remain == 0 && pktns->crypto.tx.msg.hdrlen == 0 &&
++        pktns->crypto.tx.msg.nends < ngtcp2_arraylen(pktns->crypto.tx.msg.ends)) {
++      pktns->crypto.tx.msg.ends[pktns->crypto.tx.msg.nends++] = offset + i;
++    }
++  }
++}
++
++/*
+  * conn_write_handshake_pkt writes handshake packet in the buffer
+  * pointed by |dest| whose length is |destlen|.  |dgram_offset| is the
+  * offset in UDP datagram payload where this QUIC packet is positioned
+@@ -2578,7 +2667,7 @@
  
    ngtcp2_pkt_hd_init(
      &hd, conn_pkt_flags_long(conn), type, &conn->dcid.current.cid, &conn->oscid,
@@ -117,7 +246,18 @@
  
    if (!conn->server && type == NGTCP2_PKT_INITIAL &&
        conn->local.settings.tokenlen) {
-@@ -2758,7 +2775,11 @@
+@@ -2678,6 +2767,10 @@
+           break;
+         }
+ 
++        if (conn->local.wire.nginx_server) {
++          left = conn_crypto_msg_left(pktns, crypto_offset, left);
++        }
++
+         rv = ngtcp2_strm_streamfrq_pop(&pktns->crypto.strm, &nfrc, left);
+         if (rv != 0) {
+           assert(ngtcp2_err_is_fatal(rv));
+@@ -2758,7 +2851,11 @@
  
      if (!pkt_empty) {
        if (!(rtb_entry_flags & NGTCP2_RTB_ENTRY_FLAG_ACK_ELICITING)) {
@@ -130,7 +270,7 @@
                                    conn->cstat.smoothed_rtt, ts)) {
            lfr.ping.type = NGTCP2_FRAME_PING;
  
-@@ -2783,9 +2804,13 @@
+@@ -2783,9 +2880,13 @@
      return 0;
    }
  
@@ -147,7 +287,7 @@
          conn, type, ngtcp2_ppe_left(&ppe), write_datalen,
          (rtb_entry_flags & NGTCP2_RTB_ENTRY_FLAG_ACK_ELICITING) != 0,
          require_padding)) {
-@@ -3127,6 +3152,91 @@
+@@ -3127,6 +3228,91 @@
   * NGTCP2_ERR_CALLBACK_FAILURE
   *     User-defined callback function failed.
   */
@@ -239,7 +379,7 @@
  static ngtcp2_ssize conn_write_handshake_pkts(ngtcp2_conn *conn,
                                                ngtcp2_pkt_info *pi,
                                                uint8_t *dest, size_t destlen,
-@@ -3151,6 +3261,14 @@
+@@ -3151,6 +3337,14 @@
       pending Initial ACK, Initial packet number space is discarded
       after writing the first Handshake packet.
     */
@@ -254,7 +394,7 @@
    if (!conn->server && conn->hs_pktns->crypto.tx.ckm && conn->in_pktns &&
        !ngtcp2_acktr_require_active_ack(&conn->in_pktns->acktr,
                                         /* max_ack_delay = */ 0, ts) &&
-@@ -3701,7 +3819,7 @@
+@@ -3701,7 +3895,7 @@
  
      ngtcp2_pkt_hd_init(hd, hd_flags, type, &conn->dcid.current.cid, scid,
                         pktns->tx.last_pkt_num + 1,
@@ -263,7 +403,7 @@
  
      ngtcp2_ppe_init(ppe, dest, destlen, dgram_offset, cc);
  
-@@ -4688,7 +4806,7 @@
+@@ -4688,7 +4882,7 @@
    cc.hp_mask = conn->callbacks.hp_mask;
  
    ngtcp2_pkt_hd_init(&hd, hd_flags, type, dcid, scid,
@@ -272,7 +412,7 @@
                       version);
  
    ngtcp2_ppe_init(&ppe, dest, destlen, 0, &cc);
-@@ -8259,6 +8377,22 @@
+@@ -8259,6 +8453,22 @@
    ngtcp2_dcid dcid;
    int rv;
  
@@ -295,7 +435,7 @@
    if (conn->dcid.current.seq < conn->dcid.retire_prior_to) {
      if (ngtcp2_dcidtr_unused_empty(&conn->dcid.dtr)) {
        return 0;
-@@ -12013,10 +12147,41 @@
+@@ -12013,10 +12223,47 @@
  ngtcp2_ssize ngtcp2_conn_encode_local_transport_params2(const ngtcp2_conn *conn,
                                                          uint8_t *dest,
                                                          size_t destlen) {
@@ -309,6 +449,12 @@
                                          &conn->local.transport_params);
  }
  
++void ngtcp2_conn_set_nginx_server_wire(ngtcp2_conn *conn) {
++  assert(conn->server);
++
++  conn->local.wire.nginx_server = 1;
++}
++
 +void ngtcp2_conn_set_openssl_client_wire(
 +  ngtcp2_conn *conn, uint64_t wire_active_connection_id_limit) {
 +  assert(!conn->server);
@@ -337,7 +483,7 @@
  int ngtcp2_conn_open_bidi_stream(ngtcp2_conn *conn, int64_t *pstream_id,
                                   void *stream_user_data) {
    int rv;
-@@ -12339,6 +12504,12 @@
+@@ -12339,6 +12586,12 @@
  
        if (ngtcp2_pkt_get_type_long(conn->negotiated_version, dest[0]) ==
            NGTCP2_PKT_INITIAL) {
@@ -350,9 +496,52 @@
          wflags |= NGTCP2_WRITE_PKT_FLAG_REQUIRE_PADDING;
        }
  
+@@ -12411,7 +12664,8 @@
+         }
+       }
+     }
+-    if (conn->pktns.crypto.tx.ckm == NULL) {
++    /* An nginx-like server sends no 0.5RTT data. */
++    if (conn->pktns.crypto.tx.ckm == NULL || conn->local.wire.nginx_server) {
+       return res;
+     }
+     break;
+@@ -13596,6 +13850,10 @@
+     return rv;
+   }
+ 
++  if (conn->local.wire.nginx_server) {
++    conn_crypto_msg_track(pktns, pktns->crypto.tx.offset, data, datalen);
++  }
++
+   rv = ngtcp2_frame_chain_stream_datacnt_objalloc_new(
+     &frc, 1, &conn->frc_objalloc, conn->mem);
+   if (rv != 0) {
 --- a/lib/ngtcp2_conn.h
 +++ b/lib/ngtcp2_conn.h
-@@ -484,6 +484,23 @@
+@@ -269,6 +269,21 @@
+       ngtcp2_crypto_cipher_ctx hp_ctx;
+       /* data is the submitted crypto data. */
+       ngtcp2_buf_chain *data;
++      /* msg tracks the TLS handshake messages in the submitted crypto
++         data, for a server that writes one CRYPTO frame per message
++         (conn->local.wire.nginx_server). */
++      struct {
++        /* hdr is the handshake message header being read, hdrlen its
++           length so far. */
++        uint8_t hdr[4];
++        size_t hdrlen;
++        /* remain is the number of body bytes of the current message
++           not seen yet. */
++        uint64_t remain;
++        /* ends are the crypto stream offsets where messages end. */
++        uint64_t ends[8];
++        size_t nends;
++      } msg;
+     } tx;
+ 
+     struct {
+@@ -484,6 +499,26 @@
           local endpoint opens next. */
        int64_t next_stream_id;
      } uni;
@@ -372,6 +561,9 @@
 +      /* dcid_switched is nonzero once the client has moved to the
 +         first connection ID the server issued. */
 +      int dcid_switched;
++      /* nginx_server is nonzero if the server writes its handshake as
++         nginx does (ngtcp2_conn_set_nginx_server_wire). */
++      int nginx_server;
 +    } wire;
    } local;
  
@@ -404,7 +596,7 @@
  
 --- a/lib/ngtcp2_pkt.h
 +++ b/lib/ngtcp2_pkt.h
-@@ -107,6 +107,17 @@
+@@ -107,6 +107,22 @@
     Length field in Long packet header. */
  #define NGTCP2_PKT_LENGTHLEN 4
  
@@ -413,6 +605,11 @@
 +   instead of NGTCP2_PKT_LENGTHLEN.  The packet must be shorter than
 +   16384 bytes.  Internal: not one of the public NGTCP2_PKT_FLAG_*. */
 +#define NGTCP2_PKT_FLAG_LENGTH2 0x80U
++/* NGTCP2_PKT_FLAG_LENGTH_MIN, with NGTCP2_PKT_FLAG_LENGTH2, makes
++   ngtcp2_ppe_final encode the Length field in 1 byte when the value
++   fits (below 64), as nginx does; 2 bytes are reserved while the
++   packet is built. */
++#define NGTCP2_PKT_FLAG_LENGTH_MIN 0x40U
 +
 +/* ngtcp2_pkt_lengthlen returns the number of bytes the Length field
 +   of a Long packet with |flags| occupies. */
@@ -424,25 +621,28 @@
  #define NGTCP2_PKT_TYPE_INITIAL_V1 0x0U
 --- a/lib/ngtcp2_ppe.c
 +++ b/lib/ngtcp2_ppe.c
-@@ -38,6 +38,7 @@
+@@ -38,6 +38,8 @@
    ppe->dgram_offset = dgram_offset;
    ppe->hdlen = 0;
    ppe->len_offset = 0;
 +  ppe->lengthlen = 0;
++  ppe->length_min = 0;
    ppe->pkt_num_offset = 0;
    ppe->pkt_numlen = 0;
    ppe->pkt_num = 0;
-@@ -69,7 +70,8 @@
+@@ -69,7 +71,10 @@
        ppe->len_offset += ngtcp2_put_uvarintlen(hd->tokenlen) + hd->tokenlen;
      }
  
 -    ppe->pkt_num_offset = ppe->len_offset + NGTCP2_PKT_LENGTHLEN;
 +    ppe->lengthlen = ngtcp2_pkt_lengthlen(hd->flags);
++    ppe->length_min = ppe->lengthlen == 2 &&
++                      (hd->flags & NGTCP2_PKT_FLAG_LENGTH_MIN) != 0;
 +    ppe->pkt_num_offset = ppe->len_offset + ppe->lengthlen;
  
      rv = ngtcp2_pkt_encode_hd_long(buf->last, buf_left - cc->aead.max_overhead,
                                     hd);
-@@ -131,9 +133,15 @@
+@@ -131,9 +136,27 @@
    assert(cc->hp_mask);
  
    if (ppe->len_offset) {
@@ -451,7 +651,19 @@
 -      (uint16_t)(payloadlen + ppe->pkt_numlen + cc->aead.max_overhead));
 +    size_t n = payloadlen + ppe->pkt_numlen + cc->aead.max_overhead;
 +
-+    if (ppe->lengthlen == 2) {
++    if (ppe->length_min && n < 64) {
++      /* nginx encodes Length in as few bytes as it takes: drop the
++         second reserved byte and move the rest of the packet up. */
++      uint8_t *tail = buf->begin + ppe->len_offset + 2;
++
++      memmove(tail - 1, tail, (size_t)(buf->last - tail));
++      --buf->last;
++      --ppe->hdlen;
++      --ppe->pkt_num_offset;
++      ppe->lengthlen = 1;
++      payload = buf->begin + ppe->hdlen;
++      buf->begin[ppe->len_offset] = (uint8_t)n;
++    } else if (ppe->lengthlen == 2) {
 +      assert(n < 16384);
 +      buf->begin[ppe->len_offset] = (uint8_t)(0x40 | (n >> 8));
 +      buf->begin[ppe->len_offset + 1] = (uint8_t)(n & 0xff);
@@ -463,12 +675,15 @@
    ngtcp2_crypto_create_nonce(ppe->nonce, cc->ckm->iv.base, cc->ckm->iv.len,
 --- a/lib/ngtcp2_ppe.h
 +++ b/lib/ngtcp2_ppe.h
-@@ -51,6 +51,8 @@
+@@ -51,6 +51,11 @@
    size_t hdlen;
    /* len_offset is the offset to Length field. */
    size_t len_offset;
 +  /* lengthlen is the number of bytes of Length field. */
 +  size_t lengthlen;
++  /* length_min is nonzero if a 2-byte Length field is shrunk to 1 byte
++     when its value fits (NGTCP2_PKT_FLAG_LENGTH_MIN). */
++  int length_min;
    /* pkt_num_offset is the offset to packet number field. */
    size_t pkt_num_offset;
    /* pkt_numlen is the number of bytes used to encode a packet
