@@ -7,6 +7,8 @@
 # the Linux core -- no Windows machine, and nothing on the host:
 #
 #   Windows as the server (founder), a Linux leaf dialling it:
+#     * tinc.exe writes the config (private keys, API tokens) with no ACE for
+#       Everyone or Users -- as far as Wine can show a DACL, see below;
 #     * the leaf connects over `https' and over `quic';
 #     * curl gets the decoy page over TLS and over HTTP/3, and a plain HTTP
 #       request on 443 gets nginx's 400 -- the Windows front answers like the
@@ -78,7 +80,7 @@ linux() { # <name> <ip>
 }
 windows() { # <name> <ip>: a Wine container with the Windows binaries under /b
 	docker run -d --name "$PFX-$1" --network "$NET" --ip "$2" --entrypoint sleep -e WINEDEBUG=-all \
-		-v "$RUN/bin:/b:ro" -v "$RUN/$1:/c" "$WINE" infinity >/dev/null
+		-v "$RUN/bin:/b:ro" -v "$RUN/$1:/c" -v "$ROOT/platforms/windows/tools:/t:ro" "$WINE" infinity >/dev/null
 }
 lt() { local n=$1; shift; docker exec "$PFX-$n" tinc -n lab -c "$YAML" "$@"; }
 wt() { local n=$1; shift; docker exec "$PFX-$n" wine /b/tinc.exe -n lab -c "$WYAML" "$@" 2>/dev/null | tr -d '\r'; }
@@ -110,6 +112,16 @@ docker exec "$PFX-w" sh -c "touch $YAML"
 wt w set Name wfounder >/dev/null
 wt w set Port 655 >/dev/null
 wt w set DeviceType dummy >/dev/null
+# The config holds tls_key, acme_account and CloudflareToken: tinc.exe must write it with its own
+# DACL (yamlconf.c private_sd()), not an inherited one. Wine keeps no DACL of its own -- it maps
+# the one given at creation onto the unix mode -- so what shows here is whether Everyone/Users
+# got an ACE (an fopen()ed file gets Everyone read). Protection and ownership need real Windows.
+sd=$(docker exec "$PFX-w" sh -c "wine \"\$WINPY\" /t/file_sddl.py '$WYAML'" 2>/dev/null | tr -d '\r' | cut -f2)
+if [[ $sd == *"D:"* && $sd != *";;;WD)"* && $sd != *";;;BU)"* && $sd != *";;;AU)"* ]]; then
+	ok "tinc.exe writes the config with no Everyone/Users ACE ($sd)"
+else
+	bad "tinc.exe writes the config with no Everyone/Users ACE: '$sd'"
+fi
 wstart w
 until_up "$RUN/w/tincd.log"
 if grep -q "QUIC carrier ready (ngtcp2 .*OpenSSL 3.5" "$RUN/w/tincd.log" && grep -q "https: listening on 0.0.0.0 port 443" "$RUN/w/tincd.log"; then

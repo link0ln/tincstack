@@ -39,7 +39,9 @@ from __future__ import annotations
 
 import copy
 import os
+import secrets
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from typing import Any
@@ -205,7 +207,12 @@ def atomic_write_text(path: str, text: str, mode: int = 0o600) -> None:
     """Write `text` to `path` atomically: temp file in the same directory,
     fsync, then rename over the target. The target is never truncated in
     place, so a crash mid-write leaves either the old or the new file — never
-    a half-written one over the only copy of the private keys."""
+    a half-written one over the only copy of the private keys.
+
+    On Windows the temporary is created with paths.private_sddl()'s protected
+    DACL -- the one the core writes the config with -- and the rename keeps it,
+    so the keys never sit under an inherited ACL (Program Files: Users may
+    read). mkstemp's mode bits mean nothing to Windows."""
     path = os.path.abspath(path)
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
@@ -213,7 +220,12 @@ def atomic_write_text(path: str, text: str, mode: int = 0o600) -> None:
         mode = stat.S_IMODE(os.stat(path).st_mode)   # keep the existing mode
     except OSError:
         pass
-    fd, tmp = tempfile.mkstemp(prefix=".tinc.yaml.", suffix=".tmp", dir=d)
+    if sys.platform == "win32":
+        import paths
+        tmp = os.path.join(d, f".tinc.yaml.{os.getpid()}.{secrets.token_hex(6)}.tmp")
+        fd = paths.open_private_new(tmp)
+    else:
+        fd, tmp = tempfile.mkstemp(prefix=".tinc.yaml.", suffix=".tmp", dir=d)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
@@ -431,7 +443,6 @@ def save_text(path: str, text: str) -> None:
 
 
 if __name__ == "__main__":
-    import sys
     app = load(sys.argv[1])
     print("workdir:", app.workdir or "(default)")
     for name, nc in app.networks.items():

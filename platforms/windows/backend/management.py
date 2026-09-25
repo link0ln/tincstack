@@ -17,6 +17,7 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -91,22 +92,128 @@ def _clear_task_battery_limits(name: str) -> None:
         pass
 
 
+INSTALL_SUBDIR = "app"
+INSTALL_RECORD = "tincmgr-install.txt"
+
+
+class DowngradeRefused(OSError):
+    """The installed copy is newer than (or not provably older than) this one."""
+
+
+def install_dir() -> str | None:
+    """The onedir tree the logon task runs (admin-only)."""
+    prot = paths.protected_dir()
+    return os.path.join(prot, INSTALL_SUBDIR) if prot else None
+
+
 def installed_exe() -> str | None:
-    """Where the autostart task's copy of tincmgr.exe lives (admin-only)."""
+    """The program the autostart task runs: the onedir tincmgr.exe under
+    %ProgramFiles%\\tincmgr\\app. Not a onefile: a onefile unpacks its Python
+    and Qt DLLs into %TEMP%\\_MEIxxxx, writable by the user's unelevated
+    processes, before loading them elevated."""
+    d = install_dir()
+    return os.path.join(d, "tincmgr.exe") if d else None
+
+
+def _legacy_installed_exe() -> str | None:
+    """Where tincmgr <= this change put the autostart copy: the onefile itself."""
     prot = paths.protected_dir()
     return os.path.join(prot, "tincmgr.exe") if prot else None
 
 
-def install_self(exe_path: str) -> str:
-    """Copy the running exe to installed_exe() (by content, paths.stage_file)
-    and return that path. The logon task runs its target elevated with no
-    prompt, so the target must be a file only administrators can replace --
-    not wherever the user happened to drop the download."""
-    dst = installed_exe()
-    if not dst:
+def installed_version() -> str | None:
+    """The version recorded by the install, None if there is none (nothing
+    installed, or the pre-onedir layout, which recorded no version)."""
+    d = install_dir()
+    try:
+        with open(os.path.join(d or "", INSTALL_RECORD), encoding="utf-8") as f:
+            first = f.readline().split()
+    except OSError:
+        return None
+    return first[1] if len(first) == 2 and first[0] == "version" else None
+
+
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def check_downgrade(ours: str, installed: str | None) -> None:
+    """Raise DowngradeRefused unless installing `ours` over `installed` is
+    provably not a downgrade. Last run must not win: running an older
+    tincmgr.exe elevated would otherwise put that older copy -- and its old
+    bugs -- behind the logon task."""
+    if installed is None:
+        return                                  # nothing, or the unversioned old layout
+    o, i = paths.version_key(ours), paths.version_key(installed)
+    if i is None:
+        if ours == installed:
+            return
+        # a dev build is installed: only a release, or the same dev build, replaces it
+        if o is not None:
+            return
+        raise DowngradeRefused(f"installed {installed} and this {ours} cannot be ordered")
+    if o is None or o < i:
+        raise DowngradeRefused(f"installed {installed} is newer than this {ours}")
+
+
+def install_self(exe_path: str, allow_downgrade: bool = False) -> str:
+    """Install this build's onedir tree into install_dir() and return the exe
+    the logon task should run. The task runs its target elevated with no
+    prompt, so the target must be a file only administrators can replace and
+    must load nothing from anywhere else.
+
+    Every file is copied out of this onefile's unpack dir -- which an
+    unelevated process may have rewritten by now -- with
+    paths.stage_verified() against the manifest compiled into the exe, into a
+    fresh `app.new`, and only a complete, verified tree is swapped in. A copy
+    of the installed tree that is running (DLLs mapped) makes the swap fail;
+    the old tree then stays as it was."""
+    target = installed_exe()
+    d = install_dir()
+    if not target or not d:
         raise OSError("Program Files could not be resolved")
-    paths.stage_file(exe_path, dst)
-    return dst
+    if _same_path(exe_path, target):
+        return target                           # this is the installed copy
+    b = paths.bundle()
+    if b is None:
+        raise OSError("only the single-file tincmgr.exe can install itself")
+    record = os.path.join(d, INSTALL_RECORD)
+    try:
+        with open(record, encoding="utf-8") as f:
+            if f.read() == b.manifest_text():
+                return target                   # already this build
+    except OSError:
+        pass
+    if not allow_downgrade:
+        check_downgrade(b.version, installed_version())
+
+    staging, old = d + ".new", d + ".old"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        for rel, (sha, src_rel) in b.files.items():
+            paths.stage_verified(os.path.join(b.root, *src_rel.split("/")),
+                                 os.path.join(staging, *rel.split("/")), sha)
+        with open(os.path.join(staging, INSTALL_RECORD), "w", encoding="utf-8") as f:
+            f.write(b.manifest_text())
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.isdir(d):
+        try:
+            os.rename(d, old)
+        except OSError as e:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise OSError(f"cannot replace {d} (is the installed tincmgr running?): {e}") from e
+    os.rename(staging, d)
+    shutil.rmtree(old, ignore_errors=True)
+    legacy = _legacy_installed_exe()
+    if legacy and os.path.isfile(legacy):
+        try:
+            os.remove(legacy)                   # the old onefile copy; nothing runs it now
+        except OSError:
+            pass
+    return target
 
 
 def startup_task_command() -> str | None:
@@ -126,21 +233,31 @@ def startup_task_command() -> str | None:
 def set_startup_task(enabled: bool, exe_path: str) -> tuple[bool, str]:
     """Create/remove a logon Scheduled Task that runs tincmgr with highest
     privileges (starts elevated at login). Needs admin to create. The task runs
-    the admin-only copy from install_self(), never `exe_path` itself."""
+    the admin-only onedir copy from install_self(), never `exe_path` itself.
+    Turning it on is the user choosing this copy, so an older one may replace
+    a newer install here (refresh_startup_task() refuses that)."""
     if sys.platform != "win32":
         return False, "run-at-startup is Windows-only"
     try:
         if enabled:
-            target = install_self(exe_path)
-            p = subprocess.run(
-                ["schtasks", "/create", "/tn", STARTUP_TASK, "/tr", f'"{target}"',
-                 "/sc", "onlogon", "/rl", "highest", "/f"],
-                capture_output=True, text=True, creationflags=_NO_WINDOW)
-            if p.returncode == 0:
-                _clear_task_battery_limits(STARTUP_TASK)
-        else:
-            p = subprocess.run(["schtasks", "/delete", "/tn", STARTUP_TASK, "/f"],
-                               capture_output=True, text=True, creationflags=_NO_WINDOW)
+            target = install_self(exe_path, allow_downgrade=True)
+            return _point_task_at(target)
+        p = subprocess.run(["schtasks", "/delete", "/tn", STARTUP_TASK, "/f"],
+                           capture_output=True, text=True, creationflags=_NO_WINDOW)
+        return p.returncode == 0, (p.stdout + p.stderr).strip()
+    except OSError as e:
+        return False, str(e)
+
+
+def _point_task_at(target: str) -> tuple[bool, str]:
+    """(Re)create the logon task with `target` as its program."""
+    try:
+        p = subprocess.run(
+            ["schtasks", "/create", "/tn", STARTUP_TASK, "/tr", f'"{target}"',
+             "/sc", "onlogon", "/rl", "highest", "/f"],
+            capture_output=True, text=True, creationflags=_NO_WINDOW)
+        if p.returncode == 0:
+            _clear_task_battery_limits(STARTUP_TASK)
         return p.returncode == 0, (p.stdout + p.stderr).strip()
     except OSError as e:
         return False, str(e)
@@ -148,25 +265,36 @@ def set_startup_task(enabled: bool, exe_path: str) -> tuple[bool, str]:
 
 def refresh_startup_task(exe_path: str) -> str:
     """At every elevated start: if run-at-startup is on, bring the installed
-    copy up to this exe (an upgrade must not leave the task on the old
-    version) and move a task created by an older tincmgr -- which points at a
-    user-writable path -- onto the installed copy. Returns a status note."""
+    copy up to this build (an upgrade must not leave the task on the old
+    version) -- but never down to it: an older build leaves a newer install
+    alone. A task created by an older tincmgr (pointing at a user-writable
+    path, or at the Program Files onefile) is moved onto the onedir copy.
+    Returns a status note. Runs schtasks and copies the app tree: call it off
+    the Qt thread."""
     cmd = startup_task_command()
     if cmd is None:
         return ""
     target = installed_exe()
     if not target:
         return "run-at-startup: Program Files could not be resolved; task left as it is"
+    note = ""
     try:
-        if os.path.normcase(cmd) != os.path.normcase(target):
-            ok, msg = set_startup_task(True, exe_path)
-            return (f"run-at-startup now runs {target}" if ok
-                    else f"run-at-startup: could not move the task off {cmd}: {msg[:80]}")
-        if os.path.normcase(os.path.abspath(exe_path)) != os.path.normcase(target):
-            paths.stage_file(exe_path, target)
-        return ""
+        if _same_path(exe_path, target) or paths.bundle() is not None:
+            install_self(exe_path)
+        elif not os.path.isfile(target):
+            return ("run-at-startup: this copy cannot install itself (use the single-file "
+                    f"tincmgr.exe); the task still runs {cmd}")
+    except DowngradeRefused as e:
+        note = (f"run-at-startup: left the installed copy as it is ({e}); "
+                "turn run-at-startup off and on to install this one")
     except OSError as e:
         return f"run-at-startup: could not update {target}: {e}"
+    if _same_path(cmd, target) or not os.path.isfile(target):
+        return note
+    ok, msg = _point_task_at(target)
+    moved = (f"run-at-startup now runs {target}" if ok
+             else f"run-at-startup: could not move the task off {cmd}: {msg[:80]}")
+    return "; ".join(n for n in (note, moved) if n)
 
 
 # ---- firewall (pre-allow tincd so Windows doesn't prompt every launch) --------

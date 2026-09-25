@@ -543,3 +543,41 @@ def test_parse_cert_expiry_reads_both_spellings_and_nothing_else():
     assert parse_cert_expiry("Expires        unreadable\n") is None
     assert parse_cert_expiry("Certificate    none stored yet\n") is None
     assert parse_cert_expiry("") is None
+
+
+def test_startup_task_refresh_runs_off_the_qt_thread(window, monkeypatch):
+    """refresh_startup_task() runs schtasks and may copy the whole app tree
+    into Program Files; at every start it used to do that on the Qt thread."""
+    import management
+    seen = {}
+
+    def slow_refresh(exe):
+        seen["thread"] = threading.get_ident()
+        seen["exe"] = exe
+        time.sleep(0.6)
+        return "run-at-startup now runs X"
+    monkeypatch.setattr(management, "refresh_startup_task", slow_refresh)
+    t0 = time.time()
+    window.refresh_startup_async(r"C:\Users\u\Downloads\tincmgr.exe")
+    QtWidgets.QApplication.processEvents()
+    assert time.time() - t0 < 0.3, "the refresh blocked the Qt thread"
+    assert wait_until(lambda: "now runs X" in window.statusBar().currentMessage())
+    assert seen["thread"] != threading.get_ident()
+    assert seen["exe"].endswith("tincmgr.exe")
+
+
+def test_startup_state_query_runs_off_the_qt_thread(window, monkeypatch):
+    import management
+    seen = {}
+
+    def slow_query():
+        seen["thread"] = threading.get_ident()
+        time.sleep(0.5)
+        return True
+    monkeypatch.setattr(management, "startup_task_enabled", slow_query)
+    t0 = time.time()
+    window._sync_startup_radio()
+    assert time.time() - t0 < 0.3, "schtasks /query blocked the Qt thread"
+    assert wait_until(lambda: window.startup_radio.isChecked())
+    assert "ON" in window.startup_radio.text()
+    assert seen["thread"] != threading.get_ident()

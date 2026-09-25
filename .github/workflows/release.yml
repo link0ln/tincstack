@@ -218,8 +218,10 @@ jobs:
         env:
           WINTUN_VERSION: '0.14.1'
 
+      # TINCMGR_VERSION goes into the install manifest: an automatic refresh of
+      # the run-at-startup copy never replaces a newer install with this build.
       - name: Build tincmgr.exe (Windows CPython + PyInstaller under Wine)
-        run: SMOKE=1 platforms/windows/build-exe.sh
+        run: SMOKE=1 TINCMGR_VERSION='${{ needs.meta.outputs.version }}' platforms/windows/build-exe.sh
 
       - name: Assert every artefact is a PE32+ binary
         run: |

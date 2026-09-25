@@ -67,6 +67,7 @@ v\Scripts\pip install PySide6-Essentials==6.7.3 pyqtgraph pyyaml pyinstaller pyt
 v\Scripts\python -m pytest -q tests            # backend + offscreen GUI tests
 v\Scripts\pyinstaller tincmgr.spec --noconfirm
 :: -> dist\tincmgr.exe  (onefile, windowed, uac_admin)
+::    dist\tincmgr-app\  (the onedir tree tincmgr.exe installs for run-at-startup)
 ```
 
 Then copy `dist\tincmgr.exe` next to a `tinc.yaml` (or an empty file, or
@@ -105,9 +106,15 @@ transitive ones (`PySide6-Essentials`/`shiboken6` 6.7.3, `pyqtgraph` 0.13.7,
 `SMOKE=1` starts the finished exe under `xvfb-run wine` with
 `TINCMGR_SELFTEST_MS` set: the onefile unpacks, Qt builds the main window,
 `tinc.yaml` is created and the bundled `tincd.exe` is located, then the app
-quits. The exe is built `console=False` (`uac_admin`), so it has no `--help`
-to print — `TINCMGR_SELFTEST_MS` + `TINCMGR_SELFTEST_LOG` is the headless probe
-on Wine and on real Windows alike.
+quits. With `TINCMGR_SELFTEST_INSTALL=1` it also installs its onedir tree into
+`C:\Program Files\tincmgr\app` (the run-at-startup code path), and the smoke
+test then runs that installed `tincmgr.exe`: it must run from Program Files,
+load its Python from `app\_internal`, and leave no `_MEI*` directory in
+`%TEMP%` (the onefile's own run shows one, so the check discriminates). Last,
+`tools/file_sddl.py` reads the config's DACL: no Everyone/Users ACE. The exe is
+built `console=False` (`uac_admin`), so it has no `--help` to print —
+`TINCMGR_SELFTEST_MS` + `TINCMGR_SELFTEST_LOG` is the headless probe on Wine
+and on real Windows alike.
 
 You can also run the test suite with the *Windows* interpreter this way:
 
@@ -128,6 +135,17 @@ shallow start check; every one of these still needs §2's Windows box:
   so the manifest and the `relaunch_self_elevated()` path are untested.
 - **Scheduled Task autostart** (`schtasks`), tray icon / shell integration,
   `CREATE_NO_WINDOW` behaviour, and Windows service control.
+- **ACLs.** Wine keeps no DACL of its own: it maps the one a file is created
+  with onto the unix mode and synthesises one back, so `file_sddl.py` shows
+  whether Everyone got an ACE, not the protected flag, the Administrators ACE
+  or the owner. Wine also answers `TokenElevation` with an error, so the
+  elevated descriptor (`O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)`, no user ACE) is
+  only parsed there, never applied. Program Files' own ACL, and that an
+  unelevated process really cannot write `C:\Program Files\tincmgr\app`, are
+  Windows'.
+- **A running installed copy blocks its own upgrade** by mapped DLLs: the
+  rename of `app\` fails and the old tree stays (unit-tested with a fake
+  rename); Wine does not lock mapped files the same way.
 - **Antivirus / SmartScreen** reaction to an unsigned PyInstaller onefile, and
   **code signing** (the artefact is unsigned).
 - Real-Windows Qt rendering; Wine's Qt platform plugin is not the Windows one.
