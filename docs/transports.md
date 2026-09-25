@@ -1733,12 +1733,30 @@ What an observer can still tell (testing/fingerprint, re-measured
     SETTINGS (`H3_DATAGRAM`, QPACK 0/0 vs 4096/128). Since then both are
     nginx 1.26's byte for byte (EE 121 B, as nginx's; SETTINGS
     `04 06 01 5000 07 4080`), and the listener opens a QPACK decoder stream
-    and no encoder stream, as nginx (§9.4). Left: session tickets (7200 s,
-    208 B vs 300 s, 224 B), the packing of the first 1-RTT packets (ours
-    549 B with STREAM frames only + the decoder stream in a 50 B datagram,
-    nginx 596 B with two tickets, HANDSHAKE_DONE, NEW_CONNECTION_ID and
-    all three streams, then 31 B), and a wrong-ALPN close without nginx's
-    reason phrase (59 vs 75 B).
+    and no encoder stream, as nginx (§9.4);
+  - after a handshake, until 2026-09-26: the session tickets (7200 s,
+    208 B; nginx 300 s, 224 B -- its default `ssl_session_timeout 5m` and
+    the 20-byte session id context inside each ticket), the first 1-RTT
+    datagrams (ours 549 B: NEW_CONNECTION_ID, HANDSHAKE_DONE, both tickets
+    in one CRYPTO frame, the control stream in one STREAM frame without an
+    Offset field, then the decoder stream alone in a 50 B datagram, every
+    small packet padded to 22 B over the connection id; nginx one 596 B
+    datagram: a CRYPTO frame per ticket, HANDSHAKE_DONE, NEW_CONNECTION_ID,
+    then the control stream's type byte, its SETTINGS and the decoder
+    stream as three STREAM frames of type 0x0e, then a 31 B ACK), and the
+    refusal of a wrong ALPN (nginx closes with 0x178 and the reason
+    `handshake failed`, 75 B; ours without a reason, 59 B). Since then all
+    three are nginx's (`quic-listener-wire-test.sh` 9/9;
+    `testing/fingerprint/results/2026-09-26-quic-tickets/`): the listener's
+    TLS context takes nginx's session cache settings
+    (`transport_quic_tls.c`), `ngtcp2_conn_set_nginx_server_wire` writes
+    the 1-RTT packets in nginx's order and framing and pads only for
+    header protection, the listener packs its unidirectional streams into
+    one packet with the stream type in a frame of its own, and its TLS
+    alert closes carry nginx's reason. Left, outside the test's checks: the
+    decoy's answer to `GET /` is one STREAM frame (HEADERS and DATA, 802 B
+    of stream, an 838 B datagram) where nginx's is two (727 B, 768 B: the
+    same 615 B page, a field section 75 B shorter; not yet decoded).
   Details and priorities: PLAN.md, "The listener's QUIC side is not
   nginx's"; raw results in
   `testing/fingerprint/results/2026-09-25-quic-listener/`;

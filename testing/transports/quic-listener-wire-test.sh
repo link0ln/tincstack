@@ -23,8 +23,9 @@
 #     HTTP/3 streams), its session tickets, its HTTP/3 SETTINGS;
 #   * its HTTP/3 answers to GET /, GET /nope, HEAD /, POST /, DELETE /.
 #
-# Every difference is a FAIL. On 2026-09-25 most checks fail: this is the
-# acceptance test for making the listener nginx's, not yet a regression test
+# Every difference is a FAIL. Written on 2026-09-25 as the acceptance test
+# for making the listener nginx's, when most checks failed; all of them pass
+# since 2026-09-26 (core/tincd/PATCHES.md), so it is a regression test now
 # (PLAN.md, "The listener's QUIC side vs nginx").
 #
 # Usage: [CORE_IMAGE=...] [NGINX_IMAGE=...] [KEEP=1] testing/transports/quic-listener-wire-test.sh

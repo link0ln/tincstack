@@ -1,6 +1,6 @@
 --- a/lib/includes/ngtcp2/ngtcp2.h
 +++ b/lib/includes/ngtcp2/ngtcp2.h
-@@ -4984,6 +4984,101 @@
+@@ -4984,6 +4984,108 @@
    ngtcp2_conn *conn, uint8_t *dest, size_t destlen);
  
  /**
@@ -74,7 +74,14 @@
 + *   original_destination_connection_id, initial_source_connection_id,
 + *   stateless_reset_token), each written even at its default; the local
 + *   max_datagram_frame_size keeps governing which DATAGRAM frames are
-+ *   accepted, although the peer is not told about it.
++ *   accepted, although the peer is not told about it;
++ * - a 1RTT packet carries its CRYPTO frames (the session tickets) first,
++ *   one per TLS message, then HANDSHAKE_DONE, then NEW_CONNECTION_ID,
++ *   then STREAM frames;
++ * - every STREAM frame has the Offset field, even at offset 0;
++ * - a packet is padded only as far as header protection needs, not to
++ *   22 bytes more than the connection ID length (RFC 9000 section 10.3
++ *   says SHOULD; nginx does not).
 + *
 + * Call it right after `ngtcp2_conn_server_new`, before the first packet
 + * is written.
@@ -403,7 +410,152 @@
    if (!conn->server && conn->hs_pktns->crypto.tx.ckm && conn->in_pktns &&
        !ngtcp2_acktr_require_active_ack(&conn->in_pktns->acktr,
                                         /* max_ack_delay = */ 0, ts) &&
-@@ -3701,7 +3895,7 @@
+@@ -3370,8 +3564,20 @@
+       goto fail;
+     }
+ 
+-    nfrc->next = pktns->tx.frq;
+-    pktns->tx.frq = nfrc;
++    if (conn->local.wire.nginx_server) {
++      /* nginx queues NEW_CONNECTION_ID behind HANDSHAKE_DONE. */
++      ngtcp2_frame_chain **pfrc = &pktns->tx.frq;
++
++      while (*pfrc) {
++        pfrc = &(*pfrc)->next;
++      }
++
++      nfrc->next = NULL;
++      *pfrc = nfrc;
++    } else {
++      nfrc->next = pktns->tx.frq;
++      pktns->tx.frq = nfrc;
++    }
+ 
+     assert(NGTCP2_MAX_SCID_POOL_SIZE > conn->scid.num_in_flight);
+ 
+@@ -3448,6 +3654,13 @@
+  * into account header protection sample.
+  */
+ static size_t conn_min_pktlen(const ngtcp2_conn *conn) {
++  if (conn->local.wire.nginx_server) {
++    /* nginx pads a packet only as far as the header protection sample
++       needs, which ngtcp2_ppe_padding_size does anyway: its ACK-only
++       1RTT packet is 23 bytes, not 22 more than its connection ID. */
++    return 0;
++  }
++
+   return conn->oscid.datalen + NGTCP2_MIN_PKT_EXPANDLEN;
+ }
+ 
+@@ -3503,6 +3716,99 @@
+ }
+ 
+ /*
++ * conn_write_pkt_crypto writes the pending CRYPTO frames of 1RTT
++ * packet number space to |ppe|, and links them in at *|*ppfrc|, ahead
++ * of the frames already there; *|ppfrc| is moved past them.  An
++ * nginx-like server (conn->local.wire.nginx_server) writes one CRYPTO
++ * frame per TLS message, as nginx does with its session tickets.
++ *
++ * This function returns 0 if it succeeds, or a negative fatal error
++ * code.
++ */
++static int conn_write_pkt_crypto(ngtcp2_conn *conn, ngtcp2_ppe *ppe,
++                                 int *hd_logged, const ngtcp2_pkt_hd *hd,
++                                 ngtcp2_frame_chain ***ppfrc, int *pkt_empty,
++                                 uint16_t *rtb_entry_flags) {
++  ngtcp2_pktns *pktns = &conn->pktns;
++  ngtcp2_frame_chain *nfrc;
++  uint64_t crypto_offset;
++  size_t left;
++  int rv;
++
++  for (; !ngtcp2_strm_streamfrq_empty(&pktns->crypto.strm);) {
++    left = ngtcp2_ppe_left(ppe);
++
++    crypto_offset = ngtcp2_strm_streamfrq_unacked_offset(&pktns->crypto.strm);
++    if (crypto_offset == (uint64_t)-1) {
++      ngtcp2_strm_streamfrq_clear(&pktns->crypto.strm);
++      break;
++    }
++
++    left = ngtcp2_pkt_crypto_max_datalen(crypto_offset, left, left);
++
++    if (left == (size_t)-1) {
++      break;
++    }
++
++    if (conn->local.wire.nginx_server) {
++      left = conn_crypto_msg_left(pktns, crypto_offset, left);
++    }
++
++    rv = ngtcp2_strm_streamfrq_pop(&pktns->crypto.strm, &nfrc, left);
++    if (rv != 0) {
++      assert(ngtcp2_err_is_fatal(rv));
++      return rv;
++    }
++
++    if (nfrc == NULL) {
++      break;
++    }
++
++    rv = conn_ppe_write_frame_hd_log(conn, ppe, hd_logged, hd, &nfrc->fr);
++    if (rv != 0) {
++      ngtcp2_unreachable();
++    }
++
++    nfrc->next = **ppfrc;
++    **ppfrc = nfrc;
++    *ppfrc = &nfrc->next;
++
++    *pkt_empty = 0;
++    *rtb_entry_flags |= NGTCP2_RTB_ENTRY_FLAG_ACK_ELICITING |
++                        NGTCP2_RTB_ENTRY_FLAG_PTO_ELICITING |
++                        NGTCP2_RTB_ENTRY_FLAG_RETRANSMITTABLE;
++
++    ++conn->frame_counts.crypto;
++  }
++
++  return 0;
++}
++
++/*
++ * conn_stream_max_datalen is ngtcp2_pkt_stream_max_datalen for a
++ * STREAM frame this endpoint writes: an nginx-like server writes the
++ * Offset field even when it is 0 (NGTCP2_STREAM_OFF_BIT), 1 byte more.
++ */
++static size_t conn_stream_max_datalen(const ngtcp2_conn *conn,
++                                      int64_t stream_id, uint64_t offset,
++                                      uint64_t len, size_t left) {
++  if (conn->local.wire.nginx_server && offset == 0) {
++    /* Offset 1 takes as many bytes as a written offset 0. */
++    offset = 1;
++  }
++
++  return ngtcp2_pkt_stream_max_datalen(stream_id, offset, len, left);
++}
++
++/*
++ * conn_stream_frame_flags returns the flags a STREAM frame this
++ * endpoint writes starts with; see conn_stream_max_datalen.
++ */
++static uint8_t conn_stream_frame_flags(const ngtcp2_conn *conn) {
++  return conn->local.wire.nginx_server ? NGTCP2_STREAM_OFF_BIT : 0;
++}
++
++/*
+  * conn_write_pkt writes a protected packet in the buffer pointed by
+  * |dest| whose length if |destlen|.  |dgram_offset| is the offset in
+  * UDP datagram payload where this QUIC packet is positioned at.
+@@ -3568,7 +3874,6 @@
+   size_t min_pktlen = conn_min_pktlen(conn);
+   int min_padded = 0;
+   int padded = 0;
+-  uint64_t crypto_offset;
+   uint64_t stream_offset;
+   ngtcp2_ssize num_reclaimed;
+   uint64_t target_max_data;
+@@ -3701,7 +4006,7 @@
  
      ngtcp2_pkt_hd_init(hd, hd_flags, type, &conn->dcid.current.cid, scid,
                         pktns->tx.last_pkt_num + 1,
@@ -412,7 +564,121 @@
  
      ngtcp2_ppe_init(ppe, dest, destlen, dgram_offset, cc);
  
-@@ -4688,7 +4882,7 @@
+@@ -3766,7 +4071,19 @@
+     }
+ 
+   build_pkt:
+-    for (pfrc = &pktns->tx.frq; *pfrc;) {
++    pfrc = &pktns->tx.frq;
++
++    if (conn->local.wire.nginx_server) {
++      /* nginx writes the session tickets first, then HANDSHAKE_DONE
++         and NEW_CONNECTION_ID. */
++      rv = conn_write_pkt_crypto(conn, ppe, &hd_logged, hd, &pfrc, &pkt_empty,
++                                 &rtb_entry_flags);
++      if (rv != 0) {
++        return rv;
++      }
++    }
++
++    for (; *pfrc;) {
+       if ((*pfrc)->binder &&
+           ((*pfrc)->binder->flags & NGTCP2_FRAME_CHAIN_BINDER_FLAG_ACK)) {
+         frc = *pfrc;
+@@ -3874,46 +4191,10 @@
+     }
+ 
+     if (*pfrc == NULL) {
+-      for (; !ngtcp2_strm_streamfrq_empty(&pktns->crypto.strm);) {
+-        left = ngtcp2_ppe_left(ppe);
+-
+-        crypto_offset =
+-          ngtcp2_strm_streamfrq_unacked_offset(&pktns->crypto.strm);
+-        if (crypto_offset == (uint64_t)-1) {
+-          ngtcp2_strm_streamfrq_clear(&pktns->crypto.strm);
+-          break;
+-        }
+-
+-        left = ngtcp2_pkt_crypto_max_datalen(crypto_offset, left, left);
+-
+-        if (left == (size_t)-1) {
+-          break;
+-        }
+-
+-        rv = ngtcp2_strm_streamfrq_pop(&pktns->crypto.strm, &nfrc, left);
+-        if (rv != 0) {
+-          assert(ngtcp2_err_is_fatal(rv));
+-          return rv;
+-        }
+-
+-        if (nfrc == NULL) {
+-          break;
+-        }
+-
+-        rv = conn_ppe_write_frame_hd_log(conn, ppe, &hd_logged, hd, &nfrc->fr);
+-        if (rv != 0) {
+-          ngtcp2_unreachable();
+-        }
+-
+-        *pfrc = nfrc;
+-        pfrc = &(*pfrc)->next;
+-
+-        pkt_empty = 0;
+-        rtb_entry_flags |= NGTCP2_RTB_ENTRY_FLAG_ACK_ELICITING |
+-                           NGTCP2_RTB_ENTRY_FLAG_PTO_ELICITING |
+-                           NGTCP2_RTB_ENTRY_FLAG_RETRANSMITTABLE;
+-
+-        ++conn->frame_counts.crypto;
++      rv = conn_write_pkt_crypto(conn, ppe, &hd_logged, hd, &pfrc, &pkt_empty,
++                                 &rtb_entry_flags);
++      if (rv != 0) {
++        return rv;
+       }
+     }
+ 
+@@ -4097,8 +4378,8 @@
+ 
+         left = ngtcp2_ppe_left(ppe);
+ 
+-        left = ngtcp2_pkt_stream_max_datalen(strm->stream_id, stream_offset,
+-                                             left, left);
++        left = conn_stream_max_datalen(conn, strm->stream_id, stream_offset,
++                                       left, left);
+ 
+         if (left == (size_t)-1) {
+           break;
+@@ -4115,6 +4396,8 @@
+           break;
+         }
+ 
++        nfrc->fr.stream.flags |= conn_stream_frame_flags(conn);
++
+         rv = conn_ppe_write_frame_hd_log(conn, ppe, &hd_logged, hd, &nfrc->fr);
+         if (rv != 0) {
+           ngtcp2_unreachable();
+@@ -4249,9 +4532,9 @@
+   left = ngtcp2_ppe_left(ppe);
+ 
+   if (*pfrc == NULL && send_stream && ngtcp2_pq_empty(&conn->tx.strmq) &&
+-      (wdatalen = ngtcp2_pkt_stream_max_datalen(
+-         vmsg->stream.strm->stream_id, vmsg->stream.strm->tx.offset, ndatalen,
+-         left)) != (size_t)-1 &&
++      (wdatalen = conn_stream_max_datalen(
++         conn, vmsg->stream.strm->stream_id, vmsg->stream.strm->tx.offset,
++         ndatalen, left)) != (size_t)-1 &&
+       (wdatalen == ndatalen || wdatalen >= NGTCP2_MIN_STREAM_DATALEN) &&
+       (wdatalen || datalen == 0)) {
+     ndatalen = wdatalen;
+@@ -4270,7 +4553,7 @@
+     }
+ 
+     nfrc->fr.stream.type = NGTCP2_FRAME_STREAM;
+-    nfrc->fr.stream.flags = 0;
++    nfrc->fr.stream.flags = conn_stream_frame_flags(conn);
+     nfrc->fr.stream.fin = 0;
+     nfrc->fr.stream.stream_id = vmsg->stream.strm->stream_id;
+     nfrc->fr.stream.offset = vmsg->stream.strm->tx.offset;
+@@ -4688,7 +4971,7 @@
    cc.hp_mask = conn->callbacks.hp_mask;
  
    ngtcp2_pkt_hd_init(&hd, hd_flags, type, dcid, scid,
@@ -421,7 +687,7 @@
                       version);
  
    ngtcp2_ppe_init(&ppe, dest, destlen, 0, &cc);
-@@ -8259,6 +8453,22 @@
+@@ -8259,6 +8542,22 @@
    ngtcp2_dcid dcid;
    int rv;
  
@@ -444,7 +710,7 @@
    if (conn->dcid.current.seq < conn->dcid.retire_prior_to) {
      if (ngtcp2_dcidtr_unused_empty(&conn->dcid.dtr)) {
        return 0;
-@@ -12013,10 +12223,52 @@
+@@ -12013,10 +12312,52 @@
  ngtcp2_ssize ngtcp2_conn_encode_local_transport_params2(const ngtcp2_conn *conn,
                                                          uint8_t *dest,
                                                          size_t destlen) {
@@ -497,7 +763,7 @@
  int ngtcp2_conn_open_bidi_stream(ngtcp2_conn *conn, int64_t *pstream_id,
                                   void *stream_user_data) {
    int rv;
-@@ -12339,6 +12591,12 @@
+@@ -12339,6 +12680,12 @@
  
        if (ngtcp2_pkt_get_type_long(conn->negotiated_version, dest[0]) ==
            NGTCP2_PKT_INITIAL) {
@@ -510,7 +776,7 @@
          wflags |= NGTCP2_WRITE_PKT_FLAG_REQUIRE_PADDING;
        }
  
-@@ -12411,7 +12669,8 @@
+@@ -12411,7 +12758,8 @@
          }
        }
      }
@@ -520,7 +786,7 @@
        return res;
      }
      break;
-@@ -13596,6 +13855,10 @@
+@@ -13596,6 +13944,10 @@
      return rv;
    }
  
@@ -608,6 +874,27 @@
      p = ngtcp2_put_pkt_num(p, hd->pkt_num, hd->pkt_numlen);
    }
  
+@@ -1581,7 +1587,10 @@
+     flags |= NGTCP2_STREAM_FIN_BIT;
+   }
+ 
+-  if (fr->offset) {
++  /* NGTCP2_STREAM_OFF_BIT in fr->flags on the way in writes the
++     Offset field even when it is 0, as nginx does (see
++     ngtcp2_conn_set_nginx_server_wire). */
++  if (fr->offset || (fr->flags & NGTCP2_STREAM_OFF_BIT)) {
+     flags |= NGTCP2_STREAM_OFF_BIT;
+     len += ngtcp2_put_uvarintlen(fr->offset);
+   }
+@@ -1607,7 +1616,7 @@
+ 
+   p = ngtcp2_put_uvarint(p, (uint64_t)fr->stream_id);
+ 
+-  if (fr->offset) {
++  if (flags & NGTCP2_STREAM_OFF_BIT) {
+     p = ngtcp2_put_uvarint(p, fr->offset);
+   }
+ 
 --- a/lib/ngtcp2_pkt.h
 +++ b/lib/ngtcp2_pkt.h
 @@ -107,6 +107,22 @@
@@ -633,6 +920,18 @@
  /* NGTCP2_PKT_TYPE_INITIAL_V1 is Initial long header packet type for
     QUIC v1. */
  #define NGTCP2_PKT_TYPE_INITIAL_V1 0x0U
+@@ -188,8 +204,9 @@
+ typedef struct ngtcp2_stream {
+   uint64_t type;
+   /**
+-   * flags of decoded STREAM frame.  This gets ignored when encoding
+-   * STREAM frame.  CRYPTO frame does not include this field, and must
++   * flags of decoded STREAM frame.  When encoding STREAM frame, only
++   * NGTCP2_STREAM_OFF_BIT is read: it writes the Offset field even if
++   * offset is 0.  CRYPTO frame does not include this field, and must
+    * set it to 0.
+    */
+   uint8_t flags;
 --- a/lib/ngtcp2_ppe.c
 +++ b/lib/ngtcp2_ppe.c
 @@ -38,6 +38,8 @@
