@@ -88,14 +88,23 @@ uint8_t *h3_response_ok(size_t *outlen);
    NULL if `resp' is not a response. */
 uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen);
 
-/* What a web server answers a request by: its pseudo-header fields, decoded
-   from a HEADERS frame's field section (RFC 9204). NUL-terminated; a field
-   that is missing stays empty. */
+/* What a web server answers a request by, decoded from a HEADERS frame's
+   field section (RFC 9204): its pseudo-header fields, and every other
+   field as an HTTP/1.1 header line, in order ("name: value\r\n"), for the
+   decoy -- conditional requests, Range, Accept-Encoding, what an upstream
+   is sent. NUL-terminated; a field that is missing stays empty. A field
+   name that is not a lowercase token, a value with CR, LF or NUL, or more
+   than fits, fails the decode (nginx answers such a request 400). */
+#define H3_REQ_HEADERS_MAX 32768
+
 typedef struct h3_req_fields_t {
 	char method[32];
 	char path[8192];
 	char authority[256];
+	char host[256];         /* a `host' field line, kept apart from the rest */
 	char cookie[4096];      /* every cookie field line, joined */
+	char headers[H3_REQ_HEADERS_MAX];
+	size_t headers_len;
 } h3_req_fields_t;
 
 /* The listener's QPACK decoder: the dynamic table a client builds with its

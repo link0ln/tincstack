@@ -110,6 +110,36 @@ static void test_decode_split_cookie(void **state) {
 	assert_true(decode(fs, sizeof(fs), &f));
 	assert_string_equal(f.method, "GET");
 	assert_string_equal(f.cookie, "a=1; b=2");
+	assert_string_equal(f.headers, "cookie: a=1\r\ncookie: b=2\r\n");
+}
+
+/* Regular fields come out as HTTP/1.1 header lines, in order, for the
+   decoy; `host' is kept apart; a name that is not a lowercase token or a
+   value with CR, LF or NUL fails the decode. */
+static void test_decode_regular_fields(void **state) {
+	(void)state;
+	static const uint8_t fs[] = {
+		0x00, 0x00,
+		0xd1,
+		0x5f, 0x10, 0x04, 'g', 'z', 'i', 'p',           /* accept-encoding (static 31) */
+		0x5f, 0x28, 0x08, 'b', 'y', 't', 'e', 's', '=', '0', '-',       /* range (static 55) */
+		0x24, 'h', 'o', 's', 't', 0x01, 'h',
+		0x24, 'x', '-', 'a', 'b', 0x01, 'v',
+	};
+	h3_req_fields_t f;
+	assert_true(decode(fs, sizeof(fs), &f));
+	assert_string_equal(f.headers, "accept-encoding: gzip\r\nrange: bytes=0-\r\nx-ab: v\r\n");
+	assert_string_equal(f.host, "h");
+	assert_int_equal(f.headers_len, strlen(f.headers));
+
+	static const uint8_t upper[] = {0x00, 0x00, 0xd1, 0x23, 'X', '-', 'a', 0x01, 'v'};
+	assert_false(decode(upper, sizeof(upper), &f));
+
+	static const uint8_t cr[] = {0x00, 0x00, 0xd1, 0x23, 'x', '-', 'a', 0x02, 'v', '\r'};
+	assert_false(decode(cr, sizeof(cr), &f));
+
+	static const uint8_t nul[] = {0x00, 0x00, 0xd1, 0x23, 'x', '-', 'a', 0x02, 'v', 0};
+	assert_false(decode(nul, sizeof(nul), &f));
 }
 
 /* RFC 9204 Appendix B.1/B.2-style exchange: the encoder sets the capacity,
@@ -190,6 +220,7 @@ int main(void) {
 		cmocka_unit_test(test_decode_rejects),
 		cmocka_unit_test(test_decode_own_request),
 		cmocka_unit_test(test_decode_split_cookie),
+		cmocka_unit_test(test_decode_regular_fields),
 		cmocka_unit_test(test_dynamic_table),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

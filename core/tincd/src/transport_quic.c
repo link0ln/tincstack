@@ -531,16 +531,18 @@ static bool field_ok(const char *v, bool token) {
 
 /* The request as the decoy's HTTP/1.1 parser takes it: the stream's real
    method, path and authority, so a path that does not exist gets 404, a
-   method other than GET or HEAD 405, and HEAD no body -- nginx's answers.
-   A request whose fields were not decoded, or that no HTTP/1.1 parser would
-   accept, becomes a request line it rejects: 400. */
+   method other than GET or HEAD 405, and HEAD no body -- nginx's answers --
+   and, since 2026-09-26, every other field of the request, so conditional
+   requests, Range and Accept-Encoding are answered as over TCP, and an
+   upstream (HttpsDecoyUpstream) is sent what the client sent. A request
+   whose fields were not decoded, or that no HTTP/1.1 parser would accept,
+   becomes a request line it rejects: 400. */
 static char *req_as_http1(const h3_req_fields_t *f) {
 	char *r = NULL;
+	const char *host = f && *f->authority ? f->authority : f && *f->host ? f->host : "localhost";
 
-	if(f && field_ok(f->method, true) && field_ok(f->path, false) &&
-	                (!*f->authority || field_ok(f->authority, false))) {
-		xasprintf(&r, "%s %s HTTP/1.1\r\nHost: %s\r\n\r\n", f->method, f->path,
-		          *f->authority ? f->authority : "localhost");
+	if(f && field_ok(f->method, true) && field_ok(f->path, false) && field_ok(host, false)) {
+		xasprintf(&r, "%s %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", f->method, f->path, host, f->headers);
 	} else {
 		r = xstrdup("\r\n\r\n");
 	}

@@ -477,8 +477,8 @@ static bool huff_decode(const uint8_t *src, size_t len, char *out, size_t cap, s
 			if(huff_count[bits] && code >= huff_first[bits] && code - huff_first[bits] < huff_count[bits]) {
 				uint16_t sym = huff_sorted[huff_offset[bits] + (code - huff_first[bits])];
 
-				if(sym == 256 || o + 1 >= cap) {
-					return false;   /* EOS in a string, or too long */
+				if(sym == 256 || !sym || o + 1 >= cap) {
+					return false;   /* EOS or NUL in a string, or too long */
 				}
 
 				out[o++] = (char)sym;
@@ -522,7 +522,8 @@ static bool qd_string(const uint8_t *buf, size_t len, size_t *i, int bits, char 
 		return huff_decode(str, slen, out, cap, &olen);
 	}
 
-	if(slen >= cap) {
+	/* A NUL would cut the string short: nginx rejects a field with one. */
+	if(slen >= cap || memchr(str, 0, slen)) {
 		return false;
 	}
 
@@ -921,12 +922,55 @@ size_t h3_qpack_stream_cancel(int64_t stream_id, uint8_t *out) {
 	return fb.len;
 }
 
-/* Keep a decoded field if the decoy or the listener needs it. Cookie
-   field lines, which HTTP/3 lets a client split (RFC 9114 4.2.1), are
-   joined with "; "; what does not fit is dropped, not an error. */
+/* An HTTP/3 field name: lowercase (RFC 9114 4.2), a token. */
+static bool qd_name_ok(const char *n) {
+	if(!*n) {
+		return false;
+	}
+
+	for(; *n; n++) {
+		unsigned char c = (unsigned char) * n;
+
+		if(!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || strchr("!#$%&'*+-.^_`|~", c))) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/* Keep a decoded field. Pseudo-headers the decoy needs, and every regular
+   field as a header line. Cookie field lines, which HTTP/3 lets a client
+   split (RFC 9114 4.2.1), are also joined with "; " for the listener's
+   token; what does not fit there is dropped, not an error. */
 static bool qd_keep(h3_req_fields_t *out, const char *name, const char *value) {
 	char *dst;
 	size_t cap;
+
+	if(*name != ':') {
+		if(!qd_name_ok(name) || strpbrk(value, "\r\n")) {
+			return false;
+		}
+
+		if(!strcmp(name, "host")) {
+			size_t n = strlen(value);
+
+			if(n >= sizeof(out->host)) {
+				return false;
+			}
+
+			memcpy(out->host, value, n + 1);
+			return true;
+		}
+
+		int n = snprintf(out->headers + out->headers_len, sizeof(out->headers) - out->headers_len, "%s: %s\r\n", name, value);
+
+		if(n < 0 || (size_t)n >= sizeof(out->headers) - out->headers_len) {
+			return false;
+		}
+
+		out->headers_len += (size_t)n;
+	}
 
 	if(!strcmp(name, "cookie")) {
 		size_t have = strlen(out->cookie);
