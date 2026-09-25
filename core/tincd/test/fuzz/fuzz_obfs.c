@@ -24,7 +24,9 @@
 
     The fuzzed input then drives obfs_udp_try() with two node keys installed, so
     the fast path, cold-start key scan and replay window are all exercised on
-    attacker-controlled bytes. Connections the SF inject path may create are
+    attacker-controlled bytes; records with flag 4 are sealed by the peer's
+    link first (v3, or v2 with flag 8), so what follows a verified frame is
+    fuzzed as well. Connections the SF inject path may create are
     torn down after every input.
 
     Wrapped edges (-Wl,--wrap): sendto (no socket), receive_meta_bytes,
@@ -576,10 +578,25 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 			now.tv_sec++;
 		}
 
-		uint8_t *frame = xmalloc(len ? len : 1);
-		memcpy(frame, data + pos, len);
-		obfs_udp_try(&listen_socket[0], frame, len, &peers[flags & 1]);
-		free(frame);
+		/* flags & 4: the bytes are an INNER datagram, sealed by the peer's
+		   own link (v3, or v2 with flags & 8) before delivery, so the fuzzer
+		   also reaches what runs after Poly1305 verifies: version following,
+		   the replay window and epoch restart, the SF/SPTPS re-injection. */
+		if((flags & 4) && peer_view && len <= 1400) {
+			uint8_t sealed[OBFS_MAX_OVERHEAD + 1400 + OBFS_MAX_JUNK];
+			obfs_link_force_v2_for_test(peer_view, flags & 8);
+			size_t slen = obfs_encode(peer_view, data + pos, len, sealed, sizeof(sealed), flags & 16);
+
+			if(slen) {
+				obfs_udp_try(&listen_socket[0], sealed, slen, &peers[flags & 1]);
+			}
+		} else {
+			uint8_t *frame = xmalloc(len ? len : 1);
+			memcpy(frame, data + pos, len);
+			obfs_udp_try(&listen_socket[0], frame, len, &peers[flags & 1]);
+			free(frame);
+		}
+
 		pos += len;
 	}
 
