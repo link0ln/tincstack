@@ -23,6 +23,7 @@
 #define QPACK_AUTHORITY 0               /* :authority */
 #define QPACK_PATH_ROOT 1               /* :path / */
 #define QPACK_CONTENT_LENGTH 4          /* content-length 0 */
+#define QPACK_COOKIE 5                  /* cookie */
 #define QPACK_METHOD_POST 20            /* :method POST */
 #define QPACK_SCHEME_HTTPS 23           /* :scheme https */
 #define QPACK_STATUS_200 25             /* :status 200 */
@@ -245,7 +246,7 @@ static void section_prefix(fbuf_t *fs) {
 	fb_byte(fs, 0x00);      /* Delta Base 0 */
 }
 
-uint8_t *h3_request(const char *authority, const char *path, size_t *outlen) {
+uint8_t *h3_request(const char *authority, const char *path, const char *cookie, size_t *outlen) {
 	static const char ua[] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 	                         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 	static const char ctype[] = "application/octet-stream";
@@ -265,6 +266,11 @@ uint8_t *h3_request(const char *authority, const char *path, size_t *outlen) {
 	qp_literal_ref(&fs, QPACK_CONTENT_TYPE_OCTET, ctype, sizeof(ctype) - 1);
 	qp_indexed(&fs, QPACK_ACCEPT_ANY);
 	qp_literal_ref(&fs, QPACK_USER_AGENT, ua, sizeof(ua) - 1);
+
+	if(cookie) {
+		qp_literal_ref(&fs, QPACK_COOKIE, cookie, strlen(cookie));
+	}
+
 	return headers_frame(&fs, NULL, outlen);
 }
 
@@ -915,10 +921,28 @@ size_t h3_qpack_stream_cancel(int64_t stream_id, uint8_t *out) {
 	return fb.len;
 }
 
-/* Keep a decoded field if the decoy needs it. */
+/* Keep a decoded field if the decoy or the listener needs it. Cookie
+   field lines, which HTTP/3 lets a client split (RFC 9114 4.2.1), are
+   joined with "; "; what does not fit is dropped, not an error. */
 static bool qd_keep(h3_req_fields_t *out, const char *name, const char *value) {
 	char *dst;
 	size_t cap;
+
+	if(!strcmp(name, "cookie")) {
+		size_t have = strlen(out->cookie);
+		size_t n = strlen(value);
+
+		if(have + 2 + n < sizeof(out->cookie)) {
+			if(have) {
+				memcpy(out->cookie + have, "; ", 2);
+				have += 2;
+			}
+
+			memcpy(out->cookie + have, value, n + 1);
+		}
+
+		return true;
+	}
 
 	if(!strcmp(name, ":authority")) {
 		dst = out->authority;

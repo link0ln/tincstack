@@ -24,6 +24,13 @@
 # same way (the founder says why). Every pair that stays on its carrier must
 # also carry tunnel traffic over it without re-dialling.
 #
+# Since 2026-09-26 the dialler's authenticator rides a cookie of its request
+# HEADERS and the listener decides there, as nginx does; the body still opens
+# with it, for older listeners. A dialler from before sends no such cookie: a
+# current listener answers its POST at once as a web server (405), and "new
+# founder, old leaf" over quic falls back (the leaf says it was answered like
+# a web server).
+#
 # Usage: OLD_IMAGE=tincstack/core:<tag> [CORE_IMAGE=...] testing/transports/mixed-version-test.sh
 #   OLD_IMAGE: a core image built from an earlier commit (e.g. `git archive
 #   <commit> core | tar x -C /tmp/old && docker build -f /tmp/old/core/Dockerfile.build /tmp/old/core').
@@ -70,7 +77,7 @@ pair() { # <founder image> <leaf image> <transport> [fallback]
 		return
 	fi
 	if [[ $expect == fallback-old-dialler ]]; then
-		fallback "$fi" "$li" "$tr" f "answering it as a web server" "an older dialler cannot send datagrams to a current listener, which answers it as a web server"
+		fallback "$fi" "$li" "$tr" l "answered like a web server" "an older dialler carries no authenticator in its request headers, and a current listener answers it as a web server"
 		return
 	fi
 	for _ in $(seq 30); do
@@ -130,10 +137,10 @@ fallback() { # <founder image> <leaf image> <transport> <node that says why: f|l
 # An OLD_IMAGE from before 2026-09-24 knows nothing of datagrams a dialler does not announce.
 old_quic=carrier
 docker run --rm "$OLD" sh -c 'grep -q "too old to send datagrams" "$(command -v tincd)"' 2>/dev/null || old_quic=fallback
-# One from before 2026-09-25 sends datagrams only where the listener's
-# transport parameters announce them, and a current listener's (nginx's) do not.
+# One from before 2026-09-26 puts its authenticator in the request body only,
+# and a current listener decides on the request HEADERS.
 old_dialler=carrier
-docker run --rm "$OLD" sh -c 'grep -q "answering it as a web server" "$(command -v tincd)"' 2>/dev/null || old_dialler=fallback-old-dialler
+docker run --rm "$OLD" sh -c 'grep -q "by its request headers" "$(command -v tincd)"' 2>/dev/null || old_dialler=fallback-old-dialler
 
 for tr in quic https; do
 	if [[ $tr == quic ]]; then

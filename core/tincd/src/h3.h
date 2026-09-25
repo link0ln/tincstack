@@ -73,9 +73,10 @@ const uint8_t *h3_uni_preamble(uint64_t type, bool server, size_t *len);
 /* A DATA frame header for a payload of `len' bytes. Returns its length. */
 size_t h3_data_header(uint8_t *out, uint64_t len);
 
-/* HEADERS frame of the dialler's request: POST https://<authority><path>.
-   Newly allocated; *outlen is set. */
-uint8_t *h3_request(const char *authority, const char *path, size_t *outlen);
+/* HEADERS frame of the dialler's request: POST https://<authority><path>,
+   with a `cookie' field if `cookie' is not NULL. Newly allocated; *outlen
+   is set. */
+uint8_t *h3_request(const char *authority, const char *path, const char *cookie, size_t *outlen);
 
 /* HEADERS frame of the listener's answer to an authenticated tinc peer:
    status 200, nothing that says what follows. */
@@ -94,6 +95,7 @@ typedef struct h3_req_fields_t {
 	char method[32];
 	char path[8192];
 	char authority[256];
+	char cookie[4096];      /* every cookie field line, joined */
 } h3_req_fields_t;
 
 /* The listener's QPACK decoder: the dynamic table a client builds with its

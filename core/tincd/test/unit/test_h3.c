@@ -73,7 +73,7 @@ static void test_decode_rejects(void **state) {
 static void test_decode_own_request(void **state) {
 	(void)state;
 	size_t len;
-	uint8_t *frame = h3_request("example.org", "/api/v1", &len);
+	uint8_t *frame = h3_request("example.org", "/api/v1", "sid=abc-_", &len);
 	uint64_t type, flen;
 	size_t n1 = h3_varint_get(frame, len, &type);
 	size_t n2 = h3_varint_get(frame + n1, len - n1, &flen);
@@ -85,7 +85,31 @@ static void test_decode_own_request(void **state) {
 	assert_string_equal(f.method, "POST");
 	assert_string_equal(f.path, "/api/v1");
 	assert_string_equal(f.authority, "example.org");
+	assert_string_equal(f.cookie, "sid=abc-_");
 	free(frame);
+
+	frame = h3_request("example.org", "/", NULL, &len);
+	n1 = h3_varint_get(frame, len, &type);
+	n2 = h3_varint_get(frame + n1, len - n1, &flen);
+	assert_true(decode(frame + n1 + n2, flen, &f));
+	assert_string_equal(f.path, "/");
+	assert_string_equal(f.cookie, "");
+	free(frame);
+}
+
+/* Cookie field lines a client split (RFC 9114 4.2.1) come back joined. */
+static void test_decode_split_cookie(void **state) {
+	(void)state;
+	static const uint8_t fs[] = {
+		0x00, 0x00,
+		0xd1,
+		0x55, 0x03, 'a', '=', '1',
+		0x55, 0x03, 'b', '=', '2',
+	};
+	h3_req_fields_t f;
+	assert_true(decode(fs, sizeof(fs), &f));
+	assert_string_equal(f.method, "GET");
+	assert_string_equal(f.cookie, "a=1; b=2");
 }
 
 /* RFC 9204 Appendix B.1/B.2-style exchange: the encoder sets the capacity,
@@ -165,6 +189,7 @@ int main(void) {
 		cmocka_unit_test(test_decode_literal_names),
 		cmocka_unit_test(test_decode_rejects),
 		cmocka_unit_test(test_decode_own_request),
+		cmocka_unit_test(test_decode_split_cookie),
 		cmocka_unit_test(test_dynamic_table),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

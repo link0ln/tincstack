@@ -12,10 +12,11 @@
     transport_quic_tls.c so another TLS backend can replace them per platform.
 
     Peer authentication: the dialler sends the shared authenticator (authn.c,
-    the same bytes the https carrier uses) as the first bytes of stream 0; the
-    acceptor verifies it before a single byte reaches receive_meta_bytes().
-    Failure closes the QUIC connection with a generic transport error and the
-    dialler falls back to the next carrier (M4). Design: docs/transports.md §9.
+    the same bytes the https carrier uses) in a cookie of its request's
+    HEADERS; the acceptor verifies it before a single byte reaches
+    receive_meta_bytes(). Any other request gets the decoy, as from a web
+    server, and a dialler that gets one falls back to the next carrier (M4).
+    Design: docs/transports.md §9.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -69,7 +70,6 @@
 #define QUIC_DGRAM_QUEUE 64
 #define QUIC_PKT_BUF 1452
 #define QUIC_CID_SLOTS 16               /* issued connection ids we track per session */
-#define QUIC_AUTH_CAP AUTHN_MAX_LEN     /* server-side authenticator accumulation buffer */
 #define QUIC_UNI_STREAMS 3              /* control, QPACK encoder, QPACK decoder */
 #define QUIC_PEER_UNI 3                 /* the peer's: our initial_max_streams_uni (server) */
 #define QUIC_REQ_SLOTS 8                /* request streams a server answers per connection */
@@ -151,7 +151,6 @@ typedef struct quic_session_t {
 		bool hdr_seen, hdr_bad;
 		bool hdr_blocked;       /* HEADERS whole, waiting for the dynamic table */
 		bool respond_pending;   /* answer as soon as they are decoded */
-		bool tinc_mark;         /* H3_FRAME_TINC_DGRAM came before the body */
 		uint8_t *resp;          /* HEADERS + DATA; one allocation, never moved,
 		                           kept until the session ends */
 		size_t resp_len, resp_sent;
@@ -176,13 +175,13 @@ typedef struct quic_session_t {
 	size_t dgram_head, dgram_n;
 	uint64_t dgram_id;
 
-	/* Server-side authenticator gate. */
+	/* Server-side authenticator gate: the one a request's cookie carried,
+	   and how much of the copy that opens the dialler's body has gone by. */
 	bool is_server;
 	bool authenticated;
-	bool auth_slot_taken;           /* a request stream is sending an authenticator */
-	int auth_slot;
-	uint8_t authbuf[QUIC_AUTH_CAP];
+	uint8_t authbuf[AUTHN_MAX_LEN];
 	size_t authlen;
+	size_t auth_skip;
 
 	quic_cid_t cids[QUIC_CID_SLOTS];
 	int ncids;
@@ -609,60 +608,89 @@ typedef struct rx_ctx_t {
 	int64_t id;
 } rx_ctx_t;
 
-/* Server: authenticator bytes from the first DATA of a request. Returns the
-   bytes consumed; sets *verdict to 1 (authenticated), -1 (rejected) or 0
-   (need more). */
-static size_t server_auth(quic_session_t *s, const uint8_t *p, size_t remain, int *verdict) {
-	size_t used = 0;
-	*verdict = 0;
+/* Server: a POST whose cookie carries a valid authenticator (§8.3, the
+   dialler's) -- the value of any of its cookie pairs, base64url. Only the
+   first value shaped like one is checked, so a request stuffed with cookies
+   costs one verification. Returns true and sets up the session on success;
+   the request is then the meta stream. */
+static bool req_token(quic_session_t *s, int i) {
+	const h3_req_fields_t *f = s->req[i].fields;
+	const char *p = f->cookie;
 
-	while(remain) {
-		size_t expected = authn_expected_len(s->authbuf, s->authlen);
+	while(*p) {
+		const char *end = strchr(p, ';');
+		size_t plen = end ? (size_t)(end - p) : strlen(p);
+		const char *eq = memchr(p, '=', plen);
 
-		if(expected == (size_t) -1) {
-			logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: malformed authenticator from %s", s->c->hostname);
-			*verdict = -1;
-			return used;
-		}
+		if(eq) {
+			const char *v = eq + 1;
+			size_t vlen = plen - (size_t)(v - p);
+			char b64[B64_SIZE(AUTHN_MAX_LEN)];
+			uint8_t payload[AUTHN_MAX_LEN + 3];
 
-		size_t want = expected ? expected - s->authlen : 1;
+			if(vlen && vlen < sizeof(b64)) {
+				memcpy(b64, v, vlen);
+				b64[vlen] = 0;
+				size_t n = b64decode_tinc(b64, payload, vlen);
+				size_t expected = n ? authn_expected_len(payload, n) : 0;
 
-		if(want > QUIC_AUTH_CAP - s->authlen) {
-			logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: oversized authenticator from %s", s->c->hostname);
-			*verdict = -1;
-			return used;
-		}
+				if(expected && expected != (size_t) -1 && expected == n) {
+					uint8_t exporter[AUTHN_EXPORTER_LEN];
+					char *name = NULL;
 
-		size_t take = want < remain ? want : remain;
-		memcpy(s->authbuf + s->authlen, p, take);
-		s->authlen += take;
-		p += take;
-		remain -= take;
-		used += take;
+					if(!quic_tls_exporter(&s->tls, exporter, sizeof(exporter)) ||
+					                !authn_verify(payload, n, tls_own_fp, exporter, "quic", s->c->hostname, &name)) {
+						logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: authenticator from %s rejected", s->c->hostname);
+						return false;
+					}
 
-		expected = authn_expected_len(s->authbuf, s->authlen);
-
-		if(expected && expected != (size_t) -1 && s->authlen == expected) {
-			uint8_t exporter[AUTHN_EXPORTER_LEN];
-			char *name = NULL;
-
-			if(!quic_tls_exporter(&s->tls, exporter, sizeof(exporter)) ||
-			                !authn_verify(s->authbuf, s->authlen, tls_own_fp, exporter, "quic", s->c->hostname, &name)) {
-				logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: authenticator from %s rejected", s->c->hostname);
-				*verdict = -1;
-				return used;
+					memcpy(s->authbuf, payload, n);
+					s->authlen = n;
+					free(s->c->name);
+					s->c->name = name;
+					s->authenticated = true;
+					logger(DEBUG_CONNECTIONS, LOG_NOTICE, "quic: authenticated peer %s (%s) by its request headers", s->c->name, s->c->hostname);
+					return true;
+				}
 			}
+		}
 
-			free(s->c->name);
-			s->c->name = name;
-			s->authenticated = true;
-			logger(DEBUG_CONNECTIONS, LOG_NOTICE, "quic: authenticated peer %s (%s)", s->c->name, s->c->hostname);
-			*verdict = 1;
-			return used;
+		if(!end) {
+			break;
+		}
+
+		for(p = end + 1; *p == ' '; p++) {
 		}
 	}
 
-	return used;
+	return false;
+}
+
+/* Server: the authenticated request becomes the meta stream; its answer is
+   the listener's 200, then the datagram mark. */
+static void req_become_meta(quic_session_t *s, int i) {
+	s->stream_id = s->req[i].id;
+	s->req[i].done = true;  /* its answer is the meta stream's send queue */
+	s->req[i].responded = true;
+
+	size_t hlen;
+	uint8_t *h = h3_response_ok(&hlen);
+	tx_append(s, h, hlen);
+	free(h);
+
+	/* A current dialler takes DATAGRAM frames without announcing it (its
+	   Initial is curl's, and curl has none): allow them to it, and tell it
+	   we know, with a frame only an authenticated peer ever sees. */
+	const ngtcp2_transport_params *rp = ngtcp2_conn_get_remote_transport_params(s->conn);
+
+	if(rp && !rp->max_datagram_frame_size) {
+		ngtcp2_conn_set_remote_max_datagram_frame_size(s->conn, QUIC_DGRAM_FRAME_MAX);
+	}
+
+	uint8_t mark[16];
+	size_t mlen = h3_varint_put(mark, H3_FRAME_TINC_DGRAM);
+	mlen += h3_varint_put(mark + mlen, 0);
+	tx_append(s, mark, mlen);
 }
 
 /* Server: decode slot i's whole HEADERS with the client's dynamic table.
@@ -712,11 +740,20 @@ static void req_decode(quic_session_t *s, int i) {
 	s->req[i].hdr = NULL;
 	s->req[i].hdr_len = 0;
 
-	/* Undecoded: answered (400) when the body or FIN comes, as before --
-	   never early, so a dialler's POST is never answered by mistake. */
-	if(s->req[i].respond_pending || (s->req[i].fields && strcmp(s->req[i].fields->method, "POST"))) {
-		req_respond_decoy(s, i);
+	/* The request is decided on its HEADERS, as nginx decides it: a POST
+	   whose cookie authenticates a tinc dialler is the tinc session; every
+	   other request -- a POST without one included, body or not -- gets
+	   the web server's answer now (405 for a POST, as nginx's to a static
+	   file). Until 2026-09-26 the authenticator was the body's first
+	   bytes, and a POST was answered only once they had come: nginx
+	   answers before, and a POST without a body not at all (stream F,
+	   testing/fingerprint/post405-timing.sh). */
+	if(s->req[i].fields && s->stream_id < 0 && !strcmp(s->req[i].fields->method, "POST") && req_token(s, i)) {
+		req_become_meta(s, i);
+		return;
 	}
+
+	req_respond_decoy(s, i);
 }
 
 /* Server: requests blocked on the dynamic table, after it grew. */
@@ -773,85 +810,36 @@ static bool server_frame(void *data, uint64_t type, const uint8_t *payload, size
 		return true;
 	}
 
-	if(type == H3_FRAME_TINC_DGRAM && x->id != s->stream_id) {
-		s->req[x->slot].tinc_mark = true;
+	if(type != H3_FRAME_DATA || !len || x->id != s->stream_id) {
+		/* SETTINGS-like or reserved frames (the dialler's datagram mark),
+		   and bodies of requests answered as a web server: nothing we
+		   need. */
 		return true;
 	}
 
-	if(type != H3_FRAME_DATA || !len) {
-		return true;    /* SETTINGS-like or reserved frames: nothing we need */
-	}
+	/* The dialler's body opens with the authenticator its cookie carried,
+	   for a listener from before 2026-09-26, which reads it there: skip
+	   that copy. A dialler that sends none starts with its ID line, whose
+	   first byte is never an authenticator's. */
+	if(s->auth_skip < s->authlen) {
+		if(!s->auth_skip && payload[0] != s->authbuf[0]) {
+			s->auth_skip = s->authlen;
+		} else {
+			size_t n = s->authlen - s->auth_skip < len ? s->authlen - s->auth_skip : len;
 
-	if(x->id == s->stream_id) {
-		return deliver_meta(s, payload, len);
-	}
+			if(memcmp(payload, s->authbuf + s->auth_skip, n)) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: %s (%s) sent a body that does not start with its authenticator",
+				       s->c->name, s->c->hostname);
+				return false;
+			}
 
-	if(s->req[x->slot].responded || s->authenticated || (s->auth_slot_taken && s->auth_slot != x->slot)) {
-		return true;    /* a request body nobody is waiting for */
-	}
-
-	s->auth_slot_taken = true;
-	s->auth_slot = x->slot;
-	int verdict;
-	size_t used = server_auth(s, payload, len, &verdict);
-
-	if(verdict < 0) {
-		/* Not a tinc peer: an HTTP/3 client POSTing something. Answer it like
-		   a web server; its later requests get the same. */
-		s->authlen = 0;
-		s->auth_slot_taken = false;
-		req_respond_decoy(s, x->slot);
-		return true;
-	}
-
-	if(verdict > 0 && !s->req[x->slot].tinc_mark) {
-		/* A tinc dialler from before 2026-09-25: it sends DATAGRAM frames
-		   only to a listener whose transport parameters announce them, and
-		   ours, nginx's, do not -- its first tunnel packet would kill the
-		   connection, and it would dial quic again and again. Answer it as
-		   a web server does, before anything is activated: it gives quic up
-		   and tries its next carrier (as with any web server). */
-		logger(DEBUG_CONNECTIONS, LOG_WARNING, "quic: %s (%s) runs a tinc too old to send datagrams to this one; answering it as a web server so it tries another carrier",
-		       s->c->name, s->c->hostname);
-		s->authenticated = false;
-		free(s->c->name);
-		s->c->name = xstrdup("<unknown>");
-		s->authlen = 0;
-		s->auth_slot_taken = false;
-		req_respond_decoy(s, x->slot);
-		return true;
-	}
-
-	if(verdict > 0) {
-		s->stream_id = x->id;
-		s->req[x->slot].done = true;    /* its answer is the meta stream's send queue */
-
-		size_t hlen;
-		uint8_t *h = h3_response_ok(&hlen);
-		tx_append(s, h, hlen);
-		free(h);
-
-		/* A current dialler takes DATAGRAM frames without announcing it (its
-		   Initial is curl's, and curl has none): allow them to it, and tell it
-		   we know, with a frame only an authenticated peer ever sees. An
-		   earlier dialler announced them itself and skips the frame. */
-		const ngtcp2_transport_params *rp = ngtcp2_conn_get_remote_transport_params(s->conn);
-
-		if(rp && !rp->max_datagram_frame_size) {
-			ngtcp2_conn_set_remote_max_datagram_frame_size(s->conn, QUIC_DGRAM_FRAME_MAX);
-		}
-
-		uint8_t mark[16];
-		size_t mlen = h3_varint_put(mark, H3_FRAME_TINC_DGRAM);
-		mlen += h3_varint_put(mark + mlen, 0);
-		tx_append(s, mark, mlen);
-
-		if(used < len) {
-			return deliver_meta(s, payload + used, len - used);
+			s->auth_skip += n;
+			payload += n;
+			len -= n;
 		}
 	}
 
-	return true;
+	return deliver_meta(s, payload, len);
 }
 
 static bool client_frame(void *data, uint64_t type, const uint8_t *payload, size_t len) {
@@ -1185,10 +1173,10 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 	}
 
 	/* Client: the tinc session is one HTTP/3 request. Open it, queue the
-	   request HEADERS and the authenticator as the first DATA frame, then
-	   drive the tinc handshake so the ID line is the next DATA frame. All
-	   appends only -- the post-read flush sends them (we are in a
-	   callback).
+	   request HEADERS -- the authenticator in a cookie -- and the
+	   authenticator again as the first DATA frame, then drive the tinc
+	   handshake so the ID line is the next DATA frame. All appends only --
+	   the post-read flush sends them (we are in a callback).
 
 	   An unpinned certificate -- or one that replaced the pin (verify_pin) --
 	   is NOT pinned here: a completed TLS handshake proves nothing about who
@@ -1213,18 +1201,6 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 
 	s->stream_id = sid;
 
-	size_t hlen;
-	uint8_t *h = h3_request(s->authority, "/", &hlen);
-	tx_append(s, h, hlen);
-	free(h);
-
-	/* "Send me datagrams without my announcing them; I send you mine
-	   without yours": see H3_FRAME_TINC_DGRAM. A web server ignores it. */
-	uint8_t mark[16];
-	size_t mlen = h3_varint_put(mark, H3_FRAME_TINC_DGRAM);
-	mlen += h3_varint_put(mark + mlen, 0);
-	tx_append(s, mark, mlen);
-
 	uint8_t exporter[AUTHN_EXPORTER_LEN];
 	uint8_t auth[AUTHN_MAX_LEN];
 	size_t authlen;
@@ -1236,6 +1212,28 @@ static int cb_handshake_completed(ngtcp2_conn *conn, void *user_data) {
 		return 0;
 	}
 
+	/* The authenticator rides a session cookie, as the https carrier's
+	   does, so that the listener decides on the request's HEADERS, as
+	   nginx does (docs/transports.md §9.4). Bound to this connection's
+	   exporter, it is worth nothing outside it; only the TLS peer sees
+	   it. */
+	char cookie[4 + B64_SIZE(AUTHN_MAX_LEN)] = "sid=";
+	b64encode_tinc_urlsafe(auth, cookie + 4, authlen);
+
+	size_t hlen;
+	uint8_t *h = h3_request(s->authority, "/", cookie, &hlen);
+	tx_append(s, h, hlen);
+	free(h);
+
+	/* "Send me datagrams without my announcing them; I send you mine
+	   without yours": see H3_FRAME_TINC_DGRAM. A web server ignores it. */
+	uint8_t mark[16];
+	size_t mlen = h3_varint_put(mark, H3_FRAME_TINC_DGRAM);
+	mlen += h3_varint_put(mark + mlen, 0);
+	tx_append(s, mark, mlen);
+
+	/* The same authenticator opens the body, where a listener from before
+	   2026-09-26 reads it; a current one skips it. */
 	tx_append_data(s, auth, authlen);
 
 	/* Sends the ID line onto the same stream (append only while reading). */
