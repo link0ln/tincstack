@@ -1,0 +1,14 @@
+# TLS 1.3 on TCP 443: the https front (ww-a) next to Debian 13's nginx 1.26.3, same certificate;
+# openssl s_client -msg -tls1_3, then openssl sess_id -text
+== listener
+<<< TLS 1.3, Handshake [length 00e9], NewSessionTicket
+<<< TLS 1.3, Handshake [length 00e9], NewSessionTicket
+    Session-ID-ctx: 
+    TLS session ticket lifetime hint: 7200 (seconds)
+    Timeout   : 7200 (sec)
+== nginx
+<<< TLS 1.3, Handshake [length 0109], NewSessionTicket
+<<< TLS 1.3, Handshake [length 0109], NewSessionTicket
+    Session-ID-ctx: 
+    TLS session ticket lifetime hint: 300 (seconds)
+    Timeout   : 7200 (sec)
