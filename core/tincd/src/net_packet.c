@@ -156,6 +156,10 @@ static bool carrier_datagram_path(const node_t *n) {
    A carrier datagram path or an obfs link is sealed or carried anyway. */
 #define DSEAL_UNKNOWN_HOLD 3
 
+/* Set while send_carrier_beacon() sends: the probe goes out of the plain UDP
+   data socket even though the peer's meta connection carries datagrams. */
+static bool carrier_beacon_raw;
+
 static bool direct_seal_permits(node_t *n, bool probing) {
 	if(carrier_datagram_path(n) || obfs_link_is_active(n)) {
 		return true;
@@ -1152,7 +1156,7 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	   `false' return means it does not fit the carrier's datagram ceiling:
 	   treated exactly like EMSGSIZE so tinc's MTU discovery converges. With
 	   plain/sf/obfs the hook is NULL and this is byte-identical to before. */
-	if(relay->connection && relay->connection->transport && relay->connection->transport->send_datagram) {
+	if(!carrier_beacon_raw && relay->connection && relay->connection->transport && relay->connection->transport->send_datagram) {
 		size_t excess = 0;
 
 		if(!relay->connection->transport->send_datagram(relay->connection, buf, (size_t)(buf_ptr - buf), &excess)) {
@@ -1399,9 +1403,49 @@ static void send_udp_probe_packet(node_t *n, size_t len) {
 // This function tries to establish a UDP tunnel to a node so that packets can be sent.
 // If a tunnel is already established, it makes sure it stays up.
 // This function makes no guarantees - it is up to the caller to check the node's state to figure out if UDP is usable.
+/* A neighbour reached over a datagram carrier (quic) sees our QUIC socket,
+   not our UDP data socket, and since the carrier's records no longer move
+   n->address (process_sptps_udp) it would know no mapping of the data socket
+   at all -- yet it is the one that tells other peers where to punch
+   (UDP_INFO, the ANS_KEY hint). So while we try UDP to a node behind it, send it one
+   probe from the data socket every udp_discovery_keepalive_interval: sealed
+   like any direct datagram (DirectSeal), never in the clear to a peer that
+   cannot read it, and answered over the carrier. It also keeps our NAT's
+   mapping for the data socket alive. */
+static void send_carrier_beacon(node_t *n) {
+	if(!n->status.validkey || !n->status.sptps || (n->options >> 24) < 4 ||
+	                ((myself->options | n->options) & OPTION_TCPONLY)) {
+		return;
+	}
+
+	if(n->carrier_beacon_sent && now.tv_sec - n->carrier_beacon_sent < udp_discovery_keepalive_interval) {
+		return;
+	}
+
+	dseal_verdict_t dv = dseal_verdict(n);
+
+	if(dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK) {
+		return;
+	}
+
+	n->carrier_beacon_sent = now.tv_sec;
+	carrier_beacon_raw = true;
+	send_udp_probe_packet(n, MIN_PROBE_SIZE);
+	carrier_beacon_raw = false;
+}
+
 static void try_udp(node_t *n) {
 	if(!udp_discovery) {
 		return;
+	}
+
+	/* Punching towards a node we reach through a quic neighbour: that
+	   neighbour is the one that tells it where our data socket is, so it has
+	   to have seen that socket (send_carrier_beacon). Nothing is sent to a
+	   quic neighbour that relays for nobody: between two quic nodes the wire
+	   stays QUIC only. */
+	if(n->nexthop && n->nexthop != n && n->nexthop != myself && carrier_datagram_path(n->nexthop)) {
+		send_carrier_beacon(n->nexthop);
 	}
 
 	if(n->status.udp_confirmed && carrier_datagram_path(n)) {
@@ -1992,7 +2036,20 @@ bool sptps_udp_addresses_known_nodes(const node_t *n, const uint8_t *buf, size_t
 /* The SPTPS / legacy UDP data path, split out so the obfs carrier can
    re-inject a datagram it just unsealed without going back through the carrier
    dispatcher (which would try to classify the inner bytes again). */
-static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr) {
+/* `via_carrier': the record arrived inside a carrier flow (a QUIC DATAGRAM
+   frame), so `addr' is that flow's remote -- the peer's QUIC socket as its
+   NAT maps it -- and says nothing about where its UDP data socket is. Such a
+   record must not move n->address: a relay that did so handed the QUIC flow
+   out as the node's UDP address (UDP_INFO, the ANS_KEY hint), and every pair
+   behind a port-changing NAT punched at the wrong port (stream N,
+   docs/nat.md §5.1). The node's data-socket mapping reaches the relay from
+   the node's carrier beacons instead (send_carrier_beacon).
+   `carrier_node' (non-NULL only with via_carrier) is the node at the other
+   end of the carrier's authenticated meta connection: the sender of the
+   record, whatever its address. Looking the sender up by address no longer
+   works once the flow is not n->address, and a relayed record (non-zero
+   destination id) has no other way to be attributed. */
+static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr, bool via_carrier, node_t *carrier_node) {
 	char *hostname;
 	node_id_t nullid = {0};
 	node_t *from, *to;
@@ -2002,9 +2059,13 @@ static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t
 
 	// Try to figure out who sent this packet.
 
-	node_t *n = lookup_node_udp(addr);
+	node_t *n = via_carrier ? carrier_node : lookup_node_udp(addr);
 
-	if(n && !n->status.udp_confirmed) {
+	if(via_carrier && !n) {
+		return;         // the carrier's connection is not authenticated yet
+	}
+
+	if(n && !via_carrier && !n->status.udp_confirmed) {
 		n = NULL;        // Don't believe it if we don't have confirmation yet.
 	}
 
@@ -2107,7 +2168,7 @@ skip_harder:
 
 	n->sock = ls - listen_socket;
 
-	if(direct && sockaddrcmp(addr, &n->address)) {
+	if(direct && !via_carrier && sockaddrcmp(addr, &n->address)) {
 		update_node_udp(n, addr);
 	}
 
@@ -2130,7 +2191,7 @@ static void handle_incoming_vpn_packet(listen_socket_t *ls, vpn_packet_t *pkt, s
 		return;
 	}
 
-	process_sptps_udp(ls, pkt, addr);
+	process_sptps_udp(ls, pkt, addr, false, NULL);
 }
 
 /* Re-inject an inner SPTPS datagram that the obfs carrier just unsealed. It
@@ -2147,7 +2208,24 @@ void handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t *buf, s
 	pkt.len = len;
 
 	sockaddr_t a = *addr;
-	process_sptps_udp(ls, &pkt, &a);
+	process_sptps_udp(ls, &pkt, &a, false, NULL);
+}
+
+/* A record a carrier delivered inside its own flow (quic's DATAGRAM frames):
+   the data path, but `addr' is the carrier flow's (see process_sptps_udp). */
+void handle_incoming_carrier_datagram(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr, node_t *from) {
+	if(len > MAXSIZE) {
+		return;
+	}
+
+	vpn_packet_t pkt;
+	pkt.offset = 0;
+	pkt.priority = 0;
+	memcpy(pkt.data, buf, len);
+	pkt.len = len;
+
+	sockaddr_t a = *addr;
+	process_sptps_udp(ls, &pkt, &a, true, from);
 }
 
 void handle_incoming_vpn_data(void *data, int flags) {

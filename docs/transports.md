@@ -1739,6 +1739,31 @@ packets at most and never probes the path MTU; on the wire it writes its
 parameters as curl does (§9.8): `active_connection_id_limit` 2 and no
 `max_datagram_frame_size`, although it accepts 8 and 65536.
 
+### 9.3.1 A carrier datagram is not the node's UDP address (stream N2)
+
+Until N2 a record that arrived in a QUIC DATAGRAM frame went through the
+ordinary UDP path, which moves `n->address` to the datagram's source. For a
+quic neighbour that source is the peer's *QUIC* socket (an ephemeral dial
+port, or 443 on a listener), so a relay handed that flow out as the node's
+UDP address in UDP_INFO and the ANS_KEY hint, and every pair behind a
+port-changing NAT punched at the wrong port (docs/nat.md §5.1).
+
+Now `transport_quic.c` delivers DATAGRAM records through
+`handle_incoming_carrier_datagram()`, which never calls `update_node_udp()`.
+The relay learns the node's data-socket mapping from a *carrier beacon*
+instead: while a node tries UDP towards a peer whose next hop is a quic
+neighbour, it sends that neighbour one PMTU-probe-shaped datagram from its UDP
+data socket every `UDPDiscoveryKeepaliveInterval` (`send_carrier_beacon()`).
+The beacon is a direct datagram like any other: DirectSeal seals it, and it is
+not sent at all to a peer that cannot read sealed datagrams. The reply comes
+back over the carrier. Two quic neighbours with nobody behind either exchange
+no beacon, so their wire stays QUIC only (`quic-carrier-test.sh` (a) checks
+exactly that; a first version that beaconed every quic neighbour failed it with
+2 non-QUIC datagrams in 280). Side effect: while punching, the beacon also keeps
+the node's NAT mapping for the data socket alive.
+
+Proof: docs/nat.md §5.1 (6 of 6 expected-direct quic pairs direct, was 1 of 6).
+
 ### 9.4 Framing: an HTTP/3 request (since 2026-09-23)
 
 The carrier is an HTTP/3 connection (RFC 9114) to everyone, the peer

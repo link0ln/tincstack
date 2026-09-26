@@ -416,6 +416,35 @@ Only pairs whose edge address is already right (port-preserving EIM on both
 sides: `masqfw x masqfw`, 4 s) survive. Every NAT that changes the port loses
 its direct path under quic.
 
+**Fixed in N2** (docs/transports.md §9.3.1): a record that arrives in a QUIC
+DATAGRAM frame is attributed to the carrier connection's node and never moves
+`n->address`; the relay learns the data-socket mapping from a sealed beacon the
+node sends from its UDP socket while it punches through that relay. Runs
+`ww-n2-i2c-quic3`, `ww-n2-i2c-quic6`, `ww-n2-i2c-quicrelay` (image
+`ww-n2-i2c`; evidence `results/2026-09-26/n2/quic-item2/`):
+
+| pair (core) | `--transport quic` before (`ww-n2-mat-n2-quic`) | after |
+|---|---|---|
+| restricted x restricted | relay (FAIL) | direct 6 s |
+| fullcone x fullcone | relay (FAIL) | direct 6 s |
+| masqfw x masqfw | direct 4 s | direct 4 s |
+| masq x restricted | relay (FAIL) | direct 10 s |
+| portrestricted x portrestricted | relay (FAIL) | direct 8 s |
+| symmetric x restricted | relay (FAIL) | direct 10 s |
+| masq x masq, masq x portrestricted, symmetric x symmetric (expected relay) | relay, ping ok | relay, ping ok |
+
+n = 1 run per pair. The `--capture` row (restricted x restricted, quic) now
+goes direct in 4 s with 430 sealed datagrams: 0 zero dst id, 0 sf magic, 2 of
+51 B, no chi² position flagged, entropy 7.97 bit, PMTU 1413.
+`quic-carrier-test.sh`, `quic-loss-test.sh` and `mixed-version-test.sh`
+(`CARRIERS=quic`, both old images) pass on the same image.
+
+A first version of the fix (image `ww-n2-i2`) got the three pairs above
+direct but lost *every* relayed quic packet (ping 0 on the pairs that stay
+relayed): the relay identified the sender of a carrier record by its source
+address, which by design no longer matched. Now the carrier passes the node
+of its authenticated connection (`handle_incoming_carrier_datagram(..., from)`).
+
 ### 5.2 https: relayed traffic between two https nodes is dropped
 
 `matrix --transport https` (4 pairs, all FAIL, ping 0): both NATed nodes reach
@@ -750,6 +779,8 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
 
 2. 🟠 **P1 — quic: the relay hands out the QUIC flow as the node's UDP
    address (W2).**
+   **Status: fixed in N2** (§5.1): the proof pairs go direct, and so do the
+   three more that were relayed under quic.
    Pairs: every expected-direct pair with a port-changing NAT on either side
    loses its direct path under `quic` (lab: `restricted x restricted`,
    `fullcone x fullcone` relay instead of 6 s; only port-preserving EIM pairs

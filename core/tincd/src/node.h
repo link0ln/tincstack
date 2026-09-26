@@ -124,6 +124,7 @@ typedef struct node_t {
 	time_t last_req_transports;             /* Last time we asked this node for its carrier list (rate limit) */
 	uint8_t dseal;                          /* direct-seal capability, DSEAL_* (obfs.h); 0 = not learned yet */
 	time_t dseal_logged;                    /* rate limit for the "no direct UDP to it" log line */
+	time_t carrier_beacon_sent;             /* last send_carrier_beacon() to it (net_packet.c) */
 	int dseal_logged_verdict;               /* verdict that line was logged for */
 	struct node_t *prev_nexthop;            /* nexthop as of the previous graph run; only meaningful inside graph() */
 } node_t;
