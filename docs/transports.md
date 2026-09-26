@@ -1891,10 +1891,14 @@ What an observer can still tell (testing/fingerprint, re-measured
     the 1-RTT packets in nginx's order and framing and pads only for
     header protection, the listener packs its unidirectional streams into
     one packet with the stream type in a frame of its own, and its TLS
-    alert closes carry nginx's reason. Left, outside the test's checks: the
-    decoy's answer to `GET /` is one STREAM frame (HEADERS and DATA, 802 B
-    of stream, an 838 B datagram) where nginx's is two (727 B, 768 B: the
-    same 615 B page, a field section 75 B shorter; not yet decoded).
+    alert closes carry nginx's reason. Until 2026-09-26 the decoy's answer
+    to `GET /` was one STREAM frame with the FIN (HEADERS 210 B and DATA,
+    831 B of stream) where nginx writes one without it and an empty FIN
+    frame after it, with a field section 81 B shorter (nginx's static name
+    references and Huffman). Since then both are 750 + 0 B of stream in a
+    791 B datagram, HEADERS 129 B (with `add_header Alt-Svc` on both;
+    `quic-listener-wire-test.sh` 10/10,
+    `testing/fingerprint/results/2026-09-26-quic-q/listener-wire/`).
   Details and priorities: PLAN.md, "The listener's QUIC side is not
   nginx's"; raw results in
   `testing/fingerprint/results/2026-09-25-quic-listener/`;

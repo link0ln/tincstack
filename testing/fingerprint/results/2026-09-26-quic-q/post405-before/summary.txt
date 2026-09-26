@@ -1,0 +1,42 @@
+POST-405 timing: time from the request head to the answer, ms (median [p10..p90])
+per-probe = best single-threshold accuracy (optimistic); structural = answered before the body / at all
+
+=== RTT 20 ms, jitter 0 ms ===
+    mode          listener t_head                     nginx    t_head                        AUC    thr  structural
+h3  get           200:12      23.2 [  23.0..   24.0]  200:12      21.1 [  20.7..   23.7]    0.72    83%  -
+h3  post-now      405:12      23.1 [  23.0..   23.1]  405:12      21.0 [  20.5..   23.8]    0.58    79%  -
+h3  post-pause    405:12    1023.0 [1022.4.. 1024.9]  405:12      23.3 [  20.7..   24.0]    1.00   100%  listener waited 12/12, nginx early 12/12 -> 100%
+h3  post-authver  405:12    1023.2 [1022.4.. 1025.3]  405:12      21.1 [  20.7..   23.6]    1.00   100%  listener waited 12/12, nginx early 12/12 -> 100%
+h3  post-nobody   none:6   -                          405:6       20.6 [  20.6..   24.1]     nan   nan%  listener waited 6/6, nginx early 6/6 -> 100%
+h1  get           200:12      40.3 [  40.2..   40.8]  200:12      40.5 [  40.3..   41.1]    0.24    50%  -
+h1  post-now      405:12      40.3 [  40.2..   40.3]  405:12      40.5 [  40.2..   40.9]    0.35    54%  -
+h1  post-pause    405:12      40.3 [  40.2..   40.3]  405:12      40.5 [  40.2..   41.0]    0.32    54%  listener waited 0/12, nginx early 12/12 -> 50%
+h1  post-authver  405:12      40.3 [  40.2..   40.4]  405:12      40.3 [  40.2..   40.9]    0.40    54%  listener waited 0/12, nginx early 12/12 -> 50%
+h1  post-nobody   405:6       40.8 [  40.3..   41.0]  405:6       40.3 [  40.2..   41.1]    0.68    75%  listener waited 0/6, nginx early 6/6 -> 50%
+
+=== RTT 80 ms, jitter 0 ms ===
+    mode          listener t_head                     nginx    t_head                        AUC    thr  structural
+h3  get           200:12      91.9 [  91.3..   92.6]  200:12      81.6 [  80.7..   84.2]    1.00   100%  -
+h3  post-now      405:12      91.2 [  91.2..   92.3]  405:12      81.2 [  80.6..   84.0]    1.00   100%  -
+h3  post-pause    405:12    1083.4 [1082.5.. 1084.4]  405:12      80.8 [  80.7..   83.9]    1.00   100%  listener waited 12/12, nginx early 12/12 -> 100%
+h3  post-authver  405:12    1084.2 [1083.1.. 1085.6]  405:12      81.4 [  80.6..   84.3]    1.00   100%  listener waited 12/12, nginx early 12/12 -> 100%
+h3  post-nobody   none:6   -                          405:6       81.4 [  80.8..   84.3]     nan   nan%  listener waited 6/6, nginx early 6/6 -> 100%
+h1  get           200:12     160.5 [ 160.2..  160.9]  200:12     160.3 [ 160.2..  160.8]    0.55    62%  -
+h1  post-now      405:12     160.8 [ 160.2..  161.1]  405:12     160.8 [ 160.2..  161.2]    0.48    54%  -
+h1  post-pause    405:12     160.6 [ 160.3..  161.2]  405:12     160.4 [ 160.3..  161.2]    0.58    62%  listener waited 0/12, nginx early 12/12 -> 50%
+h1  post-authver  405:12     160.8 [ 160.2..  161.0]  405:12     160.7 [ 160.2..  160.9]    0.61    67%  listener waited 0/12, nginx early 12/12 -> 50%
+h1  post-nobody   405:6      160.6 [ 160.4..  161.2]  405:6      160.6 [ 160.5..  163.1]    0.40    58%  listener waited 0/6, nginx early 6/6 -> 50%
+
+=== RTT 200 ms, jitter 0 ms ===
+    mode          listener t_head                     nginx    t_head                        AUC    thr  structural
+h3  get           200:12     227.6 [ 227.5..  228.0]  200:12     203.1 [ 200.6..  204.1]    1.00   100%  -
+h3  post-now      405:12     227.5 [ 226.8..  228.2]  405:12     200.8 [ 200.2..  203.3]    1.00   100%  -
+h3  post-pause    405:12    1201.5 [1201.1.. 1203.0]  405:12     203.5 [ 200.4..  204.3]    1.00   100%  listener waited 12/12, nginx early 12/12 -> 100%
+h3  post-authver  405:12    1202.5 [1201.5.. 1204.0]  405:12     201.1 [ 200.6..  204.2]    1.00   100%  listener waited 12/12, nginx early 12/12 -> 100%
+h3  post-nobody   none:6   -                          405:6      200.2 [ 200.2..  201.7]     nan   nan%  listener waited 6/6, nginx early 6/6 -> 100%
+h1  get           200:12     400.4 [ 400.3..  400.9]  200:12     400.7 [ 400.3..  401.1]    0.44    54%  -
+h1  post-now      405:12     400.8 [ 400.3..  401.2]  405:12     400.8 [ 400.2..  401.3]    0.50    62%  -
+h1  post-pause    405:12     400.3 [ 400.3..  400.4]  405:12     400.4 [ 400.3..  400.7]    0.33    54%  listener waited 0/12, nginx early 12/12 -> 50%
+h1  post-authver  405:12     400.6 [ 400.2..  400.8]  405:12     400.4 [ 400.3..  400.7]    0.61    67%  listener waited 0/12, nginx early 12/12 -> 50%
+h1  post-nobody   405:6      400.9 [ 400.3..  401.1]  405:6      400.3 [ 400.3..  400.8]    0.75    83%  listener waited 0/6, nginx early 6/6 -> 50%
+
