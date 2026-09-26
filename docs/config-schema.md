@@ -109,14 +109,18 @@ networks:
                                     # (0 = off); never per data packet
       ObfsJunkPacketMinSize: 40     # min junk datagram size (bytes), 1..1400
       ObfsJunkPacketMaxSize: 200    # max junk datagram size (bytes), 1..1400
-      ObfsInitHeaderJunkSize: 0     # random tail bytes on handshake-phase frames
-                                    # (AmneziaWG S1), 0..1400
-      ObfsTransportHeaderJunkSize: 0 # random tail bytes on steady-state frames
-                                    # (AmneziaWG S2), 0..1400
-      ObfsInitMagicHeader: 0        # if set, force the first 4 nonce bytes of
-                                    # handshake-phase frames to this value so the
+      ObfsInitHeaderJunkSize: 0     # max random tail on handshake-phase frames
+                                    # (AmneziaWG S1), 0..1400; reserved in the
+                                    # MTU. Every frame gets a random tail of
+                                    # 0..max(this, 256) that fits the path
+      ObfsTransportHeaderJunkSize: 0 # max random tail on steady-state frames
+                                    # (AmneziaWG S2), 0..1400; reserved in the
+                                    # MTU; tail 0..max(this, 64) per datagram
+      ObfsInitMagicHeader: 0        # if set, a 4-byte plaintext prefix with this
+                                    # value on handshake-phase frames so the
                                     # leading bytes mimic another protocol
-                                    # (AmneziaWG H1); 0 = random nonce
+                                    # (AmneziaWG H1); it takes no nonce bytes;
+                                    # 0 = no prefix
       ObfsTransportMagicHeader: 0   # same for steady-state frames (H2)
       # Runtime CLI: tinc obfs status | enable | disable |
       #              set <key> <value> | get <key> | tag <c>/<min>/<max>[/<s1>[/<h1>]]

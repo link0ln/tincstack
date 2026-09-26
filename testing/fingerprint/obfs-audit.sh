@@ -55,6 +55,14 @@ mkdir -p "$RUN" "$OUT"
 
 t() { local n=$1; shift; docker exec "$PFX-$n" tinc -n lab -c "$Y" "$@"; }
 mark() { printf '%s\t%s\t%s\n' "$1" "$2" "$(date +%s.%N)" >> "$RUN/phases.tsv"; }
+# A node's own Ed25519 public key, from its host block in the tinc.yaml on stdin.
+ownpubkey() { # name
+	awk -v n="$1" '
+		$0 ~ "^      " n ": \\|" {inblk=1; next}
+		inblk && /^      [A-Za-z0-9_]+: \|/ {inblk=0}
+		inblk && /Ed25519PublicKey/ {print $3; exit}
+	'
+}
 on_obfs() { t l dump connections 2>/dev/null | grep -q "^founder .*transport obfs"; }
 start_leaf() { docker exec -d "$PFX-l" sh -c "tincd -n lab -c $Y -D -d3 >>/tmp/tincd.log 2>&1"; }
 wait_obfs() {
@@ -175,6 +183,16 @@ for cfg in $CONFIGS; do
 		> "$RUN/$cfg-udp.tsv" 2>/dev/null
 	docker run --rm -v "$HERE:/h:ro" -v "$RUN:/r" "$PROBER" python3 /h/obfs_stats.py \
 		"/r/$cfg-udp.tsv" "/r/$cfg-phases.tsv" "$F_IP" "$L_IP" > "$OUT/obfs-$cfg.txt"
+	# A mesh member holds both public keys, so it can derive the bootstrap
+	# keys and read what is sealed under them (the frames before the session
+	# key exists). Counting them is also the on-wire check that the probe's
+	# key derivation and frame parsing (v2 and v3) are the daemon's.
+	pkf=$(docker exec "$PFX-f" cat "$Y" | ownpubkey founder)
+	pkl=$(docker exec "$PFX-l" cat "$Y" | ownpubkey leaf)
+	docker run --rm -v "$HERE/../transports:/t:ro" -v "$RUN:/r" "$PROBER" python3 /t/obfs_probe.py \
+		decrypt "/r/$cfg.pcap" "$pkf" "$pkl" > "$RUN/$cfg-bootstrap.txt" 2>&1
+	{ echo "--- a mesh member's view: datagrams it can unseal with the bootstrap keys (obfs_probe.py) ---"
+	  cat "$RUN/$cfg-bootstrap.txt"; } >> "$OUT/obfs-$cfg.txt"
 	{ echo "--- probes (a stranger at $P_IP) ---"; cat "$RUN/$cfg-probes.txt"
 	  echo "--- leaf's connection at the end ---"; cat "$RUN/$cfg-connections.txt"
 	  echo "--- ping summary ---"; grep -E 'packets transmitted|rtt' "$RUN/$cfg-ping.txt"; } >> "$OUT/obfs-$cfg.txt"

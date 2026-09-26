@@ -112,6 +112,11 @@ put("fuzz_sf", "hijack", rec(0, syn) + rec(1, data2) + rec(1, reset) + rec(0, re
 put("fuzz_sf", "unknown-cid", rec(0, ack) + rec(2, ack) + rec(0, data2))
 put("fuzz_sf", "bad-meta", rec(0, sf_frame(1, 1, cid, 0, 0, b"\xff\xff\xff")))
 
+# fuzz_obfs flag 4 seals the record with the peer's link first (flag 8: as
+# frame v2, flag 16: handshake phase), so these reach the post-verify path.
+put("fuzz_obfs", "sealed-v3", rec(4 | 16, syn) + rec(4, data2) + rec(4 | 2, ack) + rec(4, data2))
+put("fuzz_obfs", "sealed-v2-v3", rec(4 | 8 | 16, syn) + rec(4 | 8, data2) + rec(4, ack) + rec(4 | 8, close))
+
 put("fuzz_pool", "pending", "10.99.0.0/24\nName = x\nSubnet = 10.99.0.2/32\nSubnet = 10.99.0.3/32\n")
 put("fuzz_pool", "wide", "10.99.0.0/24\nName = exit\nSubnet = 0.0.0.0/0\nSubnet = 10.99.0.0/16\n")
 put("fuzz_pool", "bad", "10.99.0.0/33\nSubnet = garbage\n")

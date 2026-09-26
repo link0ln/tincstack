@@ -632,14 +632,16 @@ Source: `core/tincd/src/obfs.c` (framing, keys, junk, inbound keyed check),
 (`obfs_wrap_send` on the SPTPS data path, `handle_incoming_vpn_packet_decap`
 for re-injection).
 
-> **Frame version.** The layout and key schedule below are obfs **v2**
-> (`tincstack-obfs-v2`), which replaces the v1 seal that review R found to be
-> forgeable mesh-wide, nonce-reusing and replayable (findings M5-2…M5-6). v2 is
-> not wire-compatible with v1, but the two only ever meet *inside one mesh*
-> (obfs needs no upstream compat): a v1 node's frames simply fail a v2 node's
-> keyed check and are dropped as junk, and vice-versa, so neither crashes the
-> other — the obfs handshake never completes across the version boundary and
-> the link falls back to `plain`. Upgrade all nodes of a mesh together.
+> **Frame version.** The key schedule below is obfs **v2**
+> (`tincstack-obfs-v2`), which replaced the v1 seal that review R found to be
+> forgeable mesh-wide, nonce-reusing and replayable (findings M5-2…M5-6); v1
+> and v2 do not interoperate (a v1 frame fails a v2 node's keyed check and is
+> dropped as junk, and vice-versa, so the link falls back to `plain`). The
+> frame layout is **v3** since 2026-09-26: the v2 layout with the header
+> protected and the tail length random, because the wire audit of that day
+> found v2 identifiable from a single datagram (see "Frame v3" below). A mesh
+> can move to v3 piecemeal: a current node reads v2 and v3 and answers a peer
+> that only speaks v2 in v2 — see "Mixed versions".
 
 ### Frame
 
@@ -653,14 +655,110 @@ datagram — is:
                            Poly1305 IV is the un-whitened counter
     M+8    2    clen       length of the ciphertext that follows (network order)
     M+10   clen ciphertext ChaCha20-Poly1305(inner)  = inner_len + 16-byte tag
-    M+10+clen P tail junk  P random bytes (handshake/steady header-junk knob)
+    M+10+clen P tail       P pseudo-random bytes, P random per datagram
+                           (see "Header shaping")
+
+    v3: bytes M..M+9 (nonce and clen) are XORed with a mask computed from
+        bytes M+10..M+25 (the first 16 ciphertext bytes) -- "Frame v3" below.
 
 `inner` is the exact datagram that would have been sent in the clear: the
 single-flow frame (which itself begins with the SF magic) or the SPTPS relay/
 direct datagram (`dst-id|src-id|record`). Nothing of tinc's structure is on the
-wire — with no magic configured the leading bytes are the whitened counter and
-the rest is ciphertext, both indistinguishable from random; the SF magic and
-the SPTPS record are inside the sealed region.
+wire — with no magic configured every byte is masked header, ciphertext or
+tail, all indistinguishable from random; the SF magic and the SPTPS record are
+inside the sealed region.
+
+### Frame v3: header protection and random tails (wire audit 2026-09-26)
+
+v2 sealed everything *but* its own header, and the header gave it away
+(`testing/fingerprint/results/2026-09-26-audit/`, stream F):
+
+- `clen` sat in clear: `bytes[8:10] == len − 10` in **9283 of 9283**
+  datagrams (random: 2⁻¹⁶) — a stateless one-datagram DPI rule;
+- the wire nonce was `counter XOR mask` with a fixed mask per keyset, so
+  consecutive datagrams shared bytes 0–5 (**4620 of 4643** pairs) and a
+  10-minute capture had 12 distinct 2-byte prefixes per direction;
+- sizes were the inner sizes plus a constant: every dial opened
+  62/50/65/50/118 B (7 of 7), a 4000-datagram flood had 2 sizes, and the
+  header-junk knobs only shifted all of it by a constant.
+
+v3 fixes the first two the way QUIC does (RFC 9001 §5.4). Each keyset gets a
+third key per direction, the **header-protection key**:
+
+    hp_dir  = SHA-512( "tincstack-obfs-hp\0"  || dir || base  )[:32]   (bootstrap)
+    shp_dir = SHA-512( "tincstack-obfs-shp\0" || dir || sbase )[:32]   (session)
+
+The sender seals as in v2, then takes the **sample** — the first 16 bytes of
+the ciphertext, which exist in every frame because the ciphertext always holds
+at least the 16-byte tag — and computes one ChaCha20 block under `hp_dir` with
+the sample as its input block (tinc's DJB ChaCha20: counter = sample[0:8]
+little-endian, nonce = sample[8:16]; RFC 9001 splits the same 16 bytes 4/12
+for the IETF variant). Bytes 0–9 of that block are XORed over nonce‖clen;
+bytes 10–11 pick the tail length (see "Header shaping"); the blocks after it
+are the tail bytes. The receiver recomputes the mask from the same sample,
+unmasks, and only then parses clen and runs Poly1305 — which still gates
+everything: a tampered sample yields a different mask and counter, and the tag
+fails. Cost: one ChaCha20 block per datagram sent, and one per keyset tried on
+receive.
+
+What this does and does not buy: the header is now as random as the
+ciphertext, per datagram, for anyone without the header key. A mesh member
+holding both public keys can still derive the *bootstrap* header key and read
+the cold-start frames, as in v2 (finding M5-2: those are the frames before the
+session key exists); the session keys and their header keys are known to the
+two endpoints only. The magic prefix is deliberately left in clear (it exists
+to imitate something). SPTPS inside is unchanged.
+
+Measured with the same audit script on the v3 core
+(`testing/fingerprint/results/2026-09-26-obfs-v3/`): `bytes[8:10] == len − 10`
+in 0 of 9313 datagrams, consecutive datagrams with equal bytes 0–5 0 of 4657
+and 0 of 4654, no header byte flagged by the chi-square, 130 bulk sizes where
+v2 had 2, no handshake position of fixed size over 7 dials (v2: the first 5).
+The `fuzz_obfs` self-tests assert the same properties on 20 000 frames, the v2
+and v3 round trips, tampering and replay; a build with the header mask removed
+fails them.
+
+### Mixed versions: v2 and v3 nodes in one mesh
+
+There is no version field on the wire — a field would be exactly the marker v3
+removes. The receiver tells the versions apart by which one verifies: for each
+keyset and magic-prefix length it tries v3 (unmask, then Poly1305) and then v2
+(Poly1305 on the clear header). A stranger's datagram almost never gets as far
+as Poly1305, because the unmasked `clen` must fit the datagram first.
+
+What a node **sends** to a peer is v3 unless that peer has shown it only speaks
+v2 (`obfs_link_t.peer_v2`):
+
+- a fresh (verified, inside the replay window) **v2 frame** from the peer sets
+  it — "`nodeb speaks obfs frame v2 (an older tincstack): sealing for it in v2,
+  with the header in the clear`" — before the frame is re-injected, so the
+  SYN-ACK to an older dialler already goes out in v2;
+- a fresh **v3 frame** clears it;
+- the peer's `OBFS_KEY` carries the highest frame version it reads as a
+  trailing token (`OBFS_KEY <flag> <seed> 3`; an older parser stops at the
+  seed). Once a peer has said `3` over the authenticated meta channel, a v2
+  frame no longer moves the link back to v2 until the link resets — so on a
+  link between two current nodes the header is protected for the rest of the
+  session, however it started.
+
+`peer_v2` survives a link reset on purpose, so the next dial to an older peer
+that once reached us is readable to it; `peer_v3` is re-learned per session.
+v2 frames also get the random tail, which an older receiver ignores (it
+delimits the ciphertext by `clen`).
+
+The one pair that cannot interoperate: a **current dialler that has never
+heard from an older acceptor**. Its v3 SYN reads as junk to the old node; the
+dial times out, the dialler logs "`No obfs frame from nodeb (…) verified
+during the dial; if it runs a tincstack older than obfs frame v3 it cannot read
+ours`", and the carrier walk (§2) moves on after that one failure — no
+flapping; the next reconnect tries obfs once more. Upgrade the nodes that are
+dialled (founders, relays) first and every older dialler keeps obfs; upgrade a
+dialler first and its links to not-yet-upgraded acceptors run on the next
+carrier until those are upgraded. Proof:
+`OLD_IMAGE=<pre-v3 image> testing/transports/mixed-version-test.sh`
+(obfs pairs: new founder / old leaf stays on obfs, in v2, and carries traffic;
+old founder / new leaf falls back once with that line and carries traffic;
+new / new stays on obfs).
 
 ### Key schedule (findings M5-2, M5-5): bootstrap key → per-link session key
 
@@ -682,6 +780,10 @@ does the reverse. Because every mesh member holds every public key, this key is
 link, until a session key exists. It is what makes cold-start classification
 possible (the receiver can derive it before any handshake). The Poly1305 tag is
 the junk/real discriminator: junk and forgeries fail it.
+
+**Header protection (frame v3).** Each tier also derives a per-direction
+header-protection key (`tincstack-obfs-hp` / `tincstack-obfs-shp`), see
+"Frame v3" above.
 
 **Session tier (steady state).** Once the connection is up and its SPTPS meta
 channel is authenticated, the two nodes exchange a fresh 32-byte seed each over
@@ -769,8 +871,10 @@ deterministic mechanism proof.)
 
 The ChaCha20-Poly1305 nonce is a **strict per-direction 64-bit counter**, so it
 never repeats under a given key — no keystream reuse, no Poly1305 forgery. On
-the wire the counter is whitened (`counter XOR mask_dir`) so it does not read as
-a plaintext sequence number; the receiver recovers it by XORing the same mask.
+the wire the counter is whitened (`counter XOR mask_dir`) and, since frame v3,
+also masked per datagram by header protection: the whitening alone left the
+high bytes constant from one datagram to the next (see "Frame v3"). The
+receiver removes both masks.
 The counter starts at a random 48-bit value per keyset, so the leading wire
 bytes never look like a low counter. (That random start does **not** keep a
 restarted node above the peer's window — see "Key epochs" below, which is what
@@ -825,10 +929,22 @@ Steady-state data never emits junk (the prototype's 3× amplification is gone).
 
 ### Header shaping (the AmneziaWG S1/S2/H1–H4 vocabulary)
 
-- `ObfsInitHeaderJunkSize` / `ObfsTransportHeaderJunkSize` (S1/S2): extra random
-  bytes appended after the ciphertext of handshake-phase / steady-state frames,
-  to change the size distribution. The receiver ignores them (`clen` delimits
-  the ciphertext).
+- **Every frame carries a random tail** (since frame v3; v2 frames to older
+  peers too): its length is drawn per datagram, uniformly from `[0, cap]`,
+  from the header-protection block, and its bytes are that key's keystream —
+  no `getentropy()` per datagram. `cap` is `max(Obfs*HeaderJunkSize, floor)`,
+  with a floor of **256** bytes for handshake-phase frames (few, and the most
+  characteristic sizes) and **64** for steady-state frames, and never more
+  than the room the path budget leaves after the frame: the floor only ever
+  fills room, so it never costs a datagram or moves the MTU. The receiver
+  ignores the tail (`clen` delimits the ciphertext).
+- `ObfsInitHeaderJunkSize` / `ObfsTransportHeaderJunkSize` (S1/S2): the
+  **maximum** tail of handshake-phase / steady-state frames, and the room
+  reserved for it in the MTU arithmetic below. Before v3 this was the exact
+  tail of every frame, which only shifted the size histogram by a constant
+  (16 and 64 bytes in the audit); now it widens the random range. A value
+  above the floor is also what gives full-size packets a random tail (see the
+  limits in "obfs and the path MTU").
 - `ObfsInitMagicHeader` / `ObfsTransportMagicHeader` (H1/H2): if set, a 4-byte
   **plaintext prefix** is prepended to the frame, so the leading bytes can be
   made to mimic another protocol. Unlike v1, this prefix is separate from the
@@ -856,7 +972,8 @@ top of the inner frame obfs puts
 | magic prefix (`Obfs*MagicHeader`, optional) | 0 or 4 |
 | nonce + `clen` (`OBFS_HDR_LEN`) | 10 |
 | Poly1305 tag | 16 |
-| tail junk (`Obfs*HeaderJunkSize`) | 0 … `OBFS_MAX_JUNK` (1400) |
+| random tail, reserved part (`Obfs*HeaderJunkSize`) | 0 … `OBFS_MAX_JUNK` (1400) |
+| random tail above that (floor 256 / 64) | only what the budget leaves |
 
 so the fixed seal costs 26 bytes (30 with a magic header). The two things it
 wraps are a single-flow frame (`SF_HDR_LEN` 24 + up to `SF_MAX_PAYLOAD` 1200)
@@ -907,6 +1024,15 @@ bytes (exactly the budget) and tinc fixes its MTU to 1273 after one probe. On a
 which is the seal being accounted for. The proof is
 `testing/transports/obfs-mtu-test.sh`.
 
+The random tail (frame v3) keeps all of this: its reserved part is the
+configured junk, exactly what the arithmetic above already reserved, and the
+floor above it is cut to the room the budget leaves after the frame. The flip
+side is a limit: a datagram that already fills the budget gets no tail, so with
+`ObfsTransportHeaderJunkSize: 0` the full-size packets of a bulk transfer, and
+tinc's PMTU probes at the path maximum, all have exactly the budget's size.
+Set `ObfsTransportHeaderJunkSize` to reserve a random range for them, at that
+many bytes of tunnel MTU.
+
 Limits: the budget is only as good as the kernel's route MTU. A middlebox that
 silently drops oversized datagrams without sending ICMP is invisible to it, and
 tinc's own PMTU probing (which now converges) is what covers that case for the
@@ -919,8 +1045,10 @@ obfs frames look random, so `transport_classify_udp` cannot spot them and
 returns `SPTPS`. `transport_udp_dispatch` then runs `obfs_udp_try`, **after** the
 SF and QUIC pattern tests:
 
-1. **Fast path** — an active link whose remembered source address matches: at
-   most two Poly1305 verifications (session key then bootstrap key). On failure
+1. **Fast path** — an active link whose remembered source address matches: per
+   keyset (pending, session, bootstrap) one ChaCha20 block for the v3 header
+   mask, and a Poly1305 verification only when the unmasked (v3) or clear (v2)
+   length fits the datagram. On failure
    it falls through to SPTPS (so a still-plain datagram during the brief setup
    window, or junk, is handled correctly).
 2. **Cold path** — a source with no active obfs link, obfs accepted: a
