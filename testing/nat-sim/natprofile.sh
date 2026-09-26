@@ -19,11 +19,17 @@
 #                   inbound only for conntrack ESTABLISHED tuples (exact ip:port).
 #   masq            Stock Linux MASQUERADE, dynamic (works for any inside port,
 #                   needed for a node that rebinds its UDP port at run time).
-#                   What a Linux home router / Linux CGN does. NOTE: on kernel
-#                   >= 6.7 this is NOT endpoint-independent: udpprobe measures
-#                   "first destination keeps the source port, every further
-#                   destination shares one other port" (EIM-after-first) with
-#                   address-and-port-dependent filtering.
+#                   The gateway's INPUT chain is open, so an unsolicited datagram
+#                   to its external address creates a local conntrack entry.
+#                   udpprobe measures "first destination keeps the source port,
+#                   every further destination shares one other port"
+#                   (EIM-after-first) with address-and-port-dependent filtering;
+#                   2026-09-26 (stream N): that remapping follows the unsolicited
+#                   inbound entries, see README "masq vs masqfw".
+#   masqfw          masq plus the router's own firewall: new inbound on the
+#                   external interface is dropped in INPUT (as OpenWrt and CPE
+#                   firewalls do). Measured on 6.8: EIM + APDF, port-preserving;
+#                   see README "masq vs masqfw".
 #   symmetric       APDM + APDF: MASQUERADE --random-fully (fresh external port per
 #                   destination tuple) + inbound only for ESTABLISHED tuples.
 #   udpblock        Drops every UDP datagram both ways; TCP is MASQUERADEd
@@ -76,6 +82,7 @@ iptables -t nat -L -n >/dev/null
 
 iptables -t nat -F
 iptables -F FORWARD
+iptables -F INPUT
 iptables -P FORWARD DROP
 conntrack -F 2>/dev/null || true
 tc qdisc del dev "$EXT" root 2>/dev/null || true
@@ -118,6 +125,18 @@ case "$TYPE" in
         ;;
     masq)
         iptables -t nat -A POSTROUTING -o "$EXT" -j MASQUERADE
+        ;;
+    masqfw)
+        # masq as a real router runs it: the gateway's own INPUT chain drops
+        # new inbound connections on the WAN side (OpenWrt's `wan' zone input
+        # REJECT, every CPE firewall). An unsolicited datagram is then dropped
+        # before conntrack confirms it, so it leaves no local conntrack entry
+        # behind -- in plain `masq' (INPUT open) such an entry claims the
+        # external port and pushes later outbound flows onto another one.
+        iptables -t nat -A POSTROUTING -o "$EXT" -j MASQUERADE
+        iptables -F INPUT
+        iptables -A INPUT -i "$EXT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        iptables -A INPUT -i "$EXT" -j DROP
         ;;
     symmetric)
         iptables -t nat -A POSTROUTING -o "$EXT" -j MASQUERADE --random-fully

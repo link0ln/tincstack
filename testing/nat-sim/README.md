@@ -27,7 +27,17 @@ testing/nat-sim/lab.sh matrix --quick --image core     # what `make check` runs
 testing/nat-sim/lab.sh matrix                          # 5x5 + udpblock, core AND baseline
 testing/nat-sim/lab.sh laptop                          # the named regression, core vs baseline
 testing/nat-sim/lab.sh glare                           # simultaneous REQ_KEY
+testing/nat-sim/lab.sh matrix --image core --pairs "masqfw/masqfw cgnat/cgnat" --transport quic
+testing/nat-sim/lab.sh mesh --image both               # 5 NATed nodes + relay: % direct, relay load
+testing/nat-sim/lab.sh mesh --image core --relay-down 20
+testing/nat-sim/lab.sh rekey restricted symmetric --keyexpire 20
+testing/nat-sim/lab.sh portmap                         # what each NAT does to source ports (no tincd)
+testing/nat-sim/lab.sh punch masq/masq --sync --rtt 40 # hole-punch techniques (no tincd)
 ```
+
+Stream N (2026-09-26) added the arms below the matrix; `docs/nat.md` is the
+analysis they feed (trace of the traversal code, per-NAT behaviour, ranked
+fixes). Evidence: `results/2026-09-26/`.
 
 Results go to `results/run/<run-id>/` (logs, `dump nodes/edges`, `info`,
 gateway rule/conntrack dumps, `summary.md`); the run id is `$WSF_RUN` or
@@ -81,9 +91,47 @@ RFC 4787 vocabulary: mapping = EIM (endpoint-independent) or APDM
 | `fullcone` | static pair: `PREROUTING DNAT ext:P → inside:655`, `POSTROUTING SNAT inside:655 → ext:P` (P ≠ 655, i.e. non-port-preserving), plus `FORWARD` ACCEPT for any inbound to `inside:655` | EIM + EIF |
 | `restricted` | same static pair; inbound to `inside:655` accepted only if the inside host has sent UDP to that *source IP* before — `xt_recent` list keyed on destination address (`--rdest --set` on every outbound datagram, `--rsource --rcheck --seconds 300` inbound) | EIM + ADF |
 | `portrestricted` | same static pair; inbound only for conntrack `ESTABLISHED` tuples (exact ip:port) | EIM + APDF |
-| `masq` | stock `MASQUERADE` (what a Linux router / Linux CGN does), dynamic: works for any inside port | **EIM-after-first** + APDF in the probe (the first destination keeps the source port; the next three shared one other port), but tinc runs also showed three distinct ports — treat it as APDM-ish. Kernels ≥ 6.7 no longer give endpoint-independent mapping with plain MASQUERADE |
+| `masq` | stock `MASQUERADE`, gateway INPUT chain open (a Linux box doing NAT with no firewall; the lab's CGN tier), dynamic: works for any inside port | **EIM-after-first** + APDF in the probe (the first destination keeps the source port; the next three shared one other port). 2026-09-26: EIM and port-preserving until an unsolicited inbound datagram leaves a local conntrack entry; after that new flows move to another port (see "masq vs masqfw") |
 | `symmetric` | `MASQUERADE --random-fully` + inbound only `ESTABLISHED` | APDM + APDF |
+| `masqfw` | `masq` plus the router's own firewall: `INPUT -i ext` drops everything but `ESTABLISHED,RELATED` | EIM + APDF, port-preserving (2026-09-26, `expect masqfw`) |
+| `cgnat` | two `masq` tiers (home router, then a carrier tier with short UDP timeouts); pair scenarios only | as `masq`, twice |
 | `udpblock` | all UDP dropped both ways; TCP MASQUERADEd | no UDP at all (TCP meta path only) |
+
+### `masq` vs `masqfw` — what "Linux MASQUERADE is not EIM" really was
+
+Until 2026-09-26 this README said MASQUERADE on kernels >= 6.7 is
+"EIM-after-first" and the matrix treated `masq` like a symmetric NAT. Stream N
+measured where the second port comes from (`lab.sh portmap`,
+`results/2026-09-26/portmap/`, kernel 6.8, two trials each):
+
+- **Nothing unsolicited → EIM and port-preserving.** Five destinations from
+  one socket: all five see source port 655, on `masq`, `masqfw` and `cgnat`.
+- **An unsolicited datagram to the mapping** (a reflector socket the client
+  never sent to, i.e. exactly what a peer's early hole-punch probe is) reaches
+  the gateway's own INPUT chain in `masq` and leaves a *local* conntrack entry
+  `peer:port -> gw:sport`. Every later outbound flow whose reply tuple clashes
+  with it is moved to another port (656 -> 935 / 647, 4004 -> 60376 / 44401),
+  and so is every later new flow after that, clash or not. Flows opened before
+  the poke keep the source port. The new port stays in the source port's class
+  (512-1023 -> 600-1023, >= 1024 -> 1024-65535).
+- **`masqfw` drops the unsolicited datagram before conntrack confirms it**, so
+  it leaves nothing behind: every destination, poked or not, keeps the source
+  port. That is how a Linux home router with its firewall on (OpenWrt, every
+  CPE) behaves.
+- A throwaway first datagram that is never answered (`burn`) changes nothing.
+
+udpprobe's own XPORT/XHOST filter tests are such unsolicited datagrams, which
+is why it saw "the first destination keeps the port, the rest share another".
+Conntrack shows the same mechanism deadlocking tinc in `pair-masq-masq/core`
+(ww-n base run, `gw-gwa.txt` / `gw-gwb.txt`): nodeb's probe to `gwa:655`
+arrives first and pushes all of nodea's later flows to 684; nodea's probes
+from 684 do the same to nodeb (818); each side keeps probing the other's
+previous port every 2 s, which refreshes the entries — a permanent deadlock.
+
+So `masq` is still a valid profile — it is a Linux NAT that accepts WAN input
+(the lab's CGN tier, a bare Linux box doing NAT with no firewall) — but it is
+not the typical home router; `masqfw` is. The matrix table below keeps `masq`
+as measured and judges `masqfw` as a port-restricted cone (`nat_class`).
 
 Limits, stated plainly:
 
@@ -93,13 +141,11 @@ Limits, stated plainly:
   observed address must fix. A node that *rebinds* its port (`UDPRebindOnWake`)
   cannot sit behind a static cone profile, so the laptop scenario uses the
   dynamic `masq` profile on both CGNAT tiers.
-- A dynamic EIM NAT cannot be built from stock netfilter on this kernel
-  (`MASQUERADE` is EIM-after-first, `--random*` is APDM, a port range excluding
-  the source port is random). So there is no "dynamic full-cone/restricted"
-  tier; RFC 6888 CGNs (EIM) are approximated by `masq`, which is EIM for every
-  destination after the first. Since the first flow of a NATed node is always
-  to the relay, all *peers* see one stable port — the practical effect for
-  tinc is EIM.
+- Dynamic EIM exists after all: `masqfw` (MASQUERADE behind a closed INPUT
+  chain) is EIM + APDF and port-preserving. What was read as "MASQUERADE is
+  EIM-after-first" is the open INPUT chain of `masq` (next section). There is
+  still no dynamic full-cone/address-restricted tier (EIF/ADF filtering needs
+  the static profiles).
 - "Restricted" is address-restricted (ADF) per RFC 4787; the netmaker lab's
   "restricted" was in fact port-restricted (conntrack-state filter).
 
@@ -129,6 +175,10 @@ Expected outcome table (RFC 5128 logic; tinc does no port prediction):
 | portrestricted | direct | direct | direct | relay | relay |
 | masq | direct | direct | relay | relay | relay |
 | symmetric | direct | direct | relay | relay | relay |
+
+`masqfw` rows (judged as `portrestricted`) and `cgnat` (judged as `masq`)
+come from `nat_class()`; `--pairs "A/B ..."` runs any subset, and a direct
+cell where the table says relay is reported, not failed.
 
 Why `symmetric x fullcone` and `symmetric x restricted` come up direct (and
 this is not a mislabelled cone): in `results/2026-09-16/pair-restricted-symmetric/core/gw-gwb.txt`
@@ -243,12 +293,41 @@ failure of the binary: it is retried once, and if it still does not collide the
 arm exits 2 and says so, because a run that never provoked the race proves
 nothing about it.
 
+## Stream N arms (2026-09-26)
+
+- `matrix`/`scenario` options: `--transport T` (NATed nodes get
+  `PreferredTransports = T,plain`; the summary shows the meta carrier each
+  side actually used, as listed by `dump connections` — a dial still pending
+  or refused is listed too), `--pairs`, `--node-conf "Key=Value ..."`,
+  `--ipv6 both|a` (a routed 2001:db8::/32 behind stateful ip6tables
+  firewalls, `AddressFamily = any`, the relay's IPv6 address first),
+  `--capture` (tcpdump of gwa's WAN side towards gwb, classified by
+  `dpi-fingerprint`: what the direct peer-to-peer path looks like on the wire).
+- `mesh [--nodes "T1 T2 ..."]`: every node behind its own NAT, one public
+  relay, every ordered pair pings at 1 pps. Per pair: seconds to direct in
+  each direction; overall % direct and the relay's steady-state packet/byte
+  rate over 20 s. `--relay-down S` then stops the relay's tincd for S seconds
+  while one direct and one relayed pair ping at 5 pps (replies while down,
+  longest gap, first reply after restart).
+- `rekey A B --keyexpire S --duration S`: a direct pair under SPTPS rekeys;
+  counts peer-address resets and data packets sent via the relay instead of
+  direct after the pair went direct.
+- `portmap`: see "masq vs masqfw" above.
+- `punch [A/B ...]`: `nattrav punch` on both sides through the real gateway
+  profiles, no tincd: `--strategies "first second burn burn-keep"`,
+  `--spray N` (also send to N ports around the advertised one), `--sync` (a
+  rendezvous GO to both sides at once), `--rtt MS`, `--trials N`. Results
+  accumulate in `punch/punch.jsonl`; the first trial's gateway conntrack is
+  kept as `punch/<pair>/<strategy>-gw-gw?.txt`.
+
 ## Files
 
 - `lab.sh` — host wrapper (build the lab image, run one command in it).
 - `natlab.sh` — the lab itself (runs inside the container).
 - `natprofile.sh` — NAT profiles (runs inside a gateway namespace).
 - `udpprobe.py` — NAT classifier used by `validate-nat`.
+- `nattrav.py` — reflector/rendezvous, port-allocation map and hole-punch
+  client used by `portmap` and `punch` (stdlib only).
 - `results/run/<run-id>/` — full output of every run (git-ignored).
 - `results/<date>/` — committed, curated evidence (`lab.sh promote`; no keys —
   promote greps for key material and fails if it finds any).

@@ -75,4 +75,7 @@ testing/dpi-proof/results/**/*.txt
 # the two gateway dumps testing/nat-sim/README.md cites by path
 !testing/nat-sim/results/*/pair-restricted-symmetric/core/gw-gwb.txt
 !testing/nat-sim/results/*/pair-masq-portrestricted/baseline/gw-gwa.txt
+# ... and the masq x masq deadlock plus the punch arm's conntrack evidence (docs/nat.md)
+!testing/nat-sim/results/*/pair-masq-masq/core/gw-gwa.txt
+!testing/nat-sim/results/*/pair-masq-masq/core/gw-gwb.txt
 testing/fingerprint/run/

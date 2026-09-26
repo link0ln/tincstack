@@ -10,10 +10,28 @@
 #   natlab matrix [--quick] [opts]
 #   natlab laptop [opts]
 #   natlab glare [opts]            (--image-b IMG: nodeb runs the other binary)
+#   natlab mesh [opts]             relay + N NATed nodes, every pair pings
+#                                  (--nodes "t1 t2 ...", --relay-down S)
+#   natlab rekey A_TYPE B_TYPE     direct pair under frequent SPTPS rekeys
+#                                  (--keyexpire S, --duration S)
+#   natlab portmap                 NAT port-allocation map (nattrav, no tinc)
+#   natlab punch A_TYPE B_TYPE     hole-punch strategies (nattrav, no tinc;
+#                                  --trials N, --strategies "first second ...",
+#                                  --spray N: also send to N ports around the
+#                                  peer's advertised port, --sync: both sides
+#                                  start on the rendezvous' GO, --rtt MS)
 #
 # opts: --image core|baseline|both  --image-b core|baseline  --out DIR  --rtt MS
 #       --wait S  --recover S  --expect clean|defect|any  --clean-max S
 #       --pause S  --cgnat-udp-timeout S  --cgnat-udp-stream-timeout S
+#       --transport CARRIER (PreferredTransports of the NATed nodes, e.g. quic)
+#       --pairs "a/b c/d" (matrix subset)
+#       --capture (scenario/matrix: pcap of the A<->B datagrams on gwa's
+#       external side + the dpi-proof fingerprint report, peer.report.txt)
+#       --ipv6 both|a|b (scenario/matrix: that side also gets global IPv6 behind a
+#       stateful, non-translating firewall; the relay is dual-stack)
+# Type `cgnat' (scenario/matrix/mesh/punch) = two tiers of stock MASQUERADE,
+# the carrier tier with the short --cgnat-udp-* conntrack windows.
 set -euo pipefail
 
 CORE_TINCD=/usr/local/sbin/tincd;      CORE_TINC=/usr/local/sbin/tinc
@@ -35,6 +53,8 @@ IMAGE_SEL=""; IMAGE_B=""; OUT=/lab/results; RTT=0; WAIT=90; RECOVER=60; PAUSE=70
 # glare grading: what a run must look like, and how fast "clean" has to be.
 EXPECT=""; CLEAN_MAX=10
 CGNAT_UDP_TO=10; CGNAT_UDP_STO=30
+TRANSPORT=""; PAIRS=""; NODE_CONF=""; IPV6=""; CAPTURE=0; SPRAY=0; SYNC=""; MESH_NODES="fullcone restricted portrestricted masq symmetric"
+RELAY_DOWN=0; KEYEXPIRE=20; DURATION=120; TRIALS=5; STRATEGIES="first second burn burn-keep"
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
@@ -54,6 +74,19 @@ parse_opts() {
             --cgnat-udp-timeout) CGNAT_UDP_TO="$2"; shift 2 ;;
             --cgnat-udp-stream-timeout) CGNAT_UDP_STO="$2"; shift 2 ;;
             --quick) QUICK=1; shift ;;
+            --transport) TRANSPORT="$2"; shift 2 ;;
+            --pairs) PAIRS="$2"; shift 2 ;;
+            --nodes) MESH_NODES="$2"; shift 2 ;;
+            --relay-down) RELAY_DOWN="$2"; shift 2 ;;
+            --keyexpire) KEYEXPIRE="$2"; shift 2 ;;
+            --duration) DURATION="$2"; shift 2 ;;
+            --trials) TRIALS="$2"; shift 2 ;;
+            --strategies) STRATEGIES="$2"; shift 2 ;;
+            --node-conf) NODE_CONF="$2"; shift 2 ;;
+            --ipv6) IPV6="$2"; shift 2 ;;
+            --capture) CAPTURE=1; shift ;;
+            --spray) SPRAY="$2"; shift 2 ;;
+            --sync) SYNC=1; shift ;;
             *) die "unknown option $1" ;;
         esac
     done
@@ -61,7 +94,7 @@ parse_opts() {
 
 # ---------------------------------------------------------------- netns topology
 ns() { ip netns exec "$@"; }
-ns_add() { for n in "$@"; do ip netns add "$n"; ns "$n" ip link set lo up; done; }
+ns_add() { local n; for n in "$@"; do ip netns add "$n"; ns "$n" ip link set lo up; done; }
 
 # veth NS1 IF1 IP1/PL NS2 IF2 IP2/PL  (NS "root" = the container namespace)
 veth() {
@@ -84,12 +117,29 @@ attach() {
 }
 
 teardown() {
+    local n
     pkill -x tincd 2>/dev/null || true
     pkill -f "udpprobe server" 2>/dev/null || true
+    pkill -f "nattrav server" 2>/dev/null || true
     pkill -x ping 2>/dev/null || true
+    pkill -x tcpdump 2>/dev/null || true
     sleep 0.3
     for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do ip netns del "$n" 2>/dev/null || true; done
     ip link del br0 2>/dev/null || true
+    # netns teardown is asynchronous in the kernel: the root-side veth ends
+    # (br-*) linger for a moment, and a quick re-setup then fails with
+    # "RTNETLINK answers: File exists" (seen in back-to-back portmap trials)
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        ip -o link show 2>/dev/null | grep -q ': br-' || break
+        sleep 0.5
+    done
+    # still there (a process kept a namespace alive, or a veth() failed
+    # half-way and left its temporary name behind): remove them by hand,
+    # otherwise every later scenario of the run fails with "File exists"
+    local l
+    for l in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(br-|v[0-9]+[ab]$)'); do
+        ip link del "$l" 2>/dev/null || true
+    done
     rm -rf "$RUN" "$NODES" "$LOGS"
     mkdir -p "$RUN" "$NODES" "$LOGS"
 }
@@ -102,6 +152,33 @@ internet_up() {
     sysctl -qw net.bridge.bridge-nf-call-iptables=0 2>/dev/null || true
     ns_add relay
     attach relay eth0 "$RELAY_IP/24"
+    if [ -n "$IPV6" ]; then ns relay ip -6 addr add "$RELAY_IP6/64" dev eth0 nodad; fi
+}
+# IPv6 "internet" 2001:db8::/64 on br0; site L (a|b) gets 2001:db8:L::/64 behind
+# its gateway, routed (no translation) with a stateful firewall: outbound open,
+# inbound only for conntrack ESTABLISHED/RELATED -- what a home router does for
+# IPv6. IPv4 keeps whatever NAT profile the site has.
+RELAY_IP6=2001:db8::10
+v6_site() { # GW NODE L EXT_HOST_ID
+    local gw="$1" node="$2" l="$3" id="$4"
+    ns "$gw" sysctl -qw net.ipv6.conf.all.forwarding=1
+    ns "$gw" ip -6 addr add "2001:db8::$id/64" dev ext nodad
+    ns "$gw" ip -6 addr add "2001:db8:$l::1/64" dev int nodad
+    ns "$node" ip -6 addr add "2001:db8:$l::5/64" dev eth0 nodad
+    ns "$node" ip -6 route add default via "2001:db8:$l::1"
+    ns "$gw" ip6tables -P FORWARD DROP
+    ns "$gw" ip6tables -A FORWARD -i int -o ext -j ACCEPT
+    ns "$gw" ip6tables -A FORWARD -i ext -o int -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    ns relay ip -6 route add "2001:db8:$l::/64" via "2001:db8::$id"
+}
+v6_up() { # after side_up of both sites
+    [ -n "$IPV6" ] || return 0
+    case "$IPV6" in both|a) v6_site gwa nodea a 2 ;; esac
+    case "$IPV6" in both|b) v6_site gwb nodeb b 3 ;; esac
+    if [ "$IPV6" = both ]; then
+        ns gwa ip -6 route add 2001:db8:b::/64 via 2001:db8::3
+        ns gwb ip -6 route add 2001:db8:a::/64 via 2001:db8::2
+    fi
 }
 # gw_up NAME EXT_IF_ADDR INT_IF_ADDR NODE NODE_ADDR  (all ext on br0)
 gw_up() {
@@ -128,14 +205,21 @@ write_node() {
         echo "Name = $name"
         echo "Mode = router"
         echo "Port = $TINC_PORT"
-        echo "AddressFamily = ipv4"
+        if [ -n "$IPV6" ]; then echo "AddressFamily = any"; else echo "AddressFamily = ipv4"; fi
         echo "PingInterval = 10"
         echo "PingTimeout = 5"
         for l in "$@"; do echo "$l"; done
     } > "$d/tinc.conf"
     printf 'Subnet = %s/32\n' "$vpnip" > "$d/hosts/$name"
     if [ "$name" = relay ]; then
+        # dual-stack relay: the IPv6 address first, as a resolver would order it
+        if [ -n "$IPV6" ]; then printf 'Address = %s\n' "$RELAY_IP6" >> "$d/hosts/$name"; fi
         printf 'Address = %s\nPort = %s\n' "$RELAY_IP" "$TINC_PORT" >> "$d/hosts/$name"
+        # --transport: a first dial only tries carriers the peer's host record
+        # advertises (docs/transports.md §2), and the fronts listen on 443
+        if [ -n "$TRANSPORT" ]; then
+            printf 'Transports = plain, sf, obfs, https, quic\nHttpsPort = 443\nQuicPort = 443\n' >> "$d/hosts/$name"
+        fi
     fi
     # shellcheck disable=SC2016  # $INTERFACE is expanded by tincd, not here
     printf '#!/bin/sh\nip link set "$INTERFACE" up\nip addr add %s/24 dev "$INTERFACE"\n' "$vpnip" > "$d/tinc-up"
@@ -200,7 +284,7 @@ wait_recover() {
 bg_ping() { ns "$1" ping -i 1 "$2" >/dev/null 2>&1 & }
 
 save_state() { # dir node...
-    local d="$1"; mkdir -p "$d"
+    local d="$1" n; mkdir -p "$d"
     for n in "${@:2}"; do
         cp "$LOGS/$n.log" "$d/$n.log" 2>/dev/null || true
         { tincctl "$n" dump nodes; echo; tincctl "$n" dump edges; } > "$d/$n.dump.txt" 2>&1 || true
@@ -227,7 +311,7 @@ validate_nat() {
     sleep 0.5
     local fail=0 t sport=4000 out rc
     : > "$d/udpprobe.jsonl"
-    for t in fullcone restricted portrestricted masq symmetric udpblock; do
+    for t in fullcone restricted portrestricted masq masqfw symmetric udpblock; do
         sport=$((sport + 1))   # fresh inside port per profile: no conntrack carry-over
         local extra=()
         case "$t" in
@@ -242,7 +326,7 @@ validate_nat() {
         if [ "$rc" -ne 0 ]; then log "NAT profile $t: emulation does NOT behave as declared"; fail=1; fi
     done
     teardown
-    if [ "$fail" -eq 0 ]; then log "validate-nat: all 6 profiles behave as declared"; else log "validate-nat: FAILED"; fi
+    if [ "$fail" -eq 0 ]; then log "validate-nat: all 7 profiles behave as declared"; else log "validate-nat: FAILED"; fi
     cp "$d/udpprobe.jsonl" "$OUT/validate-nat.jsonl" 2>/dev/null || true
     return "$fail"
 }
@@ -253,8 +337,11 @@ validate_nat() {
 # measured on this kernel) cannot meet an address-and-port-dependent *filter*
 # (portrestricted, symmetric, masq); every other pair can. udpblock pairs must
 # still carry traffic over TCP.
+# the class a profile is judged as: cgnat = two masq tiers; masqfw measures
+# as EIM + APDF (port-restricted cone) once the gateway's INPUT is closed
+nat_class() { case "$1" in cgnat) echo masq ;; masqfw) echo portrestricted ;; *) echo "$1" ;; esac; }
 expect_direct() { # a b -> yes|no|tcp
-    case "$1/$2" in
+    case "$(nat_class "$1")/$(nat_class "$2")" in
         *udpblock*) echo tcp ;;
         symmetric/symmetric|symmetric/masq|masq/symmetric|masq/masq) echo no ;;
         symmetric/portrestricted|portrestricted/symmetric|masq/portrestricted|portrestricted/masq) echo no ;;
@@ -267,21 +354,64 @@ profile_args() { # type inside_ip map_ext
         *) echo "" ;;
     esac
 }
+# PreferredTransports line for the NATed nodes when --transport is given. The
+# relay accepts every compiled carrier by default, so only the dialler changes.
+# Printed as one word (no spaces) so it survives the unquoted $(...) at the
+# call sites; tincd's list parser takes commas.
+transport_conf() {
+    [ -z "$TRANSPORT" ] || printf 'PreferredTransports=%s,plain\n' "$TRANSPORT"
+    # --node-conf "Key=Value Key=Value": extra lines for the NATed nodes
+    [ -z "$NODE_CONF" ] || printf '%s\n' "$NODE_CONF"
+}
+# side_up GW NODE TYPE EXT_IP INT_IP NODE_IP MAP CGNET
+#   One NATed site on br0. TYPE cgnat = two tiers of stock MASQUERADE: the home
+#   router GW (int INT_IP) behind the carrier GW"2" (ext EXT_IP, int CGNET.254,
+#   short --cgnat-udp-* conntrack windows); otherwise one gateway of TYPE.
+side_up() {
+    local gw="$1" node="$2" t="$3" ext="$4" int="$5" nip="$6" map="$7" cg="$8"
+    if [ "$t" = cgnat ]; then
+        ns_add "${gw}2" "$gw" "$node"
+        attach "${gw}2" ext "$ext/24"
+        veth "${gw}2" int "$cg.254/24" "$gw" ext "$cg.2/24"
+        ns "$gw" ip route add default via "$cg.254"
+        veth "$gw" int "$int/24" "$node" eth0 "$nip/24"
+        ns "$node" ip route add default via "$int"
+        gw_nat "$gw" masq "$cg.2" "$int"
+        gw_nat "${gw}2" masq "$ext" "$cg.254" --udp-timeout "$CGNAT_UDP_TO" --udp-stream-timeout "$CGNAT_UDP_STO"
+    else
+        gw_up "$gw" "$ext" "$int" "$node" "$nip"
+        # shellcheck disable=SC2046
+        gw_nat "$gw" "$t" "$ext" "$int" $(profile_args "$t" "$nip" "$map")
+    fi
+}
+# the carrier each meta connection of NODE runs on ("peer:carrier ...")
+meta_carriers() {
+    tincctl "$1" dump connections 2>/dev/null \
+        | awk '{c=""; for(i=1;i<NF;i++) if($i=="transport") c=$(i+1); printf "%s:%s ", $1, (c==""?"?":c)}'
+}
 
 scenario_run() { # A_TYPE B_TYPE IMAGE OUTDIR -> 0 pass / 1 fail
     local ta="$1" tb="$2" img="$3" d="$4"
     CUR_IMG="$img"; mkdir -p "$d"
     teardown; internet_up
     write_node relay "$VPN_RELAY"
-    write_node nodea "$VPN_A" "ConnectTo = relay" "UDPDiscoveryBurst = 5"
-    write_node nodeb "$VPN_B" "ConnectTo = relay" "UDPDiscoveryBurst = 5"
+    # shellcheck disable=SC2046  # transport_conf prints zero or one line
+    write_node nodea "$VPN_A" "ConnectTo = relay" "UDPDiscoveryBurst = 5" $(transport_conf)
+    # shellcheck disable=SC2046
+    write_node nodeb "$VPN_B" "ConnectTo = relay" "UDPDiscoveryBurst = 5" $(transport_conf)
     share_hosts
-    gw_up gwa "$GWA_EXT" "$GWA_INT" nodea "$NODEA_IP"
-    gw_up gwb "$GWB_EXT" "$GWB_INT" nodeb "$NODEB_IP"
-    # shellcheck disable=SC2046
-    gw_nat gwa "$ta" "$GWA_EXT" "$GWA_INT" $(profile_args "$ta" "$NODEA_IP" "$MAP_A") > "$d/gw-setup.txt"
-    # shellcheck disable=SC2046
-    gw_nat gwb "$tb" "$GWB_EXT" "$GWB_INT" $(profile_args "$tb" "$NODEB_IP" "$MAP_B") >> "$d/gw-setup.txt"
+    side_up gwa nodea "$ta" "$GWA_EXT" "$GWA_INT" "$NODEA_IP" "$MAP_A" 10.201.0 > "$d/gw-setup.txt"
+    side_up gwb nodeb "$tb" "$GWB_EXT" "$GWB_INT" "$NODEB_IP" "$MAP_B" 10.202.0 >> "$d/gw-setup.txt"
+    v6_up
+    local cap_pid=""
+    if [ "$CAPTURE" -eq 1 ]; then
+        # only what crosses between the two sites directly: what an on-path
+        # observer between A's and B's networks sees of the peer-to-peer path
+        # exec: $! must be tcpdump itself (a backgrounded `ns' function is a
+        # subshell; killing it left tcpdump holding gwa's namespace alive)
+        ( exec ip netns exec gwa tcpdump -i ext -U -s 0 -w "$d/peer.pcap" "udp and host $GWB_EXT" > /dev/null 2>&1 ) &
+        cap_pid=$!
+    fi
     tinc_start relay; sleep 1
     tinc_start nodea; tinc_start nodeb
     sleep 2
@@ -297,6 +427,10 @@ scenario_run() { # A_TYPE B_TYPE IMAGE OUTDIR -> 0 pass / 1 fail
     local ping=1; ping_ok nodea "$VPN_B" && ping_ok nodeb "$VPN_A" || ping=0
     local exp verdict direct=0
     exp="$(expect_direct "$ta" "$tb")"
+    # https links are TCP-only by design (https.c become_established), and so
+    # is TCPOnly: no direct UDP is attempted, traffic must flow over the meta
+    # path -- graded like udpblock
+    case " $TRANSPORT $NODE_CONF " in *" https "*|*TCPOnly=yes*) exp=tcp ;; esac
     [ "$ok_ab" -eq 1 ] && [ "$ok_ba" -eq 1 ] && direct=1
     case "$exp" in
         yes) if [ "$direct" -eq 1 ] && [ "$ping" -eq 1 ]; then verdict=PASS; else verdict=FAIL; fi ;;
@@ -305,18 +439,31 @@ scenario_run() { # A_TYPE B_TYPE IMAGE OUTDIR -> 0 pass / 1 fail
     esac
     tincctl nodea info nodeb > "$d/nodea.info.txt" 2>&1 || true
     tincctl nodeb info nodea > "$d/nodeb.info.txt" 2>&1 || true
+    local meta_a meta_b
+    meta_a="$(meta_carriers nodea)"; meta_b="$(meta_carriers nodeb)"
+    if [ -n "$cap_pid" ]; then
+        # 20 s more of steady-state traffic: a carrier link that comes up
+        # after the direct path (AutoConnect, UdpMetaFallback) shows up too
+        sleep 20
+        meta_a="$(meta_carriers nodea)"; meta_b="$(meta_carriers nodeb)"
+        kill "$cap_pid" 2>/dev/null || true; wait "$cap_pid" 2>/dev/null || true
+        dpi-fingerprint "$d/peer.pcap" --port 0 > "$d/peer.report.txt" 2>&1 || true
+        rm -f "$d/peer.pcap"
+    fi
     save_state "$d" relay nodea nodeb
     save_gw "$d" gwa gwb
-    printf '{"a":"%s","b":"%s","image":"%s","rtt_ms":%s,"expected":"%s","direct_ab":%s,"direct_ba":%s,"t_ab":%s,"t_ba":%s,"reach_ab":"%s","reach_ba":"%s","ping":%s,"verdict":"%s"}\n' \
-        "$ta" "$tb" "$img" "$RTT" "$exp" "$ok_ab" "$ok_ba" "$t_ab" "$t_ba" "$r_ab" "$r_ba" "$ping" "$verdict" > "$d/result.json"
-    log "scenario $ta x $tb [$img]: $verdict (expected=$exp direct a->b=$ok_ab/${t_ab}s b->a=$ok_ba/${t_ba}s ping=$ping reach=[$r_ab | $r_ba])"
+    if [ "$ta" = cgnat ]; then save_gw "$d" gwa2; fi
+    if [ "$tb" = cgnat ]; then save_gw "$d" gwb2; fi
+    printf '{"a":"%s","b":"%s","image":"%s","transport":"%s","meta_a":"%s","meta_b":"%s","rtt_ms":%s,"expected":"%s","direct_ab":%s,"direct_ba":%s,"t_ab":%s,"t_ba":%s,"reach_ab":"%s","reach_ba":"%s","ping":%s,"verdict":"%s"}\n' \
+        "$ta" "$tb" "$img" "${TRANSPORT:-plain}${IPV6:+ +v6$IPV6}" "${meta_a% }" "${meta_b% }" "$RTT" "$exp" "$ok_ab" "$ok_ba" "$t_ab" "$t_ba" "$r_ab" "$r_ba" "$ping" "$verdict" > "$d/result.json"
+    log "scenario $ta x $tb [$img${TRANSPORT:+/$TRANSPORT}]: $verdict (expected=$exp direct a->b=$ok_ab/${t_ab}s b->a=$ok_ba/${t_ba}s ping=$ping reach=[$r_ab | $r_ba])"
     teardown
     [ "$verdict" = PASS ]
 }
 
 scenario() {
     local ta="$1" tb="$2"; shift 2; parse_opts "$@"
-    scenario_run "$ta" "$tb" "${IMAGE_SEL:-core}" "$OUT/pair-$ta-$tb/${IMAGE_SEL:-core}"
+    scenario_run "$ta" "$tb" "${IMAGE_SEL:-core}" "$OUT/pair-$ta-$tb/${IMAGE_SEL:-core}${TRANSPORT:+-$TRANSPORT}${IPV6:+-v6$IPV6}"
 }
 
 MATRIX_TYPES=(fullcone restricted portrestricted masq symmetric)
@@ -326,7 +473,9 @@ matrix() {
     case "${IMAGE_SEL:-both}" in both) imgs="core baseline" ;; *) imgs="$IMAGE_SEL" ;; esac
     mkdir -p "$OUT"
     local pairs=()
-    if [ "$QUICK" -eq 1 ]; then
+    if [ -n "$PAIRS" ]; then
+        read -r -a pairs <<<"$PAIRS"
+    elif [ "$QUICK" -eq 1 ]; then
         pairs=(fullcone/fullcone portrestricted/portrestricted masq/restricted symmetric/symmetric udpblock/portrestricted)
     else
         for a in "${MATRIX_TYPES[@]}"; do for b in "${MATRIX_TYPES[@]}"; do pairs+=("$a/$b"); done; done
@@ -335,7 +484,7 @@ matrix() {
     for i in $imgs; do
         for p in "${pairs[@]}"; do
             a="${p%/*}"; b="${p#*/}"
-            scenario_run "$a" "$b" "$i" "$OUT/pair-$a-$b/$i" || fail=1
+            scenario_run "$a" "$b" "$i" "$OUT/pair-$a-$b/$i${TRANSPORT:+-$TRANSPORT}${IPV6:+-v6$IPV6}" || fail=1
         done
     done
     summarize
@@ -349,8 +498,8 @@ summarize() {
         echo
         echo "Cell = seconds until \`tinc info <peer>\` reported *directly with UDP* on that side; \`-\` = never within the wait. \`expected\` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic)."
         echo
-        echo "| A x B | image | expected | direct a->b | direct b->a | ping | verdict |"
-        echo "|---|---|---|---|---|---|---|"
+        echo "| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |"
+        echo "|---|---|---|---|---|---|---|---|"
         for f in "$OUT"/pair-*/*/result.json; do
             [ -f "$f" ] || continue
             python3 - "$f" <<'PY'
@@ -358,11 +507,14 @@ import json,sys
 r=json.load(open(sys.argv[1]))
 da=f"{r['t_ab']}s" if r['direct_ab'] else "-"
 db=f"{r['t_ba']}s" if r['direct_ba'] else "-"
-print(f"| {r['a']} x {r['b']} | {r['image']} | {r['expected']} | {da} | {db} | {'ok' if r['ping'] else 'FAIL'} | {r['verdict']} |")
+print(f"| {r['a']} x {r['b']} | {r['image']} | {r.get('transport','plain')} | {r['expected']} | {da} | {db} | {'ok' if r['ping'] else 'FAIL'} | {r['verdict']} |")
 PY
         done
         if [ -f "$OUT/laptop/summary.md" ]; then echo; cat "$OUT/laptop/summary.md"; fi
         if [ -f "$OUT/glare/summary.md" ]; then echo; cat "$OUT/glare/summary.md"; fi
+        for f in mesh rekey portmap punch; do
+            if [ -f "$OUT/$f/summary.md" ]; then echo; cat "$OUT/$f/summary.md"; fi
+        done
         if [ -f "$OUT/validate-nat/udpprobe.jsonl" ]; then
             echo; echo "## NAT emulation self-check (udpprobe)"; echo; echo '```'
             cat "$OUT/validate-nat/udpprobe.jsonl"; echo '```'
@@ -649,6 +801,419 @@ PY
     return "$worst"
 }
 
+# ---------------------------------------------------------------- mesh
+# relay + one NATed node per type in --nodes; every node pings every other node
+# (both directions: a mesh has no polite initiator). Per pair: seconds until
+# both sides report direct UDP; the share of pairs that went direct against the
+# pair table; the relay's traffic in a 20 s steady-state window. With
+# --relay-down S the relay's tincd is then stopped for S seconds while one
+# direct and one relayed pair ping at 5 pps, and the outage each saw is taken
+# from `ping -D' timestamps.
+mesh_run() { # IMAGE OUTDIR
+    local img="$1" d="$2"
+    CUR_IMG="$img"; mkdir -p "$d"
+    teardown; internet_up
+    local types=() i j n t0 t r key left
+    read -r -a types <<<"$MESH_NODES"
+    n=${#types[@]}
+    write_node relay "$VPN_RELAY"
+    for ((i = 1; i <= n; i++)); do
+        # shellcheck disable=SC2046  # transport_conf prints zero or one word
+        write_node "m$i" "10.77.0.$((10 + i))" "ConnectTo = relay" "UDPDiscoveryBurst = 5" $(transport_conf)
+    done
+    share_hosts
+    : > "$d/gw-setup.txt"
+    for ((i = 1; i <= n; i++)); do
+        side_up "g$i" "m$i" "${types[i - 1]}" "100.64.0.$((30 + i))" "192.168.$((140 + i)).254" \
+            "192.168.$((140 + i)).5" "$((42000 + i))" "10.$((210 + i)).0" >> "$d/gw-setup.txt"
+    done
+    tinc_start relay; sleep 1
+    for ((i = 1; i <= n; i++)); do tinc_start "m$i"; done
+    sleep 2
+    for ((i = 1; i <= n; i++)); do
+        for ((j = 1; j <= n; j++)); do
+            [ "$i" -eq "$j" ] || bg_ping "m$i" "10.77.0.$((10 + j))"
+        done
+    done
+    declare -A tdir=()
+    t0=$(date +%s)
+    while :; do
+        t=$(( $(date +%s) - t0 )); left=0
+        for ((i = 1; i <= n; i++)); do
+            for ((j = 1; j <= n; j++)); do
+                [ "$i" -ne "$j" ] || continue
+                key="$i-$j"
+                [ -z "${tdir[$key]:-}" ] || continue
+                r="$(reach "m$i" "m$j" || true)"
+                if [ "$r" = "directly with UDP" ]; then tdir[$key]=$t; else left=$((left + 1)); fi
+            done
+        done
+        [ "$left" -eq 0 ] && break
+        [ "$t" -ge "$WAIT" ] && break
+        sleep 2
+    done
+    # steady-state relay load: every ordered pair keeps pinging at 1 pps
+    local rx0 tx0 rp0 tp0 rx1 tx1 rp1 tp1 st=/sys/class/net/eth0/statistics
+    rx0=$(ns relay cat $st/rx_bytes); tx0=$(ns relay cat $st/tx_bytes)
+    rp0=$(ns relay cat $st/rx_packets); tp0=$(ns relay cat $st/tx_packets)
+    sleep 20
+    rx1=$(ns relay cat $st/rx_bytes); tx1=$(ns relay cat $st/tx_bytes)
+    rp1=$(ns relay cat $st/rx_packets); tp1=$(ns relay cat $st/tx_packets)
+    : > "$d/pairs.txt"
+    # which meta connections exist now (AutoConnect + UdpMetaFallback may have
+    # added direct `sf' links between NATed nodes; those survive a relay loss)
+    : > "$d/meta.txt"
+    for ((i = 1; i <= n; i++)); do echo "m$i(${types[i - 1]}): $(meta_carriers "m$i")" >> "$d/meta.txt"; done
+    local pd="" pr=""
+    for ((i = 1; i <= n; i++)); do
+        for ((j = i + 1; j <= n; j++)); do
+            local e now_ij now_ji
+            e="$(expect_direct "${types[i - 1]}" "${types[j - 1]}")"
+            now_ij="$(reach "m$i" "m$j" || true)"; now_ji="$(reach "m$j" "m$i" || true)"
+            echo "${types[i - 1]} ${types[j - 1]} $e ${tdir[$i-$j]:--} ${tdir[$j-$i]:--} $i $j ${now_ij// /_} ${now_ji// /_}" >> "$d/pairs.txt"
+            if [ -z "$pd" ] && [ -n "${tdir[$i-$j]:-}" ] && [ -n "${tdir[$j-$i]:-}" ]; then pd="$i $j"; fi
+            if [ -z "$pr" ] && [ -z "${tdir[$i-$j]:-}" ]; then pr="$i $j"; fi
+        done
+    done
+    local down_json="null"
+    if [ "$RELAY_DOWN" -gt 0 ]; then
+        local a b pa pb t_stop t_start
+        read -r a b <<<"${pd:-1 2}"
+        ns "m$a" ping -D -i 0.2 -W 1 "10.77.0.$((10 + b))" > "$d/ping-direct.txt" 2>&1 & pa=$!
+        read -r a b <<<"${pr:-1 2}"
+        ns "m$a" ping -D -i 0.2 -W 1 "10.77.0.$((10 + b))" > "$d/ping-relayed.txt" 2>&1 & pb=$!
+        echo "direct-pair ${pd:-none} relayed-pair ${pr:-none}" > "$d/relay-down-pairs.txt"
+        sleep 5
+        for ((i = 1; i <= n; i++)); do echo "=== relay stopped $(date +%T) ===" >> "$LOGS/m$i.log"; done
+        t_stop=$(date +%s.%N)
+        tinc_stop relay
+        sleep "$RELAY_DOWN"
+        t_start=$(date +%s.%N)
+        tinc_start relay
+        for ((i = 1; i <= n; i++)); do echo "=== relay started $(date +%T) ===" >> "$LOGS/m$i.log"; done
+        sleep "$RECOVER"
+        kill "$pa" "$pb" 2>/dev/null || true
+        wait "$pa" "$pb" 2>/dev/null || true
+        down_json="$(python3 - "$d" "$t_stop" "$t_start" <<'PY'
+import json, re, sys
+d, t_stop, t_start = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+out = {}
+for k in ("direct", "relayed"):
+    ts = []
+    for line in open(f"{d}/ping-{k}.txt"):
+        m = re.match(r"\[(\d+\.\d+)\] \d+ bytes from", line)
+        if m:
+            ts.append(float(m.group(1)))
+    during = [t for t in ts if t_stop < t < t_start]
+    after = [t for t in ts if t >= t_start]
+    gaps = [b - a for a, b in zip(ts, ts[1:])]
+    out[k] = {"replies": len(ts), "replies_while_relay_down": len(during),
+              "max_gap_s": round(max(gaps), 1) if gaps else None,
+              "first_reply_after_restart_s": round(after[0] - t_start, 1) if after else None}
+print(json.dumps(out))
+PY
+)"
+    fi
+    for ((i = 1; i <= n; i++)); do save_state "$d" "m$i"; done
+    save_state "$d" relay
+    python3 - "$d" "$img" "${TRANSPORT:-plain}" "$WAIT" "$rx0" "$rx1" "$tx0" "$tx1" "$rp0" "$rp1" "$tp0" "$tp1" "$down_json" "$RELAY_DOWN" <<'PY'
+import json, sys
+d, img, tr, wait = sys.argv[1:5]
+rx0, rx1, tx0, tx1, rp0, rp1, tp0, tp1 = map(int, sys.argv[5:13])
+down = json.loads(sys.argv[13]); rdown = int(sys.argv[14])
+rows = []
+for line in open(f"{d}/pairs.txt"):
+    a, b, e, tij, tji, i, j, nij, nji = line.split()
+    both = tij != "-" and tji != "-"
+    rows.append({"a": a, "b": b, "expected": e, "t_ab": tij, "t_ba": tji, "direct": both,
+                 "now_ab": nij.replace("_", " "), "now_ba": nji.replace("_", " ")})
+exp_yes = [r for r in rows if r["expected"] == "yes"]
+res = {"image": img, "transport": tr, "wait": int(wait), "pairs": rows,
+       "direct_pairs": sum(r["direct"] for r in rows), "total_pairs": len(rows),
+       "expected_direct": len(exp_yes), "expected_direct_ok": sum(r["direct"] for r in exp_yes),
+       "unexpected_direct": sum(r["direct"] for r in rows if r["expected"] != "yes"),
+       "time_to_all_expected_s": max([max(int(r["t_ab"]), int(r["t_ba"])) for r in exp_yes if r["direct"]] or [0]),
+       "relay_rx_Bps": round((rx1 - rx0) / 20), "relay_tx_Bps": round((tx1 - tx0) / 20),
+       "relay_rx_pps": round((rp1 - rp0) / 20, 1), "relay_tx_pps": round((tp1 - tp0) / 20, 1),
+       "relay_down_s": rdown, "relay_down": down}
+json.dump(res, open(f"{d}/result.json", "w"))
+with open(f"{d}/summary.md", "w") as f:
+    f.write(f"### mesh — image {img}, carrier {tr}, {len(rows)} pairs, wait {wait}s\n\n")
+    f.write("| A x B | expected | direct a->b | direct b->a | direct both | state at end (a / b) |\n|---|---|---|---|---|---|\n")
+    for r in rows:
+        f.write(f"| {r['a']} x {r['b']} | {r['expected']} | {r['t_ab'] if r['t_ab'] == '-' else r['t_ab'] + 's'} | "
+                f"{r['t_ba'] if r['t_ba'] == '-' else r['t_ba'] + 's'} | {'yes' if r['direct'] else 'no'} | {r['now_ab']} / {r['now_ba']} |\n")
+    f.write(f"\n- direct: **{res['direct_pairs']}/{res['total_pairs']}** pairs "
+            f"({res['expected_direct_ok']}/{res['expected_direct']} of the pairs the table calls traversable, "
+            f"{res['unexpected_direct']} beyond it); all traversable pairs direct after {res['time_to_all_expected_s']} s\n")
+    f.write(f"- relay load, steady state (every ordered pair pings at 1 pps): rx {res['relay_rx_pps']} pkt/s "
+            f"{res['relay_rx_Bps']} B/s, tx {res['relay_tx_pps']} pkt/s {res['relay_tx_Bps']} B/s\n")
+    f.write("- meta connections at the end of the wait (node(type): peer:carrier ...): "
+            + "; ".join(l.strip() for l in open(f"{d}/meta.txt")) + "\n")
+    if down:
+        for k, v in down.items():
+            f.write(f"- relay tincd down {rdown} s, {k} pair (5 pps): replies while down {v['replies_while_relay_down']}, "
+                    f"longest gap {v['max_gap_s']} s, first reply {v['first_reply_after_restart_s']} s after the relay restarted\n")
+print(open(f"{d}/summary.md").read())
+PY
+    teardown
+}
+
+mesh() {
+    parse_opts "$@"
+    local imgs i d="$OUT/mesh" sub=""
+    case "${IMAGE_SEL:-both}" in both) imgs="core baseline" ;; *) imgs="$IMAGE_SEL" ;; esac
+    [ -z "$TRANSPORT" ] || sub="-$TRANSPORT"
+    [ "$RELAY_DOWN" -eq 0 ] || sub="$sub-relaydown$RELAY_DOWN"
+    if [ -n "$NODE_CONF" ]; then sub="$sub-$(printf '%s' "$NODE_CONF" | tr ' =' '_-')"; fi
+    mkdir -p "$d"
+    for i in $imgs; do mesh_run "$i" "$d/$i$sub"; done
+    { for f in "$d"/*/summary.md; do cat "$f"; echo; done; } > "$d/summary.md"
+}
+
+# ---------------------------------------------------------------- rekey
+# A direct pair under frequent SPTPS rekeys (KeyExpire on every node). Every
+# rekey's handshake records travel as ANS_KEY through the relay, which appends
+# the sender's reflexive UDP address; ans_key_h() applies it with
+# update_node_udp(), which clears udp_confirmed and the PMTU state even when
+# the address did not change. Counts, after the pair first went direct, how
+# often that happened and how many data packets went via the relay instead.
+rekey_run() { # A B IMAGE OUTDIR
+    local ta="$1" tb="$2" img="$3" d="$4"
+    CUR_IMG="$img"; mkdir -p "$d"
+    teardown; internet_up
+    write_node relay "$VPN_RELAY" "KeyExpire = $KEYEXPIRE"
+    # shellcheck disable=SC2046  # --node-conf words, one tinc.conf line each
+    write_node nodea "$VPN_A" "ConnectTo = relay" "UDPDiscoveryBurst = 5" "KeyExpire = $KEYEXPIRE" $(transport_conf)
+    # shellcheck disable=SC2046
+    write_node nodeb "$VPN_B" "ConnectTo = relay" "UDPDiscoveryBurst = 5" "KeyExpire = $KEYEXPIRE" $(transport_conf)
+    share_hosts
+    side_up gwa nodea "$ta" "$GWA_EXT" "$GWA_INT" "$NODEA_IP" "$MAP_A" 10.201.0 > "$d/gw-setup.txt"
+    side_up gwb nodeb "$tb" "$GWB_EXT" "$GWB_INT" "$NODEB_IP" "$MAP_B" 10.202.0 >> "$d/gw-setup.txt"
+    tinc_start relay; sleep 1
+    tinc_start nodea; tinc_start nodeb
+    sleep 2
+    local t_up ok=1 la lb
+    ns nodea ping -D -i 0.2 -W 1 "$VPN_B" > "$d/ping.txt" 2>&1 &
+    local pp=$!
+    t_up="$(wait_direct nodea nodeb "$WAIT")" || ok=0
+    wait_direct nodeb nodea 30 >/dev/null || ok=0
+    la=$(wc -l < "$LOGS/nodea.log"); lb=$(wc -l < "$LOGS/nodeb.log")
+    local t_mark; t_mark=$(date +%s.%N)
+    sleep "$DURATION"
+    kill "$pp" 2>/dev/null || true; wait "$pp" 2>/dev/null || true
+    # a direct meta connection nodea<->nodeb (UdpMetaFallback `sf') carries
+    # the rekey handshake itself, so the relay never appends an address
+    echo "nodea: $(meta_carriers nodea)" > "$d/meta.txt"
+    save_state "$d" relay nodea nodeb
+    tail -n +"$((la + 1))" "$d/nodea.log" > "$d/nodea.window.txt"
+    tail -n +"$((lb + 1))" "$d/nodeb.log" > "$d/nodeb.window.txt"
+    python3 - "$d" "$ta" "$tb" "$img" "$KEYEXPIRE" "$DURATION" "$ok" "$t_up" "$t_mark" "${NODE_CONF:--}" <<'PY'
+import json, re, sys
+d, ta, tb, img, ke, dur, ok, t_up, t_mark, nc = sys.argv[1:11]
+t_mark = float(t_mark)
+def cnt(f, pat):
+    return sum(1 for l in open(f) if re.search(pat, l))
+wa, wb = f"{d}/nodea.window.txt", f"{d}/nodeb.window.txt"
+res = {"a": ta, "b": tb, "image": img, "node_conf": nc, "keyexpire": int(ke), "window_s": int(dur), "direct_before_window": ok == "1",
+       "t_direct_s": int(t_up),
+       "rekeys_a": cnt(wa, r"Expiring symmetric keys"),
+       "addr_updates_a": cnt(wa, r"UDP address of nodeb set to"),
+       "addr_updates_b": cnt(wb, r"UDP address of nodea set to"),
+       "reflexive_applied_a": cnt(wa, r"Using reflexive UDP address from nodeb"),
+       "a_to_b_via_nodeb": cnt(wa, r"to nodeb \(.*\) via nodeb \("),
+       "a_to_b_via_relay": cnt(wa, r"to nodeb \(.*\) via relay \("),
+       "a_to_b_tcp": cnt(wa, r"to nodeb \(.*\) via relay \(.*\) \(TCP\)")}
+ts = []
+for line in open(f"{d}/ping.txt"):
+    m = re.match(r"\[(\d+\.\d+)\] \d+ bytes from", line)
+    if m and float(m.group(1)) >= t_mark:
+        ts.append(float(m.group(1)))
+gaps = [b - a for a, b in zip(ts, ts[1:])]
+res["ping_replies"] = len(ts)
+res["ping_expected"] = int(int(dur) / 0.2)
+res["ping_max_gap_s"] = round(max(gaps), 2) if gaps else None
+tot = res["a_to_b_via_nodeb"] + res["a_to_b_via_relay"]
+res["relayed_share"] = round(res["a_to_b_via_relay"] / tot, 3) if tot else None
+json.dump(res, open(f"{d}/result.json", "w"))
+print(json.dumps(res))
+PY
+    teardown
+}
+
+rekey() {
+    local ta="$1" tb="$2"; shift 2; parse_opts "$@"
+    local imgs i d="$OUT/rekey" sub=""
+    case "${IMAGE_SEL:-both}" in both) imgs="core baseline" ;; *) imgs="$IMAGE_SEL" ;; esac
+    if [ -n "$NODE_CONF" ]; then sub="-$(printf '%s' "$NODE_CONF" | tr ' =' '_-')"; fi
+    mkdir -p "$d"
+    for i in $imgs; do rekey_run "$ta" "$tb" "$i" "$d/$ta-$tb-$i-ke$KEYEXPIRE$sub"; done
+    {
+        echo "### SPTPS rekey on a direct pair (KeyExpire on every node; counted over a window after the pair went direct)"
+        echo
+        echo "| A x B | image (extra config) | KeyExpire | window | rekeys (A) | A: peer UDP address reset | B: peer UDP address reset | A->B packets via relay / direct | relayed share | ping replies / sent | longest ping gap |"
+        echo "|---|---|---|---|---|---|---|---|---|---|---|"
+        for f in "$d"/*/result.json; do
+            python3 - "$f" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+print(f"| {r['a']} x {r['b']} | {r['image']}{'' if r.get('node_conf', '-') == '-' else ' (' + r['node_conf'] + ')'} | {r['keyexpire']} s | {r['window_s']} s | {r['rekeys_a']} | {r['addr_updates_a']} | {r['addr_updates_b']} | "
+      f"{r['a_to_b_via_relay']} / {r['a_to_b_via_nodeb']} | {r['relayed_share']} | {r['ping_replies']} / {r['ping_expected']} | {r['ping_max_gap_s']} s |")
+PY
+        done
+    } > "$d/summary.md"
+    cat "$d/summary.md"
+}
+
+# ---------------------------------------------------------------- portmap / punch
+# Both run nattrav (stdlib python) instead of tincd: they measure what a NAT
+# does and what a hole puncher could do with it, so a technique is proven here
+# before the daemon changes. Reflectors: $PROBE_IP1..3 on ports 3478/3479.
+PROBE_IP3=100.64.0.22
+reflector_up() {
+    ns_add probe
+    attach probe eth0 "$PROBE_IP1/24"
+    ns probe ip addr add "$PROBE_IP2/24" dev eth0
+    ns probe ip addr add "$PROBE_IP3/24" dev eth0
+    ns probe nattrav server --bind "$PROBE_IP1:3478" --bind "$PROBE_IP1:3479" \
+        --bind "$PROBE_IP2:3478" --bind "$PROBE_IP2:3479" \
+        --bind "$PROBE_IP3:3478" --bind "$PROBE_IP3:3479" >> "$1" 2>&1 &
+    sleep 0.3
+}
+
+portmap() {
+    parse_opts "$@"
+    local d="$OUT/portmap" t k out
+    mkdir -p "$d"
+    : > "$d/portmap.jsonl"
+    local i1="$PROBE_IP1" i2="$PROBE_IP2" i3="$PROBE_IP3"
+    # A: no unsolicited inbound at all -- five destinations in order.
+    local seq_a=("$i1:3478" "$i1:3479" "$i2:3478" "$i2:3479" "$i3:3478")
+    # P: after the first destination, two OTHER reflector sockets send us an
+    # unsolicited datagram (what a peer's early hole-punch probe is); then new
+    # destinations, poked and not poked, in a mixed order.
+    local seq_p=("$i1:3478" "poke=$i1:3478>$i2:3478" "poke=$i1:3478>$i1:3479" "$i3:3478" "$i2:3478" "$i1:3479" "$i3:3479")
+    for t in masq masqfw cgnat symmetric; do
+        for k in 1 2; do
+            teardown; internet_up
+            reflector_up "$d/server.log"
+            side_up gwa client "$t" "$GWA_EXT" "$GWA_INT" "$NODEA_IP" "$MAP_A" 10.201.0 >> "$d/gw-setup.txt"
+            sleep 0.3
+            local dst=() x sp
+            for x in "${seq_a[@]}"; do dst+=(--dst "$x"); done
+            out="$(ns client nattrav portmap --sport 655 "${dst[@]}")"
+            echo "{\"type\":\"$t\",\"trial\":$k,\"seq\":\"A-nopoke-sport655\",\"r\":$out}" >> "$d/portmap.jsonl"
+            for sp in 656 4004; do
+                dst=()
+                for x in "${seq_p[@]}"; do dst+=(--dst "$x"); done
+                out="$(ns client nattrav portmap --sport "$sp" "${dst[@]}")"
+                echo "{\"type\":\"$t\",\"trial\":$k,\"seq\":\"P-poked-sport$sp\",\"r\":$out}" >> "$d/portmap.jsonl"
+            done
+            # C: a throwaway first datagram, then the "relay"; what does a new
+            # destination get once the unanswered burn mapping has expired?
+            # (home tier: unreplied UDP conntrack timeout 5 s for this sequence)
+            if [ "$t" = masq ] || [ "$t" = masqfw ]; then
+                gw_nat gwa "$t" "$GWA_EXT" "$GWA_INT" --udp-timeout 5 >> "$d/gw-setup.txt"
+                out="$(ns client nattrav portmap --sport 657 --dst "burn=$i3:9" --dst "$i1:3478" \
+                    --dst "$i2:3478" --dst sleep=10 --dst "$i3:3479" --dst "$i2:3479")"
+                echo "{\"type\":\"$t\",\"trial\":$k,\"seq\":\"C-burn-then-expire\",\"r\":$out}" >> "$d/portmap.jsonl"
+            fi
+            if [ "$k" -eq 1 ]; then save_gw "$d" gwa; mv "$d/gw-gwa.txt" "$d/gw-gwa-$t.txt"; fi
+        done
+    done
+    teardown
+    python3 - "$d" <<'PY' > "$d/summary.md"
+import json, sys
+d = sys.argv[1]
+print("### NAT port allocation (nattrav portmap; one inside socket, destinations in order)\n")
+print("A: ip1:3478, ip1:3479, ip2:3478, ip2:3479, ip3:3478 -- nothing unsolicited. "
+      "P: ip1:3478, then ip2:3478 and ip1:3479 each send one unsolicited datagram to the mapping (`poke`), "
+      "then ip3:3478, ip2:3478 (poked), ip1:3479 (poked), ip3:3479. "
+      "C (masq/masqfw, unreplied UDP timeout 5 s): a burn datagram nobody answers, ip1:3478, ip2:3478, "
+      "10 s with the answered flows kept alive, ip3:3479, ip2:3479.\n")
+print("| NAT | trial | sequence | external port per destination (poke: arrived?) | first keeps source port | later destinations share one port |")
+print("|---|---|---|---|---|---|")
+for line in open(f"{d}/portmap.jsonl"):
+    j = json.loads(line); r = j["r"]
+    cells = []
+    for o in r["obs"]:
+        if o["dst"].startswith("poke="):
+            cells.append("poke:" + ("in" if o.get("poke_arrived") else "dropped"))
+        elif o["dst"].startswith("burn="):
+            cells.append("burn")
+        else:
+            cells.append(f"{o['dst'].split(':')[0].split('.')[-1]}:{o['dst'].split(':')[1]}->{o['port']}")
+    print(f"| {j['type']} | {j['trial']} | {j['seq']} | {', '.join(cells)} | {r['first_preserved']} | {r['rest_shared']} |")
+PY
+    cat "$d/summary.md"
+}
+
+punch_pair() { # A B -> appends to $OUT/punch/punch.jsonl
+    local ta="$1" tb="$2" d="$OUT/punch/$1-$2" s k ra rb pa pb label
+    mkdir -p "$d"
+    for s in $STRATEGIES; do
+        label="$s"; [ "$SPRAY" -eq 0 ] || label="$label+spray$SPRAY"
+        [ -z "$SYNC" ] || label="$label+sync"
+        [ "$RTT" = 0 ] || label="$label+rtt$RTT"
+        for ((k = 1; k <= TRIALS; k++)); do
+            teardown; internet_up
+            reflector_up "$d/server.log"
+            side_up gwa nodea "$ta" "$GWA_EXT" "$GWA_INT" "$NODEA_IP" "$MAP_A" 10.201.0 > /dev/null
+            side_up gwb nodeb "$tb" "$GWB_EXT" "$GWB_INT" "$NODEB_IP" "$MAP_B" 10.202.0 > /dev/null
+            sleep 0.3
+            ns nodea nattrav punch --name "a$k$s" --peer "b$k$s" --sport "$TINC_PORT" --rdv "$PROBE_IP1:3478" \
+                --second "$PROBE_IP1:3479" --burn "$PROBE_IP3:9" --strategy "$s" --spray "$SPRAY" ${SYNC:+--sync} > "$d/a.json" 2>&1 & pa=$!
+            ns nodeb nattrav punch --name "b$k$s" --peer "a$k$s" --sport "$TINC_PORT" --rdv "$PROBE_IP1:3478" \
+                --second "$PROBE_IP1:3479" --burn "$PROBE_IP3:9" --strategy "$s" --spray "$SPRAY" ${SYNC:+--sync} > "$d/b.json" 2>&1 & pb=$!
+            wait "$pa" || true; wait "$pb" || true
+            ra="$(tail -1 "$d/a.json")"; rb="$(tail -1 "$d/b.json")"
+            echo "{\"a\":\"$ta\",\"b\":\"$tb\",\"strategy\":\"$label\",\"trial\":$k,\"ra\":${ra:-null},\"rb\":${rb:-null}}" >> "$OUT/punch/punch.jsonl"
+            if [ "$k" -eq 1 ]; then
+                save_gw "$d" gwa gwb
+                mv "$d/gw-gwa.txt" "$d/$label-gw-gwa.txt"; mv "$d/gw-gwb.txt" "$d/$label-gw-gwb.txt"
+            fi
+        done
+    done
+}
+
+punch() {
+    local pairs=() p
+    while [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; do pairs+=("$1"); shift; done
+    parse_opts "$@"
+    [ "${#pairs[@]}" -gt 0 ] || pairs=(masq/masq masqfw/masqfw masq/portrestricted masqfw/portrestricted masq/symmetric cgnat/cgnat symmetric/symmetric restricted/masq)
+    mkdir -p "$OUT/punch"
+    touch "$OUT/punch/punch.jsonl"      # appended: several runs share one table
+    for p in "${pairs[@]}"; do punch_pair "${p%/*}" "${p#*/}"; done
+    teardown
+    python3 - "$OUT/punch/punch.jsonl" <<'PY' > "$OUT/punch/summary.md"
+import json, sys, collections
+agg = collections.OrderedDict()
+for line in open(sys.argv[1]):
+    j = json.loads(line)
+    key = (j["a"], j["b"], j["strategy"])
+    a, b = j["ra"] or {}, j["rb"] or {}
+    both = bool(a.get("ok")) and bool(b.get("ok"))
+    t = max((a.get("first_contact") or {}).get("t", 99), (b.get("first_contact") or {}).get("t", 99)) if both else None
+    g = agg.setdefault(key, {"n": 0, "ok": 0, "t": [], "adv": set()})
+    g["n"] += 1; g["ok"] += both
+    if t is not None:
+        g["t"].append(t)
+    g["adv"].add(f"{(a.get('advertised') or ['?', '?'])[1]}/{(b.get('advertised') or ['?', '?'])[1]}")
+print("### Hole punch without tinc (nattrav punch; both sides send every 100 ms for 8 s to the address the other advertised)\n")
+print("strategy: `first` = advertise what the rendezvous (first destination) saw -- what tinc's UDP_INFO/ANS_KEY carry today; "
+      "`second` = advertise what a second reflector port on the same host saw; `burn` = one throwaway datagram before the rendezvous, advertise the rendezvous' view; "
+      "`+sprayN` = also send to N ports around the advertised one; `+sync` = neither side sends to the other before the rendezvous says GO to both at once; "
+      "`+rttN` = netem on every gateway's external interface.\n")
+print("| A x B | strategy | bidirectional contact | median time to contact | advertised ports (a/b, per trial) |")
+print("|---|---|---|---|---|")
+for (a, b, s), g in agg.items():
+    ts = sorted(g["t"])
+    med = f"{ts[len(ts)//2]:.2f} s" if ts else "-"
+    print(f"| {a} x {b} | {s} | {g['ok']}/{g['n']} | {med} | {' '.join(sorted(g['adv']))} |")
+PY
+    cat "$OUT/punch/summary.md"
+}
+
 # ---------------------------------------------------------------- main
 mkdir -p "$RUN" "$NODES" "$LOGS"
 # Both binaries must actually run (a baseline CLI missing a shared library once
@@ -663,6 +1228,10 @@ case "$cmd" in
     matrix) matrix "$@" ;;
     laptop) laptop "$@" ;;
     glare) glare "$@" ;;
+    mesh) mesh "$@" ;;
+    rekey) rekey "$@" ;;
+    portmap) portmap "$@" ;;
+    punch) punch "$@" ;;
     summarize) parse_opts "$@"; summarize ;;
     shell) exec bash ;;
     *) sed -n '2,16p' "$0"; exit 2 ;;
