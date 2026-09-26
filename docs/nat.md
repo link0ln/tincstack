@@ -751,6 +751,59 @@ uncoordinated, repeating probe schedule.
   class; on a real CGN this pair stays relayed. It should stay relayed rather
   than grow a port scanner — the relay path works.
 
+### 9.3 The coordinated start in tincd (N2 item 3)
+
+Implemented in `net_packet.c` (`punch_*`), wire-compatible: a node with the
+`DSEAL_PUNCH` bit in its capability token does not probe such a peer
+unsolicited; it sends `REQ_KEY <me> <peer> 98 0 - -` through the meta graph.
+The relay that has both ends as meta neighbours answers — once it has
+confirmed both ends' UDP addresses — with `98 2 <addr> <port>` to both at
+once, each carrying the other end's address as the relay sees it; both start
+an 8 s round of the usual probe bursts at once. A round without a confirmed
+path is followed by 35 s without a single probe to that peer (longer than the
+30 s an unreplied conntrack entry lives). An older relay forwards the request
+(REQ_KEY extensions are forwarded verbatim) and the far end answers `98 1`
+itself and starts after half the weighted meta distance; after 5 unanswered
+requests (2 s apart) a node runs a round on its own. Peers without the bit
+(upstream, older tincstack) and direct meta neighbours are probed as before.
+
+`lab.sh matrix --image core --rtt R --pairs "masq/masq masq/portrestricted
+cgnat/cgnat cgnat/masq"`, one matrix per run (`results/2026-09-26/n2/punch/`):
+
+| pair | pre-N2 `11e02ef`, rtt 40 (n=3) | N2 items 1-2 (`ww-n2-i2c`), rtt 40 (n=5) | + item 3 (`ww-n2-i3b`), rtt 40 (n=5) | items 1-2, rtt 0 (n=3) | + item 3, rtt 0 (n=3) |
+|---|---|---|---|---|---|
+| masq x masq | 0/3 | 5/5, 2 s | 5/5, 4-6 s | 0/3 | 1/3 |
+| masq x portrestricted | 3/3, 10 s | 5/5, 10 s | 5/5, 4-6 s | 2/3 | 3/3, 4-6 s |
+| cgnat x cgnat | 0/3 | 5/5, 2 s | 5/5, 4-6 s | 0/3 | 1/3 |
+| cgnat x masq | 0/3 | 5/5, 2 s | 5/5, 4-6 s | 0/3 | 2/3 |
+
+What the numbers say, without flattering them:
+
+- Most of the rtt-40 gain over pre-N2 came from item 1, not from this item:
+  DirectSeal holds the first probe until the peer's capability token has
+  arrived, and both ends learn it from the same key exchange, so their first
+  probes already left together. Item 3 makes that explicit and adds the
+  back-off; at rtt 40 it costs 2-4 s on three pairs (the relay waits for
+  confirmed addresses) and saves 4-6 s on masq x portrestricted.
+- rtt 0 is where it helps: 7 of 12 pair-runs direct against 2 of 12. It is
+  not 3/3: with no path delay the two GOs arrive with a skew comparable to
+  the RTT itself, one end's first probe still reaches the other NAT before
+  that NAT's own outbound packet, and every following round repeats it (logs
+  of `after2-rtt0-2`: three rounds, addresses right, all fail). The pair
+  stays relayed and pings; no regression. Residual.
+- A first version (`ww-n2-i3`) let the relay say GO before it had confirmed
+  either end's address: each end probed the other's edge guess (port 655)
+  for the whole round, and masq x portrestricted went from 10 s to 44-46 s
+  (5/5 runs). The relay now stays silent until it has both.
+- n = 3-5 per cell: a 5/5 vs 0/3 difference is not luck; 1/3 vs 0/3 is not
+  significant on its own.
+- `lab.sh laptop` and `lab.sh glare` PASS on `ww-n2-i3b`.
+  `mixed-version-test.sh` (direct section, image `ww-n2-i3c` = `i3b` with
+  the round lines logged at level 1) gains a case "current leaves, older
+  relay": the older relay forwards the request, the far leaf answers and
+  starts, the pair goes direct — PASS against `ww-n2-base` and `pre-deb13`
+  (`results/2026-09-26/n2/punch/mixed-version-direct.log`).
+
 ## 10. Ranked fixes for stream N2
 
 Ranked by what a user loses today, not by how interesting the fix is. Each
@@ -816,6 +869,8 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
    Code: net_packet.c `send_sptps_data`, `try_udp`; obfs.c `obfs_wrap_send`.
 
 4. 🟠 **P1 — coordinated start + back-off for unconfirmed peers (W4, W6).**
+   **Status: done in N2** (§9.3): all four pairs 5/5 at rtt 40; at rtt 0
+   better than before (7/12 vs 2/12 pair-runs) but not 2/3 on every pair.
    Pairs: `masq x masq`, `masq x portrestricted`, `portrestricted x masq`,
    `cgnat x cgnat`, `cgnat x masq` (5 of the 8 + 2 relay-only pairs in the
    lab); harness proof 3/3 at 40 ms RTT (§9).

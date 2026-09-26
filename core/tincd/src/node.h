@@ -125,6 +125,11 @@ typedef struct node_t {
 	uint8_t dseal;                          /* direct-seal capability, DSEAL_* (obfs.h); 0 = not learned yet */
 	time_t dseal_logged;                    /* rate limit for the "no direct UDP to it" log line */
 	time_t carrier_beacon_sent;             /* last send_carrier_beacon() to it (net_packet.c) */
+	struct timeval punch_go;                /* coordinated hole punch: start of the current round (net_packet.c) */
+	time_t punch_req_sent;                  /* last PUNCH_REQ asking for a round */
+	time_t punch_backoff_until;             /* no probes to it before this, after a failed round */
+	uint8_t punch_unanswered;               /* PUNCH_REQs sent without a GO since the last round */
+	timeout_t punch_timer;                  /* fires the first burst of a round */
 	int dseal_logged_verdict;               /* verdict that line was logged for */
 	struct node_t *prev_nexthop;            /* nexthop as of the previous graph run; only meaningful inside graph() */
 } node_t;

@@ -273,6 +273,8 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr);
 #define DSEAL_READS 0x01  /* reads sealed direct datagrams */
 #define DSEAL_WANTS 0x02  /* seals its own and wants ours sealed */
 #define DSEAL_KEX   0x04  /* speaks DSEAL_KEX (end-to-end session key) */
+#define DSEAL_PUNCH 0x08  /* coordinated hole punch (net_packet.c, PUNCH_REQ);
+                             not a seal property, but the same capability token */
 #define DSEAL_OLD   0x40  /* learned without a token: older tincstack or upstream */
 #define DSEAL_KNOWN 0x80  /* learned at all (token, or a definitive answer without one) */
 

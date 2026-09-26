@@ -208,7 +208,7 @@ dpair() {
 	shift 4
 	cleanup
 	docker network create --internal --subnet "$SUBNET.0/24" "$NET" >/dev/null
-	node f "$SUBNET.10" "$NEW"
+	node f "$SUBNET.10" "${DFOUNDER:-$NEW}"
 	docker exec "$PFX-f" sh -c "install -m600 /dev/null $Y && tinc -n lab -c $Y set Name founder && tinc -n lab -c $Y set Port 655"
 	docker exec -d "$PFX-f" sh -c "tincd -n lab -c $Y -D -d3 >>/tmp/tincd.log 2>&1"
 	for _ in $(seq 20); do t f pid >/dev/null 2>&1 && break; sleep 1; done
@@ -283,6 +283,10 @@ direct_section() {
 		dpair "older leaf b (frame v2 only)" "$OLD" relay "has not answered sealed direct datagrams"
 	fi
 	dpair "older leaf b without obfs" "$OLD" relay-noudp "cannot read sealed datagrams" Transports "plain, sf"
+	# Two current leaves behind an older relay: it forwards the coordinated
+	# hole-punch request (REQ_KEY 98) instead of answering it, and the far
+	# leaf answers and starts itself (docs/nat.md §9.3).
+	DFOUNDER=$OLD dpair "current leaves, older relay" "$NEW" direct "the peer says go\\|the peer asked through an older relay"
 }
 
 # An OLD_IMAGE from before 2026-09-24 knows nothing of datagrams a dialler does not announce.

@@ -276,6 +276,12 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 	   packet used. */
 	if(!n->status.udp_confirmed) {
 		n->status.udp_confirmed = true;
+		n->punch_go = (struct timeval) {
+			0, 0
+		};
+		n->punch_backoff_until = 0;
+		n->punch_unanswered = 0;
+		timeout_del(&n->punch_timer);
 
 		if(!n->address_cache) {
 			n->address_cache = open_address_cache(n);
@@ -1434,6 +1440,229 @@ static void send_carrier_beacon(node_t *n) {
 	carrier_beacon_raw = false;
 }
 
+/* ---- coordinated hole punch (stream N2) ------------------------------------
+
+   tinc used to probe a peer it has no direct path to as soon as it had a key,
+   every 2 s, for as long as there was traffic. Behind a NAT that creates an
+   entry for an unsolicited inbound datagram (Linux MASQUERADE with its input
+   open, a CGN tier built the same way), the first probe to arrive before the
+   peer's own outgoing one takes the port the peer then needs, and probing
+   every 2 s keeps that entry alive for ever (docs/nat.md §3.2, §9). So for a
+   peer that speaks this (DSEAL_PUNCH in its capability token) and that we
+   reach through a relay:
+
+   - nobody probes it unsolicited: we ask for a round with
+     `REQ_KEY <me> <peer> 98 0 - -' through the meta graph;
+   - the relay whose meta neighbours both ends are answers instead of
+     forwarding, once it has confirmed both ends' UDP addresses (until then
+     it stays silent and the asker retries): `98 2 <addr> <port>' to both
+     ends at the same instant, each carrying the other end's UDP address as
+     the relay sees it. An older relay forwards the request, and
+     the far end answers `98 1 - -' itself and starts after half the meta
+     path's weighted distance, so both first probes leave about together;
+   - a GO starts a PUNCH_ROUND-second round of the usual probe bursts; a
+     round that ends without a confirmed path is followed by PUNCH_BACKOFF
+     seconds without a single probe to that peer -- longer than the 30 s a
+     Linux conntrack entry for unreplied UDP lives -- so that entries left
+     by the failed round expire before the next one.
+
+   Peers without the capability (upstream, older tincstack) and direct meta
+   neighbours are probed exactly as before. */
+#define PUNCH_ROUND 8
+#define PUNCH_BACKOFF 35
+#define PUNCH_REQ_RETRY 2
+#define PUNCH_MAX_UNANSWERED 5
+#define PUNCH_MAX_DELAY_MS 1000
+
+static void try_udp(node_t *n);
+
+static bool punch_coordinated(const node_t *n) {
+	return (n->dseal & DSEAL_KNOWN) && (n->dseal & DSEAL_PUNCH) && !n->connection &&
+	       n->nexthop && n->nexthop != n && n->nexthop->connection;
+}
+
+static void punch_timer_handler(void *data) {
+	node_t *n = data;
+	timeout_del(&n->punch_timer);
+
+	if(!n->status.reachable || n->status.udp_confirmed) {
+		return;
+	}
+
+	/* The round starts now: the first burst goes out at once. */
+	n->udp_ping_sent = (struct timeval) {
+		0, 0
+	};
+	try_udp(n);
+}
+
+static void punch_start(node_t *n, int delay_ms, const sockaddr_t *sa, const char *why) {
+	if(!n->status.reachable || n->status.udp_confirmed) {
+		return;
+	}
+
+	if(timerisset(&n->punch_go)) {
+		struct timeval end;
+		timeradd(&n->punch_go, &((struct timeval) {
+			PUNCH_ROUND, 0
+		}), &end);
+
+		if(timercmp(&now, &end, <)) {
+			return; /* a round is on already (both ends asked, or a duplicate) */
+		}
+	}
+
+	if(sa && sa->sa.sa_family != AF_UNKNOWN && sockaddrcmp(sa, &n->address)) {
+		update_node_udp(n, sa);
+	}
+
+	if(delay_ms < 0) {
+		delay_ms = 0;
+	} else if(delay_ms > PUNCH_MAX_DELAY_MS) {
+		delay_ms = PUNCH_MAX_DELAY_MS;
+	}
+
+	struct timeval d = {delay_ms / 1000, (delay_ms % 1000) * 1000};
+	timeradd(&now, &d, &n->punch_go);
+	n->punch_backoff_until = 0;
+	n->punch_unanswered = 0;
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Coordinated hole punch with %s (%s): %s, first probes in %d ms", n->name, n->hostname, why, delay_ms);
+	timeout_del(&n->punch_timer);
+	timeout_add(&n->punch_timer, punch_timer_handler, n, &d);
+}
+
+/* May try_udp() probe `n' (not confirmed, coordinated) now? */
+static bool punch_may_probe(node_t *n) {
+	if(timerisset(&n->punch_go)) {
+		if(timercmp(&now, &n->punch_go, <)) {
+			return false; /* the round starts later */
+		}
+
+		struct timeval end;
+		timeradd(&n->punch_go, &((struct timeval) {
+			PUNCH_ROUND, 0
+		}), &end);
+
+		if(timercmp(&now, &end, <)) {
+			return true;
+		}
+
+		n->punch_go = (struct timeval) {
+			0, 0
+		};
+		n->punch_backoff_until = now.tv_sec + PUNCH_BACKOFF;
+		n->status.ping_sent = false;
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "No direct UDP path to %s (%s) after a coordinated %d s round; no probes to it for %d s, so that NAT entries the round left expire",
+		       n->name, n->hostname, PUNCH_ROUND, PUNCH_BACKOFF);
+		return false;
+	}
+
+	if(now.tv_sec < n->punch_backoff_until || !n->status.validkey) {
+		return false;
+	}
+
+	if(n->punch_req_sent && now.tv_sec - n->punch_req_sent < PUNCH_REQ_RETRY) {
+		return false;
+	}
+
+	if(n->punch_unanswered >= PUNCH_MAX_UNANSWERED) {
+		/* It advertised the capability but nothing answers: do not stay
+		   relayed for that, run a round on our own. */
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "No answer from %s (%s) to %d coordinated hole-punch requests; probing it on our own this round",
+		       n->name, n->hostname, PUNCH_MAX_UNANSWERED);
+		punch_start(n, 0, NULL, "no answer, uncoordinated round");
+		return false;
+	}
+
+	n->punch_req_sent = now.tv_sec;
+	n->punch_unanswered++;
+	logger(DEBUG_PROTOCOL, LOG_INFO, "Asking for a coordinated hole punch with %s (%s) via %s", n->name, n->hostname, n->nexthop->name);
+	send_request(n->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, n->name, PUNCH_REQ, 0);
+	return false;
+}
+
+/* Tell `b' to start punching towards `a' now, with `a''s UDP address as we
+   see it (the relay's view; only if we confirmed it). */
+static bool punch_send_go(node_t *a, node_t *b) {
+	char *addr = NULL, *port = NULL;
+
+	if(a->status.udp_confirmed && a->address.sa.sa_family != AF_UNSPEC && a->address.sa.sa_family != AF_UNKNOWN) {
+		sockaddr2str(&a->address, &addr, &port);
+	}
+
+	bool ok = send_request(b->connection, "%d %s %s %d %d %s %s", REQ_KEY, a->name, b->name, PUNCH_REQ, 2, addr ? addr : "-", port ? port : "-");
+	free(addr);
+	free(port);
+	return ok;
+}
+
+bool punch_h(node_t *from, node_t *to, const char *request) {
+	int flag = -1;
+	char addr[MAX_STRING_SIZE] = "";
+	char port[MAX_STRING_SIZE] = "";
+
+	if(sscanf(request, "%*d %*s %*s %*d %d " MAX_STRING " " MAX_STRING, &flag, addr, port) < 1 || flag < 0 || flag > 2) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "PUNCH_REQ", from->name, from->hostname);
+		return true;
+	}
+
+	if(to != myself) {
+		/* The rendezvous: both ends are our meta neighbours, so both hear
+		   "go" from us at the same instant. */
+		if(flag == 0 && from->connection && to->connection && from->connection->edge && to->connection->edge) {
+			/* Only with both ends' real UDP addresses: a GO without them
+			   sends each end at its edge guess (the TCP address, port 655),
+			   which a port-changing NAT never maps, and the round is spent
+			   there (lab: masq x portrestricted, 10 s -> 45 s). Stay silent
+			   until we have confirmed both; the asker retries every
+			   PUNCH_REQ_RETRY s and runs a round on its own after
+			   PUNCH_MAX_UNANSWERED requests (a relay that never has UDP to
+			   them, e.g. TCP-only links). */
+			if(!from->status.udp_confirmed || !to->status.udp_confirmed) {
+				logger(DEBUG_PROTOCOL, LOG_INFO, "Coordinated hole punch between %s and %s: not yet, no confirmed UDP address of %s", from->name, to->name,
+				       !from->status.udp_confirmed ? from->name : to->name);
+				return true;
+			}
+
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "Coordinated hole punch between %s and %s: telling both to start", from->name, to->name);
+			punch_send_go(from, to);
+			punch_send_go(to, from);
+			return true;
+		}
+
+		return send_request(to->nexthop->connection, "%s", request);
+	}
+
+	if(!punch_coordinated(from)) {
+		/* Not a peer we coordinate with (a meta neighbour now, or its token
+		   changed): it asked, so still answer, and probe as usual. */
+		if(flag == 0) {
+			send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
+		}
+
+		return true;
+	}
+
+	if(flag == 0) {
+		/* The relay forwarded the request instead of answering it (an older
+		   build): answer the peer ourselves and start once our answer has
+		   crossed the meta path, estimated as half its weighted distance. */
+		send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
+		punch_start(from, from->weighted_distance / 2, NULL, "the peer asked through an older relay");
+		return true;
+	}
+
+	sockaddr_t sa = {0};
+	bool have = *addr && *port && strcmp(addr, "-") && strcmp(port, "-");
+
+	if(have) {
+		sa = str2sockaddr(addr, port);
+	}
+
+	punch_start(from, 0, have ? &sa : NULL, flag == 2 ? "the relay says go" : "the peer says go");
+	return true;
+}
+
 static void try_udp(node_t *n) {
 	if(!udp_discovery) {
 		return;
@@ -1475,6 +1704,11 @@ static void try_udp(node_t *n) {
 				n->maxrecentlen = 0;
 			}
 		}
+	}
+
+	/* Coordinated hole punch: no unsolicited probe outside a round. */
+	if(!n->status.udp_confirmed && punch_coordinated(n) && !punch_may_probe(n)) {
+		return;
 	}
 
 	/* Probe request */

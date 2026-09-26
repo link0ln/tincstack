@@ -289,6 +289,12 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		return true;
 	}
 
+	/* The coordinated hole punch: a relay between the two ends answers it
+	   instead of forwarding it (punch_h). */
+	if(reqno == PUNCH_REQ) {
+		return punch_h(from, to, request);
+	}
+
 	/* Requests that are not SPTPS data packets are forwarded as-is. */
 
 	if(to != myself) {

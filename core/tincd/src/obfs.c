@@ -1859,6 +1859,8 @@ const char *dseal_token(char *buf, size_t len) {
 		flags |= DSEAL_WANTS;
 	}
 
+	flags |= DSEAL_PUNCH;
+
 	snprintf(buf, len, "dseal=%x", flags);
 	return buf;
 }
@@ -1868,7 +1870,7 @@ void dseal_learn(node_t *n, const char *token) {
 	uint8_t was = n->dseal;
 
 	if(token && !strncmp(token, "dseal=", 6) && sscanf(token + 6, "%x", &flags) == 1) {
-		n->dseal = DSEAL_KNOWN | (flags & (DSEAL_READS | DSEAL_WANTS | DSEAL_KEX));
+		n->dseal = DSEAL_KNOWN | (flags & (DSEAL_READS | DSEAL_WANTS | DSEAL_KEX | DSEAL_PUNCH));
 	} else {
 		/* No token: an older tincstack reads our frames iff it accepts obfs
 		   (its cold-scan classifier unseals bootstrap-key frames); upstream
@@ -1878,11 +1880,12 @@ void dseal_learn(node_t *n, const char *token) {
 	}
 
 	if(was != n->dseal) {
-		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Direct seal capability of %s: %s%s%s%s", n->name,
+		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Direct seal capability of %s: %s%s%s%s%s", n->name,
 		       n->dseal & DSEAL_OLD ? "no token (older build)" : "token",
 		       n->dseal & DSEAL_READS ? ", reads sealed datagrams" : ", reads none",
 		       n->dseal & DSEAL_WANTS ? ", seals its own" : "",
-		       n->dseal & DSEAL_KEX ? ", key exchange" : "");
+		       n->dseal & DSEAL_KEX ? ", key exchange" : "",
+		       n->dseal & DSEAL_PUNCH ? ", coordinated punch" : "");
 	}
 }
 

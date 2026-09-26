@@ -113,6 +113,7 @@ void free_node(node_t *n) {
 	sptps_stop(&n->sptps);
 
 	timeout_del(&n->udp_ping_timeout);
+	timeout_del(&n->punch_timer);
 
 	free(n->hostname);
 	free(n->name);
