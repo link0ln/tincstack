@@ -68,8 +68,11 @@ class ScreenStateReceiver(
       addAction(Intent.ACTION_SCREEN_ON)
       addAction(Intent.ACTION_USER_PRESENT)
     }
-    // protected system broadcasts still reach a not-exported receiver
-    ContextCompat.registerReceiver(context, this, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+    // EXPORTED, not NOT_EXPORTED: USER_PRESENT is sent by SystemUI, which is
+    // not the system uid, and a not-exported receiver never gets it (measured
+    // on API 34: SCREEN_OFF/ON arrived, the PIN unlock's USER_PRESENT did not).
+    // All three actions are protected broadcasts: no app can forge them.
+    ContextCompat.registerReceiver(context, this, filter, ContextCompat.RECEIVER_EXPORTED)
     registered = true
   }
 
