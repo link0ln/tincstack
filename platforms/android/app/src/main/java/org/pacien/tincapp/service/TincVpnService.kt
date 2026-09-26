@@ -210,7 +210,7 @@ class TincVpnService : VpnService() {
     dispatch(Event.SessionStarted(netName, run, interfaceCfg.disconnectOnScreenOff))
 
     enterForeground(netName, suspended = false)
-    if (interfaceCfg.disconnectOnScreenOff) screenStateReceiver.register(this)
+    if (interfaceCfg.disconnectOnScreenOff) screenStateReceiver.register(applicationContext)
 
     val startup = launchDaemon(netName, stanza, run)
     startup.whenComplete { _, exception ->
@@ -324,7 +324,7 @@ class TincVpnService : VpnService() {
       return
     }
     log.info("Ending session {} ({}).", session, reason)
-    screenStateReceiver.unregister(this)
+    screenStateReceiver.unregister(applicationContext)
     connectivityChangeReceiver.unregisterWatcher(this)
 
     getCurrentNetName()?.let { stopDaemon(it) }
