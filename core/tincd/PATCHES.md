@@ -798,6 +798,91 @@ table, RFC 9204 examples), `h3-interop-test.sh` (Chromium, curl, nginx),
 old check -- "connected over quic" once -- passed the first build of this
 change although an old dialler's link died on its first packet).
 
+## 24. The quic listener's tickets, first 1-RTT packet and TLS-failure close are nginx's (tincstack, 2026-09-26)
+
+`transport_quic.c`, `transport_quic_tls.c`; `core/ngtcp2/tincstack-wire.patch`
+(`ngtcp2_conn_set_nginx_server_wire` extended).
+
+Session tickets: nginx's 300 s lifetime and 20-byte session id context (SHA-1
+of "HTTP" and the certificate's SHA-1), the cache mode of `ssl_session_cache
+none`: 224-byte tickets (were 7200 s, 208 B). The first 1-RTT packet: a CRYPTO
+frame per ticket, HANDSHAKE_DONE, NEW_CONNECTION_ID, then the control stream's
+type byte, its SETTINGS and the decoder stream as three STREAM frames with
+the Offset field even at 0 -- one 596-byte datagram; padding only for header
+protection. A failed TLS handshake closes with the reason `handshake failed`.
+The dialler is unchanged. Proof: `quic-listener-wire-test.sh` 9/9
+(`testing/fingerprint/results/2026-09-26-quic-tickets/`), quic-wire, h3-interop,
+quic-carrier, front-port, mixed-version against pre-tps and pre-deb13.
+
+## 25. Windows elevation surface, part 2; json/httpc bounds (tincstack, 2026-09-26)
+
+`platforms/windows/**` (`tincmgr.spec`, `management.py`, `paths.py`,
+`runtime.py`, `routes.py`, `main.py`), `yamlconf.c`, `json.c`, `httpc.c`,
+`certcmd.c`, unit tests `test_json.c`, `test_httpc.c`.
+
+The logon task starts a onedir install under `%ProgramFiles%\tincmgr\app`;
+the onefile is only its carrier, with a SHA-256 manifest compiled into its
+PYZ, and bundled core binaries are verified against it. The config (core and
+GUI) is created with a protected DACL (SYSTEM + Administrators, + the user
+only when unelevated; owned by Administrators when elevated). The automatic
+refresh never downgrades. JSON numbers are scanned within the buffer,
+trailing garbage is refused; `httpc` refuses short and malformed bodies and
+no longer overflows on a huge chunk size. Proof: `build-exe.sh` smoke 14/14
+and `windows-wine-test.sh` 16/16 under Wine, unit tests under ASan/UBSan.
+Real-Windows checks (UAC, icacls, schtasks) remain open (PLAN.md).
+
+## 26. The decoy is Debian 13's nginx 1.26.3 (tincstack, 2026-09-26)
+
+`decoy.c`, `decoy.h`, `https.c`, `tls.c`, `transport_quic.c` (the HTTP/3
+decoy's upstream), `transport.c` (the Alt-Svc port), `test/unit/test_decoy.c`.
+
+The responder is a small model of nginx's static module and filter chain:
+parser, not_modified, add_header (Alt-Svc when the quic front is up), gzip,
+range; its answer is a structure that HTTP/1.1 and HTTP/3 encode. The page's
+dates are Debian's. `HttpsDecoyUpstream` behaves like `proxy_pass` on both
+fronts. The TLS front's tickets are nginx's (SNI callback, session id
+context, 300 s). Proof: `decoy-conformance-test.sh` 78/78 against
+`tincstack/nginx-deb13:dev` (63 fail on the previous core),
+`h3-interop-test.sh`, `testing/fingerprint/results/2026-09-26-deb13-persona/`.
+
+## 27. Front port override and exclusive listeners (tincstack, 2026-09-26)
+
+`transport.c` (`public_front_port()`), `tincctl.c`, `net_socket.c`
+(`set_bind_policy()`), `platforms/linux/docker/*` (`compose.leaf.yml`).
+
+`HttpsPortPublic` / `QuicPortPublic` are advertised in place of the bound
+port (a router forwarding another external port); per node, not propagated.
+On Windows every listener sets `SO_EXCLUSIVEADDRUSE` (upstream sets
+`SO_REUSEADDR`, which lets another process bind the same port there). A
+Docker leaf that only dials publishes no host ports. Proof: `front-port-test.sh`
+24/24, `windows-wine-test.sh` 19/19 (UDP takeover refused), `leaf-ports-test.sh`.
+
+## 28. obfs frame v3: header protection and random tails (tincstack, 2026-09-26)
+
+`obfs.c`, `obfs.h`, `test/fuzz/fuzz_obfs.c`, `testing/transports/obfs_probe.py`.
+
+nonce+clen are masked with a ChaCha20 block over a 16-byte ciphertext sample
+under a per-direction header key (`tincstack-obfs-hp` / `-shp`); the tail
+length is uniform per datagram, drawn from the same block, capped by the
+path budget (`Obfs*HeaderJunkSize` is now its maximum). Receivers read v2 and
+v3 and answer a v2-only peer in v2; `OBFS_KEY` carries the frame version as a
+trailing token; no version field on the wire. Proof:
+`testing/fingerprint/results/2026-09-26-obfs-v3/`, fuzz self-tests,
+`mixed-version-test.sh` obfs pairs.
+
+## 29. quic: stream bytes never move until acknowledged (tincstack, 2026-09-26)
+
+`quic_txq.c`, `quic_txq.h`, `transport_quic.c`, `test/unit/test_quic_txq.c`.
+
+ngtcp2 retransmits from the pointers passed to `ngtcp2_conn_writev_stream`
+until `acked_stream_data_offset` covers them. The meta ring moved and
+reallocated unacknowledged bytes, and so did the listener's QPACK decoder
+stream: a use-after-free under loss (ASan), and quic links that died on a
+lossy path. All stream data now goes through a chunk list whose chunks never
+move and are freed by the acknowledged offset. Proof:
+`testing/transports/quic-loss-test.sh` (fails on the previous master, passes
+here), `testing/fingerprint/results/2026-09-26-quic-q/item0-loss/`.
+
 ---
 
 ## Building

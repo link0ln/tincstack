@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-25, night (**the quic listener's transport parameters and HTTP/3 SETTINGS are nginx 1.26.3's: its parameters in nginx's order and values with no `max_datagram_frame_size` and no `version_information` (EE 121 B as nginx's, compared decrypted), SETTINGS QPACK 4096/128 and a decoder stream only -- and since a 4096 table is a promise Chromium takes up, a real QPACK dynamic table (`test_h3.c` 5/5 under ASan/UBSan, Chromium still gets the page). `quic-listener-wire-test.sh`: 6 of 9 (open: tickets, first 1-RTT datagrams, wrong-ALPN close). Found on the way, and the reason this took two builds: without the datagram parameter an old dialler's link died on its first tunnel packet and it re-dialled quic for ever (7 dials in 80 s) -- while `mixed-version-test.sh` said PASS, since it only looked for "transport quic" once. Now a dialler marks its request, a listener answers an unmarked (old) one as a web server so it falls back cleanly, and the test pings through every carrier and counts dials (PASS against five older cores both ways; the first build fails it). Price: nodes from before today lose quic towards upgraded listeners. 37 regression runs: 35 green first time, `quic-listener-wire` fails exactly its 3 open checks, `https-carrier` missed a race-dependent precondition once and passed twice on re-run (recorded under Known Issues, 🟢).**) Before that, 2026-09-25, evening (**the quic listener's handshake is nginx's in the clear: 20-byte connection ids, minimal Length fields, one CRYPTO frame per TLS message, no 0.5-RTT packet -- its handshake datagrams equal nginx 1.26.3's in size, packets, Lengths and frames (decrypted side by side with curl's key log; only EE, i.e. the transport parameters, differs inside). New server mode in `core/ngtcp2/tincstack-wire.patch`. `quic-listener-wire-test.sh`: 4 of 9. Price: PMTU over quic 1119 (was 1131). Our dialler is still curl's against it; old cores still connect both ways. Found: `front-port-test.sh` had become a coin toss with the previous commit -- its random bytes looked like a QUIC short header 1 time in 4 and got a stateless reset, as nginx would send; it passed by luck in that regression. It now sends non-QUIC-shaped junk in one datagram and checks that it did (6/6). 36 regression runs, 35 green first time plus `front-port` after the fix.**) Before that, 2026-09-25, later (**the quic listener answers one-datagram probes and HTTP/3 requests as nginx 1.26.3 does: its QuicPort socket sends Version Negotiation and stateless resets to nginx's measured thresholds (lengths, id limits, fixed bit, no rate limit -- swept side by side), and its HTTP/3 decoy decodes the request's QPACK section (new decoder, Huffman included, `test_h3.c` 4/4) and answers 404, 405 and a body-less HEAD through the TCP decoy's responder. `quic-listener-wire-test.sh`: 2 of 9 now pass, the two this was about; the other 7 (handshake in the clear, transport parameters, SETTINGS, tickets, first 1-RTT packets, wrong-ALPN close, CID length) are untouched. New residual: a POST's 405 comes after its body, nginx's right after HEADERS (🟡, owner's call). 36 regression runs, 34 green first time; `obfs-restart` (its own known first-switch flake) and `app-https` ("could not connect to inviter", a TCP join path this does not touch) failed once and passed on re-run.**) Before that, 2026-09-25 (**the quic listener measured next to nginx for the first time -- Debian 13's own nginx 1.26.3, the one reference that shares our OpenSSL 3.5 and our decoy page -- and it is not nginx's anywhere: it ignores unknown versions and unknown connections where nginx answers Version Negotiation and stateless resets (one UDP packet tells them apart); its HTTP/3 decoy answers 200 with the page to any path and method and sends a body to HEAD, which curl rejects as malformed; its connection ids (8 vs 20 B), Length fields and handshake flight differ in the clear; its transport parameters, SETTINGS (`H3_DATAGRAM`), tickets and first 1-RTT packets differ after a handshake. `quic-listener-wire-test.sh` (new) fails 9 of 9 checks, reproducibly; nothing fixed yet.**) Before that, 2026-09-24, late (**the quic dialler's second flight is curl's too: the datagram with its Finished is Initial (ACK + 1026 B PADDING, Length 1051) + Handshake (80) + a 34-byte 1-RTT ACK, 1200 B, and it has already moved to the connection ID the server issued -- stock ngtcp2 padded the 1-RTT packet (Initial Length 25, readable without keys), kept the original DCID (in the clear) and sometimes put a PING into an ACK-only Initial. `quic-wire-test.sh` requires all of it (the previous core fails), with Initials decrypted by the new stdlib `quic_initial.py` because tshark loses the connection across the DCID move. Windows equals Linux. Not closed: on the Android emulator the Finished goes out without an Initial 6 of 7 runs (by all signs ngtcp2's PTO on a slow client; OpenSSL's behaviour there unmeasured); the first HTTP/3 packets still differ in size; the listener vs nginx is unaudited. 32 regression runs green (`app-quic` on a re-run: its UI automation failed once before any traffic).**) Before that, 2026-09-24, evening (**the quic dialler's Initial is curl's: ngtcp2 1.25 is patched on every platform (`core/ngtcp2/tincstack-wire.patch`) to write OpenSSL's transport parameters -- set, order, values, `active_connection_id_limit 2` -- 4-byte packet numbers, 2-byte Length fields and the ClientHello in order (ngtcp2 had been shuffling it into ~11 CRYPTO fragments, unlisted until now); `quic-wire-test.sh` finds parameters, ClientHello and both Initial packets equal to curl's, the previous core fails it. Datagrams survive: the listener enables them inside the tunnel for an authenticated peer; with a listener from before today, a new dialler drops quic once and uses the next carrier. Price: 1200-byte packets as curl, tinc's MTU on quic 1131 (was 1366). Found and fixed: an oversized datagram jammed the quic carrier for good (would have hit any path whose PMTU settles below ~1450); the Android app lab's inviter was a stale GnuTLS-era image (yesterday's app proof re-run against the current core). Still not curl's: the second flight's Initial padding (visible without decryption), the first HTTP/3 packet sizes, and the listener side vs nginx is unaudited. 33 regression runs green.**) Before that, 2026-09-24 (**Android has both TLS carriers: the NDK build links OpenSSL 3.5.7, zstd and ngtcp2 like Windows; the default build compiles again (CI and release had shipped `nolegacy` since the TLS front); on the Android 14 emulator the app joins and its VpnService tunnel runs over https and over quic, and its ClientHellos equal the Linux ones (`android-emulator-test.sh`). Found and fixed on the way, all platforms: `tinc retry` during a TLS/QUIC handshake demoted the link to plain for the session (the app runs it on every connectivity change); config reads failed where `tmpfile()` has no directory (Android). The app left its keys file 0666 -- fixed. Correction: our QUIC transport parameters are ngtcp2's, not curl's (curl runs OpenSSL's QUIC), so "byte for byte" held for JA4 and size only -- owner's call. 27 regressions green. Not proven: ARM hardware, a mobile network.**) Before that, 2026-09-23, late evening (**Windows has both TLS carriers: `tincd.exe` links a static OpenSSL 3.5.7 (+ zlib, zstd, for Debian's `compress_certificate`) and ngtcp2, and under Wine (`windows-wine-test.sh`, 14/14) it serves and dials https and quic against Linux nodes, its decoy answers curl over TLS and HTTP/3, and its ClientHellos equal the Linux dialler's and curl's byte count and extension list. Found and fixed on the way: the https dial socket stayed blocking on Windows (a hung dial froze the daemon 10 s in the lab); every https dial to an IP sent SNI and Host `localhost`, which no client does; the Windows GUI wrote `HttpsFront*`, keys the core never read. Not proven: real Windows, Wintun. `tincmgr.exe` rebuilt with this core on 2026-09-24. Android still has no TLS carrier (🟠). 24 Linux regressions green.**) Before that, 2026-09-23, evening (**one TLS stack: the core image is Debian 13, and both carriers run on OpenSSL 3.5 -- the quic carrier moved off GnuTLS to `ngtcp2_crypto_ossl`. Our https and QUIC ClientHellos are now curl 8.14's byte for byte (JA4, JA3 and size), the QUIC ServerHello nginx's; old and new nodes still connect both ways (`mixed-version-test.sh`); 23 regression runs green. Only the Docker images: Windows and Android have no TLS carrier yet, and when they get one they must link the same OpenSSL 3.5 (🟠). We look like curl now, not a browser.**) Before that, 2026-09-23, day (**the decoy answers as nginx does: its welcome page and error pages byte for byte, its headers and dates, 404/405/400, keep-alive, close_notify, nginx's 400 to plain bytes on 443, and a silent client closed at 60 s instead of held for ever -- `decoy-conformance-test.sh` 20/20 next to a real nginx, 19/20 fail on the previous core. Found on the way: tinc's accept tarpit and the QUIC per-second budget left the 11th connection of a burst unanswered -- the web fronts now use a 256-client cap instead; the built-in page was Apache's under `Server: nginx`. Still not nginx: no h2, no Alt-Svc.**) Before that, 2026-09-23, morning (**the quic carrier is HTTP/3 now: control and QPACK streams with SETTINGS, the tinc session as a POST whose DATA frames carry the authenticator and meta, RFC 9297 datagrams, and a decoy page for every other HTTP/3 request -- curl, Chromium and nginx all read it as HTTP/3 (`h3-interop-test.sh` 8/8, 6/8 fail on the previous core). The dialler's Initial now carries curl's stream limits and an empty source connection id. Not fixable in GnuTLS: the QUIC JA4 stays unique; the fix is OpenSSL 3.5 for both carriers, which needs the owner's call. Old and new nodes no longer speak quic to each other (they fall back to plain in 5 s).**) Before that, 2026-09-23, early morning (**the https and quic fronts moved off tinc's port: a listening node binds front-only TCP/UDP 443, advertises it in its own host record so invitations carry it, and the quic dial sends from an ephemeral port -- `front-port-test.sh` and a re-measured fingerprint run show TLS and QUIC to 443 only. Found on the way: the UDP front shared 443 with any other `SO_REUSEADDR` server (fixed), and the Linux compose files published only 655, so a compose node would have advertised an unreachable 443 (fixed: `FRONT_PORT`). QUIC h3 conformance and the decoy are next.**) Before that, 2026-09-23, late night (**`CERT_RENEW=1` is the default again. First wire-fingerprint audit (`testing/fingerprint/run.sh`, against nginx, curl and Chromium): neither carrier passes the owner's rule yet -- the fronts sit on tinc's port 655 and the quic client even sends *from* it (🔴); our QUIC ClientHello says h3 but forbids the streams HTTP/3 needs and has a JA4 no reference client shares; our QUIC server never answers an h3 request; our TLS ClientHello is a 403-byte OpenSSL 3.0 one next to 1.6-2 KB from curl and Chromium; the decoy answers garbage with 200. Our TLS server side is the one part that matches nginx.**) Before that, 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
+**Last Updated:** 2026-09-26 (**wave W, part 1: a prioritised backlog handed to parallel agent streams, each verified and merged here. Fixed with proof: 🔴 a quic use-after-free -- stream buffers moved under ngtcp2's retransmission; under loss quic links died (2/2000 pings) and the listener's QPACK decoder stream, which any prober can grow, sent freed heap bytes (ASan) -- `quic_txq.c`, new `quic-loss-test.sh`; 🔴 obfs was recognisable from one datagram (length in clear, constant nonce bytes) -- frame v3 with QUIC-style header protection and random tails, statistics now at random level; the quic listener after the handshake is nginx's (`quic-listener-wire-test.sh` 9/9: tickets, first 1-RTT packet, wrong-ALPN close); the decoy is Debian 13 nginx 1.26.3 byte for byte (78/78, with 304/Range/gzip/Alt-Svc/proxy_pass/tickets); Windows: the logon task runs a onedir install instead of a %TEMP%-unpacking onefile, the config gets a private DACL, json/httpc bounds and a dechunk overflow fixed; operator port-forwards (`HttpsPortPublic`/`QuicPortPublic`), exclusive Windows listeners, a leaf compose that publishes nothing. A measurement stream (F) found further tells now listed below (https record sizes, quic idle bursts and 1160-B datagrams, POST-405 timing -- owner chose an exporter-bound token in HEADERS). h2 on the TLS front was tried and deferred (it would cut current diallers off https). Open in wave W: stream Q (POST token, quiet idle quic, 1200-B datagrams, dialler packets), stream N (NAT deep dive), the full regression.**) Before that, 2026-09-25, night (**the quic listener's transport parameters and HTTP/3 SETTINGS are nginx 1.26.3's: its parameters in nginx's order and values with no `max_datagram_frame_size` and no `version_information` (EE 121 B as nginx's, compared decrypted), SETTINGS QPACK 4096/128 and a decoder stream only -- and since a 4096 table is a promise Chromium takes up, a real QPACK dynamic table (`test_h3.c` 5/5 under ASan/UBSan, Chromium still gets the page). `quic-listener-wire-test.sh`: 6 of 9 (open: tickets, first 1-RTT datagrams, wrong-ALPN close). Found on the way, and the reason this took two builds: without the datagram parameter an old dialler's link died on its first tunnel packet and it re-dialled quic for ever (7 dials in 80 s) -- while `mixed-version-test.sh` said PASS, since it only looked for "transport quic" once. Now a dialler marks its request, a listener answers an unmarked (old) one as a web server so it falls back cleanly, and the test pings through every carrier and counts dials (PASS against five older cores both ways; the first build fails it). Price: nodes from before today lose quic towards upgraded listeners. 37 regression runs: 35 green first time, `quic-listener-wire` fails exactly its 3 open checks, `https-carrier` missed a race-dependent precondition once and passed twice on re-run (recorded under Known Issues, 🟢).**) Before that, 2026-09-25, evening (**the quic listener's handshake is nginx's in the clear: 20-byte connection ids, minimal Length fields, one CRYPTO frame per TLS message, no 0.5-RTT packet -- its handshake datagrams equal nginx 1.26.3's in size, packets, Lengths and frames (decrypted side by side with curl's key log; only EE, i.e. the transport parameters, differs inside). New server mode in `core/ngtcp2/tincstack-wire.patch`. `quic-listener-wire-test.sh`: 4 of 9. Price: PMTU over quic 1119 (was 1131). Our dialler is still curl's against it; old cores still connect both ways. Found: `front-port-test.sh` had become a coin toss with the previous commit -- its random bytes looked like a QUIC short header 1 time in 4 and got a stateless reset, as nginx would send; it passed by luck in that regression. It now sends non-QUIC-shaped junk in one datagram and checks that it did (6/6). 36 regression runs, 35 green first time plus `front-port` after the fix.**) Before that, 2026-09-25, later (**the quic listener answers one-datagram probes and HTTP/3 requests as nginx 1.26.3 does: its QuicPort socket sends Version Negotiation and stateless resets to nginx's measured thresholds (lengths, id limits, fixed bit, no rate limit -- swept side by side), and its HTTP/3 decoy decodes the request's QPACK section (new decoder, Huffman included, `test_h3.c` 4/4) and answers 404, 405 and a body-less HEAD through the TCP decoy's responder. `quic-listener-wire-test.sh`: 2 of 9 now pass, the two this was about; the other 7 (handshake in the clear, transport parameters, SETTINGS, tickets, first 1-RTT packets, wrong-ALPN close, CID length) are untouched. New residual: a POST's 405 comes after its body, nginx's right after HEADERS (🟡, owner's call). 36 regression runs, 34 green first time; `obfs-restart` (its own known first-switch flake) and `app-https` ("could not connect to inviter", a TCP join path this does not touch) failed once and passed on re-run.**) Before that, 2026-09-25 (**the quic listener measured next to nginx for the first time -- Debian 13's own nginx 1.26.3, the one reference that shares our OpenSSL 3.5 and our decoy page -- and it is not nginx's anywhere: it ignores unknown versions and unknown connections where nginx answers Version Negotiation and stateless resets (one UDP packet tells them apart); its HTTP/3 decoy answers 200 with the page to any path and method and sends a body to HEAD, which curl rejects as malformed; its connection ids (8 vs 20 B), Length fields and handshake flight differ in the clear; its transport parameters, SETTINGS (`H3_DATAGRAM`), tickets and first 1-RTT packets differ after a handshake. `quic-listener-wire-test.sh` (new) fails 9 of 9 checks, reproducibly; nothing fixed yet.**) Before that, 2026-09-24, late (**the quic dialler's second flight is curl's too: the datagram with its Finished is Initial (ACK + 1026 B PADDING, Length 1051) + Handshake (80) + a 34-byte 1-RTT ACK, 1200 B, and it has already moved to the connection ID the server issued -- stock ngtcp2 padded the 1-RTT packet (Initial Length 25, readable without keys), kept the original DCID (in the clear) and sometimes put a PING into an ACK-only Initial. `quic-wire-test.sh` requires all of it (the previous core fails), with Initials decrypted by the new stdlib `quic_initial.py` because tshark loses the connection across the DCID move. Windows equals Linux. Not closed: on the Android emulator the Finished goes out without an Initial 6 of 7 runs (by all signs ngtcp2's PTO on a slow client; OpenSSL's behaviour there unmeasured); the first HTTP/3 packets still differ in size; the listener vs nginx is unaudited. 32 regression runs green (`app-quic` on a re-run: its UI automation failed once before any traffic).**) Before that, 2026-09-24, evening (**the quic dialler's Initial is curl's: ngtcp2 1.25 is patched on every platform (`core/ngtcp2/tincstack-wire.patch`) to write OpenSSL's transport parameters -- set, order, values, `active_connection_id_limit 2` -- 4-byte packet numbers, 2-byte Length fields and the ClientHello in order (ngtcp2 had been shuffling it into ~11 CRYPTO fragments, unlisted until now); `quic-wire-test.sh` finds parameters, ClientHello and both Initial packets equal to curl's, the previous core fails it. Datagrams survive: the listener enables them inside the tunnel for an authenticated peer; with a listener from before today, a new dialler drops quic once and uses the next carrier. Price: 1200-byte packets as curl, tinc's MTU on quic 1131 (was 1366). Found and fixed: an oversized datagram jammed the quic carrier for good (would have hit any path whose PMTU settles below ~1450); the Android app lab's inviter was a stale GnuTLS-era image (yesterday's app proof re-run against the current core). Still not curl's: the second flight's Initial padding (visible without decryption), the first HTTP/3 packet sizes, and the listener side vs nginx is unaudited. 33 regression runs green.**) Before that, 2026-09-24 (**Android has both TLS carriers: the NDK build links OpenSSL 3.5.7, zstd and ngtcp2 like Windows; the default build compiles again (CI and release had shipped `nolegacy` since the TLS front); on the Android 14 emulator the app joins and its VpnService tunnel runs over https and over quic, and its ClientHellos equal the Linux ones (`android-emulator-test.sh`). Found and fixed on the way, all platforms: `tinc retry` during a TLS/QUIC handshake demoted the link to plain for the session (the app runs it on every connectivity change); config reads failed where `tmpfile()` has no directory (Android). The app left its keys file 0666 -- fixed. Correction: our QUIC transport parameters are ngtcp2's, not curl's (curl runs OpenSSL's QUIC), so "byte for byte" held for JA4 and size only -- owner's call. 27 regressions green. Not proven: ARM hardware, a mobile network.**) Before that, 2026-09-23, late evening (**Windows has both TLS carriers: `tincd.exe` links a static OpenSSL 3.5.7 (+ zlib, zstd, for Debian's `compress_certificate`) and ngtcp2, and under Wine (`windows-wine-test.sh`, 14/14) it serves and dials https and quic against Linux nodes, its decoy answers curl over TLS and HTTP/3, and its ClientHellos equal the Linux dialler's and curl's byte count and extension list. Found and fixed on the way: the https dial socket stayed blocking on Windows (a hung dial froze the daemon 10 s in the lab); every https dial to an IP sent SNI and Host `localhost`, which no client does; the Windows GUI wrote `HttpsFront*`, keys the core never read. Not proven: real Windows, Wintun. `tincmgr.exe` rebuilt with this core on 2026-09-24. Android still has no TLS carrier (🟠). 24 Linux regressions green.**) Before that, 2026-09-23, evening (**one TLS stack: the core image is Debian 13, and both carriers run on OpenSSL 3.5 -- the quic carrier moved off GnuTLS to `ngtcp2_crypto_ossl`. Our https and QUIC ClientHellos are now curl 8.14's byte for byte (JA4, JA3 and size), the QUIC ServerHello nginx's; old and new nodes still connect both ways (`mixed-version-test.sh`); 23 regression runs green. Only the Docker images: Windows and Android have no TLS carrier yet, and when they get one they must link the same OpenSSL 3.5 (🟠). We look like curl now, not a browser.**) Before that, 2026-09-23, day (**the decoy answers as nginx does: its welcome page and error pages byte for byte, its headers and dates, 404/405/400, keep-alive, close_notify, nginx's 400 to plain bytes on 443, and a silent client closed at 60 s instead of held for ever -- `decoy-conformance-test.sh` 20/20 next to a real nginx, 19/20 fail on the previous core. Found on the way: tinc's accept tarpit and the QUIC per-second budget left the 11th connection of a burst unanswered -- the web fronts now use a 256-client cap instead; the built-in page was Apache's under `Server: nginx`. Still not nginx: no h2, no Alt-Svc.**) Before that, 2026-09-23, morning (**the quic carrier is HTTP/3 now: control and QPACK streams with SETTINGS, the tinc session as a POST whose DATA frames carry the authenticator and meta, RFC 9297 datagrams, and a decoy page for every other HTTP/3 request -- curl, Chromium and nginx all read it as HTTP/3 (`h3-interop-test.sh` 8/8, 6/8 fail on the previous core). The dialler's Initial now carries curl's stream limits and an empty source connection id. Not fixable in GnuTLS: the QUIC JA4 stays unique; the fix is OpenSSL 3.5 for both carriers, which needs the owner's call. Old and new nodes no longer speak quic to each other (they fall back to plain in 5 s).**) Before that, 2026-09-23, early morning (**the https and quic fronts moved off tinc's port: a listening node binds front-only TCP/UDP 443, advertises it in its own host record so invitations carry it, and the quic dial sends from an ephemeral port -- `front-port-test.sh` and a re-measured fingerprint run show TLS and QUIC to 443 only. Found on the way: the UDP front shared 443 with any other `SO_REUSEADDR` server (fixed), and the Linux compose files published only 655, so a compose node would have advertised an unreachable 443 (fixed: `FRONT_PORT`). QUIC h3 conformance and the decoy are next.**) Before that, 2026-09-23, late night (**`CERT_RENEW=1` is the default again. First wire-fingerprint audit (`testing/fingerprint/run.sh`, against nginx, curl and Chromium): neither carrier passes the owner's rule yet -- the fronts sit on tinc's port 655 and the quic client even sends *from* it (🔴); our QUIC ClientHello says h3 but forbids the streams HTTP/3 needs and has a JA4 no reference client shares; our QUIC server never answers an h3 request; our TLS ClientHello is a 403-byte OpenSSL 3.0 one next to 1.6-2 KB from curl and Chromium; the decoy answers garbage with 200. Our TLS server side is the one part that matches nginx.**) Before that, 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
 up two defects that break a node weeks after it is installed, and both are
 fixed: nothing renewed the ACME certificate (it simply expired, leaving the
 https front *more* conspicuous than the self-signed one it replaced), and a
@@ -2240,6 +2240,47 @@ hardening), K, L, G3, S, T, N, O. No stream running.
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
 
+- 🔴 **quic: stream bytes moved under ngtcp2 -- use-after-free, dead links
+  under loss** (found 2026-09-26 by wave W stream A, **fixed** the same day by
+  stream Q, commit c831d3a). ngtcp2 retransmits stream data from the pointers
+  it was given until they are acknowledged; the meta stream's TX ring
+  memmove()d unacknowledged bytes on every ack and xrealloc()ed on growth,
+  and the listener's QPACK decoder stream (added 2026-09-25, 7ff64c2) --
+  which ANY unauthenticated HTTP/3 client makes grow through the dynamic
+  table -- xrealloc()ed too. Measured: TCPOnly, 10 % loss + 10 ms: quic
+  2/2000 pings and a dead link that still counts as activated (https
+  2000/2000); an aioquic client using the dynamic table under loss against an
+  ASan tincd: `heap-use-after-free` read in `ngtcp2_pkt_encode_stream_frame`
+  <- `quic_flush`, freed by `xrealloc` in `decoder_append` -- freed heap bytes
+  could go into packets to an unauthenticated peer. Blast radius: every quic
+  link on a lossy path; every quic listener to any prober since 2026-09-25
+  (7ff64c2 was pushed with it). Fix: `quic_txq.c`, a chunk list whose chunks
+  never move and are freed by the acknowledged offset, for the meta,
+  unidirectional and decoder streams. Proof: `testing/transports/quic-loss-test.sh`
+  (new): master 5076472 exit 1 in both sections, the fix exit 0 (2000/2000,
+  dialled once; ASan clean);
+  `testing/fingerprint/results/2026-09-26-quic-q/item0-loss/`.
+- 🔴 **obfs looked like obfs, not like random UDP** (found 2026-09-26 by
+  stream F, **fixed** the same day by stream O, obfs frame v3): `clen` in
+  clear (`bytes[8:10] == len-10` in 9283/9283 datagrams), the whitened
+  counter left bytes 0-5 constant per flow (4620/4643 consecutive pairs), and
+  sizes were inner sizes + a constant. Frame v3: nonce+clen masked with a
+  ChaCha20 block over a 16-byte ciphertext sample under a per-direction
+  header key (QUIC's header protection), random per-datagram tail, handshake
+  frames padded; receivers read v2 and v3, no version field on the wire.
+  After: 0/9313, 0/9324 (shaped), 0/4657 equal prefixes, 4500 distinct
+  2-byte prefixes (random ~4495), 130 bulk sizes (was 2), PMTU unchanged
+  1273/1413; fuzz_obfs 10M + 4.6M runs (a build without the mask fails its
+  self-test). Price: +32 B average per datagram, +128 per handshake frame; a
+  current dialler cannot use obfs towards a not-yet-upgraded acceptor that
+  never reached it (one fallback per reconnect) -- upgrade founders and
+  relays first. `ObfsTransport/InitHeaderJunkSize` is now the tail's maximum.
+  Proof: `testing/fingerprint/results/2026-09-26-obfs-v3/README.md`,
+  `mixed-version-test.sh` obfs pairs, obfs-test/-mtu/-restart/-rekey,
+  classify, matrix. Open (🟡): full-size datagrams get no tail while the
+  junk setting is 0 (owner's call: MTU cost); bulk sizes still two 65-B
+  bands; the idle heartbeat cadence (`net_packet.c`).
+
 - 🟢 **`https-carrier-test.sh` "L-2 residual" can MISS its precondition**
   (found 2026-09-25 in the transport-parameters regression). The case needs
   B's `plain` autoconnect to reach A before A's own https re-dial after
@@ -2324,26 +2365,43 @@ Defects identified during the source audit, to fix as their milestone is reached
     and plain `fopen(tmp, "wb")` on Windows, while that file holds `tls_key`,
     `acme_account` and `CloudflareToken` in clear. The comment above it promises
     0600 and delivers it on one of the two platforms.
+    **Fixed 2026-09-26 (stream C)** in C (`yamlconf.c write_atomic`:
+    CreateFile CREATE_NEW with `private_sd()`, a protected DACL: SYSTEM +
+    Administrators, + the user only when unelevated, owned by Administrators
+    when elevated; never an inherited ACL) and in the GUI's Python writers. Wine
+    proof: the old `tinc.exe` wrote `...(A;;0x1200a9;;;WD)` (Everyone read), the
+    new one no WD/BU/AU ACE (`windows-wine-test.sh` 16/16). Not observable in
+    Wine: the P flag, the BA owner and the elevated branch (TokenElevation
+    fails there) -- check with icacls on real Windows.
   - 🟡 `json_parse(text, len)` can read past `end`: `strtod()` is called on
     `j->p` and the bound is checked afterwards. Safe today only because every
     caller passes a NUL-terminated HTTP body -- a contract that exists in a
     comment, not in the signature.
+    **Fixed 2026-09-26 (stream C):** RFC 8259 number grammar scanned within `end`, then `strtod` on a copy; `test_json` 8 cases (5 fail on the old json.c).
   - 🟡 `json_parse` accepts trailing garbage after the top-level value (no
     `j.p == j.end` check).
+    **Fixed 2026-09-26 (stream C):** `j.p != j.end` rejects it (`test_json`).
   - 🟡 `httpc` silently accepts a body shorter than `Content-Length`, turning a
     truncated response into "the server sent bad JSON".
+    **Fixed 2026-09-26 (stream C):** `httpc_parse_response()` rejects a short body, an unterminated chunked body and a malformed Content-Length (HEAD/1xx/204/304 excepted); `test_httpc` 10 cases.
   - 🟢 `routes.apply_now()` passes `via` to `nexthop=` without checking it is an
     IP (no shell, so not injection -- just a bad value reaching netsh).
+    **Fixed 2026-09-26 (stream C):** the next hop must be an IP of the same family (`test_routes`).
   - 🟢 `routes.apply_now()`'s fallback (`netsh ... set route`) drops the nexthop.
+    **Fixed 2026-09-26 (stream C):** the `set` fallback carries the next hop.
   - 🟢 `runtime.py:284` discards the success flag of the MTU clamp; a failed
     clamp is logged like a successful one.
+    **Fixed 2026-09-26 (stream C):** a failed clamp is logged as FAILED.
   - 🟢 `certcmd.c` shadows three tinc globals (`force`, `myname`, `line`).
+    **Fixed 2026-09-26 (stream C):** two real shadows renamed (`-Wshadow` 3 -> 0 warnings); `line` was a false positive (the global is meant).
   - 🟢 Dead code, the whole sweep's yield: `json_type()` (used nowhere),
     `typing.Any` in `routes.py`, and the discarded `ok` above. No orphan
     modules, no orphan test scripts, no `#if 0`, no leftovers of the rejected
     `sendmmsg` patch.
+    **Fixed 2026-09-26 (stream C):** `json_type()` and `typing.Any` removed.
   - 🟢 `README.md` drift: "M0–M9" (M10 exists), a `v0.1.0` example, and the
     Android signing paragraph still calls an unsigned APK merely "unsigned".
+    **Fixed 2026-09-26 (stream C).**
 
 - 🟠 **Standing requirement (owner, 2026-09-23): every carrier looks on the
   wire exactly like what it declares** -- `quic` like QUIC, `https` like
@@ -2396,13 +2454,26 @@ Defects identified during the source audit, to fix as their milestone is reached
       Linux compose publishes `FRONT_PORT` (443) tcp+udp -- before
       this a compose node would have advertised 443 that nobody could reach.
       Limits, open:
-      - [ ] 🟡 the advertisement is the bound port: an operator port-forward
+      - [x] 🟡 the advertisement is the bound port: an operator port-forward
         to a different external port is overwritten on every start (the
         compose files publish the same port; routers with NAT remapping are
         not covered)
-      - [ ] 🟡 the Docker invitee also reserves host 443 (compose publishes it
+        **Fixed 2026-09-26 (wave W, stream H):** `HttpsPortPublic` /
+        `QuicPortPublic` (server options, per node, not propagated; compose
+        `FRONT_PORT_PUBLIC`) are advertised instead of the bound port for a
+        listening front; a front that cannot bind stays unadvertised. Proof:
+        `front-port-test.sh` 24/24 (listens on 443, nothing on 8443, advertises
+        8443 across a restart, the invitation carries 8443 but not the options,
+        https and quic dials go to 8443 only and get in through a DNAT to 443).
+      - [x] 🟡 the Docker invitee also reserves host 443 (compose publishes it
         unconditionally), which fails `compose up` on a host running a web
         server until `FRONT_PORT` is changed
+        **Fixed 2026-09-26 (stream H):** `join.sh` adds `compose.leaf.yml`
+        (`ports: !reset []`) when PORT is unset and records it in `.env`; the
+        founder publishes as before. Proof: `platforms/linux/docker/leaf-ports-test.sh`
+        7/7 (control: the old invitee fails "port is already allocated" on a taken
+        host port). Not covered: an exported COMPOSE_FILE overrides .env (warned,
+        documented).
       - [ ] 🟡 `tinc join` is still cleartext tinc on the tinc port (item below)
       - [x] 🟠 non-TLS bytes on TCP 443 are closed without a word; nginx
         answers `400` (decoy step, next) -- **fixed 2026-09-23**: plain
@@ -2413,6 +2484,15 @@ Defects identified during the source audit, to fix as their milestone is reached
       - [ ] 🟡 Windows: `SO_REUSEADDR` on the TCP listeners lets another
         process bind the same port there (upstream behaviour, unchanged);
         the Windows core was cross-built with this change, not run
+        **Code fixed 2026-09-26 (stream H), stays open:** `SO_EXCLUSIVEADDRUSE`
+        on every Windows listener, TCP and UDP (`net_socket.c set_bind_policy()`).
+        Under Wine the old `tincd.exe`'s UDP 655 is taken by a second process with
+        SO_REUSEADDR, the new one refuses all four ports (`windows-wine-test.sh`
+        19/19; the same test on `core-win:dev` fails exactly that check). Open: Wine
+        refuses a second TCP listener like Linux, so the TCP half needs real
+        Windows -- and so does the cost Microsoft documents for this option: a port
+        may stay unbindable after close while accepted connections linger, and the
+        GUI restarts tincd on every config change (🟡, measure before a release).
     - [ ] 🟠 **Our QUIC ClientHello claims `h3` and breaks HTTP/3.** Transport
       parameters in the (publicly decryptable) Initial:
       `initial_max_streams_uni` absent (= 0) and `initial_max_streams_bidi =
@@ -2529,6 +2609,9 @@ Defects identified during the source audit, to fix as their milestone is reached
           curl). A real phone on a real network (RTT >> processing time)
           probably takes the normal path -- not measured.
           `android-emulator-test.sh` prints it as NOT COMPARED, not PASS.
+          **Reproduced 2026-09-26 (stream F), not fixed:** under `--cpus 0.03` our dialler sends a Handshake-only datagram in
+          8/26 dials, curl 0/26 (p ~ 0.002); at 1 CPU 0/26 each. It is ngtcp2's PTO
+          probe in openssl-client mode; fix in `tincstack-wire.patch` (moderate).
         - [ ] 🟡 **The first 1-RTT packets** (HTTP/3 control, QPACK, the
           request): 54, 41, 41, 315 UDP bytes from us, 55, 40, 40, 69 from
           curl (re-measured 2026-09-24, late, after the second flight) --
@@ -2545,9 +2628,10 @@ Defects identified during the source audit, to fix as their milestone is reached
           2 of 9 pass since the probe and decoy fixes below
           (`.../2026-09-25-quic-listener-fixed/`), 4 of 9 since the
           handshake fix (`.../2026-09-25-quic-handshake/`), 6 of 9 since
-          the transport parameters and SETTINGS (`.../2026-09-25-quic-tps/`);
-          the other 3 (tickets, first 1-RTT datagrams, wrong-ALPN close) are
-          open.
+          the transport parameters and SETTINGS (`.../2026-09-25-quic-tps/`),
+          9 of 9 since stream A (2026-09-26, `.../2026-09-26-quic-tickets/`).
+          Still open below: the POST-405 timing and the decoy's HTTP/3 answer
+          framing.
           Official `nginx:1.29` (1.29.8, Debian 13, OpenSSL 3.5.5) behaves
           the same on every QUIC point below; `nginx:1.27` (OpenSSL 3.0) does
           not pick X25519MLKEM768 and is the wrong reference for us.
@@ -2596,6 +2680,12 @@ Defects identified during the source audit, to fix as their milestone is reached
             need the dialler to be told apart by HEADERS alone (a path or
             header only a dialler sends), which is itself a tell --
             owner's call.
+            **Measured 2026-09-26 (stream F), raised to 🟠:** a head-only POST is
+            never answered by us (54/54 probes, 2/2 waited 70 s), nginx answers 405 in
+            one RTT; a body 1 s after the head: ours 1018-1203 ms, nginx 21-204 ms,
+            12/12 in every RTT x jitter cell -- one probe settles it. The TCP front is
+            indistinguishable (378/378). **Owner 2026-09-26: carry the authenticator
+            (an exporter-bound token) in the request HEADERS** -- stream Q item 1.
           - [x] 🟢 **If SETTINGS ever announce a QPACK dynamic table** (nginx
             announces 4096/128, see below), `h3_decode_request` must learn
             the encoder stream and dynamic references; today such a
@@ -2640,7 +2730,7 @@ Defects identified during the source audit, to fix as their milestone is reached
             against the new listener is still curl's (`quic-wire-test.sh`
             PASS), and old nodes still connect both ways (mixed-version vs
             `pre-tp`, `pre-sf2`, `pre-deb13` and the previous core).
-          - [ ] 🟡 **What a prober reads after a handshake.** (Split
+          - [x] 🟡 **What a prober reads after a handshake.** (Split
             2026-09-25: transport parameters and SETTINGS fixed, sub-items
             below; tickets, first 1-RTT datagrams and the wrong-ALPN close
             open.) Transport
@@ -2699,13 +2789,39 @@ Defects identified during the source audit, to fix as their milestone is reached
               no connection). Price: nodes from before 2026-09-25 lose quic
               towards upgraded listeners (their other carriers work) --
               upgrade diallers too.
-          - [ ] 🟡 **Owner's call: which nginx we are.** Debian 13's nginx
+            - [x] 🟡 **Session tickets.** **Fixed 2026-09-26 (stream A)**
+              (`transport_quic_tls.c` `nginx_session_cache`: nginx 1.26's
+              ssl_session_timeout 5m, SHA-1 session id context, the cache mode of
+              `ssl_session_cache none`): 300 s, 224 B, two tickets, as nginx (were
+              7200 s, 208 B). Proof: `quic-listener-wire-test.sh` "the session tickets"
+              PASS (`testing/fingerprint/results/2026-09-26-quic-tickets/`).
+            - [x] 🟡 **First 1-RTT datagrams.** **Fixed 2026-09-26 (stream A)**
+              (`ngtcp2_conn_set_nginx_server_wire`: CRYPTO first, one per ticket,
+              HANDSHAKE_DONE before NEW_CONNECTION_ID, STREAM frames always with
+              Offset, padding only for header protection; `transport_quic.c` packs the
+              uni streams into one packet): 596 B `06,06,1e,18,0e,0e,0e` then 31 B
+              `02`, as nginx (were 549 B `18,1e,06,0a` + 50 B). Proof: same test PASS.
+            - [x] 🟡 **Wrong-ALPN close.** **Fixed 2026-09-26 (stream A):** TLS-alert
+              closes carry nginx's reason `handshake failed`: 75 B, 0x178, Initial.
+              Proof: same test PASS. `quic-listener-wire-test.sh` 9/9.
+            - [ ] 🟡 **The decoy's HTTP/3 answer frames.** nginx: HEADERS and DATA in two
+              STREAM frames (727 B of stream for GET /), ours one (802 B); same 615-B
+              page, nginx's field section 75 B shorter -- not decoded yet (stream Q
+              item 5).
+          - [x] 🟡 **Owner's call: which nginx we are.** Debian 13's nginx
             1.26.3 is the persona that fits our TLS stack and already serves
             our decoy's page byte for byte (only Last-Modified/ETag differ:
             2025-02-05 vs 2025-04-16), with `Server: nginx`. The decoy and
             fingerprint labs still compare against `nginx:1.27` (OpenSSL
             3.0, no post-quantum). Recommendation: move them to the Debian 13
             reference and take its page dates.
+            **Decided 2026-09-26 (owner): Debian 13 nginx 1.26.3 for every carrier.**
+            Done by stream E: the decoy is that nginx's static module byte for byte
+            (page dates `Wed, 05 Feb 2025 11:07:30 GMT`, ETag `"67a34672-267"`, gzip
+            level 1, conditional requests, ranges, directories, parse errors) and
+            `decoy-conformance-test.sh` / `testing/fingerprint/run.sh` compare against
+            `tincstack/nginx-deb13:dev`: 78/78 on this core, 63 of 78 fail on the
+            previous one (`testing/fingerprint/results/2026-09-26-deb13-persona/`).
       - [x] 🟠 **JA4 is GnuTLS 3.7.9's and stays unique.** Not fixable
         inside GnuTLS: curl's value comes from OpenSSL 3.5 (ML-DSA and
         brainpool signature schemes), Chromium's from BoringSSL (ALPS,
@@ -2811,10 +2927,11 @@ Defects identified during the source audit, to fix as their milestone is reached
         - [ ] 🟡 not a browser: Chromium's hello (GREASE, ECH, ALPS) needs
           BoringSSL; we now look like curl/OpenSSL 3.5, a common
           non-browser client
-        - [ ] 🟡 the fingerprint lab's reference nginx is `nginx:1.27`
+        - [x] 🟡 the fingerprint lab's reference nginx is `nginx:1.27`
           (Debian 12, OpenSSL 3.0, no post-quantum): ours answers curl's
           `X25519MLKEM768` share with a ~660 B larger ServerHello flight,
           as a Debian 13 nginx would; the lab should add that reference
+          **Done 2026-09-26 (stream E):** `testing/fingerprint/run.sh` uses the Debian 13 reference.
     - [x] 🟠 **Our QUIC server does not behave like an HTTP/3 server** (active):
       `curl --http3-only` against B times out after 5 s with 0 bytes; nginx
       answers `HTTP/3 200`. Its ServerHello (GnuTLS, JA3S
@@ -2918,16 +3035,36 @@ Defects identified during the source audit, to fix as their milestone is reached
       - [ ] 🟡 no ALPN `h2`: an nginx with `http2 on` (most HTTPS sites)
         selects h2 for curl and browsers, we always answer `http/1.1`
         (matches nginx's default config, not the typical site)
-      - [ ] 🟡 no `Alt-Svc` on TCP answers although the node serves HTTP/3
+        **Tried 2026-09-26 (stream G), stays open, deferred:** our dialler offers
+        `h2, http/1.1` like curl and gives up when a server selects h2, so a listener
+        selecting h2 would cut every current dialler off https (their ClientHello is
+        curl's, the listener cannot tell them apart). h2 needs a dialler h2 path
+        first (a POST stream with an exporter-bound token, as the quic carrier's
+        POST token), and old diallers could only fall back. Deferred until the quic
+        POST token has proven that pattern; the stream stopped before any code.
+      - [x] 🟡 no `Alt-Svc` on TCP answers although the node serves HTTP/3
         on 443; sites that serve h3 advertise it (the lab's nginx does)
-      - [ ] 🟡 not imitated: `Range`, `If-Modified-Since` → `304`,
+        **Fixed 2026-09-26 (stream E):** `Alt-Svc: h3=":<QuicPort>"; ma=86400` on the statuses the reference `add_header` adds it to, when the quic front is up (`decoy-conformance-test.sh`).
+      - [x] 🟡 not imitated: `Range`, `If-Modified-Since` → `304`,
         directory redirects (`/dir` → `301`), TLS session-ticket size
-      - [ ] 🟡 the HTTP/3 decoy always serves `/` and never proxies to
+        **Fixed 2026-09-26 (stream E):** 304/412, 206/416/multipart, If-Range, 301
+        (absolute Location) and 403 for directories, TLS tickets 261/214 B at
+        300 s as nginx (SNI callback, SHA-1 session id context,
+        `SSL_CTX_set_timeout(300)`); `decoy-conformance-test.sh`.
+      - [x] 🟡 the HTTP/3 decoy always serves `/` and never proxies to
         `HttpsDecoyUpstream`; with an upstream the TCP decoy relays its
         answer and always closes (the forwarded request says
         `Connection: close`)
-      - [ ] 🟡 the 75 s keep-alive idle close is set, not measured; the
+        **Fixed 2026-09-26 (stream E):** the HTTP/3 decoy relays to the upstream
+        (`h3-interop-test.sh`), and the TCP decoy with an upstream behaves like
+        `proxy_pass` (HTTP/1.0 upstream request, nginx's own Server/Date, the client
+        connection kept alive; `decoy-conformance-test.sh` proxy set). Open (🟡):
+        over HTTP/3 only method, path and authority reach the responder, so If-*,
+        Range and gzip do not apply there (stream Q item 2); a failed upstream gives
+        the static page after 3 s, nginx 502/504 after 60 s.
+      - [x] 🟡 the 75 s keep-alive idle close is set, not measured; the
         256-client cap is by reading, no lab fills it
+        **Measured 2026-09-26 (stream E):** 75 s on both (`decoy-conformance-test.sh`); the 256-client cap stays by reading (nginx: 768 per worker, 🟢).
       - [ ] 🟡 Windows: the decoy changes were cross-built (mingw), not run
     - [x] 🟢 **What is fine:** our TLS *server* (OpenSSL 3.0) gives the same
       JA3S as nginx to both curl (`15af977c...`) and Chromium (`f4febc55...`).
@@ -2937,6 +3074,20 @@ Defects identified during the source audit, to fix as their milestone is reached
       handshake and rekey sizes), post-handshake record sizes and timing
       for both carriers. (The h3 control stream question is answered: it
       is sent now, see above.)
+      **Audited 2026-09-26 (wave W, stream F; measurement only):** see
+      `testing/fingerprint/results/2026-09-26-audit/README.md` for every item's
+      text, repro and numbers. Findings: 🔴 obfs `clen` in clear, 🔴 obfs nonce
+      bytes 0-5 constant per flow, 🟠 obfs sizes = inner + constant (all three
+      fixed by frame v3, item below); 🟡 obfs idle heartbeat (~2 s, 1472-B probes;
+      open, `net_packet.c`); 🟡 obfs on UDP 655 next to a TCP 655 that answers as
+      nginx (open); 🟠 https: every tunnel packet is two TLS records (44 + 1550 B)
+      where nginx writes 16 KiB records (open); 🟡 https idle 4 x 43-B records
+      every 60 s where nginx closes at 75 s (open); 🟠 quic idle bursts every
+      ~2.5 s (stream Q item 3); 🟠 quic full datagrams 1160 B, never 1200 (Q item
+      4); 🟠 POST-405 timing (item "A POST's 405"); 🟡 the listener answers ~RTT/8
+      later than nginx (cause unmeasured); 🟡 slow-client second flight
+      reproduced on Linux (`slow-client-flight.sh`, `--cpus 0.03`: ours 8/26
+      Handshake-only datagrams, curl 0/26). Stays open until those are.
   - [ ] 🟡 `tinc join` is cleartext tinc meta (item below): it looks like
     what it is, which is exactly what a censor blocks
   Method for the audits: capture our carrier and the reference client in
@@ -3083,7 +3234,7 @@ Defects identified during the source audit, to fix as their milestone is reached
     Files\tincmgr\bin\tincd.exe`. **Not verified:** real ACLs, a real
     `schtasks /query /xml` (the parse is tested against a fake), UAC.
     What is still open:
-    - [ ] 🟠 **The onefile exe itself unpacks into `%TEMP%\_MEIxxxx`** and
+    - [x] 🟠 **The onefile exe itself unpacks into `%TEMP%\_MEIxxxx`** and
       loads `python3*.dll` and the Qt DLLs from there. For an admin user the
       elevated process's `%TEMP%` is the user's own, writable at medium
       integrity: a race-to-replace before load is a silent elevation, and
@@ -3092,10 +3243,28 @@ Defects identified during the source audit, to fix as their milestone is reached
       admin's, so this does not apply.) Fix: ship the installed copy as a
       PyInstaller *onedir* build under Program Files, so nothing elevated
       unpacks anywhere; or set `runtime_tmpdir` to a protected path.
-    - [ ] 🟢 Last run wins: running an older tincmgr elevated with autostart
+      **Fixed 2026-09-26 (stream C):** `tincmgr.spec` builds a onedir tree and a
+      onefile that carries it plus a SHA-256 manifest compiled into its PYZ;
+      elevated, the onefile installs the tree into `%ProgramFiles%\tincmgr\app`
+      (every file verified against the manifest, swapped in by rename) and the
+      logon task runs that onedir exe, which unpacks nothing. Bundled core
+      binaries are verified against the manifest too, with no fallback to an
+      unverified file. Proof: `build-exe.sh` SMOKE under Wine 14/14 (installed
+      copy runs from Program Files, meipass `app\_internal`, no `_MEI*` in
+      %TEMP% before/after), `test_trust`. Not verified: that real Windows denies
+      an unelevated write to `Program Files\tincmgr\app`, and that a running copy
+      blocks the swap. Residual (🟠, inherent to onefile): the FIRST elevated run
+      of a downloaded onefile still loads its DLLs from the user's %TEMP% -- only
+      a signed installer/MSI closes that; the permanent logon-task window is
+      closed. Residual (🟡): when staging fails because a file is busy, the
+      hash-verified `_MEI` tincd runs, with a TOCTOU window between check and
+      launch.
+    - [x] 🟢 Last run wins: running an older tincmgr elevated with autostart
       on puts that older copy into Program Files.
-    - [ ] 🟢 `refresh_startup_task()` runs `schtasks` on the Qt thread at start
+      **Fixed 2026-09-26 (stream C):** the automatic refresh never installs an older or a dev build over a newer release (`test_refresh_never_downgrades_but_the_toggle_may`); toggling autostart off and on is the explicit way to downgrade.
+    - [x] 🟢 `refresh_startup_task()` runs `schtasks` on the Qt thread at start
       (one `/query`, plus `/create` and PowerShell once when migrating).
+      **Fixed 2026-09-26 (stream C):** refresh, toggle and state query run in the WorkerPool (`test_startup_task_refresh_runs_off_the_qt_thread`, `test_startup_state_query_runs_off_the_qt_thread`).
   - [x] 🟠 **A Windows upgrade can keep running the old `tincd.exe`.**
     *(Fixed 2026-09-23: `paths.stage_file()` compares SHA-256, reads the
     source once so the hashed bytes are the written bytes, writes `.new` +
@@ -3198,6 +3367,10 @@ Defects identified during the source audit, to fix as their milestone is reached
     `httpc` is compiled into the Windows `tinc.exe` too; there `strtoul` is
     32-bit (LLP64), so `in + chunk` cannot wrap a 64-bit `size_t` -- by
     reading, not run. Still open.
+    **Fixed 2026-09-26 (stream C):** `chunk > len - in` checked, the size
+    parsed with overflow protection (`test_chunk_size_cannot_wrap` under
+    ASan/UBSan). The `fuzz_dechunk` harness this note names is not in the
+    repository, so it was not re-run.
   - [x] 🟡 **The Linux renew timer never fires on a node restarted more often than
     `CERT_RENEW_INTERVAL`** (12 h). *(Fixed 2026-09-23.)* `renew_loop` is `while sleep ...; do`, so
     the first check is one interval after start; a node rebooted nightly
