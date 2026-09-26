@@ -2311,6 +2311,20 @@ Defects identified during the source audit, to fix as their milestone is reached
     drops quic once per reconnect towards an upgraded listener
     (`mixed-version-test.sh` expects it).
 
+- 🟢 **Android rebuilt with the wave-W ngtcp2 patch (2026-09-26, master
+  11e02ef)** -- stream A had extended `core/ngtcp2/tincstack-wire.patch` and
+  never built Android. `./gradlew -PtincAbis=x86_64 testDebugUnitTest
+  assembleDebug` rc 0 (OpenSSL 3.5.7 + ngtcp2 1.25.0 + the patch rebuilt, the
+  build cache is keyed on the patch's SHA); on the API 34 emulator
+  `join-on-emulator.sh` TRANSPORT=https and =quic rc 0 (join, schema, tunnel
+  traffic); `android-emulator-test.sh` 2/2 green on re-run (https and quic
+  connect; ClientHellos equal Linux's and curl's: 1542 B TLS, 1477 B QUIC,
+  transport parameters 12,15,1,3,14,4,5,6). Its first run failed both
+  connects because the emulator's `tinc join` had failed silently (the node
+  came up as its own founder, `Name=localhost`); the join's output was
+  discarded, so the cause is unknown -- 1 in 4 runs. The test now stops on a
+  failed join and prints it. Debug build only; release not built.
+
 - 🟢 **`quic-listener-wire-test.sh` "first 1-RTT datagrams" failed once on
   ACK timing** (merged tree, 2026-09-26): our second 1-RTT datagram was the
   791-B answer with the ACK inside instead of nginx's separate 31-B ACK and

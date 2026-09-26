@@ -121,7 +121,14 @@ lstart f
 until_up "$RUN/f/tincd.log"
 lt f set founder.Address "$F_IP"
 inv=$(lt f invite aleaf)
-at "join $inv" >/dev/null 2>&1 || true
+# A failed join leaves a node named `localhost' that is its own founder, and
+# every check below would fail as a carrier failure: stop here, with the join's
+# own words (seen once in four runs on 2026-09-26, cause not captured then).
+if ! join_out=$(at "join $inv" 2>&1) || ! printf '%s' "$join_out" | grep -q "Invitation successfully accepted"; then
+	echo "$join_out" | tail -15 >&2
+	bad "the Android node joins by invitation"
+	exit 1
+fi
 at "set DeviceType dummy" >/dev/null
 inv=$(lt f invite lleaf)
 linux c "$C_IP"
