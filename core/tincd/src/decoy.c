@@ -1753,7 +1753,10 @@ void decoy_origin_of(int fd, bool tls, decoy_origin_t *at) {
 /* Rewrite the request head for the upstream as nginx's proxy_pass does
    with its defaults (proxy_http_version 1.0): the request line with
    HTTP/1.0, Host: the upstream authority, Connection: close (so the upstream
-   ends the response with EOF), then the client's headers. Every header that
+   ends the response with EOF), Content-Length: the body's length (nginx's
+   $proxy_internal_body_length, in that slot whatever the client's order or
+   spelling -- an HTTP/3 client's is "content-length"), then the client's
+   other headers. Every header that
    can carry the tinc authenticator or betray the WebSocket upgrade shape is
    dropped (M5-10): Cookie, Upgrade, Sec-WebSocket-*, Authorization; and so
    are the ones nginx does not forward (Keep-Alive, TE, Expect). What the
@@ -1767,9 +1770,35 @@ static bool header_is(const char *line, size_t linelen, const char *name) {
 static char *rewrite_request(const char *request, size_t reqlen, const char *host, size_t *outlen) {
 	const char *line = request;
 	const char *req_end = request + reqlen;
-	char *out = xmalloc(reqlen + strlen(host) + 64);
+	char *out = xmalloc(reqlen + strlen(host) + 96);
 	size_t olen = 0;
 	bool first = true;
+	long long clen = -1;
+
+	/* The client's Content-Length, if any: nginx sends its own. */
+	for(const char *l = request; l < req_end;) {
+		const char *eol = memchr(l, '\n', (size_t)(req_end - l));
+
+		if(!eol || eol - l <= 1) {
+			break;
+		}
+
+		if(l != request && header_is(l, (size_t)(eol - l), "Content-Length:")) {
+			const char *v = l + 15;
+
+			while(v < eol && (*v == ' ' || *v == '\t')) {
+				v++;
+			}
+
+			if(v < eol && isdigit((unsigned char)*v)) {
+				clen = strtoll(v, NULL, 10);
+			}
+
+			break;
+		}
+
+		l = eol + 1;
+	}
 
 	while(line < req_end) {
 		const char *eol = memchr(line, '\n', (size_t)(req_end - line));
@@ -1794,12 +1823,17 @@ static char *rewrite_request(const char *request, size_t reqlen, const char *hos
 			/* Our own headers right after the request line; duplicates from
 			   the client are dropped below. */
 			olen += (size_t) sprintf(out + olen, "\r\nHost: %s\r\nConnection: close\r\n", host);
+
+			if(clen >= 0) {
+				olen += (size_t) sprintf(out + olen, "Content-Length: %lld\r\n", clen);
+			}
 		} else if(linelen <= 2 && (line[0] == '\r' || line[0] == '\n')) {
 			/* the blank line, and then the body as it came */
 			memcpy(out + olen, line, (size_t)(req_end - line));
 			olen += (size_t)(req_end - line);
 			break;
 		} else if(header_is(line, linelen, "Host:") || header_is(line, linelen, "Connection:") ||
+		          (clen >= 0 && header_is(line, linelen, "Content-Length:")) ||
 		          header_is(line, linelen, "Cookie:") || header_is(line, linelen, "Upgrade:") ||
 		          header_is(line, linelen, "Sec-WebSocket-") || header_is(line, linelen, "Authorization:") ||
 		          header_is(line, linelen, "Keep-Alive:") || header_is(line, linelen, "TE:") ||
