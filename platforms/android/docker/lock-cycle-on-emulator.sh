@@ -155,13 +155,11 @@ cycle() { # cycle <n> <label>
     if [[ ${pin_set:-0} == 1 ]]; then
         step "cycle $n: screen on, PIN bouncer still up -> must stay suspended"
         adb shell input keyevent KEYCODE_WAKEUP
-        sleep 10
-        note "$(screen) $(keyguard) tincd=$(tincd_pid)"
+        sleep 4   # the lock screen turns itself off again after ~10 s
+        note "$(screen) $(keyguard) tincd=[$(tincd_pid)]"
         has_tincd && fail "tincd resumed on SCREEN_ON with the secure keyguard still locked"
-        adb shell wm dismiss-keyguard
-        sleep 1
-        adb shell input text "$PIN"
-        adb shell input keyevent KEYCODE_ENTER
+        step "cycle $n: PIN unlock"
+        unlock
     else
         step "cycle $n: unlock"
         unlock
@@ -194,9 +192,15 @@ notification_disconnect() {
     # shellcheck source=ui-lib.sh
     . ./ui-lib.sh
     if UI_TIMEOUT=20 ui_tap 'text="Disconnect"' || { adb shell input swipe 540 900 540 1600 >/dev/null; UI_TIMEOUT=20 ui_tap 'text="Disconnect"'; }; then
-        t=$(wait_until 30 "tun0 gone after the notification's Disconnect" no_tun)
-        note "notification Disconnect tapped: tun0 gone ${t}s later; at that moment $(keyguard)"
+        local t0=$SECONDS
+        while has_tun && (( SECONDS - t0 < 20 )); do sleep 1; done
+        if no_tun; then
+            note "notification Disconnect tapped: tun0 gone $(( SECONDS - t0 ))s later, before any unlock; $(keyguard)"
+        else
+            note "notification Disconnect tapped: the lock screen held the action back (tun0 still up); unlocking lets it run"
+        fi
         unlock
+        wait_until 30 "tun0 gone after the notification's Disconnect" no_tun >/dev/null
         sleep 30
         has_tincd && fail "tincd came back after a disconnect made while locked"
         has_tun && fail "tun0 came back after a disconnect made while locked"
@@ -210,6 +214,9 @@ notification_disconnect() {
     fi
 }
 
+step "transport after the cycles"
+docker exec "$INVITER" tincstack-cli dump connections | tr -d '\r' | grep '^phone ' || true
+
 step "negative: explicit disconnect, then lock/unlock -> stays disconnected"
 disconnect
 wait_until 30 "tun0 gone after disconnect" no_tun >/dev/null
@@ -221,9 +228,6 @@ sleep 30
 has_tincd && fail "tincd came back after an explicit disconnect"
 has_tun && fail "tun0 came back after an explicit disconnect"
 note "stays disconnected: no tincd, no tun0; service: $(service_up && echo running || echo stopped)"
-
-step "transport after the cycles"
-docker exec "$INVITER" tincstack-cli dump connections | tr -d '\r' | grep '^phone ' || true
 
 if [[ $SECURE == 1 ]]; then
     step "secure keyguard: PIN $PIN"

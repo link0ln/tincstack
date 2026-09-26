@@ -85,8 +85,8 @@ echo "OK: a=reach b=reach"
 step "WHITELIST via the settings screen: only $PA"
 reconnect ./ui-pick-apps.sh "$NAME" whitelist no "$PA"
 options
-yaml | grep -qE "AllowApplication: $PA$" || fail "the picker did not write AllowApplication: $PA"
-yaml | grep -q DisallowApplication && fail "DisallowApplication left in the file with a whitelist"
+grep -qE "^ +AllowApplication: $PA$" <<<"$(yaml)" || fail "the picker did not write AllowApplication: $PA"
+grep -q DisallowApplication <<<"$(yaml)" && fail "DisallowApplication left in the file with a whitelist"
 wait_for 60 reach "$PA" || fail "whitelisted $PA does not reach $pool_a"
 reach "$PB" && fail "$PB (not whitelisted) reached $pool_a"
 echo "OK: whitelist: a=reach b=NO"
@@ -95,8 +95,8 @@ routing_evidence
 step "BLACKLIST via the settings screen: all but $PA"
 reconnect ./ui-pick-apps.sh "$NAME" blacklist no
 options
-yaml | grep -qE "DisallowApplication: $PA$" || fail "the picker did not write DisallowApplication: $PA"
-yaml | grep -q AllowApplication: && fail "AllowApplication left in the file with a blacklist"
+grep -qE "^ +DisallowApplication: $PA$" <<<"$(yaml)" || fail "the picker did not write DisallowApplication: $PA"
+grep -qE "^ +AllowApplication:" <<<"$(yaml)" && fail "AllowApplication left in the file with a blacklist"
 wait_for 60 reach "$PB" || fail "$PB (not blacklisted) does not reach $pool_a"
 reach "$PA" && fail "blacklisted $PA reached $pool_a"
 echo "OK: blacklist: a=NO b=reach"
