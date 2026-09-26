@@ -1582,8 +1582,16 @@ other and fall back to the next carrier):
   byte the listener's fixed 200 response; anything else (a decoy, a real web
   server) logs `quic: <peer> answered like a web server, not a tinc peer`
   and the dialler falls back (§9.9).
-- Our QPACK encoder uses the static table only and literals are not
-  Huffman-coded; the listener decodes a request's field section with the
+- Our QPACK encoder uses the static table only. Since 2026-09-26 its
+  literals are Huffman-coded where that is shorter, as curl's (nghttp3)
+  and Chromium's encoders and nginx write them, and the decoy's answers
+  are encoded as nginx 1.26's HTTP/3 filter encodes them (`h3_from_http1()`:
+  `:status` 200 indexed, any other a raw literal on its name; `server`,
+  `date`, `content-type`, `location`, `last-modified` and `content-length`
+  on their static names, `vary: accept-encoding` indexed, the rest literal
+  names) and sent as nginx sends them, HEADERS and DATA in two STREAM
+  frames; the listener's own 200 to a dialler stays the fixed bytes
+  diallers compare. The listener decodes a request's field section with the
   client's dynamic table (above), the dialler does not decode the answer's.
   Graceful closes carry `H3_NO_ERROR` (0x100).
 

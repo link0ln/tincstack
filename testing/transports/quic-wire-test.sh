@@ -143,6 +143,11 @@ else
 	bad "the second flight differs (udp length, packets, Lengths, Initial frames, dcid): ours '$s_ours', curl '$s_curl'"
 fi
 
+# The client's first short-header-only datagrams (its HTTP/3 streams, the request): printed, not
+# compared -- our request carries the authenticator (docs/transports.md §9.4), curl's GET does not.
+onertt() { awk -F'\t' -v ip="$1" '$1 == ip && $3 == "S" { printf "%s%s", (n++ ? "/" : ""), $2; if (n == 4) exit }' "$RUN/datagrams.txt"; }
+log "  the client's first 1-RTT datagrams (udp length): leaf $(onertt "$L_IP"), curl $(onertt "$(awk -F'\t' -v l="$L_IP" '$1 != l { print $1; exit }' "$RUN/datagrams.txt")")"
+
 # ---- the tunnel ----------------------------------------------------------------------------------
 lab_ip() { docker exec "$PFX-$1" ip -4 -br addr show lab | awk '{print $3}' | cut -d/ -f1; }
 fv=$(lab_ip f)

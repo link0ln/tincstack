@@ -83,10 +83,15 @@ uint8_t *h3_request(const char *authority, const char *path, const char *cookie,
 uint8_t *h3_response_ok(size_t *outlen);
 
 /* Turn an HTTP/1.1 response (status line, headers, blank line, body -- what
-   decoy_respond_static() returns) into a HEADERS frame and one DATA frame.
-   Connection-specific headers are dropped, names lowercased. Newly allocated;
-   NULL if `resp' is not a response. */
-uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen);
+   decoy_respond_static() returns) into a HEADERS frame and one DATA frame,
+   the field section encoded as nginx 1.26's HTTP/3 filter encodes it
+   (static name references for the fields it keeps apart, Huffman where
+   shorter). `proxied': the answer came from an upstream, whose
+   Last-Modified and Content-Length nginx sends as literals.
+   Connection-specific headers are dropped, names lowercased. Newly
+   allocated; *hdrlen (if not NULL) is the HEADERS frame's length. NULL if
+   `resp' is not a response. */
+uint8_t *h3_from_http1(const char *resp, size_t resplen, bool proxied, size_t *outlen, size_t *hdrlen);
 
 /* What a web server answers a request by, decoded from a HEADERS frame's
    field section (RFC 9204): its pseudo-header fields, and every other
