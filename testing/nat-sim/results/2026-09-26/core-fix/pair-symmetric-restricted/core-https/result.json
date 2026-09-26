@@ -1,0 +1,1 @@
+{"a":"symmetric","b":"restricted","image":"core","transport":"https","meta_a":"relay:https <control>:plain","meta_b":"relay:https <control>:plain","rtt_ms":0,"expected":"tcp","direct_ab":0,"direct_ba":0,"t_ab":91,"t_ba":6,"reach_ab":"indirectly via nodea","reach_ba":"indirectly via nodeb","ping":1,"verdict":"PASS"}

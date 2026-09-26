@@ -1,0 +1,1 @@
+{"a":"restricted","b":"restricted","image":"core","transport":"plain","meta_a":"relay:plain <control>:plain","meta_b":"relay:plain <control>:plain","rtt_ms":0,"expected":"tcp","direct_ab":0,"direct_ba":0,"t_ab":90,"t_ba":6,"reach_ab":"indirectly via nodea","reach_ba":"indirectly via nodeb","ping":0,"verdict":"FAIL"}

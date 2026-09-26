@@ -102,7 +102,7 @@ RFC 4787 vocabulary: mapping = EIM (endpoint-independent) or APDM
 Until 2026-09-26 this README said MASQUERADE on kernels >= 6.7 is
 "EIM-after-first" and the matrix treated `masq` like a symmetric NAT. Stream N
 measured where the second port comes from (`lab.sh portmap`,
-`results/2026-09-26/portmap/`, kernel 6.8, two trials each):
+`results/2026-09-26/ext/portmap/`, kernel 6.8, two trials each):
 
 - **Nothing unsolicited → EIM and port-preserving.** Five destinations from
   one socket: all five see source port 655, on `masq`, `masqfw` and `cgnat`.

@@ -1,0 +1,9 @@
+dpi-fingerprint: port=0 tcp_segments=0 udp_datagrams=181
+  tcp_id_line              absent   n=0     []
+  tcp_sptps_handshake      absent   n=0     []
+  udp_size_histogram       info     n=181   {"24": 35, "37": 2, "45": 7, "51": 46, "71": 10, "81": 6, "84": 2, "91": 2, "92": 2, "104": 2, "108": 4, "111": 4, "117": 55, "1472": 4}
+  udp_null_dstid           PRESENT  n=111   111/181 datagrams start with 6 zero bytes
+  udp_constant_srcid       absent   n=0     {}
+  udp_seqno_counter        absent   n=0     {}
+  udp_probe_size           PRESENT  n=46    46 datagrams of exactly 51 bytes (tinc MIN_PROBE_SIZE)
+present: udp_null_dstid, udp_probe_size
