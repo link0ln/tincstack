@@ -1615,6 +1615,11 @@ most (§9.8): tinc's path MTU over `quic` is 1119 in the lab (1131 until
 2026-09-25, when the listener's connection ids grew from 8 to nginx's 20
 bytes, which every dialler packet carries; 1366 before 2026-09-24, when
 PMTUD took it to Ethernet's); `SF_MAX_PAYLOAD` is 1200 for comparison.
+Since 2026-09-26 a packet whose DATAGRAM frame is at least 3/4 of that room
+is padded to the path's size (`NGTCP2_WRITE_DATAGRAM_FLAG_PADDING`), so a
+bulk transfer's full packets are 1200 bytes as nginx's are, not the 1160 the
+tunnelled TCP segments come to; smaller ones (tunnelled ACKs, pings) keep
+their size.
 
 **An idle link** (since 2026-09-26): tinc's UDP keepalive (a probe and its
 reply each way every 10 s, the gratuitous probe replies, a PMTU re-probe per

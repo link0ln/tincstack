@@ -1367,7 +1367,20 @@ static void quic_flush(quic_session_t *s) {
 		if(s->dgram_n) {
 			ngtcp2_vec v = {s->dgram[s->dgram_head].data, s->dgram[s->dgram_head].len};
 			int accepted = 0;
-			nwrite = ngtcp2_conn_writev_datagram(s->conn, &ps.path, &pi, buf, sizeof(buf), &accepted, 0,
+
+			/* A full-size packet goes out at the path's full size, as a
+			   web server's full packets do (1200 on a curl-sized path):
+			   tinc's PMTU search settles a few dozen bytes under the
+			   ceiling, and a bulk download of 1160-B datagrams that never
+			   reach 1200 is a shape no HTTP/3 server has. Small ones (ACKs,
+			   probes, interactive traffic) stay small. */
+			uint32_t dflags = 0;
+
+			if(v.len >= dgram_room(s) * 3 / 4) {
+				dflags = NGTCP2_WRITE_DATAGRAM_FLAG_PADDING;
+			}
+
+			nwrite = ngtcp2_conn_writev_datagram(s->conn, &ps.path, &pi, buf, sizeof(buf), &accepted, dflags,
 			                                     ++s->dgram_id, &v, 1, ts);
 
 			if(nwrite < 0) {
