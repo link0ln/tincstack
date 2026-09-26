@@ -924,6 +924,14 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
    router) and one carrier row (`--transport quic`, `--transport https`), so
    W1/W2 cannot come back silently. Done in this stream for the lab; the
    `make check` wiring is N2's.
+   **Status: done in N2.** `matrix --quick` has `masqfw/masqfw` as its sixth
+   pair, and `nat-quick` adds `--transport https` and `--transport quic` on
+   `restricted/restricted` (a W1 regression fails the https row's ping, a W2
+   regression the quic row's direct path). Timed on `ww-n2`
+   (`results/2026-09-26/n2/natquick/timing.txt`, n = 1): quick matrix 289 s
+   (the old five pairs ~276 s; `masqfw/masqfw` 13 s), https row 105 s (a
+   `tcp` pair waits the whole 90 s budget), quic row 15 s: `nat-quick` ~6.8
+   min, was ~4.6 min, inside the CI job's 40-minute budget.
    Code: testing/nat-sim (this stream), Makefile.
 
 7. 🟡 **P2 — dual-stack hints (W10).** Probe both families when a peer has
@@ -988,8 +996,8 @@ floor. Residual recorded.
   lab has no IGD; no number exists.
 - **One-way traffic** (W9) — every scenario pings, which is two-way.
 - **Sleep between 30 and 60 s** (no "Awaking from dead", no rebind).
-- **The tinc daemon with a coordinated start** — §9 proves the NAT side in
-  the harness, not a tincd implementation.
+- **The coordinated start on real NATs** — §9 proves the NAT side in the
+  harness and §9.3 the tincd implementation, both on Linux netfilter only.
 - **Carriers other than plain on the mesh arm**, and `obfs` beyond the two
   capture pairs.
 - **Loss and jitter** — only fixed delay (`--rtt`) was used.

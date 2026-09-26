@@ -483,7 +483,7 @@ matrix() {
     if [ -n "$PAIRS" ]; then
         read -r -a pairs <<<"$PAIRS"
     elif [ "$QUICK" -eq 1 ]; then
-        pairs=(fullcone/fullcone portrestricted/portrestricted masq/restricted symmetric/symmetric udpblock/portrestricted)
+        pairs=(fullcone/fullcone portrestricted/portrestricted masq/restricted masqfw/masqfw symmetric/symmetric udpblock/portrestricted)
     else
         for a in "${MATRIX_TYPES[@]}"; do for b in "${MATRIX_TYPES[@]}"; do pairs+=("$a/$b"); done; done
         pairs+=(udpblock/fullcone udpblock/portrestricted udpblock/udpblock)

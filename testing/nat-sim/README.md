@@ -23,7 +23,8 @@ never sees forwarded traffic. The netns design is host-independent and CI-safe.
 ```
 testing/nat-sim/lab.sh validate-nat        # prove the NAT emulation (udpprobe)
 testing/nat-sim/lab.sh scenario masq restricted --image core
-testing/nat-sim/lab.sh matrix --quick --image core     # what `make check` runs
+testing/nat-sim/lab.sh matrix --quick --image core     # what `make check` runs (6 pairs,
+                                                       # plus one https and one quic row)
 testing/nat-sim/lab.sh matrix                          # 5x5 + udpblock, core AND baseline
 testing/nat-sim/lab.sh laptop                          # the named regression, core vs baseline
 testing/nat-sim/lab.sh glare                           # simultaneous REQ_KEY

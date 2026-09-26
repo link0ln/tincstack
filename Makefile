@@ -2,7 +2,8 @@
 # nothing is installed on the host. `make check` is the one CI command.
 #
 #   make check          build core + baseline images, two-node YAML smoke test,
-#                       NAT lab quick subset (core), dpi-proof baseline capture
+#                       NAT lab quick subset (core, + one https and one quic
+#                       row), dpi-proof baseline capture
 #   make nat-full       the whole NAT matrix, core and baseline (~40 min)
 #   make laptop         the CGNAT / sleep-resume regression, core vs baseline
 #   make dpi-baseline   capture plain tinc and assert its fingerprints
@@ -95,8 +96,13 @@ smoke: build-core
 validate-nat: build-lab
 	testing/nat-sim/lab.sh validate-nat
 
+# The quick matrix (masqfw/masqfw is a real home router), then one row per
+# masking carrier: https relays between TCP-only nodes (docs/nat.md §5.2),
+# quic must not hand out its QUIC flow as the UDP address (§5.1).
 nat-quick: build-lab
 	testing/nat-sim/lab.sh matrix --quick --image core
+	testing/nat-sim/lab.sh matrix --image core --transport https --pairs restricted/restricted
+	testing/nat-sim/lab.sh matrix --image core --transport quic --pairs restricted/restricted
 
 nat-full: build-lab
 	testing/nat-sim/lab.sh matrix --image both
