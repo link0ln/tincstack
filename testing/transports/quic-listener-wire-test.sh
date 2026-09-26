@@ -84,6 +84,10 @@ cat > "$RUN/n/default.conf" <<-'EOF'
 	    listen 443 ssl;
 	    ssl_certificate     /n/cert.pem;
 	    ssl_certificate_key /n/key.pem;
+	    # A site that serves HTTP/3 advertises it, or browsers never find it;
+	    # add_header applies to HTTP/3 answers too. The same reference as
+	    # decoy-conformance-test.sh (our decoy sends Alt-Svc when quic is up).
+	    add_header Alt-Svc 'h3=":443"; ma=86400';
 	    location / { root /usr/share/nginx/html; }
 	}
 EOF
