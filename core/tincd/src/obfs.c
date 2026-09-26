@@ -1566,8 +1566,30 @@ void obfs_close(connection_t *c) {
 	   and silently drop the link back to the mesh-wide bootstrap key (review R
 	   M5-2). So only reset the link when NO other connection to the node
 	   remains. If a wipe does happen and the link is still carrying data, the
-	   send-path self-heal (see obfs_encode) renegotiates within a second. */
-	bool superseded = obfs_node_has_other_connection(c->node, c);
+	   send-path self-heal (see obfs_encode) renegotiates within a second.
+
+	   The node is the link's, not c->node: tinc sets c->node only in ack_h,
+	   so for a dial that never got that far c->node is NULL and the check
+	   above found no survivor however many there were. Measured (N2 lab,
+	   masq x restricted over obfs, 3 of 3 failing runs): both ends dial
+	   each other at the same second and both dials stall; the end whose
+	   dial times out first falls back to a dial over the confirmed UDP data
+	   path, which activates and completes OBFS_KEY; the other end's own
+	   stalled dial then timed out -- and its close wiped the session the
+	   live connection had just promoted. From there that end sealed under
+	   the bootstrap key, could not open anything its peer sealed under the
+	   session key ("unknown source and/or destination ID" for every
+	   datagram), and, with the link marked inactive, neither self-heal nor
+	   the periodic rekey ever ran for it. */
+	bool superseded = obfs_node_has_other_connection(l && l->node ? l->node : c->node, c);
+
+	/* A connection that never authenticated has negotiated no session key
+	   (OBFS_KEY runs only after ack_h), so whatever session the link holds
+	   belongs to someone else: another connection, or DSEAL_KEX for the
+	   sealed direct path, whose peer would keep sealing under it while we
+	   could no longer open a single datagram. Its close drops the link's
+	   address and activity, never its keys. */
+	bool negotiated = c->allow_request == ALL;
 
 	/* Our dial ended and not one frame from the peer verified in the whole
 	   attempt. Among the possible reasons (peer down, UDP blocked) is one
@@ -1583,6 +1605,9 @@ void obfs_close(connection_t *c) {
 	if(l && !superseded) {
 		l->active = false;
 		l->have_addr = false;
+	}
+
+	if(l && !superseded && negotiated) {
 		/* Drop the session state so the next connection re-negotiates a fresh
 		   session key. The bootstrap keyset (counter + replay window) is kept
 		   so its counter stays monotone across reconnects. */

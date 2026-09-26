@@ -501,6 +501,89 @@ static void selftest_close_preserves_session(void) {
 	obfs_link_reset_for_test(peer);
 }
 
+/* A dial that never authenticated must not wipe a session it did not
+   negotiate (N2 lab, masq x restricted over obfs: both ends dial each other,
+   one end's fallback dial over the UDP data path wins and keys the link,
+   then the other end's own stalled dial times out). Two orderings:
+
+   (a) the live connection is on the list: the stalled dial's c->node is NULL
+       (tinc sets it only in ack_h), so the survivor check must use the
+       link's node, not c->node;
+   (b) no connection holds the session at all -- what DSEAL_KEX leaves on a
+       sealed direct path: the stalled dial's close must still keep it. */
+static connection_t *selftest_dial(void) {
+	connection_t *c = new_connection();
+	c->name = xstrdup("peer");
+	c->hostname = xstrdup("peer");
+	c->address = peers[0];
+	c->protocol_minor = 0;
+
+	if(!obfs_dial(c)) {
+		fprintf(stderr, "SELFTEST: obfs_dial failed\n");
+		abort();
+	}
+
+	c->transport = transport_get(TRANSPORT_OBFS);
+	return c;
+}
+
+static void selftest_unauth_close_keeps_session(void) {
+	connection_t *live = selftest_dial();
+	live->node = peer;
+	peer->connection = live;
+	live->allow_request = ALL;
+	obfs_session_start(live);
+
+	uint8_t seed[OBFS_SEED_LEN];
+	memset(seed, 0x44, sizeof(seed));
+	char b64[OBFS_SEED_LEN * 2];
+	b64encode_tinc(seed, b64, OBFS_SEED_LEN);
+
+	char req[128];
+	snprintf(req, sizeof(req), "%d 0 %s", OBFS_KEY, b64);
+	obfs_key_h(live, req);
+	snprintf(req, sizeof(req), "%d 1 %s", OBFS_KEY, b64);
+	obfs_key_h(live, req);
+
+	if(!obfs_link_has_session(peer)) {
+		fprintf(stderr, "SELFTEST: could not establish an obfs session key for the test\n");
+		abort();
+	}
+
+	/* (a) */
+	connection_t *stalled = selftest_dial();
+	__wrap_terminate_connection(stalled, false);
+
+	if(!obfs_link_has_session(peer)) {
+		fprintf(stderr, "SELFTEST: closing a dial that never authenticated wiped the session of the live connection\n");
+		abort();
+	}
+
+	/* (b): no connection on the list serves the node any more. */
+	live->node = NULL;
+	peer->connection = NULL;
+	stalled = selftest_dial();
+	__wrap_terminate_connection(stalled, false);
+
+	if(!obfs_link_has_session(peer)) {
+		fprintf(stderr, "SELFTEST: closing a dial that never authenticated wiped a session no connection owned\n");
+		abort();
+	}
+
+	/* An authenticated connection's close still drops it (the next
+	   connection must re-negotiate, e.g. with a restarted peer). */
+	live->node = peer;
+	__wrap_terminate_connection(live, false);
+
+	if(obfs_link_has_session(peer)) {
+		fprintf(stderr, "SELFTEST: closing the last authenticated connection kept its session\n");
+		abort();
+	}
+
+	peer->connection = NULL;
+	obfs_link_reset_for_test(peer);
+}
+
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
 	(void)argc;
 	(void)argv;
@@ -556,6 +639,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 	obfs_link_force_v2_for_test(peer_view, false);
 
 	selftest_close_preserves_session();
+	selftest_unauth_close_keeps_session();
 	decap_count = 0;
 	return 0;
 }

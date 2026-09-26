@@ -843,6 +843,27 @@ proven deterministically by the `fuzz_obfs` self-test
 `selftest_close_preserves_session`, which reproduces that exact ordering and
 aborts on the pre-fix condition.
 
+Two more rules since stream N2. The survivor scan looks for the **link's**
+node, not `c->node`: tinc sets `c->node` only in `ack_h()`, so for a dial that
+never got that far it is NULL and the scan found no survivor however many
+there were. And a connection that **never authenticated** drops the link's
+address and activity on close but never its keys: `OBFS_KEY` runs only after
+`ack_h()`, so whatever session the link holds was negotiated by someone else —
+another connection, or `DSEAL_KEX` for a sealed direct path (§5), whose peer
+keeps sealing under it. Measured before the fix (N2 lab, obfs, both ends of a
+pair `AutoConnect` to each other at the same second and both dials stall):
+the end whose dial timed out first fell back to a dial over the confirmed UDP
+data path (§2.2), which activated and completed `OBFS_KEY`; the other end's
+own stalled dial timed out a moment later and its close wiped the session
+just promoted. That end then sealed under the bootstrap key, opened nothing
+its peer sealed under the session key ("unknown source and/or destination ID"
+for every datagram), and — the link now marked inactive — neither self-heal
+nor the periodic rekey ran for it: ping 0 %, both sides still reporting
+"directly with UDP" (lab counts before and after: `docs/nat.md` §5.3). The `fuzz_obfs`
+self-test `selftest_unauth_close_keeps_session` covers both orderings (a live
+connection on the list; no connection at all) and aborts on the pre-fix code
+and on a fix of the first rule alone.
+
 Two backstops bound the window in the cases the reset does fire (a genuine
 owner-only close, or the rare scheduler interleaving where a wiped session is
 not immediately re-negotiated). First, the **send path self-heals**: whenever a
