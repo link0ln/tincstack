@@ -510,6 +510,7 @@ networks:
       Blocking: no
       MTU: 1400
       ReconnectOnNetworkChange: yes
+      DisconnectOnScreenOff: no        # pause tincd while the screen is locked
 ```
 
 Rules:
@@ -532,6 +533,26 @@ Rules:
   folds nothing in. With neither key present the interface still comes up on a
   zero-config node: address = own `Subnet` with the `AddressPool` prefix,
   route = `AddressPool` (the same fallback autoif.c applies).
+- `DisconnectOnScreenOff: yes` (default `no`; the app's settings screen,
+  "Pause the VPN while the screen is locked", writes it) stops tincd when the
+  screen goes off and starts it again on unlock, to save battery: no
+  keepalives, no radio wake-ups while locked. The **VPN interface stays
+  established** meanwhile: the service keeps the tun fd, so traffic routed
+  into the VPN is dropped (not sent around the tunnel over the underlying
+  network), the key icon stays, and the unlock needs neither a new consent
+  nor a new `establish()`: tincd is relaunched on a fresh SCM_RIGHTS duplicate
+  of the same fd. Consequence to know before enabling it on a full-tunnel
+  network (`InterfaceRoute: 0.0.0.0/0`): every routed app is offline while the
+  phone is locked, push notifications included; with mesh-only routes only
+  mesh traffic (and a mesh `DNSServer`) waits for the unlock. Unlock means
+  `USER_PRESENT`, or `SCREEN_ON` while no keyguard is locked. An explicit
+  disconnect (app, notification action) or a revoke (another VPN app) ends the
+  session for good; a lock/unlock never starts one. `Blocking` is unrelated: it
+  is the tun fd's blocking mode, not a kill switch. While connected the
+  service runs in the foreground (notification with a Disconnect action;
+  `systemExempted`, `specialUse` as fallback). Not verified: whether a
+  proximity-sensor screen-off during a call sends `SCREEN_OFF` on a given
+  device; where it does, a VoIP call routed through the VPN is cut.
 - Private keys are embedded (`keys:`) and unencrypted; the app's former
   passphrase feature (encrypted `*.priv` files + unlock dialog) does not apply
   and was removed.
