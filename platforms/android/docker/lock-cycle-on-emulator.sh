@@ -15,10 +15,15 @@
 #      service alive -> unlock (KEYCODE_WAKEUP + wm dismiss-keyguard) -> tincd
 #      back and the inviter answers a ping through the tunnel within
 #      RESUME_WAIT s;
-#   4. SECURE=1 (default): the same with a PIN keyguard -- SCREEN_ON alone
-#      (bouncer still up) must not resume, the PIN unlock must;
-#   5. negative: an explicit disconnect, then a lock/unlock cycle -> stays
-#      disconnected (no tincd, no tun0).
+#   4. negative: an explicit disconnect, then a lock/unlock cycle -> stays
+#      disconnected (no tincd, no tun0);
+#   5. SECURE=1 (default): one more cycle with a PIN keyguard -- SCREEN_ON
+#      alone (bouncer still up) must not resume, the PIN unlock
+#      (USER_PRESENT) must; then the notification's Disconnect tapped on the
+#      locked screen -> stays disconnected after the unlock. The stock
+#      emulator image shows no keyguard after KEYCODE_SLEEP without a PIN, so
+#      the swipe cycles resume on SCREEN_ON; only the PIN run exercises
+#      USER_PRESENT. CYCLES=0 runs only this part.
 #
 # Tunables: everything join-on-emulator.sh takes (LAB, SUBNET, INVITER_IP,
 # TRANSPORT, APK, WAIT...), CYCLES (3), LOCKED_WAIT (95), STOP_WAIT (20),
@@ -183,6 +188,10 @@ notification_disconnect() {
     has_tun || { connect; wait_until "$RESUME_WAIT" "tun0 after connect" has_tun >/dev/null; }
     wait_until 60 "ping before the lock" ping_pool >/dev/null
     adb shell input keyevent KEYCODE_HOME
+    # the session notification's channel is IMPORTANCE_LOW, i.e. "silent", and
+    # Android 14 keeps silent notifications off the lock screen by default:
+    # without this user setting there is nothing to tap there
+    adb shell settings put secure lock_screen_show_silent_notifications 1
     lock
     wait_until "$STOP_WAIT" "tincd stopped after lock" no_tincd >/dev/null
     adb shell input keyevent KEYCODE_WAKEUP
