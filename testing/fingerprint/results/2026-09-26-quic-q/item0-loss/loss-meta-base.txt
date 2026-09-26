@@ -1,0 +1,13 @@
+lab: LAB=wsqloss SUBNET=10.47.30.0/24
+image tincstack/core:ww-q-base, lab wsqloss on 10.47.30.0/24
+== meta: quic, TCPOnly, loss 10% + 10 ms both ways, 2000 pings of 1200 B
+Assigned address 10.112.138.2/24 to leaf.
+    2000 packets transmitted, 2 received, +18 errors, 99.9% packet loss, time 42278ms
+    rtt min/avg/max/mdev = 20.247/20.265/20.284/0.018 ms
+  FAIL: 2/2000 answered under 10% loss (< 99%)
+  FAIL: the link is dead after the loss
+  ok: still on quic
+  FAIL: the leaf dialled 2 times
+  ok: f: no AddressSanitizer report
+  ok: l: no AddressSanitizer report
+FAIL

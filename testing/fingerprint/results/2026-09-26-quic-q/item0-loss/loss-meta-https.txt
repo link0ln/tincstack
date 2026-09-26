@@ -1,0 +1,13 @@
+lab: LAB=wsqloss SUBNET=10.47.30.0/24
+image tincstack/core:ww-q-base, lab wsqloss on 10.47.30.0/24
+== meta: https, TCPOnly, loss 10% + 10 ms both ways, 2000 pings of 1200 B
+Assigned address 10.168.190.2/24 to leaf.
+    2000 packets transmitted, 2000 received, 0% packet loss, time 42784ms
+    rtt min/avg/max/mdev = 20.508/92.114/839.923/102.337 ms, pipe 40
+  ok: 2000/2000 answered under 10% loss (>= 99%)
+  ok: the link answers after the loss
+  ok: still on https
+  ok: the leaf dialled once
+  ok: f: no AddressSanitizer report
+  ok: l: no AddressSanitizer report
+PASS

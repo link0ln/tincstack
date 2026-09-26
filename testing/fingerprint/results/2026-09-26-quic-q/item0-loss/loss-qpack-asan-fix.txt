@@ -1,0 +1,27 @@
+lab: LAB=wsqloss SUBNET=10.47.30.0/24
+image tincstack/core:ww-q0-asan, lab wsqloss on 10.47.30.0/24
+== qpack: 20 connections x 40 requests with a dynamic table, loss 10% + 10 ms both ways
+    conn 0 answered 8/40
+    conn 1 answered 8/40
+    conn 2 answered 8/40
+    conn 3 answered 8/40
+    conn 4 answered 8/40
+    conn 5 answered 8/40
+    conn 6 answered 8/40
+    conn 7 answered 8/40
+    conn 8 answered 8/40
+    conn 9 answered 8/40
+    conn 10 answered 8/40
+    conn 11 answered 8/40
+    conn 12 answered 8/40
+    conn 13 answered 8/40
+    conn 14 answered 8/40
+    conn 15 answered 8/40
+    conn 16 answered 8/40
+    conn 17 answered 8/40
+    conn 18 answered 8/40
+    conn 19 answered 8/40
+  ok: every connection was answered
+  ok: tincd still runs
+  ok: f: no AddressSanitizer report
+PASS

@@ -1,0 +1,67 @@
+lab: LAB=wsqloss SUBNET=10.47.30.0/24
+image tincstack/core:ww-q-asan-base, lab wsqloss on 10.47.30.0/24
+== qpack: 20 connections x 40 requests with a dynamic table, loss 10% + 10 ms both ways
+    conn 0 answered 8/40
+    conn 1 error ConnectionError
+    conn 2 error ConnectionError
+    conn 3 error ConnectionError
+    conn 4 error ConnectionError
+    conn 5 error ConnectionError
+    conn 6 error ConnectionError
+    conn 7 error ConnectionError
+    conn 8 error ConnectionError
+    conn 9 error ConnectionError
+    conn 10 error ConnectionError
+    conn 11 error ConnectionError
+    conn 12 error ConnectionError
+    conn 13 error ConnectionError
+    conn 14 error ConnectionError
+    conn 15 error ConnectionError
+    conn 16 error ConnectionError
+    conn 17 error ConnectionError
+    conn 18 error ConnectionError
+    conn 19 error ConnectionError
+  ok: every connection was answered
+  FAIL: tincd died
+2026-09-26 00:13:08 NOTICE  Ready
+2026-09-26 00:13:08 NOTICE  Connection from localhost port unix
+2026-09-26 00:13:09 NOTICE  Connection closed by <control> (localhost port unix)
+2026-09-26 00:13:09 NOTICE  Closing connection with <control> (localhost port unix)
+2026-09-26 00:13:09 NOTICE  Connection from localhost port unix
+2026-09-26 00:13:09 NOTICE  Got 'reload' command
+2026-09-26 00:13:09 INFO    AddressPool 10.210.40.0/24 (first host 10.210.40.1/32)
+2026-09-26 00:13:09 INFO    Transports accept=plain,sf,obfs,https,quic prefer=plain
+2026-09-26 00:13:09 INFO    UDPDiscoveryBurst 5, UDPRebindOnWake no
+2026-09-26 00:13:09 ERROR   Metadata socket read error for <control> (localhost port unix): Connection reset by peer
+2026-09-26 00:13:09 NOTICE  Closing connection with <control> (localhost port unix)
+2026-09-26 00:13:09 NOTICE  quic: connection from 10.47.30.20 port 55360
+2026-09-26 00:13:10 INFO    quic: serving the decoy to an HTTP/3 request from 10.47.30.20 port 55360
+2026-09-26 00:13:10 INFO    quic: serving the decoy to an HTTP/3 request from 10.47.30.20 port 55360
+2026-09-26 00:13:10 INFO    quic: serving the decoy to an HTTP/3 request from 10.47.30.20 port 55360
+2026-09-26 00:13:10 INFO    quic: serving the decoy to an HTTP/3 request from 10.47.30.20 port 55360
+2026-09-26 00:13:10 INFO    quic: serving the decoy to an HTTP/3 request from 10.47.30.20 port 55360
+2026-09-26 00:13:10 INFO    quic: serving the decoy to an HTTP/3 request from 10.47.30.20 port 55360
+2026-09-26 00:13:10 INFO    quic: serving the decoy to an HTTP/3 request from 10.47.30.20 port 55360
+2026-09-26 00:13:11 INFO    quic: serving the decoy to an HTTP/3 request from 10.47.30.20 port 55360
+  FAIL: f: AddressSanitizer report
+==23==ERROR: AddressSanitizer: heap-use-after-free on address 0x50200001a5d6 at pc 0x796241a73936 bp 0x7fff648e6af0 sp 0x7fff648e62b0
+READ of size 1 at 0x50200001a5d6 thread T0
+    #0 0x796241a73935 in memcpy ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors_memintrinsics.inc:115
+    #1 0x7962417d86d8 in ngtcp2_cpymem /build/ngtcp2-1.25.0/lib/ngtcp2_str.c:34
+    #2 0x7962417d5ddf in ngtcp2_pkt_encode_stream_frame /build/ngtcp2-1.25.0/lib/ngtcp2_pkt.c:1628
+    #3 0x7962417f5db9 in ngtcp2_ppe_encode_frame /build/ngtcp2-1.25.0/lib/ngtcp2_ppe.c:115
+    #4 0x7962417dabc4 in conn_ppe_write_frame_hd_log /build/ngtcp2-1.25.0/lib/ngtcp2_conn.c:1873
+    #5 0x7962417e71bb in conn_write_pkt /build/ngtcp2-1.25.0/lib/ngtcp2_conn.c:4401
+    #6 0x7962417e900c in ngtcp2_conn_write_vmsg /build/ngtcp2-1.25.0/lib/ngtcp2_conn.c:12934
+    #7 0x7962417ea69f in conn_write_vmsg_wrapper /build/ngtcp2-1.25.0/lib/ngtcp2_conn.c:12456
+    #8 0x7962417ea7dd in ngtcp2_conn_writev_stream_versioned /build/ngtcp2-1.25.0/lib/ngtcp2_conn.c:12538
+    #9 0x5f0b271bf672 in quic_flush ../src/src/transport_quic.c:1446
+    #0 0x796241a74b58 in realloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:85
+    #1 0x5f0b271b46ec in xrealloc ../src/src/xalloc.h:52
+    #2 0x5f0b271b6967 in decoder_append ../src/src/transport_quic.c:470
+    #3 0x5f0b271bbf44 in cb_recv_stream_data ../src/src/transport_quic.c:1019
+    #4 0x7962417edd47 in conn_call_recv_stream_data /build/ngtcp2-1.25.0/lib/ngtcp2_conn.c:142
+    #5 0x7962417edd47 in conn_recv_stream /build/ngtcp2-1.25.0/lib/ngtcp2_conn.c:7923
+    #6 0x7962417edd47 in conn_recv_pkt /build/ngtcp2-1.25.0/lib/ngtcp2_conn.c:9947
+    #0 0x796241a74b58 in realloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:85
+FAIL
