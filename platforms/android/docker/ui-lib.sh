@@ -26,7 +26,11 @@ ui_find() {
 ui_wait() {
     local needle=$1 deadline=$(( SECONDS + UI_TIMEOUT )) pos
     until pos=$(ui_find "$needle"); do
-        (( SECONDS < deadline )) || { echo "ui: no element matching '$needle' within ${UI_TIMEOUT}s" >&2; return 1; }
+        (( SECONDS < deadline )) || {
+            echo "ui: no element matching '$needle' within ${UI_TIMEOUT}s; screen:" >&2
+            ui_dump | grep -oE '(text|content-desc|resource-id)="[^"]+"' | sort -u | head -40 >&2
+            return 1
+        }
         sleep 2
     done
     echo "$pos"

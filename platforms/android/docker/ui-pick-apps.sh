@@ -18,7 +18,9 @@ PKG=${PKG:-net.tincstack.android}
 . "$(dirname "$0")/ui-lib.sh"
 
 echo ">>> open the app, Configure"
-adb shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
+# a fresh task: whatever screen the app was left on (status, a dialog) must not
+# stand in front of the network list
+adb shell am start --activity-clear-task -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
     -n "$PKG/org.pacien.tincapp.activities.start.StartActivity" >/dev/null
 ui_tap 'content-desc="Configure"'
 
