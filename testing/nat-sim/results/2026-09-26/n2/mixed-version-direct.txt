@@ -1,0 +1,25 @@
+=== OLD=tincstack/core:ww-n2-base
+Assigned address 10.9.214.2/24 to leafa.
+Assigned address 10.9.214.3/24 to leafb.
+21:21:16 PASS direct pair, current leaf b: 'Reachability: directly with UDP', ping=1; wire a->b: 39 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.251.120.2/24 to leafa.
+Assigned address 10.251.120.3/24 to leafb.
+21:21:35 PASS direct pair, older leaf b (reads frame v3): 'Reachability: directly with UDP', ping=1; wire a->b: 40 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.122.234.2/24 to leafa.
+Assigned address 10.122.234.3/24 to leafb.
+21:22:46 PASS direct pair, older leaf b without obfs: 'Reachability: none, forwarded via founder', ping=1; wire a->b: 0 datagrams, 0 with the zero dst id, 0 of 51 bytes
+21:22:47 mixed versions: all pairs connect
+rc=0 OLD=tincstack/core:ww-n2-base
+=== OLD=tincstack/core:pre-deb13
+Assigned address 10.252.5.2/24 to leafa.
+Assigned address 10.252.5.3/24 to leafb.
+21:28:18 PASS direct pair, current leaf b: 'Reachability: directly with UDP', ping=1; wire a->b: 39 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.199.193.2/24 to leafa.
+Assigned address 10.199.193.3/24 to leafb.
+21:29:29 PASS direct pair, older leaf b (frame v2 only): 'Reachability: none, forwarded via founder', ping=1; wire a->b: 321 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.95.118.2/24 to leafa.
+Assigned address 10.95.118.3/24 to leafb.
+21:30:39 PASS direct pair, older leaf b without obfs: 'Reachability: none, forwarded via founder', ping=1; wire a->b: 0 datagrams, 0 with the zero dst id, 0 of 51 bytes
+21:30:40 mixed versions: all pairs connect
+rc=0 OLD=tincstack/core:pre-deb13
+ALLDONE

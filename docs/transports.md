@@ -1210,12 +1210,13 @@ get no tail, so a bulk transfer still shows one constant size at the path
 MTU (as the obfs carrier does). A node with `DirectSeal` on refuses direct
 UDP to upstream/legacy peers — that is the point, and it is logged.
 Time to a direct path for the 17 direct plain matrix pairs, one run each
-(n = 1 per pair, not significant per pair): mean 8.3 s before, 9.5 s with
+(n = 1 per pair, not significant per pair;
+`testing/nat-sim/results/2026-09-26/n2/time-to-direct.txt`): mean 8.3 s before, 9.5 s with
 DirectSeal (the first probe waits until the peer's capability token is known);
 every pair still goes direct.
 
 **Mixed versions** (`mixed-version-test.sh`, DirectSeal section; evidence
-`testing/nat-sim/results/2026-09-26/n2/mixed-version-*.log`). Leaf a is
+`testing/nat-sim/results/2026-09-26/n2/mixed-version-*.txt`). Leaf a is
 current and dials obfs; leaf b varies:
 
 | leaf b | vs `ww-n2-base` (reads frame v3) | vs `pre-deb13` (frame v2 only) |

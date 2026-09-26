@@ -1,0 +1,92 @@
+=== OLD=tincstack/core:ww-n2-base
+Assigned address 10.49.165.2/24 to leaf.
+20:59:32 PASS quic: founder tincstack/core:ww-n2-base, leaf tincstack/core:ww-n2 (tunnel carries traffic, quic dialled once)
+Assigned address 10.174.162.2/24 to leaf.
+20:59:40 PASS quic: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-base (tunnel carries traffic, quic dialled once)
+Assigned address 10.52.64.2/24 to leaf.
+20:59:48 PASS quic: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, quic dialled once)
+Assigned address 10.94.197.2/24 to leaf.
+20:59:56 PASS https: founder tincstack/core:ww-n2-base, leaf tincstack/core:ww-n2 (tunnel carries traffic, https dialled once)
+Assigned address 10.233.215.2/24 to leaf.
+21:00:05 PASS https: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-base (tunnel carries traffic, https dialled once)
+Assigned address 10.129.175.2/24 to leaf.
+21:00:12 PASS https: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, https dialled once)
+Assigned address 10.37.163.2/24 to leaf.
+21:00:19 PASS obfs: founder tincstack/core:ww-n2-base, leaf tincstack/core:ww-n2 (tunnel carries traffic, obfs dialled once)
+Assigned address 10.49.46.2/24 to leaf.
+21:00:27 PASS obfs: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-base (tunnel carries traffic, obfs dialled once)
+Assigned address 10.154.81.2/24 to leaf.
+21:00:34 PASS obfs: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, obfs dialled once)
+Assigned address 10.129.196.2/24 to leafa.
+Assigned address 10.129.196.3/24 to leafb.
+21:00:53 PASS direct pair, current leaf b: 'Reachability: directly with UDP', ping=1; wire a->b: 38 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.142.239.2/24 to leafa.
+Assigned address 10.142.239.3/24 to leafb.
+21:01:11 PASS direct pair, older leaf b (reads frame v3): 'Reachability: directly with UDP', ping=1; wire a->b: 38 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.100.150.2/24 to leafa.
+Assigned address 10.100.150.3/24 to leafb.
+21:02:21 FAIL direct pair, older leaf b without obfs: 'Reachability: none, forwarded via founder', ping=1; leaf a never said 'cannot read sealed datagrams'; wire a->b: 0 datagrams, 0 with the zero dst id, 0 of 51 bytes
+founder id 199349cef0c7 at 10.47.11.10 port 655 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 08da nexthop founder via founder distance 1 pmtu 1413 (min 1413 max 1413) rx 8 496 tx 4 248 transports plain,sf,obfs,https,quic rtt 0.402
+leafa id 44bdef90d709 at MYSELF port 43789 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 0058 nexthop leafa via leafa distance 0 pmtu 1518 (min 0 max 1518) rx 143 13834 tx 144 13824 transports plain,sf,obfs,https,quic
+leafb id dbd08125d8a7 at 10.47.11.12 port 39439 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 005a nexthop founder via leafb distance 2 pmtu 1518 (min 0 max 1518) rx 136 13328 tx 138 13524 transports plain,sf
+2026-09-26 18:01:15 DEBUG   Cannot open config file /c/lab/hosts/leafb: No such file or directory
+2026-09-26 18:01:15 DEBUG   No Ed25519 key known for leafb (10.47.11.12 port 39439)
+2026-09-26 18:01:15 DEBUG   Asking leafb (10.47.11.12 port 39439) for its carrier list over the meta graph
+2026-09-26 18:01:15 INFO    Not sending UDP to leafb (10.47.11.12 port 39439) directly yet: DirectSeal is on here and leafb has not said whether it reads sealed datagrams; asked over the meta graph
+2026-09-26 18:01:15 DEBUG   Cannot open config file /c/lab/hosts/leafb: No such file or directory
+2026-09-26 18:01:15 DEBUG   Preemptively requesting Ed25519 key for leafb (10.47.11.12 port 39439)
+2026-09-26 18:01:15 DEBUG   Direct seal capability of leafb: no token (older build), reads none
+2026-09-26 18:01:15 DEBUG   Cannot open config file /c/lab/hosts/leafb: No such file or directory
+2026-09-26 18:01:15 INFO    Learned Ed25519 public key from leafb (10.47.11.12 port 39439)
+2026-09-26 18:01:15 WARNING Got ANS_PUBKEY from leafb (10.47.11.12 port 39439) even though we already have his pubkey
+2026-09-26 18:01:15 WARNING Got ANS_PUBKEY from leafb (10.47.11.12 port 39439) even though we already have his pubkey
+2026-09-26 18:02:15 INFO    Not sending UDP to leafb (10.47.11.12 port 39439) directly: DirectSeal is on here and leafb cannot read sealed datagrams (upstream or legacy tinc, or an older tincstack that does not accept obfs); its traffic goes through the relay
+21:02:22 mixed versions: FAILURES above
+rc=1 OLD=tincstack/core:ww-n2-base
+=== OLD=tincstack/core:pre-deb13
+Assigned address 10.101.55.2/24 to leaf.
+21:11:04 PASS quic: founder tincstack/core:pre-deb13, leaf tincstack/core:ww-n2: an older listener cannot send datagrams to a current dialler; the leaf gave quic up once and is on 'plain', tunnel carries traffic
+Assigned address 10.97.151.2/24 to leaf.
+21:11:28 PASS quic: founder tincstack/core:ww-n2, leaf tincstack/core:pre-deb13: an older dialler carries no authenticator in its request headers, and a current listener answers it as a web server; the leaf gave quic up once and is on 'plain', tunnel carries traffic
+Assigned address 10.17.153.2/24 to leaf.
+21:11:36 PASS quic: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, quic dialled once)
+Assigned address 10.227.234.2/24 to leaf.
+21:11:45 PASS https: founder tincstack/core:pre-deb13, leaf tincstack/core:ww-n2 (tunnel carries traffic, https dialled once)
+Assigned address 10.123.234.2/24 to leaf.
+21:11:52 PASS https: founder tincstack/core:ww-n2, leaf tincstack/core:pre-deb13 (tunnel carries traffic, https dialled once)
+Assigned address 10.149.166.2/24 to leaf.
+21:12:00 PASS https: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, https dialled once)
+Assigned address 10.32.191.2/24 to leaf.
+21:12:20 PASS obfs: founder tincstack/core:pre-deb13, leaf tincstack/core:ww-n2: an older founder cannot read a current dialler's obfs v3 frames; the leaf gave obfs up once and is on 'plain', tunnel carries traffic
+Assigned address 10.29.59.2/24 to leaf.
+21:12:27 PASS obfs: founder tincstack/core:ww-n2, leaf tincstack/core:pre-deb13 (tunnel carries traffic, obfs dialled once)
+21:12:27 PASS obfs: the current founder saw frame v2 from the older leaf and answered in v2
+Assigned address 10.58.82.2/24 to leaf.
+21:12:34 PASS obfs: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, obfs dialled once)
+Assigned address 10.180.180.2/24 to leafa.
+Assigned address 10.180.180.3/24 to leafb.
+21:12:54 PASS direct pair, current leaf b: 'Reachability: directly with UDP', ping=1; wire a->b: 39 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.208.99.2/24 to leafa.
+Assigned address 10.208.99.3/24 to leafb.
+21:14:04 PASS direct pair, older leaf b (frame v2 only): 'Reachability: none, forwarded via founder', ping=1; wire a->b: 310 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.81.116.2/24 to leafa.
+Assigned address 10.81.116.3/24 to leafb.
+21:15:13 FAIL direct pair, older leaf b without obfs: 'Reachability: none, forwarded via founder', ping=1; leaf a never said 'cannot read sealed datagrams'; wire a->b: 0 datagrams, 0 with the zero dst id, 0 of 51 bytes
+founder id 199349cef0c7 at 10.47.11.10 port 655 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 08da nexthop founder via founder distance 1 pmtu 1413 (min 1413 max 1413) rx 7 434 tx 3 186 transports plain,sf,obfs,https,quic rtt 0.367
+leafa id 44bdef90d709 at MYSELF port 33839 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 0058 nexthop leafa via leafa distance 0 pmtu 1518 (min 0 max 1518) rx 141 13674 tx 142 13664 transports plain,sf,obfs,https,quic
+leafb id dbd08125d8a7 at 10.47.11.12 port 40123 cipher 0 digest 0 maclength 0 compression 0 options 700000c status 005a nexthop founder via leafb distance 2 pmtu 1518 (min 0 max 1518) rx 135 13230 tx 137 13426 transports plain,sf
+2026-09-26 18:14:07 DEBUG   Cannot open config file /c/lab/hosts/leafb: No such file or directory
+2026-09-26 18:14:07 DEBUG   No Ed25519 key known for leafb (10.47.11.12 port 40123)
+2026-09-26 18:14:07 DEBUG   Asking leafb (10.47.11.12 port 40123) for its carrier list over the meta graph
+2026-09-26 18:14:07 INFO    Not sending UDP to leafb (10.47.11.12 port 40123) directly yet: DirectSeal is on here and leafb has not said whether it reads sealed datagrams; asked over the meta graph
+2026-09-26 18:14:07 DEBUG   Cannot open config file /c/lab/hosts/leafb: No such file or directory
+2026-09-26 18:14:07 DEBUG   Preemptively requesting Ed25519 key for leafb (10.47.11.12 port 40123)
+2026-09-26 18:14:07 DEBUG   Direct seal capability of leafb: no token (older build), reads none
+2026-09-26 18:14:07 DEBUG   Cannot open config file /c/lab/hosts/leafb: No such file or directory
+2026-09-26 18:14:07 INFO    Learned Ed25519 public key from leafb (10.47.11.12 port 40123)
+2026-09-26 18:14:07 WARNING Got ANS_PUBKEY from leafb (10.47.11.12 port 40123) even though we already have his pubkey
+2026-09-26 18:14:07 WARNING Got ANS_PUBKEY from leafb (10.47.11.12 port 40123) even though we already have his pubkey
+2026-09-26 18:15:07 INFO    Not sending UDP to leafb (10.47.11.12 port 40123) directly: DirectSeal is on here and leafb cannot read sealed datagrams (upstream or legacy tinc, or an older tincstack that does not accept obfs); its traffic goes through the relay
+21:15:13 mixed versions: FAILURES above
+rc=1 OLD=tincstack/core:pre-deb13
+ALLDONE

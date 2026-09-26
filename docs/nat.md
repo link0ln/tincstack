@@ -540,11 +540,33 @@ obfs 304 and 229 datagrams, quic masqfw 331, quic restricted 495 — 0 zero dst
 id, 0 sf magic, 0-1 of 51 B, no chi² position flagged, entropy 7.95-7.98 bit,
 PMTU 1413; plain unchanged (170 / 106 / 64 / 40, PMTU 1439).
 
-No direct pair lost (`results/2026-09-26/n2/matrix-item1.log`): the full
+No direct pair lost (`results/2026-09-26/n2/matrix-item1.txt`): the full
 plain matrix on the N2 image is 28 PASS, 17/25 direct (the same set as §3.1);
 `--transport obfs` on six pairs 6/6 direct before and after; `--transport
 quic` 1/6 before and after (masqfw only — §5.1, fixed separately); `--transport
 https` 6/6 PASS (TCP only, relayed) before and after.
+
+**An obfs black hole the final regression found (fixed, b1c71d7).** On the
+image with all N2 items, `--transport obfs` failed a pair in 6 of 10 runs of
+the six pairs above (`masq x restricted` 4, `symmetric x restricted` 1,
+`portrestricted x portrestricted` 1): both ends "directly with UDP", ping
+0 %, one end logging "unknown source and/or destination ID" for every
+datagram of its peer. Not the seal itself: both ends `AutoConnect` to each
+other over obfs at the same second and both dials stall; the end whose dial
+gives up first dials again over the confirmed data path (`UdpMetaFallback`)
+and keys the obfs link, or the pair has just keyed its sealed path
+(`DSEAL_KEX`); then the other end's own stalled dial times out and its close
+wiped the shared link's keys (`obfs_close()` looked for other connections of
+`c->node`, which is NULL before `ack_h()`). The close path is older than N2;
+what most likely exposed it is item 3, which confirms the direct path within
+the 5 s the stalled dials live (not bisected: the item-1 image passed
+`masq x restricted` over obfs 3 of 3, n too small to say more). After the fix: 0 of 5 runs,
+0 of 30 pair-runs; the same race fired 7 times, each followed by at most one
+unreadable datagram. Runs failing 6/10 vs 0/5 is p = 0.04 (Fisher, one-sided)
+— the mechanism is proven by the `fuzz_obfs` self-test
+`selftest_unauth_close_keeps_session` and by the log trace, not by that count
+(`results/2026-09-26/n2/obfs-close/`, `docs/transports.md` obfs "Key
+schedule").
 
 ## 6. IPv4 and IPv6
 
@@ -820,7 +842,7 @@ What the numbers say, without flattering them:
   the round lines logged at level 1) gains a case "current leaves, older
   relay": the older relay forwards the request, the far leaf answers and
   starts, the pair goes direct — PASS against `ww-n2-base` and `pre-deb13`
-  (`results/2026-09-26/n2/punch/mixed-version-direct.log`).
+  (`results/2026-09-26/n2/punch/mixed-version-direct.txt`).
 
 ## 10. Ranked fixes for stream N2
 

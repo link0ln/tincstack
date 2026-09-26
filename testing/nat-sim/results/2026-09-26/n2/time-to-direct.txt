@@ -1,0 +1,87 @@
+built tincstack/natlab:ww-n2-base
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-tim-ww-n2-base-1
+18:16:05 scenario fullcone x fullcone [core]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:16:20 scenario fullcone x restricted [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:16:37 scenario fullcone x portrestricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:16:54 scenario fullcone x masq [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:17:11 scenario fullcone x symmetric [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:17:26 scenario restricted x fullcone [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:17:43 scenario restricted x restricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:18:00 scenario restricted x portrestricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:18:17 scenario restricted x masq [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:18:34 scenario restricted x symmetric [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:18:50 scenario portrestricted x fullcone [core]: PASS (expected=yes direct a->b=1/7s b->a=1/2s ping=1 reach=[directly with UDP | directly with UDP])
+18:19:05 scenario portrestricted x restricted [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:19:22 scenario portrestricted x portrestricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:19:35 scenario masq x fullcone [core]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:19:48 scenario masq x restricted [core]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:20:01 scenario symmetric x fullcone [core]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:20:14 scenario symmetric x restricted [core]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+# NAT lab summary — 2026-09-26T18:20Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | plain | yes | 6s | 0s | ok | PASS |
+| fullcone x masq | core | plain | yes | 10s | 0s | ok | PASS |
+| fullcone x portrestricted | core | plain | yes | 10s | 0s | ok | PASS |
+| fullcone x restricted | core | plain | yes | 8s | 0s | ok | PASS |
+| fullcone x symmetric | core | plain | yes | 10s | 0s | ok | PASS |
+| masq x fullcone | core | plain | yes | 6s | 0s | ok | PASS |
+| masq x restricted | core | plain | yes | 6s | 0s | ok | PASS |
+| portrestricted x fullcone | core | plain | yes | 7s | 2s | ok | PASS |
+| portrestricted x portrestricted | core | plain | yes | 10s | 0s | ok | PASS |
+| portrestricted x restricted | core | plain | yes | 8s | 0s | ok | PASS |
+| restricted x fullcone | core | plain | yes | 8s | 0s | ok | PASS |
+| restricted x masq | core | plain | yes | 10s | 0s | ok | PASS |
+| restricted x portrestricted | core | plain | yes | 10s | 0s | ok | PASS |
+| restricted x restricted | core | plain | yes | 10s | 0s | ok | PASS |
+| restricted x symmetric | core | plain | yes | 10s | 0s | ok | PASS |
+| symmetric x fullcone | core | plain | yes | 6s | 0s | ok | PASS |
+| symmetric x restricted | core | plain | yes | 6s | 0s | ok | PASS |
+rc=0 ww-n2-base
+built tincstack/natlab:ww-n2
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-tim-ww-n2-1
+18:23:04 scenario fullcone x fullcone [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:23:21 scenario fullcone x restricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:23:36 scenario fullcone x portrestricted [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:23:53 scenario fullcone x masq [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:24:10 scenario fullcone x symmetric [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:24:28 scenario restricted x fullcone [core]: PASS (expected=yes direct a->b=1/11s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:24:45 scenario restricted x restricted [core]: PASS (expected=yes direct a->b=1/11s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:25:02 scenario restricted x portrestricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:25:19 scenario restricted x masq [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:25:36 scenario restricted x symmetric [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:25:55 scenario portrestricted x fullcone [core]: PASS (expected=yes direct a->b=1/12s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:26:08 scenario portrestricted x restricted [core]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:26:25 scenario portrestricted x portrestricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:26:39 scenario masq x fullcone [core]: PASS (expected=yes direct a->b=1/7s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:26:56 scenario masq x restricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:27:13 scenario symmetric x fullcone [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+18:27:26 scenario symmetric x restricted [core]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+# NAT lab summary — 2026-09-26T18:27Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | plain | yes | 10s | 0s | ok | PASS |
+| fullcone x masq | core | plain | yes | 10s | 0s | ok | PASS |
+| fullcone x portrestricted | core | plain | yes | 8s | 0s | ok | PASS |
+| fullcone x restricted | core | plain | yes | 10s | 0s | ok | PASS |
+| fullcone x symmetric | core | plain | yes | 10s | 0s | ok | PASS |
+| masq x fullcone | core | plain | yes | 7s | 0s | ok | PASS |
+| masq x restricted | core | plain | yes | 10s | 0s | ok | PASS |
+| portrestricted x fullcone | core | plain | yes | 12s | 0s | ok | PASS |
+| portrestricted x portrestricted | core | plain | yes | 10s | 0s | ok | PASS |
+| portrestricted x restricted | core | plain | yes | 6s | 0s | ok | PASS |
+| restricted x fullcone | core | plain | yes | 11s | 0s | ok | PASS |
+| restricted x masq | core | plain | yes | 10s | 0s | ok | PASS |
+| restricted x portrestricted | core | plain | yes | 10s | 0s | ok | PASS |
+| restricted x restricted | core | plain | yes | 11s | 0s | ok | PASS |
+| restricted x symmetric | core | plain | yes | 10s | 0s | ok | PASS |
+| symmetric x fullcone | core | plain | yes | 10s | 0s | ok | PASS |
+| symmetric x restricted | core | plain | yes | 6s | 0s | ok | PASS |
+rc=0 ww-n2
+ALLDONE
