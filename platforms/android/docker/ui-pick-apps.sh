@@ -41,7 +41,8 @@ for p in "$@"; do
     ui_tap "resource-id=\"$PKG:id/apps_search\""
     adb shell input keyevent $(printf '67 %.0s' $(seq 60)) >/dev/null   # clear the field
     adb shell "input text '$p'" >/dev/null
-    ui_tap "text=\"$p\""
+    # the row's package line, not the search field that now holds the same text
+    ui_tap "text=\"$p\" resource-id=\"$PKG:id/app_package\""
 done
 ui_tap "resource-id=\"$PKG:id/apps_search\""
 adb shell input keyevent $(printf '67 %.0s' $(seq 60)) >/dev/null
@@ -55,7 +56,7 @@ have=$(ui_attr "resource-id=\"$PKG:id/apps_disconnect_on_screen_off\"" checked)
 [[ $have == "$want" ]] || { echo "ui-pick-apps: the switch did not move" >&2; exit 1; }
 
 echo ">>> Save"
-ui_tap 'text="Save"' || ui_tap 'content-desc="Save"'
+ui_tap "resource-id=\"$PKG:id/apps_picker_save\""
 # the picker finishes after writing
 deadline=$(( SECONDS + UI_TIMEOUT ))
 while ui_find "resource-id=\"$PKG:id/apps_search\"" >/dev/null; do

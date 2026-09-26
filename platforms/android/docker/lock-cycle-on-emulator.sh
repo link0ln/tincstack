@@ -177,20 +177,38 @@ cycle() { # cycle <n> <label>
 
 for i in $(seq 1 "$CYCLES"); do cycle "$i" "swipe keyguard"; done
 
-if [[ $SECURE == 1 ]]; then
-    step "secure keyguard: PIN $PIN"
-    if adb shell "locksettings set-pin $PIN" | tr -d '\r'; then
-        pin_set=1
-        cycle "$(( CYCLES + 1 ))" "PIN keyguard"
-        adb shell "locksettings clear --old $PIN" | tr -d '\r' || true
-        pin_set=0
+# Disconnect from the notification's action while the screen is locked, then
+# unlock: the session must stay down. Meaningful with a showing keyguard (the
+# PIN run); without one, SCREEN_ON already resumes the session before the tap.
+notification_disconnect() {
+    step "negative 2: disconnect from the notification while locked -> stays disconnected after unlock"
+    has_tun || { connect; wait_until "$RESUME_WAIT" "tun0 after connect" has_tun >/dev/null; }
+    wait_until 60 "ping before the lock" ping_pool >/dev/null
+    adb shell input keyevent KEYCODE_HOME
+    lock
+    wait_until "$STOP_WAIT" "tincd stopped after lock" no_tincd >/dev/null
+    adb shell input keyevent KEYCODE_WAKEUP
+    sleep 3
+    note "screen on: $(screen) $(keyguard) tincd=[$(tincd_pid)]"
+    adb shell cmd statusbar expand-notifications >/dev/null 2>&1 || true
+    # shellcheck source=ui-lib.sh
+    . ./ui-lib.sh
+    if UI_TIMEOUT=20 ui_tap 'text="Disconnect"' || { adb shell input swipe 540 900 540 1600 >/dev/null; UI_TIMEOUT=20 ui_tap 'text="Disconnect"'; }; then
+        t=$(wait_until 30 "tun0 gone after the notification's Disconnect" no_tun)
+        note "notification Disconnect tapped: tun0 gone ${t}s later; at that moment $(keyguard)"
+        unlock
+        sleep 30
+        has_tincd && fail "tincd came back after a disconnect made while locked"
+        has_tun && fail "tun0 came back after a disconnect made while locked"
+        note "stays disconnected after unlock"
     else
-        note "locksettings set-pin refused on this image: secure-keyguard run skipped"
+        note "the notification's Disconnect action was not reachable: step not proven here (unit test: userDisconnectWhileLockedIsFinal)"
+        adb shell cmd statusbar collapse >/dev/null 2>&1 || true
+        unlock
+        disconnect
+        wait_until 30 "tun0 gone after disconnect" no_tun >/dev/null
     fi
-fi
-
-step "transport after the cycles"
-docker exec "$INVITER" tincstack-cli dump connections | tr -d '\r' | grep '^phone ' || true
+}
 
 step "negative: explicit disconnect, then lock/unlock -> stays disconnected"
 disconnect
@@ -204,31 +222,26 @@ has_tincd && fail "tincd came back after an explicit disconnect"
 has_tun && fail "tun0 came back after an explicit disconnect"
 note "stays disconnected: no tincd, no tun0; service: $(service_up && echo running || echo stopped)"
 
-step "negative 2: disconnect from the notification while locked -> stays disconnected after unlock"
-connect
-wait_until "$RESUME_WAIT" "tun0 after connect" has_tun >/dev/null
-wait_until 60 "ping after reconnect" ping_pool >/dev/null
-adb shell input keyevent KEYCODE_HOME
-lock
-wait_until "$STOP_WAIT" "tincd stopped after lock" no_tincd >/dev/null
-adb shell input keyevent KEYCODE_WAKEUP   # screen on, keyguard up: still suspended
-sleep 3
-adb shell cmd statusbar expand-notifications >/dev/null 2>&1 || true
-# shellcheck source=ui-lib.sh
-. ./ui-lib.sh
-if UI_TIMEOUT=20 ui_tap 'text="Disconnect"' || { adb shell input swipe 540 900 540 1600 >/dev/null; UI_TIMEOUT=20 ui_tap 'text="Disconnect"'; } || UI_TIMEOUT=10 ui_tap 'text="DISCONNECT"'; then
-    t=$(wait_until 30 "tun0 gone after the notification's Disconnect (still locked)" no_tun)
-    note "notification Disconnect tapped on the lock screen: tun0 gone ${t}s later, $(keyguard)"
-    adb shell wm dismiss-keyguard
-    sleep 30
-    has_tincd && fail "tincd came back after a disconnect made while locked"
-    has_tun && fail "tun0 came back after a disconnect made while locked"
-    note "stays disconnected after unlock"
+step "transport after the cycles"
+docker exec "$INVITER" tincstack-cli dump connections | tr -d '\r' | grep '^phone ' || true
+
+if [[ $SECURE == 1 ]]; then
+    step "secure keyguard: PIN $PIN"
+    if adb shell "locksettings set-pin $PIN" | tr -d '\r'; then
+        pin_set=1
+        connect
+        wait_until "$RESUME_WAIT" "tun0 after connect" has_tun >/dev/null
+        wait_until 60 "ping after connect" ping_pool >/dev/null
+        adb shell input keyevent KEYCODE_HOME
+        cycle "$(( CYCLES + 1 ))" "PIN keyguard"
+        notification_disconnect
+        adb shell "locksettings clear --old $PIN" | tr -d '\r' || true
+        pin_set=0
+    else
+        note "locksettings set-pin refused on this image: secure-keyguard run skipped"
+    fi
 else
-    note "the notification's Disconnect action was not reachable on this lock screen: step skipped (unit-tested: userDisconnectWhileLockedIsFinal)"
-    adb shell cmd statusbar collapse >/dev/null 2>&1 || true
-    unlock
-    disconnect
+    notification_disconnect
 fi
 
 step "service log excerpt"
