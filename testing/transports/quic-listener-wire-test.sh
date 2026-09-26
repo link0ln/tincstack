@@ -188,7 +188,8 @@ answer() { # <x> <client port> <fields...>: the datagrams carrying the answer to
 	TS "$x" -Y "udp.srcport == 443 && udp.dstport == $p && quic.stream.stream_id == 0" -T fields "$@" |
 		sed 's/0x00000000000000//g'
 }
-# Frames and HTTP/3 frames: nginx writes HEADERS and DATA as two STREAM frames. The sizes vary
+# Frames and HTTP/3 frames: nginx writes HEADERS and DATA in one STREAM frame and the FIN in an
+# empty one after it. The sizes vary
 # with the Date's and the ETag's Huffman lengths, so they are printed, not compared.
 compare "the answer to GET / (frames, stream ids, HTTP/3 frames)" \
 	"$(answer f "$cf" -e quic.frame_type -e quic.stream.stream_id -e http3.frame_type)" \

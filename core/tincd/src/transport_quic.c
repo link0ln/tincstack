@@ -155,7 +155,6 @@ typedef struct quic_session_t {
 		uint8_t *resp;          /* HEADERS + DATA; one allocation, never moved,
 		                           kept until the session ends */
 		size_t resp_len, resp_sent;
-		size_t resp_hdr_len;    /* its HEADERS frame: a STREAM frame of its own */
 		bool responded, blocked, done;
 	} req[QUIC_REQ_SLOTS];
 	int nreq;
@@ -556,7 +555,7 @@ static void req_decoy_fetched(void *data, char *resp, size_t len) {
 	struct quic_req *q = data;
 	quic_session_t *s = q->owner;
 	q->fetch = NULL;
-	q->resp = h3_from_http1(resp, len, true, &q->resp_len, &q->resp_hdr_len);
+	q->resp = h3_from_http1(resp, len, true, &q->resp_len, NULL);
 	free(resp);
 
 	if(!q->resp) {
@@ -594,7 +593,7 @@ static void req_respond_decoy(quic_session_t *s, int i) {
 
 	char *r = decoy_respond(request, strlen(request), &at, &rl);
 	free(request);
-	s->req[i].resp = h3_from_http1(r, rl, false, &s->req[i].resp_len, &s->req[i].resp_hdr_len);
+	s->req[i].resp = h3_from_http1(r, rl, false, &s->req[i].resp_len, NULL);
 	free(r);
 
 	if(!s->req[i].resp) {
@@ -1443,16 +1442,12 @@ static void quic_flush(quic_session_t *s) {
 					v[0].len = s->req[i].resp_len - s->req[i].resp_sent;
 					cnt = v[0].len ? 1 : 0;
 					sid = s->req[i].id;
-					wflags = NGTCP2_WRITE_STREAM_FLAG_FIN;
 					req = i;
 
-					/* nginx writes the HEADERS frame and the DATA after it
-					   as two STREAM frames (two buffers), in one packet
-					   when they fit. */
-					if(s->req[i].resp_sent < s->req[i].resp_hdr_len && s->req[i].resp_hdr_len < s->req[i].resp_len) {
-						v[0].len = s->req[i].resp_hdr_len - s->req[i].resp_sent;
-						wflags = NGTCP2_WRITE_STREAM_FLAG_MORE;
-					}
+					/* nginx writes the answer (HEADERS and DATA) without
+					   the FIN, and the FIN after it as an empty STREAM
+					   frame of its own, in the same packet when it fits. */
+					wflags = NGTCP2_WRITE_STREAM_FLAG_MORE | (cnt ? 0 : NGTCP2_WRITE_STREAM_FLAG_FIN);
 				}
 			}
 
@@ -1479,8 +1474,12 @@ static void quic_flush(quic_session_t *s) {
 			if(nwrite == NGTCP2_ERR_WRITE_MORE) {
 				if(uni >= 0 && pdatalen > 0) {
 					quic_txq_sent(&s->uni_tx[uni], (size_t)pdatalen);
-				} else if(req >= 0 && pdatalen > 0) {
+				} else if(req >= 0 && pdatalen >= 0) {
 					s->req[req].resp_sent += (size_t)pdatalen;
+
+					if(wflags & NGTCP2_WRITE_STREAM_FLAG_FIN) {
+						s->req[req].done = true;        /* the FIN is in this packet */
+					}
 				}
 
 				continue;
@@ -1504,7 +1503,7 @@ static void quic_flush(quic_session_t *s) {
 					s->req[req].resp_sent += (size_t)pdatalen;
 
 					/* All of it, FIN included, is in a packet. */
-					if(s->req[req].resp_sent == s->req[req].resp_len && nwrite > 0) {
+					if((wflags & NGTCP2_WRITE_STREAM_FLAG_FIN) && nwrite > 0) {
 						s->req[req].done = true;
 					}
 				} else {

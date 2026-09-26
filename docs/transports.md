@@ -1589,8 +1589,8 @@ other and fall back to the next carrier):
   `:status` 200 indexed, any other a raw literal on its name; `server`,
   `date`, `content-type`, `location`, `last-modified` and `content-length`
   on their static names, `vary: accept-encoding` indexed, the rest literal
-  names) and sent as nginx sends them, HEADERS and DATA in two STREAM
-  frames; the listener's own 200 to a dialler stays the fixed bytes
+  names) and sent as nginx sends them: HEADERS and DATA in one STREAM
+  frame, the FIN in an empty STREAM frame after it; the listener's own 200 to a dialler stays the fixed bytes
   diallers compare. The listener decodes a request's field section with the
   client's dynamic table (above), the dialler does not decode the answer's.
   Graceful closes carry `H3_NO_ERROR` (0x100).
