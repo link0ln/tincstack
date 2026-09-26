@@ -1,0 +1,11 @@
+ww-n2-oc-ww-n2-pre-g-1 rc=1 02:25
+ww-n2-oc-ww-n2-g-1 rc=0 02:26
+ww-n2-oc-ww-n2-pre-g-2 rc=0 02:28
+ww-n2-oc-ww-n2-g-2 rc=0 02:29
+ww-n2-oc-ww-n2-pre-g-3 rc=0 02:30
+ww-n2-oc-ww-n2-g-3 rc=0 02:31
+ww-n2-oc-ww-n2-pre-g-4 rc=1 02:33
+ww-n2-oc-ww-n2-g-4 rc=0 02:34
+ww-n2-oc-ww-n2-pre-g-5 rc=0 02:35
+ww-n2-oc-ww-n2-g-5 rc=0 02:37
+ALLDONE
