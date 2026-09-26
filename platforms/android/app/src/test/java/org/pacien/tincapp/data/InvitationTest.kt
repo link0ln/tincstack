@@ -90,4 +90,15 @@ class InvitationTest {
     assertNull(Invitation.find("203.0.113.7:99999/$token")) // no such port, and "99999" is no host
     assertNull(Invitation.find("2001:db8::1:655/$token")) // IPv6 needs its brackets
   }
+
+  @Test
+  fun twoInvitationsPastedTogetherAreNotOne() {
+    // measured on the emulator (2026-09-27): the field held both, and the app
+    // offered to join a host named "<first token>203.0.113.7"
+    val other = token.reversed()
+    assertNull(Invitation.find("$plain$plain"))
+    assertNull(Invitation.find("203.0.113.7:655/$token" + "203.0.113.7:655/$other"))
+    // separated, the first one wins
+    assertEquals(plain, parsed("$plain 203.0.113.7:655/$other"))
+  }
 }

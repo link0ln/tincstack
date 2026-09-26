@@ -56,6 +56,7 @@ class JoinPanel(
   private var clipboardInvitation: Invitation? = null
   private var lastClipStamp: Long? = null
   private var detailsShown = false
+  private var wasInvitation = false
 
   init {
     // the invitation itself is monospace (a 48-character token); the label is not
@@ -92,6 +93,9 @@ class JoinPanel(
   private fun onTextChanged() {
     val text = binding.invitationInput.text?.toString().orEmpty()
     val invitation = current()
+    // pasted or typed to the end: the keyboard would cover "Join and connect"
+    if (invitation != null && !wasInvitation && binding.invitationInput.hasFocus()) hideKeyboard()
+    wasInvitation = invitation != null
     binding.joinButton.isEnabled = invitation != null && JoinController.state.value !is JoinController.State.Running
     when {
       invitation != null -> {
@@ -161,10 +165,14 @@ class JoinPanel(
       .initiateScan()
   }
 
-  private fun join() {
-    val invitation = current() ?: return
+  private fun hideKeyboard() {
     (activity.getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager)
       .hideSoftInputFromWindow(binding.invitationInput.windowToken, 0)
+  }
+
+  private fun join() {
+    val invitation = current() ?: return
+    hideKeyboard()
     binding.invitationInput.clearFocus()
     // show exactly what is sent: blanks, line breaks and surrounding text gone
     useInvitation(invitation)
