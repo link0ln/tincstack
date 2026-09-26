@@ -23,6 +23,22 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <androidx.appcompat.widget.SwitchCompat
+        android:id="@+id/apps_disconnect_on_screen_off"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingLeft="@dimen/activity_horizontal_margin"
+        android:paddingTop="@dimen/activity_vertical_margin"
+        android:paddingRight="@dimen/activity_horizontal_margin"
+        android:text="@string/apps_picker_disconnect_on_screen_off" />
+
+    <TextView
+        android:id="@+id/apps_disconnect_on_screen_off_hint"
+        style="@style/AppTheme.BlockContent"
+        android:paddingLeft="@dimen/activity_horizontal_margin"
+        android:paddingRight="@dimen/activity_horizontal_margin"
+        android:text="@string/apps_picker_disconnect_on_screen_off_hint" />
+
     <RadioGroup
         android:id="@+id/apps_mode"
         android:layout_width="match_parent"

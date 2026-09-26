@@ -55,6 +55,9 @@
 
 	<!-- error notifications -->
 	<string name="notification_error_channel_name">Errors</string>
+	<string name="notification_vpn_channel_name">VPN status</string>
+	<string name="notification_vpn_running">tinc daemon running</string>
+	<string name="notification_vpn_suspended">Paused while the screen is locked</string>
 	<string name="notification_error_action_open_manual">Open manual</string>
 	<string name="notification_error_action_open_config_dir">Open configuration directory</string>
 	<string name="notification_error_action_open_logs_dir">Open logs directory</string>
@@ -88,7 +91,7 @@
 	<string name="configure_tools_action_generate_node_configuration_and_keys">Generate node configuration and keys</string>
 	<string name="configure_tools_action_join_network_via_invitation_url_qr_code">Join network via invitation URL or QR code</string>
 	<string name="configure_tools_action_pick_apps">Choose which apps use the VPN</string>
-	<string name="configure_tools_action_pick_apps_description">Per-app split routing: only selected apps, or all apps except selected ones.</string>
+	<string name="configure_tools_action_pick_apps_description">Per-app split routing (only selected apps, or all apps except selected ones), and pausing the VPN while the screen is locked.</string>
 
 	<!-- App picker (per-app split routing) -->
 	<string name="apps_picker_choose_network_title">Network</string>
@@ -97,6 +100,8 @@
 	<string name="apps_picker_mode_blacklist_hint">Selected apps bypass the tunnel (DisallowApplication). No selection: every app uses the VPN.</string>
 	<string name="apps_picker_mode_whitelist_hint">Only selected apps go through the tunnel (AllowApplication). No selection: every app uses the VPN.</string>
 	<string name="apps_picker_search_hint">Search apps</string>
+	<string name="apps_picker_disconnect_on_screen_off">Pause the VPN while the screen is locked</string>
+	<string name="apps_picker_disconnect_on_screen_off_hint">Stops the tinc daemon on screen lock to save battery and starts it again on unlock (DisconnectOnScreenOff). The VPN interface stays up meanwhile: traffic routed into it is dropped, not sent around the tunnel.</string>
 	<string name="apps_picker_action_save">Save</string>
 	<string name="apps_picker_saved">App selection written to tinc.yaml.</string>
 	<string name="apps_picker_saved_reconnect">App selection written to tinc.yaml; reconnect to apply it.</string>

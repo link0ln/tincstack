@@ -27,9 +27,16 @@ import java.util.concurrent.TimeUnit
  */
 class NetworkListLiveData : SelfRefreshingLiveData<List<String>>(1, TimeUnit.SECONDS) {
   private val appPaths = AppPaths
+  @Volatile private var lastPosted: List<String>? = null
 
   override fun onRefresh() {
     val networkList = appPaths.confDir().list()?.sorted() ?: emptyList()
-    postValue(networkList)
+    // re-posting an identical list every second rebuilt the list view every
+    // second: needless work, and a screen that never goes idle for
+    // accessibility / uiautomator (dumps hung on the start screen)
+    if (networkList != lastPosted) {
+      lastPosted = networkList
+      postValue(networkList)
+    }
   }
 }

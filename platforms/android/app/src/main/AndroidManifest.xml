@@ -23,6 +23,13 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- the VpnService runs in the foreground while connected (TincVpnService.enterForeground):
+         systemExempted is the type Android 14 reserves for VPN apps, specialUse the fallback -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- the app picker lists every installed app (per-app split routing is what a VPN app is for) -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
@@ -92,10 +99,14 @@
         <service
             android:name="org.pacien.tincapp.service.TincVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="systemExempted|specialUse"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn: keeps the VpnService tunnel and its tinc daemon alive while connected" />
         </service>
 
         <provider

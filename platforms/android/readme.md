@@ -94,6 +94,22 @@ docker/join-on-emulator.sh          # KEEP=1 leaves the lab and the emulator up
 TRANSPORT=https docker/join-on-emulator.sh   # the same, the tunnel over https (or quic)
 ```
 
+Two more proofs build on it (both run `join-on-emulator.sh` with `KEEP=1`
+first, and take the same variables, `TRANSPORT` included):
+
+```
+docker/split-routing-on-emulator.sh  # AllowApplication / DisallowApplication, per app, end to end
+docker/lock-cycle-on-emulator.sh     # DisconnectOnScreenOff: lock -> tincd stopped, VPN kept -> unlock -> back
+```
+
+`split-routing-on-emulator.sh` installs two code-less debuggable apps of their
+own packages (`docker/probe-apps.sh`) and pings the inviter's tunnel address
+as each app's UID (`run-as <pkg> ping`), after setting the whitelist and then
+the blacklist through the app's settings screen (`docker/ui-pick-apps.sh`).
+`lock-cycle-on-emulator.sh` switches the option on through the same screen,
+runs lock/unlock cycles (`LOCKED_WAIT`, default 95 s, each), one with a PIN
+keyguard, and checks that an explicit disconnect survives a lock/unlock.
+
 Reading the app's private files (the joined `tinc.yaml`) needs a userdebug
 system image, hence `google_apis` and not `google_apis_playstore`.
 

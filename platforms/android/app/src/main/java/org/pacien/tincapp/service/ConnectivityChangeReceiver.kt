@@ -41,6 +41,8 @@ object ConnectivityChangeReceiver : BroadcastReceiver() {
   }
 
   private fun attemptReconnect() {
+    // no daemon while a session is suspended (screen locked): nothing to poke
+    if (!tincVpnService.isDaemonRunning()) return
     tincVpnService.getCurrentNetName()?.let { netName ->
       log.info("Sending immediate reconnection request to the tinc daemon.")
       tincCtl.retry(netName)
