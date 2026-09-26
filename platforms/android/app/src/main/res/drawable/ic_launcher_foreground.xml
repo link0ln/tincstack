@@ -1,27 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <!--
- * Tinc Mesh VPN logo and icon made exclusively for Tinc Mesh VPN.
- * Copyright (C) 2018 Philippe NGUYEN, Euxane P. TRAN-GIRARD
+ * tincstack for Android: launcher mark: three stacked layers.
+ * Copyright (C) 2026 tincstack contributors, GPLv3 or later.
 -->
-
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-				android:width="108dp"
-				android:height="108dp"
-				android:viewportHeight="108.3"
-				android:viewportWidth="108.3">
+	android:width="108dp"
+	android:height="108dp"
+	android:viewportWidth="108"
+	android:viewportHeight="108">
+	<path
+		android:fillColor="#FFFFFF"
+		android:pathData="M54,30L79,42.5L54,55L29,42.5Z"
+		android:strokeWidth="3"
+		android:strokeColor="#FFFFFF"
+		android:strokeLineJoin="round" />
 	<path
 		android:fillColor="#00000000"
-		android:pathData="M58.33,38.53l-19.8,19.8l27.05,7.25l-7.25,-27.05z"
-		android:strokeColor="#f0f0f0"
-		android:strokeWidth="3"/>
+		android:pathData="M29,54L54,66.5L79,54"
+		android:strokeWidth="5.5"
+		android:strokeAlpha="0.85"
+		android:strokeColor="#FFFFFF"
+		android:strokeLineCap="round"
+		android:strokeLineJoin="round" />
 	<path
-		android:fillColor="#fff"
-		android:pathData="M58.33,38.54m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0"/>
-	<path
-		android:fillColor="#fff"
-		android:pathData="M38.54,58.33m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0"/>
-	<path
-		android:fillColor="#fff"
-		android:pathData="M65.58,65.58m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0"/>
+		android:fillColor="#00000000"
+		android:pathData="M29,65.5L54,78L79,65.5"
+		android:strokeWidth="5.5"
+		android:strokeAlpha="0.6"
+		android:strokeColor="#FFFFFF"
+		android:strokeLineCap="round"
+		android:strokeLineJoin="round" />
 </vector>

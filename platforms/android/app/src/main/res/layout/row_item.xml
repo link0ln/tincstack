@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+ * tincstack for Android
+ * Copyright (C) 2026 tincstack contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<!-- One list row: icon, title, summary, optional trailing view. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:app="http://schemas.android.com/apk/res-auto"
+	xmlns:tools="http://schemas.android.com/tools"
+	style="@style/Tincstack.Row"
+	android:clickable="true"
+	android:focusable="true">
+
+	<ImageView
+		android:id="@+id/row_icon"
+		style="@style/Tincstack.RowIcon"
+		tools:src="@drawable/ic_transport"
+		tools:ignore="ContentDescription" />
+
+	<LinearLayout
+		android:layout_width="0dp"
+		android:layout_height="wrap_content"
+		android:layout_weight="1"
+		android:orientation="vertical">
+
+		<TextView
+			android:id="@+id/row_title"
+			style="@style/Tincstack.RowTitle"
+			tools:text="Connection type" />
+
+		<TextView
+			android:id="@+id/row_summary"
+			style="@style/Tincstack.RowSummary"
+			tools:text="Standard" />
+	</LinearLayout>
+
+	<com.google.android.material.materialswitch.MaterialSwitch
+		android:id="@+id/row_switch"
+		android:layout_width="wrap_content"
+		android:layout_height="wrap_content"
+		android:layout_marginStart="12dp"
+		android:clickable="false"
+		android:focusable="false"
+		android:visibility="gone" />
+
+	<ImageView
+		android:id="@+id/row_chevron"
+		android:layout_width="20dp"
+		android:layout_height="20dp"
+		android:layout_marginStart="8dp"
+		android:importantForAccessibility="no"
+		android:src="@drawable/ic_chevron_right"
+		app:tint="?attr/colorOnSurfaceVariant" />
+</LinearLayout>

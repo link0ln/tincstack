@@ -1,5 +1,5 @@
 /*
- * Tinc Mesh VPN: Android client and user interface
+ * tincstack for Android
  * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
@@ -24,6 +24,8 @@ import android.content.pm.ApplicationInfo
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
+import android.view.View
+import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
 import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.R
@@ -33,87 +35,101 @@ import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.data.SplitRouting
 import org.pacien.tincapp.data.SplitRoutingMode
 import org.pacien.tincapp.data.TincYaml
-import org.pacien.tincapp.data.VpnInterfaceConfiguration
 import org.pacien.tincapp.databinding.AppsPickerActivityBinding
 import org.pacien.tincapp.extensions.Java.defaultMessage
 import org.pacien.tincapp.extensions.Java.exceptionallyAccept
-import org.pacien.tincapp.service.TincVpnService
 
 /**
- * Per-app split routing of one network: which installed apps use the tunnel.
- *
- * One mode switch (whitelist: only the ticked apps use the VPN / blacklist: every
- * app except the ticked ones), a search box and a multi-select list. Saving
- * writes exactly one of `AllowApplication` / `DisallowApplication` into the
- * network's `tinc.yaml` (see [SplitRouting]); the change applies at the next
- * connection of that network.
+ * Per-app split routing of one network: all apps (no key), only the ticked
+ * ones (`AllowApplication`), or all but the ticked ones
+ * (`DisallowApplication`). Exactly one key is ever written ([SplitRouting]);
+ * the ticks are kept while switching modes. Save writes the network's
+ * tinc.yaml and returns RESULT_OK; the change applies at the next connection.
  */
 class AppPickerActivity : BaseActivity() {
   private val netName by lazy { intent.getStringExtra(EXTRA_NET_NAME)!! }
   private val yaml by lazy { TincYaml(AppPaths.tincYamlFile(netName)) }
-  private val stanza by lazy { yaml.resolveNetwork(netName) }
-  private val binding by lazy { AppsPickerActivityBinding.inflate(layoutInflater) }
+  private lateinit var binding: AppsPickerActivityBinding
   private val adapter by lazy { InstalledAppsAdapter(this) }
+  private var loaded = false
+  override val snackbarRoot: View get() = binding.appsRoot
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    supportActionBar.setDisplayHomeAsUpEnabled(true)
-    supportActionBar.subtitle = netName
+    binding = AppsPickerActivityBinding.inflate(layoutInflater)
     setContentView(binding.root)
+    setupToolbar(binding.toolbar, up = true)
+    supportActionBar?.subtitle = netName
 
     binding.appsList.adapter = adapter
     binding.appsList.setOnItemClickListener { _, _, position, _ -> adapter.toggle(position) }
     binding.appsSearch.doAfterTextChanged { adapter.filter.filter(it?.toString()) }
-    binding.appsMode.setOnCheckedChangeListener { _, id -> updateModeHint(id) }
-
+    binding.appsMode.setOnCheckedChangeListener { _, _ -> renderMode() }
     load()
   }
 
-  override fun onCreateOptionsMenu(m: Menu): Boolean {
-    menuInflater.inflate(R.menu.menu_apps_picker, m)
-    return super.onCreateOptionsMenu(m)
+  override fun onCreateOptionsMenu(menu: Menu): Boolean {
+    menuInflater.inflate(R.menu.menu_apps_picker, menu)
+    return true
   }
 
   override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
-    android.R.id.home -> { finish(); true }
+    R.id.apps_picker_save -> {
+      save(); true
+    }
+
     else -> super.onOptionsItemSelected(item)
   }
 
-  private fun currentMode() =
-    if (binding.appsMode.checkedRadioButtonId == R.id.apps_mode_whitelist) SplitRoutingMode.WHITELIST
-    else SplitRoutingMode.BLACKLIST
+  private fun mode(): SplitRoutingMode? = when (binding.appsMode.checkedRadioButtonId) {
+    R.id.apps_mode_whitelist -> SplitRoutingMode.WHITELIST
+    R.id.apps_mode_blacklist -> SplitRoutingMode.BLACKLIST
+    else -> null
+  }
 
-  private fun updateModeHint(checkedId: Int) {
-    binding.appsModeHint.setText(
-      if (checkedId == R.id.apps_mode_whitelist) R.string.apps_picker_mode_whitelist_hint
-      else R.string.apps_picker_mode_blacklist_hint)
+  private fun renderMode() {
+    val mode = mode()
+    binding.appsModeHint.setText(when (mode) {
+      SplitRoutingMode.WHITELIST -> R.string.apps_mode_whitelist_hint
+      SplitRoutingMode.BLACKLIST -> R.string.apps_mode_blacklist_hint
+      null -> R.string.apps_mode_all_hint
+    })
+    binding.appsSearchLayout.isVisible = mode != null
+    binding.appsList.isVisible = mode != null && loaded
   }
 
   private fun load() {
-    binding.appsProgress.visibility = android.view.View.VISIBLE
+    binding.appsProgress.isVisible = true
     Executor.supplyAsyncTask {
-      val current = SplitRouting.read(yaml, stanza)
-      val lockPause = TincYaml.asTincBoolean(yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF), false)
-      val apps = installedApps()
-      Triple(current, lockPause, apps)
-    }.thenAccept { (current, lockPause, apps) ->
+      val current = try {
+        SplitRouting.read(yaml, yaml.resolveNetwork(netName))
+      } catch (e: TincYaml.InvalidConfigurationException) {
+        // both keys set: the service refuses such a network; saving here repairs it
+        runOnUiThread { notify(getString(R.string.apps_error_read_format, e.defaultMessage())) }
+        null
+      }
+      current to installedApps()
+    }.thenAccept { (current, apps) ->
       runOnUiThread {
-        binding.appsDisconnectOnScreenOff.isChecked = lockPause
-        binding.appsProgress.visibility = android.view.View.GONE
-        binding.appsMode.check(
-          if (current.mode == SplitRoutingMode.WHITELIST) R.id.apps_mode_whitelist else R.id.apps_mode_blacklist)
-        updateModeHint(binding.appsMode.checkedRadioButtonId)
-        adapter.setApps(apps, current.apps)
+        loaded = true
+        binding.appsProgress.isVisible = false
+        binding.appsMode.check(when {
+          current == null || current.apps.isEmpty() -> R.id.apps_mode_all
+          current.mode == SplitRoutingMode.WHITELIST -> R.id.apps_mode_whitelist
+          else -> R.id.apps_mode_blacklist
+        })
+        adapter.setApps(apps, current?.apps.orEmpty())
+        renderMode()
       }
     }.exceptionallyAccept { e ->
       runOnUiThread {
-        binding.appsProgress.visibility = android.view.View.GONE
-        showErrorDialog(getString(R.string.apps_picker_error_read_format, e.cause?.defaultMessage() ?: e.defaultMessage()))
+        binding.appsProgress.isVisible = false
+        notify(getString(R.string.apps_error_read_format, e.cause?.defaultMessage() ?: e.defaultMessage()))
       }
     }
   }
 
-  /** Every launchable-or-not installed app but this one (the VPN app always bypasses its own tunnel). */
+  /** Every installed app but this one (the VPN app always bypasses its own tunnel). */
   private fun installedApps(): List<InstalledApp> {
     val pm = packageManager
     return pm.getInstalledApplications(0)
@@ -122,24 +138,14 @@ class AppPickerActivity : BaseActivity() {
       .sortedWith(compareBy({ it.system }, { it.label.lowercase() }))
   }
 
-  @Suppress("UNUSED_PARAMETER")
-  fun save(m: MenuItem) {
-    val selection = SplitRouting(currentMode(), adapter.selected())
-    // absent means off: the key is written only when on
-    val lockPause = if (binding.appsDisconnectOnScreenOff.isChecked) listOf("yes") else null
-    Executor.runAsyncTask {
-      selection.write(yaml, stanza)
-      yaml.setOptions(stanza, mapOf(VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF to lockPause))
-    }
-      .thenAccept {
-        runOnUiThread {
-          notify(if (TincVpnService.getCurrentNetName() == netName && TincVpnService.isConnected())
-            R.string.apps_picker_saved_reconnect else R.string.apps_picker_saved)
-          finish()
-        }
-      }
+  private fun save() {
+    if (!loaded) return
+    // "all apps" is no key at all: an empty selection in either mode
+    val selection = SplitRouting(mode() ?: SplitRoutingMode.WHITELIST, if (mode() == null) emptySet() else adapter.selected())
+    Executor.runAsyncTask { selection.write(yaml, yaml.resolveNetwork(netName)) }
+      .thenAccept { runOnUiThread { setResult(RESULT_OK); finish() } }
       .exceptionallyAccept { e ->
-        runOnUiThread { showErrorDialog(getString(R.string.apps_picker_error_write_format, e.cause?.defaultMessage() ?: e.defaultMessage())) }
+        runOnUiThread { notify(getString(R.string.apps_error_write_format, e.cause?.defaultMessage() ?: e.defaultMessage())) }
       }
   }
 

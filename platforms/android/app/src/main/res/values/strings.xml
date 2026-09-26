@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <!--
- * Tinc Mesh VPN: Android client and user interface
- * Copyright (C) 2017-2024 Euxane P. TRAN-GIRARD
+ * tincstack for Android
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,145 +17,170 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
+<!-- English only (owner decision 2026-09-27): no translations are shipped, so
+     a phone in any language shows these accurate strings. -->
 <resources>
 	<string name="app_name" translatable="false">tincstack</string>
-	<string name="app_doc_url_format" translatable="false">https://tincapp.euxane.net/%1$s</string>
 
-	<!-- generic strings -->
-	<string name="generic_title_error">Error</string>
-	<string name="generic_loading">Loading…</string>
-	<string name="generic_yes">yes</string>
-	<string name="generic_no">no</string>
-	<string name="generic_none">none</string>
-	<string name="generic_action_close">Close</string>
-	<string name="generic_action_cancel">Cancel</string>
-	<string name="generic_action_apply">Apply</string>
-	<string name="generic_action_open_web_page">Open web page</string>
+	<!-- generic -->
+	<string name="action_close">Close</string>
+	<string name="action_cancel">Cancel</string>
+	<string name="action_view_log">View log</string>
+	<string name="action_dismiss">Dismiss</string>
+	<string name="action_copy">Copy</string>
+	<string name="action_share">Share</string>
+	<string name="action_remove">Remove</string>
+	<string name="action_save">Save</string>
+	<string name="action_reconnect">Reconnect</string>
 
-	<!-- about modal -->
-	<string name="about_app_menu_about">About</string>
-	<string name="about_app_short_desc">Android client for the tincstack mesh VPN (tinc 1.1 core, one tinc.yaml, per-app split routing). Based on Tinc Mesh VPN by Euxane P. TRAN-GIRARD.</string>
-	<string name="about_app_copyright">Copyright © 2017–2024 Euxane P. TRAN-GIRARD and contributors; © 2026 tincstack contributors.</string>
-	<string name="about_app_license">Software distributed under the terms of the GNU General Public License v3.</string>
-	<string name="about_app_website_url" translatable="false">https://tincapp.euxane.net</string>
-	<string name="about_app_version_format">App version %1$s (%2$s build)</string>
-	<string name="about_app_running_on_format">Running on Android %1$s %2$s</string>
-	<string name="about_app_supported_abis_format">Device ABIs: %1$s</string>
-	<string name="about_app_open_project_website">Project website</string>
+	<!-- main screen -->
+	<string name="main_connect">Connect</string>
+	<string name="main_disconnect">Disconnect</string>
+	<string name="main_network_label">Network</string>
+	<string name="state_disconnected">Disconnected</string>
+	<string name="state_disconnected_detail">Tap to connect</string>
+	<string name="state_connecting">Connecting…</string>
+	<string name="state_connecting_detail">Starting tinc…</string>
+	<string name="state_searching_format">Looking for %1$s…</string>
+	<string name="state_searching_slow_format">%1$s isn\'t answering yet. tincstack keeps trying; the log shows why.</string>
+	<string name="state_connected">Connected</string>
+	<string name="state_connected_detail_format">Linked to %1$s</string>
+	<string name="state_connected_transport_format">Linked to %1$s over %2$s</string>
+	<string name="state_paused">Paused</string>
+	<string name="state_paused_detail">The screen is locked. tinc resumes when you unlock the phone.</string>
+	<string name="state_failed">Couldn\'t connect</string>
+	<string name="state_lost">Connection lost</string>
 
-	<!-- crash modal -->
-	<string name="crash_modal_title">App crash</string>
-	<string name="crash_modal_message">The app encountered a fatal error.</string>
-	<string name="crash_modal_crash_logged">Crash details saved in \"%1$s\".</string>
-	<string name="crash_modal_action_send_email">Send e-mail</string>
-	<string name="crash_modal_action_send_report">Send report</string>
-	<!-- maintainer address for crash reports; empty = no "Send report" button (logs stay on the device) -->
-	<string name="crash_modal_dev_email" translatable="false"></string>
+	<string name="main_address_label">This device</string>
+	<string name="main_address_none">No address yet</string>
+	<string name="address_copied_format">Copied %1$s</string>
+	<string name="main_peers_label">Peers</string>
+	<string name="main_peers_offline_format">%1$s</string>
+	<string name="main_peers_count_format">%1$d of %2$d reachable</string>
+	<string name="main_switch_locked">Disconnect to switch networks.</string>
+	<string name="main_settings_label">Settings</string>
+	<string name="main_help_label">Troubleshooting</string>
 
-	<!-- error notifications -->
-	<string name="notification_error_channel_name">Errors</string>
-	<string name="notification_vpn_channel_name">VPN status</string>
-	<string name="notification_vpn_running">tinc daemon running</string>
-	<string name="notification_vpn_suspended">Paused while the screen is locked</string>
-	<string name="notification_error_action_open_manual">Open manual</string>
-	<string name="notification_error_action_open_config_dir">Open configuration directory</string>
-	<string name="notification_error_action_open_logs_dir">Open logs directory</string>
-	<string name="notification_error_title_unable_to_start_tinc">Could not start tinc</string>
-	<string name="notification_error_message_could_not_read_network_configuration_format">Could not read network interface configuration:\n%1$s</string>
-	<string name="notification_error_message_could_not_bind_iface">Could not bind network interface. Is another VPN running?</string>
-	<string name="notification_error_message_could_not_configure_iface">Could not apply network interface configuration:\n%1$s</string>
-	<string name="notification_error_message_daemon_exited">tinc daemon exited during startup:\n%1$s\nCheck the logs for more details.</string>
-	<string name="notification_error_message_no_network_name_provided">No network name provided.</string>
-	<string name="notification_error_message_no_configuration_for_network_format">Could not find configuration for \"%1$s\" network.</string>
-	<string name="notification_error_message_network_config_not_found_format">Could not find network configuration file at \"%1$s\".</string>
-	<string name="notification_error_message_network_config_invalid_format">Invalid network configuration in tinc.yaml:\n%1$s</string>
+	<string name="setting_transport_title">Connection type</string>
+	<string name="setting_apps_title">Apps using the VPN</string>
+	<string name="setting_screen_off_title">Pause while the screen is locked</string>
+	<string name="setting_screen_off_summary">Saves battery. Nothing leaves outside the VPN while paused.</string>
+	<string name="setting_log_title">Log</string>
+	<string name="setting_log_summary">What tinc did, step by step</string>
+	<string name="applies_on_reconnect">Takes effect the next time you connect.</string>
 
-	<!-- Start activity -->
-	<string name="start_activity_menu_configure">Configure</string>
-	<string name="start_network_list_warning_text">Traffic from this device will be partially or fully routed to and through the selected network in accordance with your configuration. Never connect to a tinc network which you do not trust.</string>
-	<string name="start_network_list_title">Connect to network</string>
-	<string name="start_network_list_empty_none_found">Could not find any network configuration.</string>
-	<string name="start_starting_vpn">Starting VPN…</string>
+	<string name="menu_add_network">Add network</string>
+	<string name="menu_remove_network">Remove network</string>
+	<string name="menu_log">Log</string>
+	<string name="menu_about">About</string>
 
-	<!-- Configure activity -->
-	<string name="configure_tools_message_invalid_network_name">Invalid network name.</string>
-	<string name="configure_tools_message_network_configuration_written">Network configuration written.</string>
+	<string name="remove_title_format">Remove %1$s?</string>
+	<string name="remove_message">This deletes the network and this phone\'s keys for it. To join again you will need a new invitation.</string>
+	<string name="removed_format">Removed %1$s</string>
 
-	<string name="configure_activity_title_directories">Directories</string>
-	<string name="configure_browse_directories_action_open_networks_config">Open networks configuration directory</string>
-	<string name="configure_browse_directories_action_open_logs">Open logs directory</string>
-	<string name="configure_browse_directories_error_no_file_manager">No file manager found to open target.</string>
+	<!-- join -->
+	<string name="join_title">Join a network</string>
+	<string name="add_network_title">Add a network</string>
+	<string name="join_intro">Paste the invitation you were sent, or scan its QR code.</string>
+	<string name="join_input_hint">Invitation</string>
+	<string name="join_input_help">Looks like vpn.example.com:655/ followed by 48 letters and digits</string>
+	<string name="join_paste">Paste</string>
+	<string name="join_detected_format">Invitation for %1$s</string>
+	<string name="join_not_an_invitation">This isn\'t an invitation: it should end with / and 48 letters and digits.</string>
+	<string name="join_clipboard_title">Invitation in your clipboard</string>
+	<string name="join_clipboard_use">Use it</string>
+	<string name="join_action">Join and connect</string>
+	<string name="join_scan">Scan QR code</string>
+	<string name="join_scan_prompt">Point the camera at the invitation\'s QR code</string>
+	<string name="join_scan_no_invitation">That QR code doesn\'t contain an invitation.</string>
+	<string name="join_stage_contacting_format">Contacting %1$s…</string>
+	<string name="join_stage_exchanging">Exchanging keys…</string>
+	<string name="join_failed_title">Couldn\'t join</string>
+	<string name="join_error_host_not_found_format">Couldn\'t find %1$s. Check the address in the invitation and that you are online.</string>
+	<string name="join_error_unreachable_format">No answer from %1$s. The inviting device may be offline, or port %2$s may be blocked on your network. Check your connection and try again.</string>
+	<string name="join_error_wrong_node_format">%1$s answered, but this invitation doesn\'t match it. It may be mistyped or meant for another network; ask for a new one.</string>
+	<string name="join_error_rejected_format">%1$s turned this invitation down. It was probably used already (an invitation works only once) or has expired. Ask for a new one.</string>
+	<string name="join_error_other">Joining failed.</string>
+	<string name="join_nothing_saved">Nothing was saved; you can try again.</string>
+	<string name="join_show_details">Details</string>
+	<string name="join_hide_details">Hide details</string>
+	<string name="joined_format">Joined %1$s</string>
 
-	<string name="configure_activity_title_tools">Tools</string>
-	<string name="configure_tools_action_generate_node_configuration_and_keys">Generate node configuration and keys</string>
-	<string name="configure_tools_action_join_network_via_invitation_url_qr_code">Join network via invitation URL or QR code</string>
-	<string name="configure_tools_action_pick_apps">Choose which apps use the VPN</string>
-	<string name="configure_tools_action_pick_apps_description">Per-app split routing (only selected apps, or all apps except selected ones), and pausing the VPN while the screen is locked.</string>
+	<!-- errors while connecting -->
+	<string name="error_no_config_format">%1$s has no configuration (its tinc.yaml is missing or empty). Remove it and join again with a new invitation.</string>
+	<string name="error_config_invalid_format">The configuration of %1$s can\'t be used: %2$s</string>
+	<string name="error_no_address">This network gives this phone no address (no InterfaceAddress, and no Subnet within an AddressPool). Ask for a new invitation.</string>
+	<string name="error_vpn_busy">Couldn\'t set up the VPN. Is another VPN app active? Android runs only one VPN at a time.</string>
+	<string name="error_vpn_permission">tincstack needs your permission to set up a VPN.</string>
+	<string name="error_iface_format">Couldn\'t set up the VPN interface: %1$s</string>
+	<string name="error_daemon_start_format">tinc stopped while starting: %1$s</string>
+	<string name="error_daemon_exited_format">tinc stopped unexpectedly: %1$s</string>
+	<string name="error_resume_format">tinc could not restart after unlocking: %1$s</string>
+	<string name="error_revoked">Another VPN app took over, or the VPN permission was withdrawn.</string>
+	<string name="error_unknown">no details, see the log</string>
 
-	<!-- App picker (per-app split routing) -->
-	<string name="apps_picker_choose_network_title">Network</string>
-	<string name="apps_picker_mode_blacklist">All apps except the selected ones use the VPN</string>
-	<string name="apps_picker_mode_whitelist">Only the selected apps use the VPN</string>
-	<string name="apps_picker_mode_blacklist_hint">Selected apps bypass the tunnel (DisallowApplication). No selection: every app uses the VPN.</string>
-	<string name="apps_picker_mode_whitelist_hint">Only selected apps go through the tunnel (AllowApplication). No selection: every app uses the VPN.</string>
-	<string name="apps_picker_search_hint">Search apps</string>
-	<string name="apps_picker_disconnect_on_screen_off">Pause the VPN while the screen is locked</string>
-	<string name="apps_picker_disconnect_on_screen_off_hint">Stops the tinc daemon on screen lock to save battery and starts it again on unlock (DisconnectOnScreenOff). The VPN interface stays up meanwhile: traffic routed into it is dropped, not sent around the tunnel.</string>
-	<string name="apps_picker_action_save">Save</string>
-	<string name="apps_picker_saved">App selection written to tinc.yaml.</string>
-	<string name="apps_picker_saved_reconnect">App selection written to tinc.yaml; reconnect to apply it.</string>
-	<string name="apps_picker_error_read_format">Could not read the network configuration:\n%1$s</string>
-	<string name="apps_picker_error_write_format">Could not write the network configuration:\n%1$s</string>
+	<!-- notification -->
+	<string name="notification_channel_vpn">VPN status</string>
+	<string name="notification_connected_format">Connected to %1$s</string>
+	<string name="notification_running">tincstack VPN is on</string>
+	<string name="notification_paused">Paused while the screen is locked</string>
 
-	<string name="configure_tools_generate_config_title">New network</string>
-	<string name="configure_tools_generate_config_net_name_hint">tinc network name</string>
-	<string name="configure_tools_generate_config_node_name_hint">Name of this node</string>
-	<string name="configure_tools_generate_config_action">Create</string>
-	<string name="configure_tools_generate_config_generating">Generating node configuration…</string>
+	<!-- peers -->
+	<string name="peers_title">Peers</string>
+	<string name="peer_this_device">This device</string>
+	<string name="peer_direct">Direct</string>
+	<string name="peer_via_format">Via %1$s</string>
+	<string name="peer_unreachable">Not reachable</string>
+	<string name="peer_rtt_format">%1$s ms</string>
+	<string name="peer_address_format">%1$s port %2$s</string>
+	<string name="peers_not_connected">Connect to see which peers are reachable.</string>
+	<string name="peers_loading">Asking tinc…</string>
 
-	<string name="configure_tools_join_network_title">Join network</string>
-	<string name="configure_tools_join_network_field_invitation_url_hint">Invitation URL</string>
-	<string name="configure_tools_join_network_action_scan_qr_code_action">Scan QR code</string>
-	<string name="configure_tools_join_network_action">Join</string>
-	<string name="configure_tools_join_network_joining">Joining network…</string>
+	<!-- connection type -->
+	<string name="transport_plain">Standard</string>
+	<string name="transport_plain_desc">tinc\'s own protocol over TCP and UDP. The fastest; use it unless your network blocks it.</string>
+	<string name="transport_sf">Single UDP flow</string>
+	<string name="transport_sf_desc">All traffic in one UDP flow. Can help behind strict NATs and firewalls.</string>
+	<string name="transport_obfs">Obfuscated</string>
+	<string name="transport_obfs_desc">Randomised packets without tinc\'s recognisable signature.</string>
+	<string name="transport_https">HTTPS</string>
+	<string name="transport_https_desc">Looks like an ordinary secure website connection. For networks that block VPNs.</string>
+	<string name="transport_quic">QUIC</string>
+	<string name="transport_quic_desc">Looks like HTTP/3 web traffic over UDP. For networks that block VPNs.</string>
+	<string name="transport_not_offered_format">Not offered by %1$s</string>
+	<string name="transport_set_format">Connection type: %1$s.</string>
+	<string name="transport_fallback_note">If the chosen type can\'t connect, tincstack falls back to Standard.</string>
 
+	<!-- apps -->
+	<string name="apps_mode_all">All apps use the VPN</string>
+	<string name="apps_mode_all_hint">Every app\'s traffic to the network goes through the VPN.</string>
+	<string name="apps_mode_whitelist">Only the selected apps use the VPN</string>
+	<string name="apps_mode_whitelist_hint">Only the apps you tick go through the VPN; the others use your normal connection.</string>
+	<string name="apps_mode_blacklist">All apps except the selected ones use the VPN</string>
+	<string name="apps_mode_blacklist_hint">The apps you tick bypass the VPN.</string>
+	<string name="apps_search_hint">Search apps</string>
+	<string name="apps_saved">Saved.</string>
+	<string name="apps_error_read_format">Couldn\'t read the network configuration: %1$s</string>
+	<string name="apps_error_write_format">Couldn\'t save: %1$s</string>
+	<string name="apps_summary_all">All apps</string>
+	<plurals name="apps_summary_only">
+		<item quantity="one">Only %d app</item>
+		<item quantity="other">Only %d apps</item>
+	</plurals>
+	<plurals name="apps_summary_except">
+		<item quantity="one">All apps except %d</item>
+		<item quantity="other">All apps except %d</item>
+	</plurals>
 
-	<!-- Status activity -->
-	<string name="status_activity_state_connected_to_format">Connected to %s</string>
-	<string name="status_activity_menu_disconnect">Disconnect</string>
-	<string name="status_activity_menu_show_log">Show log</string>
-	<string name="status_activity_disconnecting_vpn">Disconnecting VPN…</string>
+	<!-- log -->
+	<string name="log_title">Log</string>
+	<string name="log_tab_connection">Connection</string>
+	<string name="log_tab_app">App</string>
+	<string name="log_empty">Nothing logged yet.</string>
+	<string name="log_copied">Log copied</string>
 
-	<string name="status_activity_title_network_info">Network</string>
-	<string name="status_network_info_network_name_label">Network name</string>
-	<string name="status_network_info_ip_addresses_label">IP addresses</string>
-	<string name="status_network_info_routes_label">Routes</string>
-	<string name="status_network_info_dns_servers_label">DNS servers</string>
-	<string name="status_network_info_search_domains_label">Search domains</string>
-	<string name="status_network_info_allowed_applications_label">Allowed apps</string>
-	<string name="status_network_info_disallowed_applications_label">Disallowed apps</string>
-	<string name="status_network_info_allow_bypass_label">Allow bypass</string>
-	<string name="status_network_info_value_yes" translatable="false">@string/generic_yes</string>
-	<string name="status_network_info_value_no" translatable="false">@string/generic_no</string>
-	<string name="status_network_info_value_none" translatable="false">@string/generic_none</string>
-
-	<string name="status_activity_title_node_list">Nodes</string>
-	<string name="status_node_list_empty_placeholder_text" translatable="false">@string/generic_loading</string>
-	<string name="status_node_reachability_unreachable">unreachable</string>
-	<string name="status_node_reachability_this_node">this node</string>
-	<string name="status_node_reachability_direct_connection">direct</string>
-	<string name="status_node_reachability_via_format">via %s</string>
-	<string name="status_node_reachability_unknown">…</string>
-	<string name="status_node_info_modal_placeholder_text" translatable="false">@string/generic_loading</string>
-	<string name="status_node_info_dialog_title">Node info</string>
-	<string name="status_node_info_dialog_close_action" translatable="false">@string/generic_action_close</string>
-
-	<string name="status_activity_title_subnet_list">Subnets</string>
-	<string name="status_subnet_list_empty_placeholder_text" translatable="false">@string/generic_loading</string>
-
-	<!-- Log viewer activity -->
-	<string name="log_view_state_level_format">Log level: %s</string>
-	<string name="log_view_state_paused">Logging paused</string>
-	<string name="log_view_menu_toggle_logging">Toggle logging</string>
-	<string name="log_view_menu_share_log">Share log</string>
+	<!-- about, crash -->
+	<string name="about_text_format">Version %1$s\n\nMesh VPN client for tincstack networks: the tinc 1.1 core, one tinc.yaml per network, invitations and per-app routing.\n\nBased on Tinc Mesh VPN by Euxane P. TRAN-GIRARD.\n© 2017–2024 Euxane P. TRAN-GIRARD and contributors; © 2026 tincstack contributors.\nFree software under the GNU General Public License v3 or later.</string>
+	<string name="crash_title">tincstack closed unexpectedly</string>
+	<string name="crash_message">What happened is in the app log.</string>
 </resources>

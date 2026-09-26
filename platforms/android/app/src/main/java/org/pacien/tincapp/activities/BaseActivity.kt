@@ -1,6 +1,7 @@
 /*
- * Tinc Mesh VPN: Android client and user interface
+ * tincstack for Android
  * Copyright (C) 2017-2019 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,98 +19,45 @@
 
 package org.pacien.tincapp.activities
 
-import android.content.Intent
-import android.os.Bundle
-import androidx.annotation.StringRes
-import com.google.android.material.snackbar.Snackbar
-import androidx.appcompat.app.AlertDialog
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
-import android.view.*
+import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
+import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.R
-import org.pacien.tincapp.context.App
-import org.pacien.tincapp.context.AppInfo
-import org.pacien.tincapp.databinding.BaseActivityBinding
 
 /**
+ * Common plumbing: the Material toolbar as the action bar, snackbars, the
+ * about dialog.
+ *
  * @author euxane
  */
 abstract class BaseActivity : AppCompatActivity() {
-  val rootView by lazy { BaseActivityBinding.inflate(layoutInflater).root }
-  private var active = false
+  /** The view snackbars attach to (the screen's CoordinatorLayout). */
+  protected abstract val snackbarRoot: View
 
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    super.setContentView(rootView)
+  protected fun setupToolbar(toolbar: MaterialToolbar, up: Boolean) {
+    setSupportActionBar(toolbar)
+    supportActionBar?.setDisplayHomeAsUpEnabled(up)
+    if (up) toolbar.setNavigationOnClickListener { onBackPressedDispatcher.onBackPressed() }
   }
 
-  override fun onCreateOptionsMenu(m: Menu): Boolean {
-    menuInflater.inflate(R.menu.menu_base, m)
-    return true
-  }
-
-  override fun onStart() {
-    super.onStart()
-    active = true
-  }
-
-  override fun onResume() {
-    super.onResume()
-    active = true
-  }
-
-  override fun onPause() {
-    active = false
-    super.onPause()
-  }
-
-  override fun onStop() {
-    active = false
-    super.onStop()
-  }
-
-  override fun setContentView(layoutResID: Int) {
-    layoutInflater.inflate(layoutResID, rootView)
-  }
-
-  override fun getSupportActionBar() = super.getSupportActionBar()!!
-
-  fun startActivityChooser(target: Intent, title: String) {
-    val intentChooser = Intent.createChooser(target, title)
-    startActivity(intentChooser)
-  }
-
-  @Suppress("UNUSED_PARAMETER")
-  fun aboutDialog(m: MenuItem) {
-    AlertDialog.Builder(this)
-      .setTitle(resources.getString(R.string.app_name))
-      .setMessage(resources.getString(R.string.about_app_short_desc) + "\n\n" +
-        resources.getString(R.string.about_app_copyright) + " " +
-        resources.getString(R.string.about_app_license) + "\n\n" +
-        AppInfo.all())
-      .setNeutralButton(R.string.about_app_open_project_website) { _, _ -> App.openURL(resources.getString(R.string.about_app_website_url)) }
-      .setPositiveButton(R.string.generic_action_close) { _, _ -> }
+  fun notify(msg: CharSequence, actionLabel: Int? = null, action: (() -> Unit)? = null) {
+    Snackbar.make(snackbarRoot, msg, Snackbar.LENGTH_LONG)
+      .apply { if (actionLabel != null && action != null) setAction(actionLabel) { action() } }
       .show()
   }
 
-  fun runOnUiThread(action: () -> Unit) {
-    if (active) super.runOnUiThread(action)
-  }
+  fun notify(msg: Int, actionLabel: Int? = null, action: (() -> Unit)? = null) =
+    notify(getString(msg), actionLabel, action)
 
-  fun notify(@StringRes msg: Int) = Snackbar.make(rootView, msg, Snackbar.LENGTH_LONG).show()
-  fun notify(msg: String) = Snackbar.make(rootView, msg, Snackbar.LENGTH_LONG).show()
-
-  fun showErrorDialog(@StringRes msg: Int, docTopic: String? = null) =
-    showErrorDialog(getString(msg), docTopic)
-
-  fun showErrorDialog(msg: String, docTopic: String? = null): AlertDialog =
-    AlertDialog.Builder(this)
-      .setTitle(R.string.generic_title_error).setMessage(msg)
-      .setPositiveButton(R.string.generic_action_close) { _, _ -> }
-      .apply {
-        if (docTopic != null)
-          setNeutralButton(R.string.notification_error_action_open_manual) { _, _ ->
-            App.openURL(getString(R.string.app_doc_url_format, docTopic))
-        }
-      }
+  fun showAbout() {
+    MaterialAlertDialogBuilder(this)
+      .setIcon(R.drawable.ic_mark)
+      .setTitle(R.string.app_name)
+      .setMessage(getString(R.string.about_text_format, "${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})"))
+      .setPositiveButton(R.string.action_close, null)
       .show()
+  }
 }

@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <!--
- * Tinc Mesh VPN: Android client and user interface
+ * tincstack for Android
  * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
@@ -18,83 +17,117 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:app="http://schemas.android.com/apk/res-auto"
+	android:id="@+id/apps_root"
+	android:layout_width="match_parent"
+	android:layout_height="match_parent"
+	android:background="?attr/colorSurface">
 
-    <androidx.appcompat.widget.SwitchCompat
-        android:id="@+id/apps_disconnect_on_screen_off"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingLeft="@dimen/activity_horizontal_margin"
-        android:paddingTop="@dimen/activity_vertical_margin"
-        android:paddingRight="@dimen/activity_horizontal_margin"
-        android:text="@string/apps_picker_disconnect_on_screen_off" />
+	<com.google.android.material.appbar.AppBarLayout
+		android:layout_width="match_parent"
+		android:layout_height="wrap_content"
+		android:background="?attr/colorSurface">
 
-    <TextView
-        android:id="@+id/apps_disconnect_on_screen_off_hint"
-        style="@style/AppTheme.BlockContent"
-        android:paddingLeft="@dimen/activity_horizontal_margin"
-        android:paddingRight="@dimen/activity_horizontal_margin"
-        android:text="@string/apps_picker_disconnect_on_screen_off_hint" />
+		<com.google.android.material.appbar.MaterialToolbar
+			android:id="@+id/toolbar"
+			android:layout_width="match_parent"
+			android:layout_height="?attr/actionBarSize"
+			app:navigationIcon="?attr/homeAsUpIndicator"
+			app:title="@string/setting_apps_title" />
+	</com.google.android.material.appbar.AppBarLayout>
 
-    <RadioGroup
-        android:id="@+id/apps_mode"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingLeft="@dimen/activity_horizontal_margin"
-        android:paddingTop="@dimen/activity_vertical_margin"
-        android:paddingRight="@dimen/activity_horizontal_margin">
+	<LinearLayout
+		android:layout_width="match_parent"
+		android:layout_height="match_parent"
+		android:orientation="vertical"
+		app:layout_behavior="@string/appbar_scrolling_view_behavior">
 
-        <RadioButton
-            android:id="@+id/apps_mode_blacklist"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:checked="true"
-            android:text="@string/apps_picker_mode_blacklist" />
+		<RadioGroup
+			android:id="@+id/apps_mode"
+			android:layout_width="match_parent"
+			android:layout_height="wrap_content"
+			android:paddingStart="12dp"
+			android:paddingEnd="16dp">
 
-        <RadioButton
-            android:id="@+id/apps_mode_whitelist"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/apps_picker_mode_whitelist" />
+			<com.google.android.material.radiobutton.MaterialRadioButton
+				android:id="@+id/apps_mode_all"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:minHeight="48dp"
+				android:paddingStart="8dp"
+				android:text="@string/apps_mode_all"
+				android:textAppearance="?attr/textAppearanceBodyLarge" />
 
-    </RadioGroup>
+			<com.google.android.material.radiobutton.MaterialRadioButton
+				android:id="@+id/apps_mode_whitelist"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:minHeight="48dp"
+				android:paddingStart="8dp"
+				android:text="@string/apps_mode_whitelist"
+				android:textAppearance="?attr/textAppearanceBodyLarge" />
 
-    <TextView
-        android:id="@+id/apps_mode_hint"
-        style="@style/AppTheme.BlockContent"
-        android:paddingLeft="@dimen/activity_horizontal_margin"
-        android:paddingRight="@dimen/activity_horizontal_margin"
-        android:paddingBottom="@dimen/activity_vertical_margin"
-        android:text="@string/apps_picker_mode_blacklist_hint" />
+			<com.google.android.material.radiobutton.MaterialRadioButton
+				android:id="@+id/apps_mode_blacklist"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:minHeight="48dp"
+				android:paddingStart="8dp"
+				android:text="@string/apps_mode_blacklist"
+				android:textAppearance="?attr/textAppearanceBodyLarge" />
+		</RadioGroup>
 
-    <EditText
-        android:id="@+id/apps_search"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginLeft="@dimen/activity_horizontal_margin"
-        android:layout_marginRight="@dimen/activity_horizontal_margin"
-        android:hint="@string/apps_picker_search_hint"
-        android:importantForAutofill="no"
-        android:inputType="text"
-        android:maxLines="1" />
+		<TextView
+			android:id="@+id/apps_mode_hint"
+			android:layout_width="match_parent"
+			android:layout_height="wrap_content"
+			android:paddingStart="20dp"
+			android:paddingTop="4dp"
+			android:paddingEnd="20dp"
+			android:paddingBottom="8dp"
+			android:textAppearance="?attr/textAppearanceBodyMedium"
+			android:textColor="?attr/colorOnSurfaceVariant" />
 
-    <ProgressBar
-        android:id="@+id/apps_progress"
-        style="?android:attr/progressBarStyleHorizontal"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:indeterminate="true"
-        android:visibility="gone" />
+		<com.google.android.material.textfield.TextInputLayout
+			android:id="@+id/apps_search_layout"
+			style="@style/Widget.Material3.TextInputLayout.OutlinedBox.Dense"
+			android:layout_width="match_parent"
+			android:layout_height="wrap_content"
+			android:layout_marginStart="16dp"
+			android:layout_marginEnd="16dp"
+			android:layout_marginBottom="4dp"
+			android:hint="@string/apps_search_hint"
+			app:startIconDrawable="@drawable/ic_search">
 
-    <ListView
-        android:id="@+id/apps_list"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:choiceMode="none"
-        android:divider="@drawable/horizontal_line" />
+			<com.google.android.material.textfield.TextInputEditText
+				android:id="@+id/apps_search"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:imeOptions="actionSearch"
+				android:importantForAutofill="no"
+				android:inputType="text" />
+		</com.google.android.material.textfield.TextInputLayout>
 
-</LinearLayout>
+		<FrameLayout
+			android:layout_width="match_parent"
+			android:layout_height="0dp"
+			android:layout_weight="1">
+
+			<ListView
+				android:id="@+id/apps_list"
+				android:layout_width="match_parent"
+				android:layout_height="match_parent"
+				android:divider="@null"
+				android:dividerHeight="0dp" />
+
+			<com.google.android.material.progressindicator.CircularProgressIndicator
+				android:id="@+id/apps_progress"
+				android:layout_width="wrap_content"
+				android:layout_height="wrap_content"
+				android:layout_gravity="center"
+				android:indeterminate="true"
+				android:visibility="gone" />
+		</FrameLayout>
+	</LinearLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

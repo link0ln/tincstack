@@ -1,5 +1,5 @@
 /*
- * Tinc Mesh VPN: Android client and user interface
+ * tincstack for Android
  * Copyright (C) 2017-2019 Euxane P. TRAN-GIRARD
  *
  * This program is free software: you can redistribute it and/or modify
@@ -31,7 +31,13 @@ abstract class SelfRefreshingLiveData<T>(private val refreshInterval: Long, priv
   private lateinit var scheduledFuture: ScheduledFuture<*>
 
   override fun onActive() {
-    scheduledFuture = scheduledExecutor.scheduleWithFixedDelay(this::onRefresh, 0, refreshInterval, timeUnit)
+    scheduledFuture = scheduledExecutor.scheduleWithFixedDelay({
+      try {
+        onRefresh()
+      } catch (e: Exception) {
+        // one failed poll must not cancel the schedule
+      }
+    }, 0, refreshInterval, timeUnit)
   }
 
   override fun onInactive() {

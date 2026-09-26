@@ -1,5 +1,5 @@
 /*
- * Tinc Mesh VPN: Android client and user interface
+ * tincstack for Android
  * Copyright (C) 2017-2018 Euxane P. TRAN-GIRARD
  * Copyright (C) 2026 tincstack contributors
  *
@@ -58,6 +58,9 @@ object Tinc {
       if (reachable) newCommand(netName).withArguments("dump", "reachable", "nodes")
       else newCommand(netName).withArguments("dump", "nodes"))
 
+  fun dumpConnections(netName: String): CompletableFuture<List<String>> =
+    Executor.call(newCommand(netName).withArguments("dump", "connections"))
+
   fun dumpSubnets(netName: String): CompletableFuture<List<String>> =
     Executor.call(
       newCommand(netName).withArguments("dump", "subnets"))
@@ -65,27 +68,6 @@ object Tinc {
   fun info(netName: String, node: String): CompletableFuture<String> =
     Executor.call(newCommand(netName).withArguments("info", node))
       .thenApply { it.joinToString("\n") }
-
-  /**
-   * `tinc -c <net>/tinc.yaml -n <net> join <invitation>`. The stanza is the
-   * directory name, so the joined network lands where the app expects it.
-   */
-  fun join(netName: String, invitationUrl: String): CompletableFuture<String> =
-    if (netName.isBlank())
-      CompletableFuture.failedFuture(IllegalArgumentException("Network name cannot be blank."))
-    else
-    // the core writes tinc.yaml into networks/<net>/ but does not create that
-    // directory: without it the join dies with "Could not lock ...tinc.yaml".
-    // A failed join leaves it empty, so it is taken back out again.
-      AppPaths.confDir(netName).let { dir ->
-        dir.mkdirs()
-        Executor.call(Command(AppPaths.tinc().absolutePath)
-          .withOption("config", AppPaths.tincYamlFile(netName).absolutePath)
-          .withOption("net", netName)
-          .withArguments("join", invitationUrl))
-          .thenApply { it.joinToString("\n") }
-          .whenComplete { _, _ -> if (dir.list()?.isEmpty() == true) dir.delete() }
-      }
 
   fun log(netName: String, level: Int? = null): Process =
     Executor.run(newCommand(netName)
