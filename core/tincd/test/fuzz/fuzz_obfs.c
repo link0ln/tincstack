@@ -526,6 +526,12 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 	listen_socket[0].tcp.fd = -1;
 	listen_socket[0].sa.in.sin_family = AF_INET;
 
+	/* As the daemon does at setup: among other things this derives whether
+	   the cold path may scan at all (DirectSeal's dseal_reads, which the
+	   obfs accept bit above implies). Without it the cold path returned
+	   before the key scan and every round trip below failed. */
+	obfs_read_config();
+
 	for(int i = 0; i < 2; i++) {
 		peers[i].in.sin_family = AF_INET;
 		peers[i].in.sin_port = htons(10000 + i);
