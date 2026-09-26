@@ -41,6 +41,7 @@
 	<string name="state_disconnected_detail">Tap to connect</string>
 	<string name="state_connecting">Connecting…</string>
 	<string name="state_connecting_detail">Starting tinc…</string>
+	<string name="state_connecting_slow">tinc is taking long to start. The log shows what it is doing.</string>
 	<string name="state_searching_format">Looking for %1$s…</string>
 	<string name="state_searching_slow_format">%1$s isn\'t answering yet. tincstack keeps trying; the log shows why.</string>
 	<string name="state_connected">Connected</string>

@@ -413,8 +413,7 @@ class MainActivity : BaseActivity() {
       ConnectionState.Disconnected ->
         Hero(getString(R.string.state_disconnected), getString(R.string.state_disconnected_detail), Tone.OFF, R.string.main_connect)
 
-      is ConnectionState.Connecting ->
-        Hero(getString(R.string.state_connecting), getString(R.string.state_connecting_detail), Tone.BUSY, R.string.main_disconnect)
+      is ConnectionState.Connecting -> startingHero()
 
       is ConnectionState.Connected -> connectedHero(net)
 
@@ -458,9 +457,7 @@ class MainActivity : BaseActivity() {
    * the mesh is reached.
    */
   private fun connectedHero(net: String): Hero {
-    val list = peers
-      ?: return Hero(getString(R.string.state_connecting), getString(R.string.state_connecting_detail), Tone.BUSY,
-        R.string.main_disconnect)
+    val list = peers ?: return startingHero()
     val targets = summary?.summary?.peers.orEmpty()
     val others = list.filter { !it.self }
     val linked = others.filter { it.reachable }
@@ -477,6 +474,16 @@ class MainActivity : BaseActivity() {
     if (!slow) handler.postDelayed(tick, Join.CONNECT_DEADLINE_S * 1000 - waited + 50)
     return Hero(getString(R.string.state_connecting),
       getString(if (slow) R.string.state_searching_slow_format else R.string.state_searching_format, who),
+      Tone.BUSY, R.string.main_disconnect, showLog = slow)
+  }
+
+  /** Setting up the tun and tincd: normally a second; past the deadline, say so and offer the log. */
+  private fun startingHero(): Hero {
+    val waited = SystemClock.elapsedRealtime() - VpnStatus.since()
+    val slow = waited >= Join.CONNECT_DEADLINE_S * 1000
+    if (!slow) handler.postDelayed(tick, Join.CONNECT_DEADLINE_S * 1000 - waited + 50)
+    return Hero(getString(R.string.state_connecting),
+      getString(if (slow) R.string.state_connecting_slow else R.string.state_connecting_detail),
       Tone.BUSY, R.string.main_disconnect, showLog = slow)
   }
 
