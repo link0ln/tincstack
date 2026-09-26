@@ -56,10 +56,21 @@ ui_texts() {
 # ui_type <needle> <text>: focus the field, clear it, type the text. In <text>
 # a space is %s (adb `input text`); a trailing newline is typed separately.
 ui_type() {
-    ui_tap "$1"
-    ui_clear_field
-    adb shell "input text '$2'" >/dev/null
-    ui_hide_ime
+    local want=${2//%s/ } have try
+    for try in 1 2; do
+        ui_tap "$1" || return 1
+        # the keyboard comes up a moment after the tap (seconds, the first
+        # time for a new window): wait for it, or it appears after
+        # ui_hide_ime looked and covers the buttons below the field
+        ui_wait_ime 5 || true
+        ui_clear_field
+        adb shell "input text '$2'" >/dev/null
+        ui_hide_ime
+        have=$(ui_attr "$1" text)
+        [[ $have == "$want" ]] && return 0
+        echo "ui_type: the field holds '$have', not '$want' (try $try)" >&2
+    done
+    return 1
 }
 
 # delete up to 150 characters on both sides of the cursor (wherever the tap
@@ -70,11 +81,37 @@ ui_clear_field() {
 
 # the soft keyboard covers the lower half of a small screen; BACK hides it
 # (and only it) while it is shown -- ESC would finish the activity otherwise
+ui_ime_shown() { adb shell dumpsys input_method | tr -d '\r' | grep -q 'mInputShown=true'; }
+ui_wait_ime() {
+    local deadline=$(( SECONDS + ${1:-5} ))
+    until ui_ime_shown; do (( SECONDS < deadline )) || return 1; sleep 0.5; done
+}
 ui_hide_ime() {
-    if adb shell dumpsys input_method | tr -d '\r' | grep -q 'mInputShown=true'; then
+    local try deadline
+    for try in 1 2 3; do
+        ui_ime_shown || break
         adb shell input keyevent KEYCODE_BACK >/dev/null
-        sleep 1
-    fi
+        deadline=$(( SECONDS + 5 ))
+        while ui_ime_shown && (( SECONDS < deadline )); do sleep 0.5; done
+    done
+    # the screen re-lays out as the keyboard slides away: bounds read during
+    # that animation send the next tap into the keyboard (whose clipboard
+    # chip then pastes into the field)
+    ui_settle
+}
+
+# ui_settle: wait (up to 5 s) until two dumps in a row agree, i.e. nothing
+# on the screen is still moving (keyboard animation, a card that appears
+# once the window has focus)
+ui_settle() {
+    local a b deadline=$(( SECONDS + 5 ))
+    a=$(ui_dump)
+    while (( SECONDS < deadline )); do
+        sleep 0.5
+        b=$(ui_dump)
+        [[ $a == "$b" ]] && return 0
+        a=$b
+    done
 }
 
 # the app's networks: directories under files/networks/ with a non-empty tinc.yaml
@@ -96,6 +133,9 @@ app_open() {
     adb shell am start --activity-clear-task -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
         -n "${PKG:-net.tincstack.android}/org.pacien.tincapp.activities.main.MainActivity" >/dev/null
     ui_wait 'resource-id="'"${PKG:-net.tincstack.android}"':id/toolbar"' >/dev/null
+    # the join form offers a copied invitation once the window has focus,
+    # which moves the field down: let that happen before anyone reads bounds
+    ui_settle
 }
 
 # ui_scroll_to <needle>: swipe the main screen up until the element shows

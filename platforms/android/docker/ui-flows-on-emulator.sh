@@ -160,6 +160,7 @@ step "the owner's case: blanks in front, a line break after"
 invitation=$(docker exec "$FOUNDER" tincstack-cli invite phone | tr -d '\r')
 echo "invitation: $invitation"
 ui_tap "$(rid invitation_input)"
+ui_wait_ime 5 || true
 ui_clear_field
 adb shell "input text '%s%s$invitation'" >/dev/null
 adb shell input keyevent KEYCODE_ENTER >/dev/null
@@ -172,6 +173,7 @@ ok "padded invitation accepted: '${field//$'\n'/\\n}'"
 
 step "Join and connect; answer the system dialogs by tapping them"
 t0=$SECONDS
+ui_hide_ime
 ui_tap "$(rid join_button)"
 connected=0
 while (( SECONDS - t0 < WAIT )); do

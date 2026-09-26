@@ -39,7 +39,17 @@ ui_type "resource-id=\"$PKG:id/invitation_input\"" "$INVITATION"
 }
 
 echo ">>> Join and connect" >&2
+ui_hide_ime
 ui_tap "resource-id=\"$PKG:id/join_button\""
+# a running join disables the button; still enabled a few seconds later means
+# the tap missed (it would otherwise pass for a join that never answers)
+sleep 3
+if [[ $(ui_attr "resource-id=\"$PKG:id/join_button\"" enabled) == true &&
+      $(ui_attr "resource-id=\"$PKG:id/invitation_input\"" text) == *"$INVITATION"* ]]; then
+    echo "ui-join: no join running 3 s after the tap; tapping again" >&2
+    ui_hide_ime
+    ui_tap "resource-id=\"$PKG:id/join_button\""
+fi
 
 deadline=$(( SECONDS + UI_TIMEOUT ))
 while :; do
