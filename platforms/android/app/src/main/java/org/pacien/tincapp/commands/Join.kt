@@ -1,0 +1,137 @@
+/*
+ * tincstack for Android
+ * Copyright (C) 2026 tincstack contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package org.pacien.tincapp.commands
+
+import java8.util.concurrent.CompletableFuture
+import org.pacien.tincapp.context.AppPaths
+import org.pacien.tincapp.data.Invitation
+import org.pacien.tincapp.data.TincYaml
+import org.pacien.tincapp.utils.makePrivate
+import org.slf4j.LoggerFactory
+import java.io.File
+import java.util.concurrent.TimeUnit
+
+/**
+ * Joining a network by invitation, all or nothing.
+ *
+ * `tinc join` runs against a `tinc.yaml` in a private staging directory
+ * (`files/joining/<id>/`), never under `networks/`: a join that fails at any
+ * point -- unreachable inviter, spent invitation, a write error half-way, the
+ * app killed mid-join -- leaves nothing in the network list, because the
+ * staging directory is deleted (and stale ones are swept at the next start).
+ * Only a join the core reported as accepted is moved into `networks/<name>/`,
+ * in one rename.
+ *
+ * No `--net` is passed: the core then names the network after the
+ * invitation's `NetName` (what the inviter calls it), falling back to
+ * `tincstack`, and the directory takes that name (`-2`, `-3`... if taken).
+ * The user never has to invent a network name.
+ */
+object Join {
+  private val log by lazy { LoggerFactory.getLogger(Join::class.java)!! }
+
+  /** Without "Connected to" on stderr by then, the inviter is treated as unreachable. */
+  private const val CONNECT_DEADLINE_S = 20L
+
+  /** The whole join: connection, key generation (RSA on a slow phone), the exchange. */
+  private const val JOIN_DEADLINE_S = 120L
+
+  private const val STAGING_DIR = "joining"
+
+  private val NAME_UNSAFE = Regex("[^A-Za-z0-9_.\\-]")
+
+  fun stagingRoot() = File(AppPaths.confDir().parentFile, STAGING_DIR)
+
+  /** Leftovers of a join the app did not live to finish. */
+  fun sweepStaging() {
+    stagingRoot().takeIf { it.exists() }?.deleteRecursively()
+  }
+
+  /** Completes with the new network's directory name, or exceptionally with a [JoinFailure]. */
+  fun join(invitation: Invitation): CompletableFuture<String> = Executor.supplyAsyncTask {
+    val staging = File(stagingRoot(), "join-${System.currentTimeMillis()}").apply { mkdirs() }
+    try {
+      runJoin(staging, invitation)
+      val yaml = TincYaml(File(staging, TincYaml.FILE_NAME))
+      val stanza = yaml.networkNames().firstOrNull()
+        ?: throw JoinFailure(JoinFailureKind.OTHER, listOf("tinc join reported success but wrote no network"))
+      val name = uniqueName(stanza)
+      val target = AppPaths.confDir(name)
+      if (!staging.renameTo(target))
+        throw JoinFailure(JoinFailureKind.OTHER, listOf("Could not move the joined network into ${target.absolutePath}"))
+      target.makePrivate()
+      log.info("Joined network \"{}\" (stanza \"{}\") via {}", name, stanza, invitation.endpoint())
+      name
+    } finally {
+      if (staging.exists()) staging.deleteRecursively()
+    }
+  }
+
+  private fun uniqueName(stanza: String): String {
+    val base = NAME_UNSAFE.replace(stanza, "_").trim('.').ifEmpty { "tincstack" }
+    val taken = AppPaths.confDir().list()?.toSet() ?: emptySet()
+    if (base !in taken) return base
+    return generateSequence(2) { it + 1 }.map { "$base-$it" }.first { it !in taken }
+  }
+
+  /** Process.isAlive / waitFor(timeout) are API 26; minSdk is 21. */
+  private fun Process.exitCodeOrNull(): Int? = try {
+    exitValue()
+  } catch (e: IllegalThreadStateException) {
+    null
+  }
+
+  private fun runJoin(staging: File, invitation: Invitation) {
+    val cmd = Command(AppPaths.tinc().absolutePath)
+      .withOption("config", File(staging, TincYaml.FILE_NAME).absolutePath)
+      .withArguments("join", invitation.toString())
+    val process = Executor.run(cmd)
+    val stderr = mutableListOf<String>()
+    val reader = Thread {
+      process.errorStream.bufferedReader().forEachLine { line -> synchronized(stderr) { stderr.add(line) } }
+    }.apply { isDaemon = true; start() }
+    // drained, not closed: a closed pipe would kill the CLI with SIGPIPE on its first printf
+    Thread { process.inputStream.bufferedReader().forEachLine { log.info("tinc join (stdout): {}", it) } }
+      .apply { isDaemon = true; start() }
+
+    val started = System.nanoTime()
+    var timedOutConnecting = false
+    while (process.exitCodeOrNull() == null) {
+      Thread.sleep(250)
+      val elapsed = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started)
+      val connected = synchronized(stderr) { stderr.any { it.startsWith("Connected to ") } }
+      if ((!connected && elapsed >= CONNECT_DEADLINE_S) || elapsed >= JOIN_DEADLINE_S) {
+        timedOutConnecting = !connected
+        process.destroy()
+        break
+      }
+    }
+    reader.join(2000)
+    val lines = synchronized(stderr) { stderr.toList() }
+    lines.forEach { log.info("tinc join: {}", it) }
+
+    val accepted = lines.any { it.contains("Invitation successfully accepted") }
+    val exit = process.exitCodeOrNull() ?: -1
+    if (exit == 0 && accepted && !timedOutConnecting) return
+    val details = if (timedOutConnecting)
+      lines + "No answer from ${invitation.endpoint()} within ${CONNECT_DEADLINE_S}s."
+    else lines.ifEmpty { listOf("tinc join exited with status $exit") }
+    throw JoinFailure(JoinFailure.classify(lines, timedOutConnecting), details)
+  }
+}
