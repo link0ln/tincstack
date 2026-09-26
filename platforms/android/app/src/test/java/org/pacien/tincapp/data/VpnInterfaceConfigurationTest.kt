@@ -54,6 +54,7 @@ class VpnInterfaceConfigurationTest {
       |      Blocking: true
       |      MTU: 1400
       |      ReconnectOnNetworkChange: no
+      |      DisconnectOnScreenOff: yes
       |""".trimMargin()), "mynet")
 
     assertEquals(listOf(CidrAddress("10.210.0.3", 24)), cfg.addresses)
@@ -67,6 +68,7 @@ class VpnInterfaceConfigurationTest {
     assertTrue(cfg.blocking)
     assertEquals(1400, cfg.mtu)
     assertFalse(cfg.reconnectOnNetworkChange)
+    assertTrue(cfg.disconnectOnScreenOff)
   }
 
   @Test
@@ -100,6 +102,7 @@ class VpnInterfaceConfigurationTest {
     assertFalse(cfg.allowBypass)
     assertNull(cfg.mtu)
     assertTrue(cfg.reconnectOnNetworkChange)
+    assertFalse(cfg.disconnectOnScreenOff) // off unless asked for
   }
 
   @Test

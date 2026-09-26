@@ -33,6 +33,7 @@ import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.data.SplitRouting
 import org.pacien.tincapp.data.SplitRoutingMode
 import org.pacien.tincapp.data.TincYaml
+import org.pacien.tincapp.data.VpnInterfaceConfiguration
 import org.pacien.tincapp.databinding.AppsPickerActivityBinding
 import org.pacien.tincapp.extensions.Java.defaultMessage
 import org.pacien.tincapp.extensions.Java.exceptionallyAccept
@@ -92,10 +93,12 @@ class AppPickerActivity : BaseActivity() {
     binding.appsProgress.visibility = android.view.View.VISIBLE
     Executor.supplyAsyncTask {
       val current = SplitRouting.read(yaml, stanza)
+      val lockPause = TincYaml.asTincBoolean(yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF), false)
       val apps = installedApps()
-      Pair(current, apps)
-    }.thenAccept { (current, apps) ->
+      Triple(current, lockPause, apps)
+    }.thenAccept { (current, lockPause, apps) ->
       runOnUiThread {
+        binding.appsDisconnectOnScreenOff.isChecked = lockPause
         binding.appsProgress.visibility = android.view.View.GONE
         binding.appsMode.check(
           if (current.mode == SplitRoutingMode.WHITELIST) R.id.apps_mode_whitelist else R.id.apps_mode_blacklist)
@@ -122,7 +125,12 @@ class AppPickerActivity : BaseActivity() {
   @Suppress("UNUSED_PARAMETER")
   fun save(m: MenuItem) {
     val selection = SplitRouting(currentMode(), adapter.selected())
-    Executor.runAsyncTask { selection.write(yaml, stanza) }
+    // absent means off: the key is written only when on
+    val lockPause = if (binding.appsDisconnectOnScreenOff.isChecked) listOf("yes") else null
+    Executor.runAsyncTask {
+      selection.write(yaml, stanza)
+      yaml.setOptions(stanza, mapOf(VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF to lockPause))
+    }
       .thenAccept {
         runOnUiThread {
           notify(if (TincVpnService.getCurrentNetName() == netName && TincVpnService.isConnected())

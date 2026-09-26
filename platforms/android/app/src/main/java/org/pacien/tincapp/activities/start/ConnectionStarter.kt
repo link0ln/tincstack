@@ -19,7 +19,10 @@
 
 package org.pacien.tincapp.activities.start
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
 import org.pacien.tincapp.service.TincVpnService
 
 /**
@@ -43,7 +46,24 @@ class ConnectionStarter(private val parentActivity: StartActivity) {
   }
 
   private fun startVpn(netName: String) {
+    requestNotificationPermission()
     parentActivity.showConnectProgressDialog()
     TincVpnService.connect(netName)
+  }
+
+  /**
+   * The session's foreground notification (with its Disconnect action) needs
+   * POST_NOTIFICATIONS from Android 13 on. Asked once the VPN consent is
+   * settled, never waited for: without it the service still runs in the
+   * foreground, only the notification is hidden.
+   */
+  private fun requestNotificationPermission() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    if (parentActivity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+    parentActivity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+  }
+
+  companion object {
+    private const val NOTIFICATION_PERMISSION_REQUEST = 1
   }
 }
