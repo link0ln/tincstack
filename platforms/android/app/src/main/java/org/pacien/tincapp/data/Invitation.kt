@@ -45,9 +45,11 @@ data class Invitation(val host: String, val port: Int, val token: String) {
 
     // host: a DNS name / IPv4 literal, or a bracketed IPv6 literal; optional port;
     // the 48-character token (tinc's base64, both alphabets), not followed by
-    // another token character (a longer run is not an invitation).
+    // another token character (a longer run is not an invitation). A host never
+    // starts right after a colon: in "1.2.3.4:99999/..." the "99999" is a bad
+    // port, not a host name.
     private val PATTERN = Regex(
-      "(?<![A-Za-z0-9.\\-\\[])" +
+      "(?<![A-Za-z0-9.:\\-\\[])" +
         "(\\[[0-9A-Fa-f:.]+]|[A-Za-z0-9](?:[A-Za-z0-9\\-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9\\-]*[A-Za-z0-9])?)*)" +
         "(?::([0-9]{1,5}))?" +
         "/([$TOKEN_CHARS]{$TOKEN_LENGTH})(?![$TOKEN_CHARS])")
