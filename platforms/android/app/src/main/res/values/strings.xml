@@ -116,6 +116,7 @@
 	<string name="error_daemon_start_format">tinc stopped while starting: %1$s</string>
 	<string name="error_daemon_exited_format">tinc stopped unexpectedly: %1$s</string>
 	<string name="error_resume_format">tinc could not restart after unlocking: %1$s</string>
+	<string name="error_process_died">tincstack was closed while connected (the app stopped or Android closed it), which ended the VPN. Connect again; the app log shows what happened.</string>
 	<string name="error_revoked">Another VPN app took over, or the VPN permission was withdrawn.</string>
 	<string name="error_unknown">no details, see the log</string>
 

@@ -25,8 +25,12 @@ import android.content.pm.ApplicationInfo
 import android.os.Build
 import com.google.android.material.color.DynamicColors
 import org.pacien.tincapp.BuildConfig
+import org.pacien.tincapp.R
 import org.pacien.tincapp.commands.Join
 import org.pacien.tincapp.data.Networks
+import org.pacien.tincapp.service.ConnectionState
+import org.pacien.tincapp.service.TincVpnService
+import org.pacien.tincapp.service.VpnStatus
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
@@ -52,6 +56,15 @@ class App : Application() {
     // behind by earlier versions without a tinc.yaml, are not networks.
     Join.sweepStaging()
     Networks.sweepBroken()
+
+    // A session is recorded until it ends; one still recorded in a fresh
+    // process ended with the process (a crash, or Android killing the app).
+    // Say so instead of showing a plain "Disconnected". An always-on restart
+    // replaces this with Connecting a moment later.
+    TincVpnService.getCurrentNetName()?.let { net ->
+      if (VpnStatus.current() !is ConnectionState.Failed)
+        VpnStatus.set(ConnectionState.Failed(net, getString(R.string.error_process_died), lost = true))
+    }
   }
 
   private fun setupCrashHandler(logger: Logger) {

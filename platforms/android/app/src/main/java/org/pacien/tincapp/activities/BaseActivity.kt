@@ -45,12 +45,21 @@ abstract class BaseActivity : AppCompatActivity() {
 
   fun notify(msg: CharSequence, actionLabel: Int? = null, action: (() -> Unit)? = null) {
     Snackbar.make(snackbarRoot, msg, Snackbar.LENGTH_LONG)
-      .apply { if (actionLabel != null && action != null) setAction(actionLabel) { action() } }
+      .apply {
+        if (actionLabel != null && action != null) {
+          setAction(actionLabel) { action() }
+          duration = ACTION_DURATION_MS // time to read it and reach the button
+        }
+      }
       .show()
   }
 
   fun notify(msg: Int, actionLabel: Int? = null, action: (() -> Unit)? = null) =
     notify(getString(msg), actionLabel, action)
+
+  companion object {
+    private const val ACTION_DURATION_MS = 8000
+  }
 
   fun showAbout() {
     MaterialAlertDialogBuilder(this)

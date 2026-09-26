@@ -27,6 +27,7 @@ import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import androidx.core.view.doOnNextLayout
 import androidx.core.view.isVisible
 import org.pacien.tincapp.R
 import org.pacien.tincapp.activities.BaseActivity
@@ -73,18 +74,19 @@ class LogActivity : BaseActivity() {
   }
 
   private fun show(id: Int) {
-    val file = if (id == R.id.log_source_connection && netName != null) AppPaths.logFile(netName!!) else AppPaths.appLogFile()
+    val connection = id == R.id.log_source_connection && netName != null
+    val file = if (connection) AppPaths.logFile(netName!!) else AppPaths.appLogFile()
     supportActionBar?.subtitle = if (id == R.id.log_source_connection) netName else getString(R.string.log_tab_app)
     source?.removeObservers(this)
     text = ""
-    source = LogFileLiveData(file).also { it.observe(this) { t -> render(t) } }
+    source = LogFileLiveData(file, hideControl = connection).also { it.observe(this) { t -> render(t) } }
   }
 
   private fun render(t: String) {
     val atBottom = !binding.logScroll.canScrollVertically(1)
     text = t
     binding.logText.text = t.ifEmpty { getString(R.string.log_empty) }
-    if (atBottom) binding.logScroll.post { binding.logScroll.fullScroll(View.FOCUS_DOWN) }
+    if (atBottom) binding.logText.doOnNextLayout { binding.logScroll.post { binding.logScroll.scrollTo(0, binding.logText.height) } }
   }
 
   override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -110,14 +112,24 @@ class LogActivity : BaseActivity() {
     else -> super.onOptionsItemSelected(item)
   }
 
-  private class LogFileLiveData(private val file: File) : ChangeOnlyLiveData<String>(2, TimeUnit.SECONDS) {
+  /**
+   * The tail of [file]. With [hideControl], tincd's lines about control
+   * connections are left out: every status refresh of the app is one `tinc`
+   * CLI call, which tincd logs three times ("Connection from localhost port
+   * unix", ...), burying what the log is for.
+   */
+  private class LogFileLiveData(private val file: File, private val hideControl: Boolean) :
+    ChangeOnlyLiveData<String>(2, TimeUnit.SECONDS) {
     @Volatile private var stamp: Pair<Long, Long>? = null
 
     override fun onRefresh() {
       val now = file.length() to file.lastModified()
       if (now == stamp) return
       stamp = now
-      offer(file.lastLines(MAX_LINES).joinToString("\n"))
+      val lines = if (hideControl)
+        file.lastLines(MAX_LINES * 8, maxBytes = 1 shl 20).filterNot { l -> CONTROL_NOISE.any { l.contains(it) } }
+      else file.lastLines(MAX_LINES)
+      offer(lines.takeLast(MAX_LINES).joinToString("\n"))
     }
   }
 
@@ -126,6 +138,7 @@ class LogActivity : BaseActivity() {
     private const val EXTRA_APP = "app"
     private const val STATE_SOURCE = "source"
     private const val MAX_LINES = 1000
+    private val CONTROL_NOISE = listOf("<control>", "localhost port unix")
 
     fun intent(context: Context, netName: String?, app: Boolean = false): Intent =
       Intent(context, LogActivity::class.java).putExtra(EXTRA_NET_NAME, netName).putExtra(EXTRA_APP, app)

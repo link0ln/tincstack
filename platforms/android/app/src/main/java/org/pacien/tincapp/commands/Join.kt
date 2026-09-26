@@ -25,6 +25,8 @@ import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.utils.makePrivate
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 /**
@@ -116,6 +118,19 @@ object Join {
     }
   }
 
+  /**
+   * Read [stream] line by line on a daemon thread. Killing the CLI at a
+   * deadline makes the pending read fail ("read interrupted"): that ends the
+   * thread quietly. Uncaught, it took the whole app down (and the VPN with it).
+   */
+  private fun drain(stream: InputStream, onLine: (String) -> Unit): Thread = Thread {
+    try {
+      stream.bufferedReader().forEachLine(onLine)
+    } catch (e: IOException) {
+      // the process is gone
+    }
+  }.apply { isDaemon = true; start() }
+
   /** Process.isAlive / waitFor(timeout) are API 26; minSdk is 21. */
   private fun Process.exitCodeOrNull(): Int? = try {
     exitValue()
@@ -131,12 +146,9 @@ object Join {
     onStage(Stage.CONTACTING)
     val process = Executor.run(cmd)
     val stderr = mutableListOf<String>()
-    val reader = Thread {
-      process.errorStream.bufferedReader().forEachLine { line -> synchronized(stderr) { stderr.add(line) } }
-    }.apply { isDaemon = true; start() }
+    val reader = drain(process.errorStream) { line -> synchronized(stderr) { stderr.add(line) } }
     // drained, not closed: a closed pipe would kill the CLI with SIGPIPE on its first printf
-    Thread { process.inputStream.bufferedReader().forEachLine { log.info("tinc join (stdout): {}", it) } }
-      .apply { isDaemon = true; start() }
+    drain(process.inputStream) { log.info("tinc join (stdout): {}", it) }
 
     val started = System.nanoTime()
     var connected = false

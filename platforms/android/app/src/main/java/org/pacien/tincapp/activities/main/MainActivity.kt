@@ -388,7 +388,8 @@ class MainActivity : BaseActivity() {
     }
     val net = selected ?: return
     binding.networkSelector.text = net
-    binding.networkSelector.alpha = if (status.active) 0.7f else 1f
+    // locked to the running network: no switching mid-session
+    binding.networkSelector.icon = if (status.active) null else ContextCompat.getDrawable(this, R.drawable.ic_expand_more)
     renderStatus()
     renderRows()
   }

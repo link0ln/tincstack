@@ -50,7 +50,8 @@ class InstalledAppsAdapter(private val context: Context) : BaseAdapter(), Filter
   fun setApps(apps: List<InstalledApp>, preselected: Set<String>) {
     val installed = apps.map { it.packageName }.toSet()
     val missing = preselected.filter { it !in installed }.sorted().map { InstalledApp(it, it, false) }
-    all = missing + apps
+    // what is ticked comes first: the selection is what the user came to see
+    all = missing + apps.sortedBy { it.packageName !in preselected }
     checked.clear()
     checked.addAll(preselected)
     applyFilter()
