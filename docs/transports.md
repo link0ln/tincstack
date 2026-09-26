@@ -1616,6 +1616,22 @@ most (§9.8): tinc's path MTU over `quic` is 1119 in the lab (1131 until
 bytes, which every dialler packet carries; 1366 before 2026-09-24, when
 PMTUD took it to Ethernet's); `SF_MAX_PAYLOAD` is 1200 for comparison.
 
+**An idle link** (since 2026-09-26): tinc's UDP keepalive (a probe and its
+reply each way every 10 s, the gratuitous probe replies, a PMTU re-probe per
+`PingInterval`) rode the DATAGRAM path too, and every one of those frames
+drew a QUIC ACK: an idle quic link put a burst on the wire every ~2.5 s,
+where an HTTP/3 client waiting on an answer sends a PING now and then and
+the server only acknowledges. Now, once UDP is confirmed and the MTU fixed
+over a carrier's datagram path (`carrier_datagram_path()` in
+`net_packet.c`: the neighbour's meta connection has `send_datagram`), tinc
+neither keeps it alive nor re-probes it, and the UDP-confirmation timeout
+does not drop it: the path lives exactly as long as the QUIC connection. The
+dialler keeps that alive as Chromium keeps an open request, with a PING
+after 15 s without traffic (`ngtcp2_conn_set_keep_alive_timeout`); the
+listener sends nothing unprompted. What remains is tinc's meta `PING` per
+`PingInterval` on the stream. A smaller carrier ceiling still comes back as
+`reduce_mtu()`, from `send_datagram`'s `false`.
+
 **Datagrams nobody announced** (since 2026-09-24): the dialler's
 transport parameters are curl's, and curl announces no
 `max_datagram_frame_size`, so by the book the listener may not send it

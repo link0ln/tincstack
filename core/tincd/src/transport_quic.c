@@ -84,6 +84,7 @@
 #define QUIC_DGRAM_OVERHEAD (1 + TRANSPORT_QUIC_CIDLEN + 4 + 1 + 2 + 16 + 3)
 #define QUIC_IDLE_MIN 30                /* s; what curl and Chromium announce */
 #define QUIC_NGINX_IDLE 75              /* s; nginx's max_idle_timeout */
+#define QUIC_KEEPALIVE 15               /* s; Chromium's PING while a request is open */
 
 typedef struct quic_cid_t {
 	uint8_t data[NGTCP2_MAX_CIDLEN];
@@ -2056,6 +2057,13 @@ bool quic_dial(connection_t *c) {
 	ngtcp2_conn_set_openssl_client_wire(s->conn, QUIC_CURL_CID_LIMIT);
 
 	ngtcp2_conn_set_tls_native_handle(s->conn, quic_tls_native_handle(&s->tls));
+
+	/* An idle link is a request left open: a browser PINGs it every 15 s
+	   and the server only acknowledges; tinc sends nothing of its own over
+	   a quic datagram path once it is confirmed (carrier_datagram_path() in
+	   net_packet.c). This keeps the connection within its idle timeout and
+	   a NAT's binding fresh. */
+	ngtcp2_conn_set_keep_alive_timeout(s->conn, QUIC_KEEPALIVE * NGTCP2_SECONDS);
 
 	c->status.connecting = false;
 	connection_add(c);
