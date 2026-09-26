@@ -883,6 +883,53 @@ move and are freed by the acknowledged offset. Proof:
 `testing/transports/quic-loss-test.sh` (fails on the previous master, passes
 here), `testing/fingerprint/results/2026-09-26-quic-q/item0-loss/`.
 
+## 30. quic: the listener decides on the request HEADERS (tincstack, 2026-09-26)
+
+`transport_quic.c`, `h3.c`, `h3.h`, `test/unit/test_h3.c`.
+
+The dialler sends its exporter-bound authenticator as a session cookie
+(`sid=`, base64url) in the request HEADERS, and still opens the body with it
+for older listeners, which read it there (a current listener compares and
+skips that copy). The listener verifies the first authenticator-shaped cookie
+value at HEADERS; every other request, a POST without one included, gets the
+decoy at once (405 for a POST, as nginx to a static file). Price: a dialler
+from before 2026-09-26 sends no cookie and falls back from quic once per
+reconnect. Proof: `testing/fingerprint/results/2026-09-26-quic-q/` (post405:
+12/12 -> 0/12 cells distinguishable, a head-only POST now gets 405 in ~1 RTT),
+`mixed-version-test.sh` against pre-tps, pre-deb13 and the previous master.
+
+## 31. quic: the HTTP/3 decoy, idle traffic and datagram size as nginx and curl (tincstack, 2026-09-26)
+
+`transport_quic.c`, `h3.c`, `decoy.c`, `net_packet.c`.
+
+- the HTTP/3 decoy gets every request field (`h3_from_http1` in nginx's
+  field encoding, Huffman where shorter); its answer is HEADERS+DATA in one
+  STREAM frame followed by an empty FIN frame, as nginx; `decoy.c
+  rewrite_request` puts Content-Length in nginx's slot for the upstream;
+- `net_packet.c carrier_datagram_path()`: over a carrier's datagram path tinc
+  sends no UDP keepalive, gratuitous probe replies or PMTU re-probes once the
+  path is confirmed and the MTU fixed; the dialler PINGs after 15 s idle, as
+  curl waiting on nginx (200 s idle: 266 -> 55 packets);
+- a DATAGRAM that fills >= 3/4 of the packet is padded to the path's full
+  1200 B (`NGTCP2_WRITE_DATAGRAM_FLAG_PADDING`).
+
+Proof: `testing/fingerprint/results/2026-09-26-quic-q/README.md`,
+`quic-listener-wire-test.sh`, `decoy-conformance-test.sh` (98 PASS). The
+ngtcp2 patch is unchanged.
+
+## 32. Relay TCP-borne SPTPS packets without a key of our own (tincstack, 2026-09-26)
+
+`net_packet.c receive_tcppacket_sptps()`.
+
+Upstream forwarded a TCP-borne SPTPS packet for another node only if it had a
+key with the destination; a relay never starts SPTPS with a TCP-only
+neighbour, so two nodes that both reached a relay over the https carrier (or
+with `TCPOnly = yes`, upstream too) exchanged no packets at all. Relaying
+needs no key -- the record is end-to-end and `send_sptps_data()` uses only
+node ids and the path, as the UDP twin always did; reachability is still
+checked. Proof: `testing/nat-sim/results/2026-09-26/core-fix/`, `tcponly/`
+(ping 0 -> ok), `docs/nat.md` §5.2.
+
 ---
 
 ## Building
