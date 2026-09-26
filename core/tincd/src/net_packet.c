@@ -668,13 +668,19 @@ bool receive_tcppacket_sptps(connection_t *c, const char *data, size_t len) {
 		send_udp_info(myself, from);
 	}
 
-	/* If we're not the final recipient, relay the packet. */
+	/* If we're not the final recipient, relay the packet.
+
+	   Relaying needs no key of our own with the destination: the record is
+	   end-to-end SPTPS between `from' and `to', and send_sptps_data() only
+	   uses node ids and the path to `to' (the UDP twin in process_sptps_udp()
+	   has never checked a key). The old `to->status.validkey' gate dropped
+	   every packet for a TCP-only neighbour, because try_tx_sptps() never
+	   starts SPTPS with one -- i.e. two nodes that both reach this node over
+	   the https carrier (TCPONLY|INDIRECT links) could not exchange any data
+	   (docs/nat.md §5.2, testing/nat-sim `matrix --transport https`). */
 
 	if(to != myself) {
-		if(to->status.validkey) {
-			send_sptps_data(to, from, 0, data, len);
-		}
-
+		send_sptps_data(to, from, 0, data, len);
 		try_tx(to, true);
 		return true;
 	}
