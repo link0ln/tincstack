@@ -773,8 +773,17 @@ bool ans_key_h(connection_t *c, const char *request) {
 			return true;
 		}
 
-		if(from->status.validkey) {
-			if(*address && *port) {
+		/* A relay's view of the peer is a hint for finding a path, not news
+		   about one we have: every rekey of a pair whose handshake goes
+		   through a relay carries it, and applying it to a confirmed direct
+		   path reset that path (udp_confirmed cleared, PMTU restarted) and
+		   moved the pair to the relay for seconds -- 8.6 % of packets at
+		   KeyExpire 20 s in the lab (docs/nat.md §7.6). udp_info_h() has
+		   always had this rule. */
+		if(from->status.validkey && *address && *port) {
+			if(from->status.udp_confirmed) {
+				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Not using reflexive UDP address from %s (%s port %s): the direct path is confirmed", from->name, address, port);
+			} else {
 				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 				sockaddr_t sa = str2sockaddr(address, port);
 				update_node_udp(from, &sa);
@@ -846,7 +855,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 	from->status.sptps_route_stale = false;   /* the exchange completed; see receive_sptps_record */
 	from->sent_seqno = 0;
 
-	if(*address && *port) {
+	if(*address && *port && !from->status.udp_confirmed) {
 		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 		sockaddr_t sa = str2sockaddr(address, port);
 		update_node_udp(from, &sa);

@@ -175,6 +175,13 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 		return;
 	}
 
+	/* The address we already use, and the node is indexed under it: nothing
+	   to learn, and nothing to invalidate -- invalidating it would throw away
+	   a confirmed path and its PMTU for news that is not news. */
+	if(sa && !sockaddrcmp(sa, &n->address) && splay_search(&node_udp_tree, n) == n) {
+		return;
+	}
+
 	splay_delete(&node_udp_tree, n);
 
 	if(sa) {

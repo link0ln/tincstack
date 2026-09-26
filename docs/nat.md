@@ -638,6 +638,24 @@ packets; no ping was lost in any run (578/600 replies everywhere, the same
 count as without rekeys). At the default `KeyExpire` of 3600 s the cost is a
 few seconds of relaying per hour: real, measurable, not urgent (W7).
 
+**Fixed in N2**: `ans_key_h()` applies the relay's reflexive address only
+while the peer's direct path is not confirmed (the rule `udp_info_h()` always
+had), and `update_node_udp()` returns early for the address the node already
+uses. Same command (`results/2026-09-26/n2/rekey/`):
+
+| image (config) | KeyExpire | rekeys | peer-address resets A / B | A→B via relay / direct | relayed share |
+|---|---|---|---|---|---|
+| N2 before this fix (`ww-n2-i3`), `UdpMetaFallback = no` | 20 s | 6 | 45 / 36 | 83 / 642 | 11.4 % |
+| N2 (`ww-n2-i4`), `UdpMetaFallback = no`, run 1 | 20 s | 6 | **0 / 0** | 0 / 632 | **0 %** |
+| N2 (`ww-n2-i4`), `UdpMetaFallback = no`, run 2 | 20 s | 6 | 0 / 0 | 0 / 631 | 0 % |
+| N2 (`ww-n2-i4`), defaults | 20 s | 6 | 0 / 0 | 0 / 641 | 0 % |
+| N2 final image (`ww-n2`), `UdpMetaFallback = no` | 20 s | 6 | 0 / 0 | 0 / 634 | 0 % |
+
+578-580/600 ping replies in every run, as before (the missing ones are the
+window's edges, the same count without rekeys). `ww-n2-i4` carries the first
+version of item 3; the change here is independent of it, and the final image
+repeats the result.
+
 ## 8. Weak points
 
 Numbered so the fix list (§10) can point at them. "Proof" = where the lab
@@ -888,6 +906,8 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
    `send_udp_info`/`udp_info_h` (carry a "go" flag or a new request).
 
 5. 🟡 **P2 — a confirmed direct path must survive a relayed rekey (W7).**
+   **Status: done in N2** (§7.6): 0 address resets, 0 % relayed (was 45/36,
+   11.4 %).
    Pairs: every direct pair whose rekey handshake goes through a relay (no
    `sf` side link): 8.6 % of A→B packets relayed at KeyExpire 20 s in
    the lab (`UdpMetaFallback = no`), 30.7 % for upstream; ~8 address
