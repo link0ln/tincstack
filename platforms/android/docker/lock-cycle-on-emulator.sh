@@ -204,6 +204,33 @@ has_tincd && fail "tincd came back after an explicit disconnect"
 has_tun && fail "tun0 came back after an explicit disconnect"
 note "stays disconnected: no tincd, no tun0; service: $(service_up && echo running || echo stopped)"
 
+step "negative 2: disconnect from the notification while locked -> stays disconnected after unlock"
+connect
+wait_until "$RESUME_WAIT" "tun0 after connect" has_tun >/dev/null
+wait_until 60 "ping after reconnect" ping_pool >/dev/null
+adb shell input keyevent KEYCODE_HOME
+lock
+wait_until "$STOP_WAIT" "tincd stopped after lock" no_tincd >/dev/null
+adb shell input keyevent KEYCODE_WAKEUP   # screen on, keyguard up: still suspended
+sleep 3
+adb shell cmd statusbar expand-notifications >/dev/null 2>&1 || true
+# shellcheck source=ui-lib.sh
+. ./ui-lib.sh
+if UI_TIMEOUT=20 ui_tap 'text="Disconnect"' || { adb shell input swipe 540 900 540 1600 >/dev/null; UI_TIMEOUT=20 ui_tap 'text="Disconnect"'; } || UI_TIMEOUT=10 ui_tap 'text="DISCONNECT"'; then
+    t=$(wait_until 30 "tun0 gone after the notification's Disconnect (still locked)" no_tun)
+    note "notification Disconnect tapped on the lock screen: tun0 gone ${t}s later, $(keyguard)"
+    adb shell wm dismiss-keyguard
+    sleep 30
+    has_tincd && fail "tincd came back after a disconnect made while locked"
+    has_tun && fail "tun0 came back after a disconnect made while locked"
+    note "stays disconnected after unlock"
+else
+    note "the notification's Disconnect action was not reachable on this lock screen: step skipped (unit-tested: userDisconnectWhileLockedIsFinal)"
+    adb shell cmd statusbar collapse >/dev/null 2>&1 || true
+    unlock
+    disconnect
+fi
+
 step "service log excerpt"
 adb shell "su 0 cat /data/data/$PKG/cache/logs/tincapp.log" | tr -d '\r' \
     | grep -E 'Session|suspended|resumed|foreground|Ending|revoked|Intent received' | tail -40 || true
