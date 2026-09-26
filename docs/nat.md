@@ -942,6 +942,36 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
 10. 🟢 **P3 — port spray for APDM peers.** Lab-only gain (§9.1); a port scan on
     the wire. Recommend *not* doing it.
 
+### 10.1 An idle quic link behind a short UDP timeout (N2 item 5)
+
+`lab.sh idle cgnat --transport quic --ping-interval P --cgnat-udp-timeout T
+--cgnat-udp-stream-timeout T --duration 120` (new): one node behind the
+two-tier CGN, meta connection to the relay over quic, no traffic at all for
+120 s; every 5 s the relay's view of the node's port is sampled, then the
+relay pings the node (server-initiated traffic is what a lost binding eats).
+Image `ww-n2-i4`, n = 1-2 per row (`results/2026-09-26/n2/idle/`):
+
+| carrier | PingInterval | CGN UDP timeout | NAT rebinds in 120 s (relay saw a new port) | QUIC path validations | re-dials / closes | relay→node after idle |
+|---|---|---|---|---|---|---|
+| quic | 60 s | 10 s | 1 (run 1), 3 (run 2) | 1, 3 | 0 / 0 | 5/5, 5/5 |
+| quic | 60 s | 20 s | 0 | 0 | 0 / 0 | 5/5 |
+| quic | 10 s (lab default) | 10 s | 0 | 0 | 0 / 0 | 5/5 |
+| quic | 10 s | 30 s / 120 s stream | 0 | 0 | 0 / 0 | 5/5 |
+| plain | 10 s | 10 s | 0 | 0 | 0 / 0 | 5/5 |
+
+The answer: with only the carrier's own 15 s QUIC keepalive (tinc's PINGs at
+60 s) a 10 s UDP timeout does drop the binding — 1 and 3 times in two
+120-second windows. The link survives it: the node's next packet creates a
+new mapping, the relay validates the new path (ngtcp2 migration, §9.3
+`quic_udp_try`) and nothing is re-dialled or closed. What is lost is
+server-to-node traffic in the gap between the drop and the node's next packet
+(up to the 15 s keepalive); the pings after the idle window all arrived
+because by then the node had spoken. With a 20 s timeout, or tinc's PINGs at
+10 s, the binding never dropped. Not fixed: a keepalive under 10 s would
+change the carrier's traffic shape away from Chromium's 15 s (the owner's
+wire rule), and a CGN with a 10 s UDP timeout is below RFC 4787's 2-minute
+floor. Residual recorded.
+
 ## 11. Not measured
 
 - **Real NAT hardware.** Everything above is Linux 6.8 netfilter. Whether a

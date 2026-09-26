@@ -316,6 +316,13 @@ nothing about it.
 - `rekey A B --keyexpire S --duration S`: a direct pair under SPTPS rekeys;
   counts peer-address resets and data packets sent via the relay instead of
   direct after the pair went direct.
+- `idle TYPE [--transport C] [--ping-interval S] --duration S`: one node
+  behind TYPE (`cgnat`: the `--cgnat-udp-*` windows) with a meta connection
+  to the relay and no traffic at all; every 5 s the relay's view of the
+  node's port (a new port = the NAT dropped the binding), then pings
+  relay->node and node->relay. Counts rebinds, re-dials, QUIC path
+  validations and closes (docs/nat.md §10.1). `--ping-interval` sets tinc's
+  `PingInterval` on every node (default 10, for every command).
 - `portmap`: see "masq vs masqfw" above.
 - `punch [A/B ...]`: `nattrav punch` on both sides through the real gateway
   profiles, no tincd: `--strategies "first second burn burn-keep"`,
