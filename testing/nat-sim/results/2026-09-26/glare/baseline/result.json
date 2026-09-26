@@ -1,0 +1,1 @@
+{"image":"baseline","expected":"defect","verdict":"PASS","t_key":12,"seqno_lines":2,"reqkey_lines":3,"sptps_restarts":1,"why":"the defect reproduced: 1 SPTPS restart(s), 2 seqno error(s), key after 12s"}

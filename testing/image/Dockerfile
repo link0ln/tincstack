@@ -18,9 +18,10 @@ COPY --from=baseline /usr/local/sbin/tinc /opt/baseline/sbin/tinc
 COPY nat-sim/natprofile.sh /usr/local/bin/natprofile
 COPY nat-sim/udpprobe.py /usr/local/bin/udpprobe
 COPY nat-sim/natlab.sh /usr/local/bin/natlab
+COPY nat-sim/nattrav.py /usr/local/bin/nattrav
 COPY dpi-proof/capture.sh /usr/local/bin/dpi-capture
 COPY dpi-proof/fingerprint.py /usr/local/bin/dpi-fingerprint
 COPY dpi-proof/compare.py /usr/local/bin/dpi-compare
-RUN chmod +x /usr/local/bin/natprofile /usr/local/bin/udpprobe /usr/local/bin/natlab \
+RUN chmod +x /usr/local/bin/natprofile /usr/local/bin/udpprobe /usr/local/bin/natlab /usr/local/bin/nattrav \
         /usr/local/bin/dpi-capture /usr/local/bin/dpi-fingerprint /usr/local/bin/dpi-compare
 CMD ["natlab"]

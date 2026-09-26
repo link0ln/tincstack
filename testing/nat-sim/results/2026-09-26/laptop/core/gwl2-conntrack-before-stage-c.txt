@@ -1,0 +1,6 @@
+tcp      6 431998 ESTABLISHED src=10.200.0.2 dst=100.64.0.10 sport=50046 dport=655 src=100.64.0.10 dst=100.64.0.4 sport=655 dport=50046 [ASSURED] mark=0 use=1
+udp      17 7 src=10.200.0.2 dst=100.64.0.3 sport=51288 dport=655 [UNREPLIED] src=100.64.0.3 dst=100.64.0.4 sport=655 dport=51288 mark=0 use=1
+udp      17 7 src=100.64.0.3 dst=100.64.0.4 sport=41655 dport=655 [UNREPLIED] src=100.64.0.4 dst=100.64.0.3 sport=655 dport=41655 mark=0 use=1
+udp      17 8 src=10.200.0.2 dst=100.64.0.10 sport=51288 dport=655 src=100.64.0.10 dst=100.64.0.4 sport=655 dport=51288 mark=0 use=1
+udp      17 29 src=10.200.0.2 dst=100.64.0.3 sport=51288 dport=41655 src=100.64.0.3 dst=100.64.0.4 sport=41655 dport=51288 [ASSURED] mark=0 use=1
+udp      17 7 src=100.64.0.10 dst=100.64.0.4 sport=655 dport=655 [UNREPLIED] src=100.64.0.4 dst=100.64.0.10 sport=655 dport=655 mark=0 use=1

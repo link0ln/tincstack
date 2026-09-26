@@ -14,6 +14,14 @@
 #   lab.sh glare [--image-b IMG]       simultaneous REQ_KEY (both sides start; --image-b: mixed pair).
 #                                      core is graded `clean', the baseline control
 #                                      `defect' (--expect / --clean-max override)
+#   lab.sh mesh [--nodes "T1 T2 ..."]  N NATed nodes + one public relay: time to
+#                                      direct per pair, % direct, relay load;
+#                                      --relay-down S stops the relay's tincd
+#   lab.sh rekey A B [--keyexpire S]   a direct pair under SPTPS rekeys
+#   lab.sh portmap                     what each NAT profile does to source ports
+#                                      (nattrav, no tincd)
+#   lab.sh punch [A/B ...]             hole punch without tinc (nattrav):
+#                                      --strategies, --trials, --spray N
 #   lab.sh shell                       interactive shell in the lab container
 #   lab.sh clean                       remove leftover wsf-* containers
 #   lab.sh promote SRC [DEST]          copy the curated evidence subset of a run
@@ -22,7 +30,9 @@
 #
 # Options are passed through to natlab (--image, --rtt, --wait, --recover,
 # --pause, --expect, --clean-max, --cgnat-udp-timeout,
-# --cgnat-udp-stream-timeout). --out DIR sets the
+# --cgnat-udp-stream-timeout, --transport, --pairs, --node-conf, --ipv6,
+# --capture, --nodes, --relay-down, --keyexpire, --duration, --trials,
+# --strategies, --spray). --out DIR sets the
 # host results directory (default results/run/$WSF_RUN, WSF_RUN defaulting to
 # <YYYY-MM-DD>-<HHMMSS>-<pid>; `make check` exports one WSF_RUN for all its
 # lab steps so they share a directory).
@@ -76,8 +86,9 @@ run_lab() { # cmd args...  (extracts --out for the host bind mount)
 
 # The committed evidence is a curated subset (what PLAN.md / the READMEs cite):
 # every summary.md and result.json, the validate-nat JSON lines, the laptop
-# regression's nodel.log + port/conntrack notes, every glare-fix log, and the
-# dpi-proof report/fingerprint/pcap. Per-pair node logs, dumps, info and
+# regression's nodel.log + port/conntrack notes, every glare-fix log, the
+# punch arm's first-trial gateway conntrack dumps, and the dpi-proof
+# report/fingerprint/pcap. Per-pair node logs, dumps, info and
 # gateway dumps stay in results/run/ (git-ignored). .gitignore enforces the
 # same list, so a stray `git add` cannot bring the full logs back.
 promote() { # SRC [DEST]
@@ -92,7 +103,7 @@ promote() { # SRC [DEST]
         -name summary.md -o -name result.json -o -name '*.result.json' -o -name '*.jsonl' \
         -o -path '*/laptop/*/nodel.log' -o -path '*/laptop/*/nodel-udp-port.txt' \
         -o -path '*/laptop/*/gwl2-conntrack-before-stage-c.txt' \
-        -o -path '*/glare-fix/*.log' \
+        -o -path '*/glare-fix/*.log' -o -path '*/punch/*/*-gw-gw?.txt' \
         -o -name '*.report.txt' -o -name '*.fingerprint.json' -o -name '*.pcap' \) -print0)
     echo "promoted $n file(s) from $src to $dest" >&2
     grep -rlE 'PRIVATE KEY|^Ed25519PrivateKey' "$dest" 2>/dev/null && { echo "promote: key material found in $dest" >&2; return 3; }
@@ -102,9 +113,9 @@ promote() { # SRC [DEST]
 cmd="${1:-}"; shift || true
 case "$cmd" in
     build) build ;;
-    validate-nat|scenario|matrix|laptop|glare|summarize) build; run_lab "$cmd" "$@" ;;
+    validate-nat|scenario|matrix|laptop|glare|mesh|rekey|portmap|punch|summarize) build; run_lab "$cmd" "$@" ;;
     shell) build; docker run --rm -it --privileged --name "$NAME" "$LAB_IMAGE" bash ;;
     clean) clean ;;
     promote) promote "$@" ;;
-    *) sed -n '2,26p' "$0"; exit 2 ;;
+    *) sed -n '2,38p' "$0"; exit 2 ;;
 esac

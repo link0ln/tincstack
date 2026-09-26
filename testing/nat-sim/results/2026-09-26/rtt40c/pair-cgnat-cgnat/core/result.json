@@ -1,0 +1,1 @@
+{"a":"cgnat","b":"cgnat","image":"core","transport":"plain","meta_a":"relay:plain <control>:plain","meta_b":"relay:plain <control>:plain","rtt_ms":40,"expected":"no","direct_ab":1,"direct_ba":1,"t_ab":4,"t_ba":0,"reach_ab":"directly with UDP","reach_ba":"directly with UDP","ping":1,"verdict":"PASS"}

@@ -26,7 +26,10 @@ Client (inside a NATed LAN):
       type      fullcone = EIM+EIF, restricted = EIM+ADF,
                 portrestricted = EIM+APDF, symmetric = APDM+APDF,
                 masq = (EIM|EIM-after-first)+APDF with the first mapping
-                port-preserving, udpblock = no reply to any PROBE
+                port-preserving, masqfw = EIM+APDF port-preserving (the
+                XPORT/XHOST datagrams are unsolicited: behind an open INPUT
+                chain they are what pushes later flows onto another port),
+                udpblock = no reply to any PROBE
     Prints one JSON line; exit 0 if --expect matches (or no --expect), 1 otherwise.
 """
 import argparse
@@ -147,6 +150,8 @@ def finish(result, args):
     ok = True
     if args.expect == "masq":
         ok = result.get("type") in ("masq", "portrestricted") and bool(result.get("port_preserving"))
+    elif args.expect == "masqfw":
+        ok = result.get("type") == "portrestricted" and bool(result.get("port_preserving"))
     elif args.expect:
         ok = result["type"] == args.expect
     if args.expect_ext_port and result["obs"].get("s1"):
