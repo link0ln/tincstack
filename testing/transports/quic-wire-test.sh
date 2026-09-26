@@ -143,6 +143,11 @@ else
 	bad "the second flight differs (udp length, packets, Lengths, Initial frames, dcid): ours '$s_ours', curl '$s_curl'"
 fi
 
+# The client's first short-header-only datagrams (its HTTP/3 streams, the request): printed, not
+# compared -- our request carries the authenticator (docs/transports.md §9.4), curl's GET does not.
+onertt() { tshark -Y "udp.dstport == 443 && !quic.long.packet_type && $1" -T fields -e udp.length | head -4 | paste -sd/; }
+log "  the client's first 1-RTT-only datagrams (udp length): leaf $(onertt "ip.src == $L_IP"), curl $(onertt "ip.src != $L_IP && ip.src != $F_IP")"
+
 # ---- the tunnel ----------------------------------------------------------------------------------
 lab_ip() { docker exec "$PFX-$1" ip -4 -br addr show lab | awk '{print $3}' | cut -d/ -f1; }
 fv=$(lab_ip f)

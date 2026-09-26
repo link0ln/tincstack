@@ -25,6 +25,11 @@
 #     If-Unmodified-Since -> 412;
 #   * Range -> 206 (one range, suffix, multipart), 416, If-Range;
 #   * a directory without its slash -> 301, one without index -> 403;
+#   * over HTTP/3 (curl --http3-only, both serve QUIC on 443): the page,
+#     HEAD, 404, 405, gzip, 304, 412, 206 (one range and multipart), 416,
+#     If-Range, a directory's 301, a proxied GET and POST -- every request
+#     field reaches the decoy as over TCP (the h3-* probes; their answers
+#     compared as curl prints them);
 #   * through a reverse proxy: nginx's Server/Date, the upstream's headers,
 #     keep-alive, bodies without a length and chunked ones re-framed, and
 #     the request the upstream receives (Cookie aside: never forwarded);
@@ -160,6 +165,11 @@ tls12() { # <name> <bytes...>: the same over TLS 1.2 (its ticket travels in the 
 tcp() { # <name> <bytes>: send over plain TCP to the TLS port
 	timeout 8 bash -c "exec 3<>/dev/tcp/$H/443; printf '%b' '$2' >&3; cat <&3" > "$O/$1" 2>/dev/null || true
 }
+h3() { # <name> <path> [curl options...]: one HTTP/3 request, the answer as curl prints it
+	local n=$1 p=$2
+	shift 2
+	timeout 10 curl -sk -m 8 -i --http3-only "$@" "https://$H$p" > "$O/$n" 2>/dev/null || true
+}
 C='Host: web.lab.test\r\nConnection: close\r\n'
 LM='Wed, 05 Feb 2025 11:07:30 GMT'
 case $S in
@@ -210,6 +220,21 @@ stock)
 	tls ifrange_no "GET / HTTP/1.1\r\n${C}Range: bytes=0-9\r\nIf-Range: \"x\"\r\n\r\n"
 	tls r416ka     'GET / HTTP/1.1\r\nHost: web.lab.test\r\nRange: bytes=1000-\r\n\r\n'
 	tls12 get12    "GET / HTTP/1.1\r\n$C\r\n"
+	h3 h3-get      /
+	h3 h3-head     / -I
+	h3 h3-nope     /nope
+	h3 h3-post     / -d x=1
+	h3 h3-gzip     / -H 'accept-encoding: gzip, deflate, br, zstd'
+	h3 h3-gzip404  /nope -H 'accept-encoding: gzip'
+	h3 h3-ims      / -H "if-modified-since: $LM"
+	h3 h3-inm      / -H 'if-none-match: "x", W/"67a34672-267"'
+	h3 h3-ifmatch  / -H 'if-match: "x"'
+	h3 h3-ius      / -H 'if-unmodified-since: Tue, 04 Feb 2025 11:07:30 GMT'
+	h3 h3-range    / -H 'range: bytes=0-99'
+	h3 h3-multi    / -H 'range: bytes=0-9,20-29'
+	h3 h3-r416     / -H 'range: bytes=1000-2000'
+	h3 h3-ifrange  / -H 'range: bytes=0-9' -H 'if-range: "67a34672-267"'
+	h3 h3-rgzip    / -H 'accept-encoding: gzip' -H 'range: bytes=0-99'
 	tcp plain      'GET / HTTP/1.1\r\nHost: web.lab.test\r\n\r\n'
 	tcp tincid     '0 prober 17.7\n'
 	tcp highbyte   '\x80\x01\x02\x03 hello\r\n\r\n'
@@ -229,6 +254,9 @@ root)
 	tls css        "GET /a.css HTTP/1.1\r\n${C}Accept-Encoding: gzip\r\n\r\n"
 	tls page       "GET /page.html HTTP/1.1\r\n${C}Accept-Encoding: gzip\r\n\r\n"
 	tls rootidx    "GET / HTTP/1.1\r\n$C\r\n"
+	h3 h3-dir      /dir
+	h3 h3-css      /a.css -H 'accept-encoding: gzip'
+	h3 h3-page     /page.html -H 'accept-encoding: gzip'
 	;;
 proxy)
 	tls get        "GET / HTTP/1.1\r\n${C}User-Agent: probe/1\r\nAccept: */*\r\nCookie: c=d\r\n\r\n"
@@ -244,6 +272,8 @@ proxy)
 	tls http10     'GET / HTTP/1.0\r\n\r\n'
 	tls nolen10    'GET /nolen HTTP/1.0\r\n\r\n'
 	tls garbage    'XYZZY\r\n\r\n'
+	h3 h3-get      / -H 'user-agent: probe/3' -H 'cookie: c=d' -H 'x-probe: 1'
+	h3 h3-post     /p -d abc
 	;;
 esac
 EOF
@@ -266,8 +296,8 @@ probe proxy h "$H_IP" p "$P_IP"
 # Date value, a multipart boundary (nginx's counter) and the server's own
 # address in a redirect to a request without Host (HTTP/1.0).
 norm() {
-	sed -E -e 's/^Date: .*/Date: -/; s/boundary=[0-9]+/boundary=N/; s/^--[0-9]+(--)?\r$/--N\1\r/' \
-		-e "s#^Location: https://${SUBNET//./\\.}\\.[0-9]+/#Location: https://SERVER/#" "$1"
+	sed -E -e 's/^(Date|date): .*/\1: -/; s/boundary=[0-9]+/boundary=N/; s/^--[0-9]+(--)?\r$/--N\1\r/' \
+		-e "s#^(Location|location): https://${SUBNET//./\\.}\\.[0-9]+/#\\1: https://SERVER/#" "$1"
 }
 same() { # <label> <ours> <nginx>
 	if [[ -s $3 ]] && cmp -s <(norm "$2") <(norm "$3"); then

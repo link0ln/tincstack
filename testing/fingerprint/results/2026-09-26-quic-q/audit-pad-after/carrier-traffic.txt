@@ -1,0 +1,83 @@
+== bulk transfers: our tunnel vs curl <-> nginx ==
+ours https down        (no packets)
+ref h1 down            S>C    329 pkts   5252638 B in    0.0 s
+    TLS records: n=329 median 16401 p10 16401 p90 16401 max 16401 distinct 9; top 16401 x320, 282 x2, 1210 x1, 1 x1, 38 x1, 425 x1
+    buckets: <100:1% <300:1% <600:0% <1000:0% <1200:0% <1500:0% <4096:0% <16000:0% <16500:97%
+ref h1 down            C>S    330 pkts      1752 B in    0.0 s
+    TLS records: n=5 median 69 p10 1 p90 1543 max 1543 distinct 5; top 1543 x1, 1 x1, 69 x1, 95 x1, 19 x1
+    buckets: <100:80% <300:0% <600:0% <1000:0% <1200:0% <1500:0% <4096:20% <16000:0% <16500:0%
+ours https up          (no packets)
+ref h1 up              S>C    295 pkts      2667 B in    0.0 s
+    TLS records: n=10 median 134 p10 38 p90 425 max 1210 distinct 9; top 282 x2, 1210 x1, 1 x1, 38 x1, 425 x1, 95 x1
+    buckets: <100:50% <300:30% <600:10% <1000:0% <1200:0% <1500:10% <4096:0% <16000:0% <16500:0%
+ref h1 up              C>S    334 pkts   5251721 B in    0.0 s
+    TLS records: n=325 median 16401 p10 16401 p90 16401 max 16401 distinct 6; top 16401 x320, 1543 x1, 1 x1, 69 x1, 144 x1, 19 x1
+    buckets: <100:1% <300:0% <600:0% <1000:0% <1200:0% <1500:0% <4096:0% <16000:0% <16500:98%
+
+ours quic down         S>C   6386 pkts   6011658 B in    0.1 s
+    UDP payloads: n=6386 median 1200 p10 24 p90 1200 max 1200 distinct 19; top 1200 x4978, 24 x1078, 25 x177, 26 x87, 27 x22, 28 x13
+    buckets: <100:22% <300:0% <600:0% <1000:0% <1200:0% <1500:78% <4096:0% <16000:0% <16500:0%
+ours quic down         C>S   5266 pkts    478337 B in    0.1 s
+    UDP payloads: n=5266 median 130 p10 47 p90 130 max 1200 distinct 17; top 130 x2726, 47 x1198, 48 x1197, 49 x83, 95 x10, 73 x9
+    buckets: <100:48% <300:52% <600:0% <1000:0% <1200:0% <1500:0% <4096:0% <16000:0% <16500:0%
+ref h3 down            S>C   4599 pkts   5365720 B in    0.1 s
+    UDP payloads: n=4599 median 1200 p10 1194 p90 1200 max 1200 distinct 26; top 1200 x3888, 1194 x164, 1198 x107, 1029 x77, 1190 x70, 31 x61
+    buckets: <100:3% <300:0% <600:0% <1000:0% <1200:13% <1500:85% <4096:0% <16000:0% <16500:0%
+ref h3 down            C>S   2005 pkts    100998 B in    0.1 s
+    UDP payloads: n=2005 median 48 p10 48 p90 48 max 1200 distinct 10; top 48 x1761, 47 x168, 54 x17, 46 x15, 53 x15, 52 x11
+    buckets: <100:100% <300:0% <600:0% <1000:0% <1200:0% <1500:0% <4096:0% <16000:0% <16500:0%
+ours quic up           S>C   5001 pkts    327254 B in    0.2 s
+    UDP payloads: n=5001 median 24 p10 24 p90 107 max 219 distinct 5; top 24 x2506, 107 x2492, 115 x1, 132 x1, 219 x1
+    buckets: <100:50% <300:50% <600:0% <1000:0% <1200:0% <1500:0% <4096:0% <16000:0% <16500:0%
+ours quic up           C>S   6249 pkts   6035379 B in    0.2 s
+    UDP payloads: n=6249 median 1200 p10 47 p90 1200 max 1200 distinct 7; top 1200 x4979, 47 x1255, 49 x8, 130 x4, 138 x1, 309 x1
+    buckets: <100:20% <300:0% <600:0% <1000:0% <1200:0% <1500:80% <4096:0% <16000:0% <16500:0%
+ref h3 up              S>C   2535 pkts     65670 B in    0.1 s
+    UDP payloads: n=2535 median 24 p10 24 p90 25 max 1200 distinct 11; top 24 x1504, 25 x836, 30 x111, 31 x47, 23 x30, 1200 x2
+    buckets: <100:100% <300:0% <600:0% <1000:0% <1200:0% <1500:0% <4096:0% <16000:0% <16500:0%
+ref h3 up              C>S   5055 pkts   5485663 B in    0.1 s
+    UDP payloads: n=5055 median 1198 p10 317 p90 1198 max 1200 distinct 131; top 1198 x4480, 317 x185, 52 x68, 48 x45, 323 x10, 47 x8
+    buckets: <100:4% <300:3% <600:4% <1000:0% <1200:89% <1500:0% <4096:0% <16000:0% <16500:0%
+
+== 20 pings at 1 s through the tunnel ==
+ours https ping        (no packets)
+ours quic ping         S>C     44 pkts      3440 B in   19.5 s
+    UDP payloads: n=44 median 25 p10 24 p90 139 max 139 distinct 4; top 139 x20, 24 x18, 25 x5, 103 x1
+    buckets: <100:52% <300:48% <600:0% <1000:0% <1200:0% <1500:0% <4096:0% <16000:0% <16500:0%
+ours quic ping         C>S     48 pkts      4715 B in   19.5 s
+    UDP payloads: n=48 median 47 p10 47 p90 162 max 162 distinct 4; top 47 x25, 162 x20, 126 x2, 48 x1
+    buckets: <100:54% <300:46% <600:0% <1000:0% <1200:0% <1500:0% <4096:0% <16000:0% <16500:0%
+
+== idle: after the pings, nothing in the tunnel ==
+ours quic idle: 61 packets with payload/FIN/RST
+  3.4<103 3.4>48 3.4<24 6.5>126 6.5<25 6.5>47 21.5>42 21.5<24 36.5>42 36.5<25 36.5>47 37.0<46 37.0>69 37.0>47 37.0<24 37.2>126 37.2<25 37.2>47 37.4>69 37.4<52 37.4>47 38.7<103 38.7>48 38.7<24 53.7>42 53.7<25 53.7>47 68.7>42 68.7<24 83.7>42 83.7<25 83.7>47 97.2<46 97.2>75 97.2<24 97.8>69 97.8<52 97.8>47 100.2>126 100.2<24 108.3<103 108.3>47 123.4>42 123.4<24 138.4>42 138.4<25 138.4>47 153.4>42 153.4<24 156.7<46 156.7>69 156.7>47 156.7<24 157.6>69 157.6<52 157.6>47 172.6>42 172.6<24 187.6>42 187.6<25
+  20 bursts at 3.4, 6.5, 21.5, 36.5, 37.0, 38.7, 53.7, 68.7, 83.7, 97.2, 97.8, 100.2, 108.3, 123.4, 138.4, 153.4, 156.7, 157.6, 172.6, 187.6 s
+  gaps: 3.1, 15.0, 15.0, 0.5, 1.7, 15.0, 15.0, 15.0, 13.4, 0.7, 2.3, 8.2, 15.0, 15.0, 15.0, 3.3, 0.9, 15.0, 15.0 (median 15.0 s)
+  burst patterns: C>S42 S>C24 x5; C>S42 S>C25 C>S47 x5; S>C103 C>S48 S>C24 x2; C>S69 S>C52 C>S47 x2; C>S126 S>C25 C>S47 x1
+
+== reference idle: one GET, then nothing (what nginx sends, when it closes) ==
+ref h1 idle (openssl s_client): 9 packets with payload/FIN/RST
+  0.3>1533 0.3<1853 0.3>80 0.3>49 0.3<271 0.3<271 0.3<316 75.4<24 75.4>24
+  2 bursts at 0.3, 75.4 s
+  gaps: 75.1 (median 75.1 s)
+  burst patterns: C>S1533 S>C1853 C>S80 C>S49 S>C271 S>C271 S>C316 x1; S>C24 C>S24 x1
+ref h3 idle (aioquic): 20 packets with payload/FIN/RST
+  0.3>1200 0.3<1200 0.3>1200 0.3<841 0.3>82 0.3<246 0.3>45 0.3>45 0.3<29 0.3>45 0.4<1350 0.4>48 0.4<32 0.5<1425 0.5>45 0.6<1462 0.6>45 0.7<1471 0.7>47 75.3<47
+  2 bursts at 0.3, 75.3 s
+  gaps: 75.1 (median 75.1 s)
+  burst patterns: C>S1200 S>C1200 C>S1200 S>C841 C>S82 S>C246 C>S45 C>S45 S>C29 C>S45 S>C1350 C>S48 S>C32 S>C1425 C>S45 S>C1462 C>S45 S>C1471 C>S47 x1; S>C47 x1
+
+== anything on tinc's port 655 between the nodes while the carrier ran ==
+  https: 0 packets on port 655 (n=0)
+  quic: 0 packets on port 655 (n=0)
+--- transfers ---
+quic down 200 5242880 B 0.149599 s
+quic up 200 5242880 B 0.164943 s
+ref-h1 down 200 5242880 B 0.011560 s
+ref-h1 up 201 5242880 B 0.010301 s
+ref-h3 down 200 5242880 B 0.058098 s
+ref-h3 up 201 5242880 B 0.061330 s
+--- quic link ---
+founder at 10.49.67.10 port 655 options 700000c socket -1 status 100 transport quic
+Status:       validkey visited reachable sptps
+image tincstack/core:ww-q4 sha256:dbf316b18827b8fa14f7205493584c9f6b097f59940689b4e8be8ce39a15ca8e

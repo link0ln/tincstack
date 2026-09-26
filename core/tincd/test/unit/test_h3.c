@@ -73,7 +73,7 @@ static void test_decode_rejects(void **state) {
 static void test_decode_own_request(void **state) {
 	(void)state;
 	size_t len;
-	uint8_t *frame = h3_request("example.org", "/api/v1", &len);
+	uint8_t *frame = h3_request("example.org", "/api/v1", "sid=abc-_", &len);
 	uint64_t type, flen;
 	size_t n1 = h3_varint_get(frame, len, &type);
 	size_t n2 = h3_varint_get(frame + n1, len - n1, &flen);
@@ -85,7 +85,134 @@ static void test_decode_own_request(void **state) {
 	assert_string_equal(f.method, "POST");
 	assert_string_equal(f.path, "/api/v1");
 	assert_string_equal(f.authority, "example.org");
+	assert_string_equal(f.cookie, "sid=abc-_");
 	free(frame);
+
+	frame = h3_request("example.org", "/", NULL, &len);
+	n1 = h3_varint_get(frame, len, &type);
+	n2 = h3_varint_get(frame + n1, len - n1, &flen);
+	assert_true(decode(frame + n1 + n2, flen, &f));
+	assert_string_equal(f.path, "/");
+	assert_string_equal(f.cookie, "");
+	free(frame);
+}
+
+/* Cookie field lines a client split (RFC 9114 4.2.1) come back joined. */
+static void test_decode_split_cookie(void **state) {
+	(void)state;
+	static const uint8_t fs[] = {
+		0x00, 0x00,
+		0xd1,
+		0x55, 0x03, 'a', '=', '1',
+		0x55, 0x03, 'b', '=', '2',
+	};
+	h3_req_fields_t f;
+	assert_true(decode(fs, sizeof(fs), &f));
+	assert_string_equal(f.method, "GET");
+	assert_string_equal(f.cookie, "a=1; b=2");
+	assert_string_equal(f.headers, "cookie: a=1\r\ncookie: b=2\r\n");
+}
+
+/* Regular fields come out as HTTP/1.1 header lines, in order, for the
+   decoy; `host' is kept apart; a name that is not a lowercase token or a
+   value with CR, LF or NUL fails the decode. */
+static void test_decode_regular_fields(void **state) {
+	(void)state;
+	static const uint8_t fs[] = {
+		0x00, 0x00,
+		0xd1,
+		0x5f, 0x10, 0x04, 'g', 'z', 'i', 'p',           /* accept-encoding (static 31) */
+		0x5f, 0x28, 0x08, 'b', 'y', 't', 'e', 's', '=', '0', '-',       /* range (static 55) */
+		0x24, 'h', 'o', 's', 't', 0x01, 'h',
+		0x24, 'x', '-', 'a', 'b', 0x01, 'v',
+	};
+	h3_req_fields_t f;
+	assert_true(decode(fs, sizeof(fs), &f));
+	assert_string_equal(f.headers, "accept-encoding: gzip\r\nrange: bytes=0-\r\nx-ab: v\r\n");
+	assert_string_equal(f.host, "h");
+	assert_int_equal(f.headers_len, strlen(f.headers));
+
+	static const uint8_t upper[] = {0x00, 0x00, 0xd1, 0x23, 'X', '-', 'a', 0x01, 'v'};
+	assert_false(decode(upper, sizeof(upper), &f));
+
+	static const uint8_t cr[] = {0x00, 0x00, 0xd1, 0x23, 'x', '-', 'a', 0x02, 'v', '\r'};
+	assert_false(decode(cr, sizeof(cr), &f));
+
+	static const uint8_t nul[] = {0x00, 0x00, 0xd1, 0x23, 'x', '-', 'a', 0x02, 'v', 0};
+	assert_false(decode(nul, sizeof(nul), &f));
+}
+
+static bool has_bytes(const uint8_t *hay, size_t hlen, const uint8_t *needle, size_t nlen) {
+	for(size_t i = 0; i + nlen <= hlen; i++) {
+		if(!memcmp(hay + i, needle, nlen)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* The dialler's literals are Huffman-coded where shorter, as curl's and
+   Chromium's encoders write them: no raw user-agent or content-type. */
+static void test_request_huffman(void **state) {
+	(void)state;
+	size_t len;
+	uint8_t *frame = h3_request("example.org", "/", "sid=abc-_", &len);
+	assert_false(has_bytes(frame, len, (const uint8_t *)"Mozilla", 7));
+	assert_false(has_bytes(frame, len, (const uint8_t *)"octet", 5));
+	assert_false(has_bytes(frame, len, (const uint8_t *)"example", 7));
+	free(frame);
+}
+
+/* The decoy's HTTP/1.1 answer as nginx's HTTP/3 filter encodes it: :status
+   other than 200 a raw literal on static 25, server/date/content-type on
+   their static names, Huffman where shorter (RFC 7541 C.4.1's
+   www.example.com), content-length raw, hop-by-hop fields dropped, the
+   rest literal names; HEADERS and DATA frames, *hdrlen at the boundary. */
+static void test_from_http1_as_nginx(void **state) {
+	(void)state;
+	static const char resp[] =
+	        "HTTP/1.1 404 Not Found\r\nServer: nginx\r\nDate: Mon, 21 Oct 2013 20:13:21 GMT\r\n"
+	        "Content-Type: text/html\r\nContent-Length: 5\r\nConnection: keep-alive\r\n"
+	        "X-Host: www.example.com\r\nETag: \"a\"\r\n\r\nhello";
+	size_t len, hdrlen;
+	uint8_t *f = h3_from_http1(resp, sizeof(resp) - 1, false, &len, &hdrlen);
+	assert_non_null(f);
+
+	uint64_t type, flen;
+	size_t n1 = h3_varint_get(f, len, &type);
+	size_t n2 = h3_varint_get(f + n1, len - n1, &flen);
+	assert_int_equal(type, H3_FRAME_HEADERS);
+	assert_int_equal(n1 + n2 + flen, hdrlen);
+	assert_int_equal(len - hdrlen, 7);
+	assert_memory_equal(f + hdrlen, "\x00\x05hello", 7);
+
+	const uint8_t *fs = f + n1 + n2;
+	static const uint8_t status[] = {0x00, 0x00, 0x5f, 0x0a, 0x03, '4', '0', '4', 0x5f, 0x4d, 0x84};
+	assert_memory_equal(fs, status, sizeof(status));
+
+	static const uint8_t www[] = {0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff};
+	assert_true(has_bytes(fs, flen, www, sizeof(www)));
+	static const uint8_t clen[] = {0x54, 0x01, '5'};
+	assert_true(has_bytes(fs, flen, clen, sizeof(clen)));
+	assert_false(has_bytes(fs, flen, (const uint8_t *)"keep", 4));
+
+	/* Every Huffman string decodes back (the request decoder keeps
+	   regular fields as header lines). */
+	h3_req_fields_t d;
+	assert_true(decode(fs, flen, &d));
+	assert_string_equal(d.headers, "server: nginx\r\ndate: Mon, 21 Oct 2013 20:13:21 GMT\r\n"
+	                    "content-type: text/html\r\ncontent-length: 5\r\nx-host: www.example.com\r\netag: \"a\"\r\n");
+	free(f);
+
+	/* 200 is indexed; no body, no DATA frame. */
+	static const char ok[] = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+	f = h3_from_http1(ok, sizeof(ok) - 1, false, &len, &hdrlen);
+	assert_int_equal(len, hdrlen);
+	static const uint8_t okfs[] = {0x01, 0x04, 0x00, 0x00, 0xd9, 0xc4};
+	assert_int_equal(len, sizeof(okfs));
+	assert_memory_equal(f, okfs, sizeof(okfs));
+	free(f);
 }
 
 /* RFC 9204 Appendix B.1/B.2-style exchange: the encoder sets the capacity,
@@ -165,6 +292,10 @@ int main(void) {
 		cmocka_unit_test(test_decode_literal_names),
 		cmocka_unit_test(test_decode_rejects),
 		cmocka_unit_test(test_decode_own_request),
+		cmocka_unit_test(test_decode_split_cookie),
+		cmocka_unit_test(test_decode_regular_fields),
+		cmocka_unit_test(test_request_huffman),
+		cmocka_unit_test(test_from_http1_as_nginx),
 		cmocka_unit_test(test_dynamic_table),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

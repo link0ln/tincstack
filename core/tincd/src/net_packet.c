@@ -135,10 +135,21 @@ static void reduce_mtu(node_t *n, int mtu) {
 	try_fix_mtu(n);
 }
 
+/* The datagram path to a direct neighbour is its meta connection's carrier
+   (quic: DATAGRAM frames in the same QUIC connection). That path is alive
+   exactly as long as the connection is, and the carrier keeps it alive and
+   knows its own ceiling; so once UDP is confirmed and the MTU fixed over it,
+   tinc's own keepalive and PMTU re-probing only add packets an idle HTTP/3
+   client never sends (a burst every ~2.5 s, measured: docs/transports.md
+   §9). With plain/sf/obfs this is always false. */
+static bool carrier_datagram_path(const node_t *n) {
+	return n->connection && n->connection->transport && n->connection->transport->send_datagram;
+}
+
 static void udp_probe_timeout_handler(void *data) {
 	node_t *n = data;
 
-	if(!n->status.udp_confirmed) {
+	if(!n->status.udp_confirmed || carrier_datagram_path(n)) {
 		return;
 	}
 
@@ -1288,6 +1299,10 @@ static void try_udp(node_t *n) {
 		return;
 	}
 
+	if(n->status.udp_confirmed && carrier_datagram_path(n)) {
+		return;
+	}
+
 	/* Send gratuitous probe replies to 1.1 nodes. */
 
 	if((n->options >> 24) >= 3 && n->status.udp_confirmed) {
@@ -1459,6 +1474,10 @@ static void try_mtu(node_t *n) {
 	   mtuprobes ==    -1: send one maxmtu and one maxmtu+1 probe every pinginterval
 	   mtuprobes ==-2..-3: send one maxmtu probe every second
 	   mtuprobes ==    -4: maxmtu no longer valid, reset minmtu and maxmtu and go to 0 */
+
+	if(n->mtuprobes < 0 && carrier_datagram_path(n)) {
+		return; /* fixed; a smaller carrier ceiling comes back as reduce_mtu() */
+	}
 
 	struct timeval elapsed;
 	timersub(&now, &n->mtu_ping_sent, &elapsed);

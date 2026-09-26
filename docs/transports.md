@@ -1671,7 +1671,9 @@ other and fall back to the next carrier):
 - **The dialler** sends one request on its first bidirectional stream:
   HEADERS `POST https://<authority>/` (`:authority` = the SNI, else the
   address; `content-type: application/octet-stream`, a browser
-  `user-agent`), then a body of DATA frames. The first DATA frame is the
+  `user-agent`, and since 2026-09-26 `cookie: sid=<authenticator,
+  base64url>`, as the `https` carrier's `Cookie`), then a body of DATA
+  frames. The first DATA frame is the
   **§8.3 authenticator**, byte for byte the `https` one (`authn_build()`:
   `ver(1) || namelen(1) || name || nonce(16) || ts_be(8) || Ed25519 sig(64)`
   over `"tincstack-authn-v2\0" || server-cert-fp(32) || TLS-exporter(32) ||
@@ -1680,17 +1682,27 @@ other and fall back to the next carrier):
   from `finish_connecting()` and everything after it. Between the HEADERS
   and the authenticator, since 2026-09-25, an empty reserved frame
   (`H3_FRAME_TINC_DGRAM`, below), which a web server ignores.
-- **The listener** parses every request stream's frames. The first stream
-  whose DATA carries a valid authenticator (`authn_verify()` against its own
-  certificate fingerprint and exporter, same replay cache and +/-90 s skew as
-  `https`) becomes the meta stream: it answers `HEADERS :status 200,
-  server: nginx` and streams its meta back as DATA frames. Not a single byte
-  reaches `receive_meta_bytes()` before that.
-- **Anyone else** -- a browser, curl, a prober, a POST whose body is not an
-  authenticator (`quic: authenticator from <host> rejected`) -- gets the
-  https front's decoy answer (`decoy_respond()`; with `HttpsDecoyUpstream`
-  the upstream's, since 2026-09-26, §8.5.1) as an
-  HTTP/3 response on each request stream: HEADERS + DATA + FIN. The
+- **The listener** decodes every request's HEADERS and decides there, as
+  nginx does. The first POST with a cookie value that is a valid
+  authenticator (`authn_verify()` against its own certificate fingerprint
+  and this connection's exporter, same replay cache and +/-90 s skew as
+  `https`; any cookie pair's value, only the first one shaped like an
+  authenticator is verified) becomes the meta stream: it answers `HEADERS
+  :status 200, server: nginx` at once and streams its meta back as DATA
+  frames. The body's copy of the authenticator is compared byte for byte
+  and skipped, not verified again (its nonce is already in the replay
+  cache). Not a single byte reaches `receive_meta_bytes()` before that.
+  Until 2026-09-26 the authenticator was only in the body, so a POST could
+  not be answered before its body came -- nginx answers a POST to a static
+  file with 405 as soon as its HEADERS are whole, and a head-only POST got
+  nothing from us at all: one probe told the two apart (stream F,
+  `testing/fingerprint/post405-timing.sh`).
+- **Anyone else** -- a browser, curl, a prober, a POST without the cookie or
+  with one that does not verify (`quic: authenticator from <host>
+  rejected`) -- gets the https front's decoy answer (`decoy_respond()`;
+  with `HttpsDecoyUpstream` the upstream's, since 2026-09-26, §8.5.1) as
+  an HTTP/3 response on each request stream: HEADERS + DATA + FIN, sent as
+  soon as the request's HEADERS are decoded, whatever its body does. The
   connection stays open; tinc's authentication timeout ends it later with
   `H3_NO_ERROR`. Up to 8 request streams are answered per connection, more
   are refused with `H3_REQUEST_REJECTED`.
@@ -1698,9 +1710,18 @@ other and fall back to the next carrier):
   byte the listener's fixed 200 response; anything else (a decoy, a real web
   server) logs `quic: <peer> answered like a web server, not a tinc peer`
   and the dialler falls back (§9.9).
-- QPACK uses the static table only, literals are not Huffman-coded, and
-  received field sections are not decoded (the carrier needs nothing from
-  them). Graceful closes carry `H3_NO_ERROR` (0x100).
+- Our QPACK encoder uses the static table only. Since 2026-09-26 its
+  literals are Huffman-coded where that is shorter, as curl's (nghttp3)
+  and Chromium's encoders and nginx write them, and the decoy's answers
+  are encoded as nginx 1.26's HTTP/3 filter encodes them (`h3_from_http1()`:
+  `:status` 200 indexed, any other a raw literal on its name; `server`,
+  `date`, `content-type`, `location`, `last-modified` and `content-length`
+  on their static names, `vary: accept-encoding` indexed, the rest literal
+  names) and sent as nginx sends them: HEADERS and DATA in one STREAM
+  frame, the FIN in an empty STREAM frame after it; the listener's own 200 to a dialler stays the fixed bytes
+  diallers compare. The listener decodes a request's field section with the
+  client's dynamic table (above), the dialler does not decode the answer's.
+  Graceful closes carry `H3_NO_ERROR` (0x100).
 
 Proof that other stacks read this as HTTP/3:
 `testing/transports/h3-interop-test.sh` -- curl (ngtcp2/nghttp3) and
@@ -1730,6 +1751,27 @@ most (§9.8): tinc's path MTU over `quic` is 1119 in the lab (1131 until
 2026-09-25, when the listener's connection ids grew from 8 to nginx's 20
 bytes, which every dialler packet carries; 1366 before 2026-09-24, when
 PMTUD took it to Ethernet's); `SF_MAX_PAYLOAD` is 1200 for comparison.
+Since 2026-09-26 a packet whose DATAGRAM frame is at least 3/4 of that room
+is padded to the path's size (`NGTCP2_WRITE_DATAGRAM_FLAG_PADDING`), so a
+bulk transfer's full packets are 1200 bytes as nginx's are, not the 1160 the
+tunnelled TCP segments come to; smaller ones (tunnelled ACKs, pings) keep
+their size.
+
+**An idle link** (since 2026-09-26): tinc's UDP keepalive (a probe and its
+reply each way every 10 s, the gratuitous probe replies, a PMTU re-probe per
+`PingInterval`) rode the DATAGRAM path too, and every one of those frames
+drew a QUIC ACK: an idle quic link put a burst on the wire every ~2.5 s,
+where an HTTP/3 client waiting on an answer sends a PING now and then and
+the server only acknowledges. Now, once UDP is confirmed and the MTU fixed
+over a carrier's datagram path (`carrier_datagram_path()` in
+`net_packet.c`: the neighbour's meta connection has `send_datagram`), tinc
+neither keeps it alive nor re-probes it, and the UDP-confirmation timeout
+does not drop it: the path lives exactly as long as the QUIC connection. The
+dialler keeps that alive as Chromium keeps an open request, with a PING
+after 15 s without traffic (`ngtcp2_conn_set_keep_alive_timeout`); the
+listener sends nothing unprompted. What remains is tinc's meta `PING` per
+`PingInterval` on the stream. A smaller carrier ceiling still comes back as
+`reduce_mtu()`, from `send_datagram`'s `false`.
 
 **Datagrams nobody announced** (since 2026-09-24): the dialler's
 transport parameters are curl's, and curl announces no
@@ -1754,12 +1796,26 @@ mark arrives it sets the listener's limit itself. A dialler from before
 sends no mark -- and would fail on its first tunnel packet, after the link
 activated, and dial `quic` again for ever (measured against the first build
 of this change: 7 dials in 80 s, the tunnel losing packets). So a listener
-that authenticates a dialler without the mark answers it as a web server
+that authenticated a dialler without the mark answered it as a web server
 (405, `quic: <peer> runs a tinc too old to send datagrams to this one;
 answering it as a web server so it tries another carrier`), and the old
-dialler, which gives up on any web server's answer, falls back cleanly
+dialler, which gives up on any web server's answer, fell back cleanly
 (`mixed-version-test.sh`). The price: a node from before 2026-09-25 no longer
 reaches an upgraded listener over `quic`, only over its other carriers.
+
+**Versions across the header token** (2026-09-26): a dialler from before
+sends no cookie, so a current listener answers its POST as a web server
+(405, at once) and the dialler falls back as above (it logs `answered like
+a web server`), dialling `quic` once. The price: a dialler from
+2026-09-25 (with the mark) no longer reaches an upgraded listener over
+`quic` either, only over its other carriers -- a listener that waited for
+the body to recognise it could not also answer a POST at its HEADERS. A
+current dialler still opens its body with the authenticator (after
+its mark), so a listener from 2026-09-25 -- which reads it there and
+ignores the cookie -- accepts it over `quic` as before; one from before
+2026-09-24 makes it fall back as in the first paragraph
+(`mixed-version-test.sh` against `pre-deb13`, `pre-tps` and master
+5076472).
 
 ### 9.5 Classifier (what G3 changed in §3)
 
@@ -1963,10 +2019,14 @@ What an observer can still tell (testing/fingerprint, re-measured
     the 1-RTT packets in nginx's order and framing and pads only for
     header protection, the listener packs its unidirectional streams into
     one packet with the stream type in a frame of its own, and its TLS
-    alert closes carry nginx's reason. Left, outside the test's checks: the
-    decoy's answer to `GET /` is one STREAM frame (HEADERS and DATA, 802 B
-    of stream, an 838 B datagram) where nginx's is two (727 B, 768 B: the
-    same 615 B page, a field section 75 B shorter; not yet decoded).
+    alert closes carry nginx's reason. Until 2026-09-26 the decoy's answer
+    to `GET /` was one STREAM frame with the FIN (HEADERS 210 B and DATA,
+    831 B of stream) where nginx writes one without it and an empty FIN
+    frame after it, with a field section 81 B shorter (nginx's static name
+    references and Huffman). Since then both are 750 + 0 B of stream in a
+    791 B datagram, HEADERS 129 B (with `add_header Alt-Svc` on both;
+    `quic-listener-wire-test.sh` 10/10,
+    `testing/fingerprint/results/2026-09-26-quic-q/listener-wire/`).
   Details and priorities: PLAN.md, "The listener's QUIC side is not
   nginx's"; raw results in
   `testing/fingerprint/results/2026-09-25-quic-listener/`;

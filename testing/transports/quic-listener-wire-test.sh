@@ -21,6 +21,7 @@
 #     reset token by name only);
 #   * its first 1-RTT datagram (tickets, HANDSHAKE_DONE, NEW_CONNECTION_ID,
 #     HTTP/3 streams), its session tickets, its HTTP/3 SETTINGS;
+#   * the STREAM and HTTP/3 frames its answer to GET / rides (sizes printed);
 #   * its HTTP/3 answers to GET /, GET /nope, HEAD /, POST /, DELETE /.
 #
 # Every difference is a FAIL. Written on 2026-09-25 as the acceptance test
@@ -78,15 +79,14 @@ pem() { # <yaml key> <PEM label>: that block of the founder's keys section
 pem tls_cert CERTIFICATE > "$RUN/n/cert.pem"
 pem tls_key "PRIVATE KEY" > "$RUN/n/key.pem"
 chmod 644 "$RUN/n/"*.pem
+# The decoy's persona is an nginx that advertises its HTTP/3 with the usual add_header Alt-Svc
+# (decoy-conformance-test.sh); without it the reference lacks a field every decoy answer has.
 cat > "$RUN/n/default.conf" <<-'EOF'
 	server {
 	    listen 443 quic reuseport;
 	    listen 443 ssl;
 	    ssl_certificate     /n/cert.pem;
 	    ssl_certificate_key /n/key.pem;
-	    # A site that serves HTTP/3 advertises it, or browsers never find it;
-	    # add_header applies to HTTP/3 answers too. The same reference as
-	    # decoy-conformance-test.sh (our decoy sends Alt-Svc when quic is up).
 	    add_header Alt-Svc 'h3=":443"; ma=86400';
 	    location / { root /usr/share/nginx/html; }
 	}
@@ -186,6 +186,21 @@ settings() {
 compare "the HTTP/3 SETTINGS" "$(settings f "$cf")" "$(settings n "$cn")"
 
 # ---- HTTP/3 answers -----------------------------------------------------------------------------------
+answer() { # <x> <client port> <fields...>: the datagrams carrying the answer to curl's GET / (stream 0)
+	local x=$1 p=$2; shift 2
+	TS "$x" -Y "udp.srcport == 443 && udp.dstport == $p && quic.stream.stream_id == 0" -T fields "$@" |
+		sed 's/0x00000000000000//g'
+}
+# Frames and HTTP/3 frames: nginx writes HEADERS and DATA in one STREAM frame and the FIN in an
+# empty one after it. The sizes vary
+# with the Date's and the ETag's Huffman lengths, so they are printed, not compared.
+compare "the answer to GET / (frames, stream ids, HTTP/3 frames)" \
+	"$(answer f "$cf" -e quic.frame_type -e quic.stream.stream_id -e http3.frame_type)" \
+	"$(answer n "$cn" -e quic.frame_type -e quic.stream.stream_id -e http3.frame_type)"
+for x in f:"$cf" n:"$cn"; do
+	log "  ${x%%:*}: answer to GET / (udp length, STREAM lengths, HTTP/3 frame lengths): $(answer "${x%%:*}" "${x#*:}" \
+		-e udp.length -e quic.stream.length -e http3.frame_length | tr '\t\n' ' ;')"
+done
 compare "the HTTP/3 answers (status, body size, header names)" "$(cat "$RUN/answers-f.txt")" "$(cat "$RUN/answers-n.txt")"
 
 if [[ $FAILED -eq 0 ]]; then

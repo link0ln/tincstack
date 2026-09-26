@@ -73,27 +73,43 @@ const uint8_t *h3_uni_preamble(uint64_t type, bool server, size_t *len);
 /* A DATA frame header for a payload of `len' bytes. Returns its length. */
 size_t h3_data_header(uint8_t *out, uint64_t len);
 
-/* HEADERS frame of the dialler's request: POST https://<authority><path>.
-   Newly allocated; *outlen is set. */
-uint8_t *h3_request(const char *authority, const char *path, size_t *outlen);
+/* HEADERS frame of the dialler's request: POST https://<authority><path>,
+   with a `cookie' field if `cookie' is not NULL. Newly allocated; *outlen
+   is set. */
+uint8_t *h3_request(const char *authority, const char *path, const char *cookie, size_t *outlen);
 
 /* HEADERS frame of the listener's answer to an authenticated tinc peer:
    status 200, nothing that says what follows. */
 uint8_t *h3_response_ok(size_t *outlen);
 
 /* Turn an HTTP/1.1 response (status line, headers, blank line, body -- what
-   decoy_respond_static() returns) into a HEADERS frame and one DATA frame.
-   Connection-specific headers are dropped, names lowercased. Newly allocated;
-   NULL if `resp' is not a response. */
-uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen);
+   decoy_respond_static() returns) into a HEADERS frame and one DATA frame,
+   the field section encoded as nginx 1.26's HTTP/3 filter encodes it
+   (static name references for the fields it keeps apart, Huffman where
+   shorter). `proxied': the answer came from an upstream, whose
+   Last-Modified and Content-Length nginx sends as literals.
+   Connection-specific headers are dropped, names lowercased. Newly
+   allocated; *hdrlen (if not NULL) is the HEADERS frame's length. NULL if
+   `resp' is not a response. */
+uint8_t *h3_from_http1(const char *resp, size_t resplen, bool proxied, size_t *outlen, size_t *hdrlen);
 
-/* What a web server answers a request by: its pseudo-header fields, decoded
-   from a HEADERS frame's field section (RFC 9204). NUL-terminated; a field
-   that is missing stays empty. */
+/* What a web server answers a request by, decoded from a HEADERS frame's
+   field section (RFC 9204): its pseudo-header fields, and every other
+   field as an HTTP/1.1 header line, in order ("name: value\r\n"), for the
+   decoy -- conditional requests, Range, Accept-Encoding, what an upstream
+   is sent. NUL-terminated; a field that is missing stays empty. A field
+   name that is not a lowercase token, a value with CR, LF or NUL, or more
+   than fits, fails the decode (nginx answers such a request 400). */
+#define H3_REQ_HEADERS_MAX 32768
+
 typedef struct h3_req_fields_t {
 	char method[32];
 	char path[8192];
 	char authority[256];
+	char host[256];         /* a `host' field line, kept apart from the rest */
+	char cookie[4096];      /* every cookie field line, joined */
+	char headers[H3_REQ_HEADERS_MAX];
+	size_t headers_len;
 } h3_req_fields_t;
 
 /* The listener's QPACK decoder: the dynamic table a client builds with its

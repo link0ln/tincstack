@@ -23,12 +23,17 @@
 #define QPACK_AUTHORITY 0               /* :authority */
 #define QPACK_PATH_ROOT 1               /* :path / */
 #define QPACK_CONTENT_LENGTH 4          /* content-length 0 */
+#define QPACK_COOKIE 5                  /* cookie */
+#define QPACK_DATE 6                    /* date */
+#define QPACK_LAST_MODIFIED 10          /* last-modified */
+#define QPACK_LOCATION 12               /* location */
+#define QPACK_CONTENT_TYPE_TEXT 53      /* content-type text/plain */
+#define QPACK_VARY_AE 59                /* vary accept-encoding */
+#define QPACK_SERVER 92                 /* server */
 #define QPACK_METHOD_POST 20            /* :method POST */
 #define QPACK_SCHEME_HTTPS 23           /* :scheme https */
 #define QPACK_STATUS_200 25             /* :status 200 */
-#define QPACK_STATUS_404 27             /* :status 404 */
 #define QPACK_CONTENT_TYPE_OCTET 44     /* content-type application/dns-message (name only) */
-#define QPACK_STATUS_400 67             /* :status 400 */
 #define QPACK_USER_AGENT 95             /* user-agent */
 #define QPACK_ACCEPT_ANY 29             /* accept * / * */
 
@@ -210,16 +215,80 @@ static void qp_string(fbuf_t *b, uint8_t flags, int bits, const char *s, size_t 
 	fb_put(b, s, len);
 }
 
-/* Literal field line with a static name reference: 01N1xxxx. */
-static void qp_literal_ref(fbuf_t *b, unsigned idx, const char *value, size_t vlen) {
-	qp_int(b, 0x50, 4, idx);
-	qp_string(b, 0x00, 7, value, vlen);
-}
-
 /* Literal field line with a literal name: 001NHxxx. */
 static void qp_literal_name(fbuf_t *b, const char *name, size_t nlen, const char *value, size_t vlen) {
 	qp_string(b, 0x20, 3, name, nlen);
 	qp_string(b, 0x00, 7, value, vlen);
+}
+
+/* A string literal as nginx writes one (ngx_http_v3_encode_field_*,
+   ngx_http_huff_encode): Huffman-coded if that is strictly shorter, raw
+   otherwise; `lower' lowercases it first (names). The H flag is the bit
+   above the `bits'-bit length prefix. */
+static void qp_string_nginx(fbuf_t *b, uint8_t flags, int bits, const char *s, size_t len, bool lower) {
+	size_t nbits = 0;
+
+	for(size_t i = 0; i < len; i++) {
+		unsigned char c = (unsigned char)(lower ? tolower((unsigned char)s[i]) : s[i]);
+		nbits += huff_len[c];
+	}
+
+	size_t hlen = (nbits + 7) / 8;
+
+	if(!len || hlen >= len) {
+		qp_int(b, flags, bits, len);
+
+		for(size_t i = 0; i < len; i++) {
+			fb_byte(b, (uint8_t)(lower ? tolower((unsigned char)s[i]) : s[i]));
+		}
+
+		return;
+	}
+
+	qp_int(b, (uint8_t)(flags | (1 << bits)), bits, hlen);
+	uint64_t acc = 0;
+	int pending = 0;
+
+	for(size_t i = 0; i < len; i++) {
+		unsigned char c = (unsigned char)(lower ? tolower((unsigned char)s[i]) : s[i]);
+		acc = acc << huff_len[c] | huff_code[c];
+		pending += huff_len[c];
+
+		while(pending >= 8) {
+			pending -= 8;
+			fb_byte(b, (uint8_t)(acc >> pending));
+		}
+	}
+
+	if(pending) {
+		/* Padding: the most significant bits of EOS, all ones. */
+		fb_byte(b, (uint8_t)((acc << (8 - pending)) | (0xff >> pending)));
+	}
+}
+
+/* nginx's Literal Field Line With (static) Name Reference; `huff' false
+   writes the value raw, as nginx does for :status and content-length. */
+static void qp_nginx_lri(fbuf_t *b, unsigned idx, const char *value, size_t vlen, bool huff) {
+	qp_int(b, 0x50, 4, idx);
+
+	if(huff) {
+		qp_string_nginx(b, 0x00, 7, value, vlen, false);
+	} else {
+		qp_string(b, 0x00, 7, value, vlen);
+	}
+}
+
+/* nginx's Literal Field Line With Literal Name. */
+static void qp_nginx_l(fbuf_t *b, const char *name, size_t nlen, const char *value, size_t vlen) {
+	qp_string_nginx(b, 0x20, 3, name, nlen, true);
+	qp_string_nginx(b, 0x00, 7, value, vlen, false);
+}
+
+/* Literal field line with a static name reference: 01N1xxxx, the value
+   Huffman-coded where that is shorter -- what curl's (nghttp3's) and
+   Chromium's QPACK encoders do with every literal. */
+static void qp_literal_ref(fbuf_t *b, unsigned idx, const char *value, size_t vlen) {
+	qp_nginx_lri(b, idx, value, vlen, true);
 }
 
 /* Wrap a field section (prefix + lines) into a HEADERS frame. */
@@ -245,7 +314,7 @@ static void section_prefix(fbuf_t *fs) {
 	fb_byte(fs, 0x00);      /* Delta Base 0 */
 }
 
-uint8_t *h3_request(const char *authority, const char *path, size_t *outlen) {
+uint8_t *h3_request(const char *authority, const char *path, const char *cookie, size_t *outlen) {
 	static const char ua[] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 	                         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 	static const char ctype[] = "application/octet-stream";
@@ -265,6 +334,11 @@ uint8_t *h3_request(const char *authority, const char *path, size_t *outlen) {
 	qp_literal_ref(&fs, QPACK_CONTENT_TYPE_OCTET, ctype, sizeof(ctype) - 1);
 	qp_indexed(&fs, QPACK_ACCEPT_ANY);
 	qp_literal_ref(&fs, QPACK_USER_AGENT, ua, sizeof(ua) - 1);
+
+	if(cookie) {
+		qp_literal_ref(&fs, QPACK_COOKIE, cookie, strlen(cookie));
+	}
+
 	return headers_frame(&fs, NULL, outlen);
 }
 
@@ -290,7 +364,11 @@ static bool hop_by_hop(const char *name, size_t len) {
 	return false;
 }
 
-uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen) {
+static bool name_is(const char *name, size_t nlen, const char *want) {
+	return strlen(want) == nlen && !strncasecmp(name, want, nlen);
+}
+
+uint8_t *h3_from_http1(const char *resp, size_t resplen, bool proxied, size_t *outlen, size_t *hdrlen) {
 	const char *end = resp + resplen;
 	const char *eol = memchr(resp, '\n', resplen);
 
@@ -304,27 +382,17 @@ uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen) {
 		return NULL;
 	}
 
+	/* ngx_http_v3_header_filter(): 200 indexed, any other status a
+	   literal on :status 200's name, raw. */
 	fbuf_t fs = {0};
 	section_prefix(&fs);
 
-	switch(status) {
-	case 200:
+	if(status == 200) {
 		qp_indexed(&fs, QPACK_STATUS_200);
-		break;
-
-	case 404:
-		qp_indexed(&fs, QPACK_STATUS_404);
-		break;
-
-	case 400:
-		qp_indexed(&fs, QPACK_STATUS_400);
-		break;
-
-	default: {
+	} else {
 		char st[4];
 		snprintf(st, sizeof(st), "%d", status);
-		qp_literal_ref(&fs, QPACK_STATUS_200, st, 3);
-	}
+		qp_nginx_lri(&fs, QPACK_STATUS_200, st, 3, false);
 	}
 
 	const char *p = eol + 1;
@@ -358,16 +426,35 @@ uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen) {
 				v++;
 			}
 
-			if(!hop_by_hop(p, nlen)) {
-				char name[64];
+			size_t vlen = (size_t)(p + ll - v);
 
-				if(nlen < sizeof(name)) {
-					for(size_t i = 0; i < nlen; i++) {
-						name[i] = (char)tolower((unsigned char)p[i]);
-					}
-
-					qp_literal_name(&fs, name, nlen, v, (size_t)(p + ll - v));
+			/* The fields nginx keeps apart from its header list, each
+			   with its static name: in the same order as its HTTP/1.1
+			   header filter writes them, so the decoy's order is
+			   nginx's. Last-Modified and Content-Length an upstream sent
+			   are in nginx's list, and literal. */
+			if(hop_by_hop(p, nlen)) {
+				/* dropped */
+			} else if(name_is(p, nlen, "server")) {
+				qp_nginx_lri(&fs, QPACK_SERVER, v, vlen, true);
+			} else if(name_is(p, nlen, "date")) {
+				qp_nginx_lri(&fs, QPACK_DATE, v, vlen, true);
+			} else if(name_is(p, nlen, "content-type")) {
+				qp_nginx_lri(&fs, QPACK_CONTENT_TYPE_TEXT, v, vlen, true);
+			} else if(!proxied && name_is(p, nlen, "content-length")) {
+				if(vlen == 1 && *v == '0') {
+					qp_indexed(&fs, QPACK_CONTENT_LENGTH);
+				} else {
+					qp_nginx_lri(&fs, QPACK_CONTENT_LENGTH, v, vlen, false);
 				}
+			} else if(!proxied && name_is(p, nlen, "last-modified")) {
+				qp_nginx_lri(&fs, QPACK_LAST_MODIFIED, v, vlen, true);
+			} else if(name_is(p, nlen, "location")) {
+				qp_nginx_lri(&fs, QPACK_LOCATION, v, vlen, true);
+			} else if(!proxied && name_is(p, nlen, "vary") && vlen == 15 && !strncasecmp(v, "Accept-Encoding", 15)) {
+				qp_indexed(&fs, QPACK_VARY_AE);
+			} else if(nlen < 64) {
+				qp_nginx_l(&fs, p, nlen, v, vlen);
 			}
 		}
 
@@ -388,7 +475,14 @@ uint8_t *h3_from_http1(const char *resp, size_t resplen, size_t *outlen) {
 		fb_put(&data, body, blen);
 	}
 
-	return headers_frame(&fs, blen ? &data : NULL, outlen);
+	size_t dlen = data.len;
+	uint8_t *out = headers_frame(&fs, blen ? &data : NULL, outlen);
+
+	if(hdrlen) {
+		*hdrlen = *outlen - dlen;
+	}
+
+	return out;
 }
 
 /* ---- QPACK decoding (the listener's view of a request) ------------------------- */
@@ -471,8 +565,8 @@ static bool huff_decode(const uint8_t *src, size_t len, char *out, size_t cap, s
 			if(huff_count[bits] && code >= huff_first[bits] && code - huff_first[bits] < huff_count[bits]) {
 				uint16_t sym = huff_sorted[huff_offset[bits] + (code - huff_first[bits])];
 
-				if(sym == 256 || o + 1 >= cap) {
-					return false;   /* EOS in a string, or too long */
+				if(sym == 256 || !sym || o + 1 >= cap) {
+					return false;   /* EOS or NUL in a string, or too long */
 				}
 
 				out[o++] = (char)sym;
@@ -516,7 +610,8 @@ static bool qd_string(const uint8_t *buf, size_t len, size_t *i, int bits, char 
 		return huff_decode(str, slen, out, cap, &olen);
 	}
 
-	if(slen >= cap) {
+	/* A NUL would cut the string short: nginx rejects a field with one. */
+	if(slen >= cap || memchr(str, 0, slen)) {
 		return false;
 	}
 
@@ -915,10 +1010,71 @@ size_t h3_qpack_stream_cancel(int64_t stream_id, uint8_t *out) {
 	return fb.len;
 }
 
-/* Keep a decoded field if the decoy needs it. */
+/* An HTTP/3 field name: lowercase (RFC 9114 4.2), a token. */
+static bool qd_name_ok(const char *n) {
+	if(!*n) {
+		return false;
+	}
+
+	for(; *n; n++) {
+		unsigned char c = (unsigned char) * n;
+
+		if(!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || strchr("!#$%&'*+-.^_`|~", c))) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/* Keep a decoded field. Pseudo-headers the decoy needs, and every regular
+   field as a header line. Cookie field lines, which HTTP/3 lets a client
+   split (RFC 9114 4.2.1), are also joined with "; " for the listener's
+   token; what does not fit there is dropped, not an error. */
 static bool qd_keep(h3_req_fields_t *out, const char *name, const char *value) {
 	char *dst;
 	size_t cap;
+
+	if(*name != ':') {
+		if(!qd_name_ok(name) || strpbrk(value, "\r\n")) {
+			return false;
+		}
+
+		if(!strcmp(name, "host")) {
+			size_t n = strlen(value);
+
+			if(n >= sizeof(out->host)) {
+				return false;
+			}
+
+			memcpy(out->host, value, n + 1);
+			return true;
+		}
+
+		int n = snprintf(out->headers + out->headers_len, sizeof(out->headers) - out->headers_len, "%s: %s\r\n", name, value);
+
+		if(n < 0 || (size_t)n >= sizeof(out->headers) - out->headers_len) {
+			return false;
+		}
+
+		out->headers_len += (size_t)n;
+	}
+
+	if(!strcmp(name, "cookie")) {
+		size_t have = strlen(out->cookie);
+		size_t n = strlen(value);
+
+		if(have + 2 + n < sizeof(out->cookie)) {
+			if(have) {
+				memcpy(out->cookie + have, "; ", 2);
+				have += 2;
+			}
+
+			memcpy(out->cookie + have, value, n + 1);
+		}
+
+		return true;
+	}
 
 	if(!strcmp(name, ":authority")) {
 		dst = out->authority;
