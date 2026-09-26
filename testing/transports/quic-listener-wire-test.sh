@@ -79,12 +79,15 @@ pem() { # <yaml key> <PEM label>: that block of the founder's keys section
 pem tls_cert CERTIFICATE > "$RUN/n/cert.pem"
 pem tls_key "PRIVATE KEY" > "$RUN/n/key.pem"
 chmod 644 "$RUN/n/"*.pem
+# The decoy's persona is an nginx that advertises its HTTP/3 with the usual add_header Alt-Svc
+# (decoy-conformance-test.sh); without it the reference lacks a field every decoy answer has.
 cat > "$RUN/n/default.conf" <<-'EOF'
 	server {
 	    listen 443 quic reuseport;
 	    listen 443 ssl;
 	    ssl_certificate     /n/cert.pem;
 	    ssl_certificate_key /n/key.pem;
+	    add_header Alt-Svc 'h3=":443"; ma=86400';
 	    location / { root /usr/share/nginx/html; }
 	}
 EOF
