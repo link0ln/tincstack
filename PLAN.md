@@ -1517,6 +1517,50 @@ host SDK/NDK mounted read-only; no core source or meson change was needed.
   (`Ready`), `tinc get AllowApplication|Route|Ifconfig` return the values (with
   "not a known configuration variable" warnings), and the file keeps all keys
   after the daemon stops. Real `establish()` on a device not run here.
+- [x] 🟠 **DisconnectOnScreenOff** (owner request 2026-09-26; the owner's phone
+  moves from the old `/opt/gitrepo/tincapp` v0.42, whose version of this never
+  reconnected, to this app). Stream D2 (merge 562ed4b). While the screen is
+  locked tincd is stopped (the battery saving: no keepalives, no radio
+  wake-ups) and the VPN interface is kept by the service, so nothing leaks
+  outside the tunnel while locked (a full-tunnel network means no network
+  while locked, by design, `docs/config-schema.md`); on `USER_PRESENT`, or
+  `SCREEN_ON` without a keyguard, tincd restarts on a fresh dup of the kept
+  fd. The service is in the foreground while connected (`systemExempted`,
+  measured `types=00000400`); an explicit disconnect or `onRevoke` is final
+  (`SessionStateMachine.kt`). yaml key `DisconnectOnScreenOff` + a toggle in
+  the app picker. Old app's failure, reproduced on its debug build: tincd held
+  the last tun fd, so the VPN vanished ~10 s after locking (traffic went
+  outside the tunnel while locked), the plain started service was stopped
+  ~60 s later ("Stopping service due to app idle"), and `onDestroy` unregistered
+  the receiver -- nothing heard the unlock. Proof (API 34 emulator,
+  `testing/android/results/2026-09-26-screenlock/`): `lock-cycle-on-emulator.sh`
+  https and quic, 3 cycles x 95 s locked each: tincd gone within 1 s, tun0 and
+  the process kept, `isForeground=true`, tincd back in 0-2 s after unlock and
+  the founder pings within 1 s, carrier unchanged; PIN keyguard: SCREEN_ON on
+  the PIN pad does not resume, the PIN unlock does; disconnect then lock/unlock
+  stays down; A/B: old app never resumed, new one in 0 s; Robolectric 48/48. Re-verified on master after the merge: gradle rc 0, 48 tests 0 failures, `lock-cycle-on-emulator.sh` quic 1 cycle x 95 s rc 0.
+  Open: the disconnect action from the notification on a locked screen (the
+  emulator does not show it; unit-tested only); `onRevoke` on a device
+  (unit-tested only); **a real phone** -- real Doze after hours unplugged, OEM
+  killers (MIUI/EMUI/...) that can kill even a foreground service: not
+  proven until the owner's phone keeps it through a locked night.
+- [x] 🟠 **Split routing proven on a device runtime** (was JVM-only): stream D2
+  drove the app picker through the UI (`ui-pick-apps.sh`), which wrote
+  `AllowApplication: net.tincstack.probe.a`, then `DisallowApplication`
+  (the other key removed); whitelist: probe app A reaches the founder through
+  the tunnel, B does not (VPN uids `10193, 20193` + an `ip rule uidrange`);
+  blacklist the reverse (uids `0-10191, 10194-20191, 20194-99999`).
+  `split-routing-on-emulator.sh` over https, `split-https.log`. Open: the
+  quic run was not kept as evidence.
+- [ ] 🟠 **A network created in the app ("Generate") does not start**: the tool
+  writes only `Name`, the daemon defaults `Port` to 655 and the app's
+  unprivileged process cannot bind it (`Can't bind 0.0.0.0 port 655/tcp:
+  Permission denied` -> "Unable to create any listening socket!",
+  `zero-config-port655.log`). Joined networks are not hit (`Port: 0`). Fix:
+  write `Port: 0` (or a free high port) when generating on Android.
+- [ ] 🟡 No `tinc.yaml` at all: `establish()` fails with "At least one address
+  must be specified" instead of a readable error.
+- [ ] 🟢 the POST_NOTIFICATIONS prompt (API 33+) races the first connect.
 - **Acceptance:** an Android user joins by invite/QR and chooses which apps use
   the tunnel. **Status:** the picker and the one-file config are proven on the
   JVM; the APK is built from the core for all 4 ABIs. Install,
