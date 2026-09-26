@@ -8,22 +8,25 @@
 #      docker network, with a fixed address so the invitation is dialable;
 #   2. the headless emulator (docker/emulator.sh) attached to that network --
 #      the guest reaches the inviter through the emulator's user-mode NAT;
-#   3. the debug APK installed, the VpnService consent granted with appops
-#      (the dialog cannot be tapped from a script);
-#   4. the join driven through the UI: Configure -> Tools -> Join a network,
-#      the invitation typed into the very field the QR scanner fills
-#      (JoinNetworkToolDialogFragment.onActivityResult -> invitation_url);
+#   3. the debug APK installed, the VpnService consent (appops) and the
+#      notification permission granted up front: this script is about the
+#      join and the tunnel; ui-flows-on-emulator.sh answers those dialogs
+#      through the UI;
+#   4. the join driven through the UI (ui-join.sh): the main screen's join
+#      form, the invitation typed into the field paste and the QR scanner
+#      fill, "Join and connect"; the app names the network itself and
+#      connects right away;
 #   5. assertions on the file the core wrote: the shared YAML schema
 #      (docs/config-schema.md), a pool address, the inviter as a host record;
-#   6. connect (the exported CONNECT intent) and ping the inviter through the
-#      tunnel.
+#   6. the tunnel the app brought up carries traffic: ping the inviter
+#      through it (with TRANSPORT, after a reconnect on that carrier).
 #
 # TRANSPORT=https|quic (2026-09-24): before connecting, set the phone's
 # PreferredTransports to that carrier (with the app's own libtinc.so, as the
 # app's user), then also require that the inviter sees the phone's link on
 # it -- the VpnService tunnel over a TLS carrier, end to end.
 #
-# Tunables: LAB (prefix, default wsy), SUBNET, APK, NETNAME, TINCSTACK_TAG, TRANSPORT,
+# Tunables: LAB (prefix, default wsy), SUBNET, APK, TINCSTACK_TAG, TRANSPORT,
 # KEEP=1 (leave the lab up), WAIT (seconds for each deadline).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -32,7 +35,6 @@ LAB=${LAB:-wsy}
 SUBNET=${SUBNET:-10.44.77.0/24}
 INVITER_IP=${INVITER_IP:-10.44.77.10}
 TAG=${TINCSTACK_TAG:-dev}
-NETNAME=${NETNAME:-phonenet}
 PKG=net.tincstack.android
 APK=${APK:-../app/build/outputs/apk/debug/app-debug.apk}
 WAIT=${WAIT:-120}
@@ -93,16 +95,19 @@ adb uninstall "$PKG" >/dev/null 2>&1 || true
 docker cp "$APK" "$NAME:/tmp/app.apk"
 adb install -r -t /tmp/app.apk
 
-step "grant the VpnService consent non-interactively"
+step "grant the VpnService consent and notifications non-interactively"
 adb shell appops set "$PKG" ACTIVATE_VPN allow || fail "could not grant ACTIVATE_VPN"
+adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS 2>/dev/null || true
 
 step "invitation for the phone"
 invitation=$(docker exec "$INVITER" tincstack-cli invite phone | tr -d '\r')
 echo "invitation: $invitation"
 case $invitation in "$INVITER_IP:655/"*) ;; *) fail "invitation does not carry $INVITER_IP:655" ;; esac
 
-step "join through the UI (the field the QR scanner fills)"
-./ui-join.sh "$NAME" "$NETNAME" "$invitation" || fail "the join dialog did not complete"
+step "join through the UI (the field paste and the QR scanner fill)"
+NETNAME=$(./ui-join.sh "$NAME" "$invitation" | tail -n1) || fail "the join did not complete"
+[ -n "$NETNAME" ] || fail "no network after the join"
+echo "the app named the network: $NETNAME"
 
 step "the file the core wrote"
 yaml=$(adb shell "su 0 cat /data/data/$PKG/files/networks/$NETNAME/tinc.yaml" | tr -d '\r')
@@ -111,7 +116,11 @@ yaml=$(adb shell "su 0 cat /data/data/$PKG/files/networks/$NETNAME/tinc.yaml" | 
 sed -E '/-----BEGIN/,/-----END/{/-----BEGIN/!d}; s/^( *)-----BEGIN.*/\1<key redacted>/' <<<"$yaml"
 
 grep -q "^networks:"            <<<"$yaml" || fail "no networks: mapping (not the shared schema)"
-grep -qE "^  $NETNAME:"         <<<"$yaml" || fail "no networks.$NETNAME stanza"
+# the stanza is the invitation's NetName, or the core's default; the
+# directory name is the app's (commands/Join.kt, pickName)
+STANZA=$(sed -nE 's/^  ([A-Za-z0-9_.-]+):$/\1/p' <<<"$yaml" | head -n1)
+[ -n "$STANZA" ] || fail "no networks.<name> stanza"
+echo "stanza: $STANZA"
 grep -qE "^    options:"        <<<"$yaml" || fail "no options: under the network"
 grep -qE "^    hosts:"          <<<"$yaml" || fail "no hosts: under the network"
 grep -qE "^    keys:"           <<<"$yaml" || fail "no keys: under the network"
@@ -124,19 +133,37 @@ echo "OK: schema-conformant, pool address present"
 mode=$(adb shell "su 0 stat -c %a /data/data/$PKG/files/networks/$NETNAME/tinc.yaml" | tr -d '\r')
 case $mode in 600|400) echo "OK: tinc.yaml is mode $mode" ;; *) fail "tinc.yaml is mode $mode, readable beyond the app" ;; esac
 
+step "the app connected on its own after the join"
+deadline=$(( SECONDS + WAIT ))
+until adb shell 'su 0 ip -br addr show tun0' 2>/dev/null | grep -c 'UNKNOWN\|UP' >/dev/null; do
+    (( SECONDS < deadline )) || {
+        adb shell "su 0 tail -n 40 /data/data/$PKG/cache/logs/tincapp.log" >&2 || true
+        fail "no tun interface within ${WAIT}s of the join"
+    }
+    sleep 3
+done
+echo "OK: tun0 up"
+
 if [[ -n ${TRANSPORT:-} ]]; then
-    step "prefer the $TRANSPORT carrier (the app's libtinc.so, run as the app)"
+    step "disconnect; prefer the $TRANSPORT carrier (the app's libtinc.so, run as the app)"
+    adb shell am start -a "$PKG.intent.action.DISCONNECT" >/dev/null
+    deadline=$(( SECONDS + WAIT ))
+    while adb shell 'su 0 ip -br link show tun0' >/dev/null 2>&1; do
+        (( SECONDS < deadline )) || fail "tun0 still up ${WAIT}s after DISCONNECT"
+        sleep 2
+    done
     # The extracted jniLibs: <dir of base.apk>/lib/<ABI dir> (x86_64 here).
     apk=$(adb shell "pm path $PKG" | tr -d '\r' | sed -n 's/^package://p' | head -n1 || true)
     libdir="${apk%/*}/lib/$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
     [ -n "$apk" ] || fail "no APK path for $PKG"
-    adb shell "run-as $PKG $libdir/libtinc.so -c /data/data/$PKG/files/networks/$NETNAME/tinc.yaml -n $NETNAME set PreferredTransports $TRANSPORT" \
+    adb shell "run-as $PKG $libdir/libtinc.so -c /data/data/$PKG/files/networks/$NETNAME/tinc.yaml -n $STANZA set PreferredTransports $TRANSPORT" \
         || fail "could not set PreferredTransports"
     adb shell "run-as $PKG $libdir/libtincd.so --version" | tr -d '\r' | head -2 || true
 fi
 
 step "connect and ping the inviter through the tunnel"
 # the app's own intent API (intent/Actions.kt): CONNECT with a tinc:<net> URI
+# (a no-op when that network is connected already)
 adb shell am start -a "$PKG.intent.action.CONNECT" -d "tinc:$NETNAME" >/dev/null
 deadline=$(( SECONDS + WAIT ))
 until adb shell 'su 0 ip -br addr show tun0' 2>/dev/null | grep -c 'UNKNOWN\|UP' >/dev/null; do

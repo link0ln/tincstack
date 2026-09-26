@@ -106,7 +106,9 @@ class JoinPanel(
 
       else -> binding.invitationLayout.error = activity.getString(R.string.join_not_an_invitation)
     }
-    if (JoinController.state.value is JoinController.State.Failed) JoinController.reset()
+    // an edit clears the failure; the same text restored after a rotation or
+    // a theme change does not
+    (JoinController.state.value as? JoinController.State.Failed)?.let { if (it.invitation != invitation) JoinController.reset() }
     updateClipboardCard()
   }
 
