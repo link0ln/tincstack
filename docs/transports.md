@@ -690,6 +690,15 @@ session key exists); the session keys and their header keys are known to the
 two endpoints only. The magic prefix is deliberately left in clear (it exists
 to imitate something). SPTPS inside is unchanged.
 
+Measured with the same audit script on the v3 core
+(`testing/fingerprint/results/2026-09-26-obfs-v3/`): `bytes[8:10] == len − 10`
+in 0 of 9313 datagrams, consecutive datagrams with equal bytes 0–5 0 of 4657
+and 0 of 4654, no header byte flagged by the chi-square, 130 bulk sizes where
+v2 had 2, no handshake position of fixed size over 7 dials (v2: the first 5).
+The `fuzz_obfs` self-tests assert the same properties on 20 000 frames, the v2
+and v3 round trips, tampering and replay; a build with the header mask removed
+fails them.
+
 ### Mixed versions: v2 and v3 nodes in one mesh
 
 There is no version field on the wire — a field would be exactly the marker v3
