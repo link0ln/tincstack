@@ -483,6 +483,40 @@ it claims, failure paths included) the direct path is the uncovered one. This
 also interacts with every traversal technique in §9: anything that makes
 more pairs direct makes more plain tinc UDP.
 
+**Since stream N2 (DirectSeal, docs/transports.md §5)** a node that dials
+obfs, https or quic seals its direct datagrams in obfs frame v3. The same
+rows, `wirestats` added to the capture (runs `ww-n2-cap-base` on the
+pre-N2 image `11e02ef`, `ww-n2-cap-n2` after):
+
+| pair, carrier | before: datagrams / zero dst id / sf magic / 51 B | after: datagrams / zero dst id / sf magic / 51 B | after: distinct sizes, chi² flagged byte positions 0-15, entropy of bytes 0-15 | PMTU before → after | direct |
+|---|---|---|---|---|---|
+| restricted x restricted, plain | 194 / 120 / 74 / 56 | 173 / 103 / 70 / 42 (unchanged by design: plain nodes do not seal) | 12, all 16, 4.17 bit | 1439 → 1439 | 8 s → 6 s |
+| restricted x restricted, obfs | 340 / 61 / 196 / 48 | 291 / **0 / 0 / 1** | 140, none, 7.96 bit | 1413 → 1413 | 10 s → 8 s |
+| masq x restricted, obfs | 313 / 69 / 196 / 39 | 335 / **0 / 0 / 1** | 151, none, 7.97 bit | 1439 → 1413 | 6 s → 8 s |
+| masqfw x masqfw, quic | 294 / 98 / 196 / 33 (+11 QUIC long headers) | 338 / **0 / 0 / 2** (+27 QUIC long headers) | 138, none, 7.97 bit | 1439 → 1413 | 4 s → 4 s |
+| restricted x restricted, quic | 485 / 485 / 0 / 485, constant src id + counter | 495 / **0 / 0 / 0** (+42 QUIC long headers) | 65, none, 7.98 bit | relay (§5.1) | relay → relay (§5.1) |
+| restricted x restricted, https | 0 (TCP only) | 0 (TCP only) | — | — | relayed (§5.2) |
+
+The one or two 51-byte datagrams after the change are sealed frames whose
+random tail happened to land on 51 (1 of 291-338, against 13-29 % before).
+`dpi-fingerprint` still reports `udp_constant_srcid` in the quic rows: those
+flows are the QUIC connections themselves (ephemeral ports, a QUIC short
+header carries its connection id in the clear), not the direct path on 655 —
+QUIC looking like QUIC. The sealed `obfs`/`quic` rows no longer flag
+`udp_null_dstid` or `udp_probe_size`. The sf-magic datagrams before were
+`UdpMetaFallback`'s `sf` side link; it now runs over `obfs` when either end
+seals. Evidence: `results/2026-09-26/n2/capture-*`. A repeat on the final
+item-1 image (run `ww-n2-cap-n2b`, `capture-n2b`) gives the same picture:
+obfs 304 and 229 datagrams, quic masqfw 331, quic restricted 495 — 0 zero dst
+id, 0 sf magic, 0-1 of 51 B, no chi² position flagged, entropy 7.95-7.98 bit,
+PMTU 1413; plain unchanged (170 / 106 / 64 / 40, PMTU 1439).
+
+No direct pair lost (`results/2026-09-26/n2/matrix-item1.log`): the full
+plain matrix on the N2 image is 28 PASS, 17/25 direct (the same set as §3.1);
+`--transport obfs` on six pairs 6/6 direct before and after; `--transport
+quic` 1/6 before and after (masqfw only — §5.1, fixed separately); `--transport
+https` 6/6 PASS (TCP only, relayed) before and after.
+
 ## 6. IPv4 and IPv6
 
 - `n->address` is one address of one family. `update_node_udp()` picks the
@@ -735,6 +769,10 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
 
 3. 🟠 **P1 — decide what the peer-to-peer path is when the carrier disguises
    the meta connection (W3).**
+   **Status: decided and done in N2 — option (b), `DirectSeal`**
+   (docs/transports.md §5; wire numbers in §5.3). plain/sf-only nodes keep
+   upstream's wire; a sealing node sends no UDP to a peer that cannot read
+   it.
    Pairs: none change reachability; every direct pair of a node on
    quic/obfs puts plain (obfs: partly plain), fingerprintable tinc UDP
    between the sites.

@@ -122,6 +122,9 @@ typedef struct node_t {
 	char *tls_fingerprint;                  /* pinned SHA-256 of its TLS cert (hex), or NULL if unknown */
 	time_t last_req_pubkey;                 /* Last time a bare REQ_PUBKEY was relayed towards this node (rate limit) */
 	time_t last_req_transports;             /* Last time we asked this node for its carrier list (rate limit) */
+	uint8_t dseal;                          /* direct-seal capability, DSEAL_* (obfs.h); 0 = not learned yet */
+	time_t dseal_logged;                    /* rate limit for the "no direct UDP to it" log line */
+	int dseal_logged_verdict;               /* verdict that line was logged for */
 	struct node_t *prev_nexthop;            /* nexthop as of the previous graph run; only meaningful inside graph() */
 } node_t;
 

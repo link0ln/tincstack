@@ -302,7 +302,11 @@ nothing about it.
   `--ipv6 both|a` (a routed 2001:db8::/32 behind stateful ip6tables
   firewalls, `AddressFamily = any`, the relay's IPv6 address first),
   `--capture` (tcpdump of gwa's WAN side towards gwb, classified by
-  `dpi-fingerprint`: what the direct peer-to-peer path looks like on the wire).
+  `dpi-fingerprint`: what the direct peer-to-peer path looks like on the wire;
+  and by `wirestats` (`peer.wirestats.report.txt`): counts of datagrams with
+  tinc's zero destination id, sf's magic, 51-byte probes, constant source ids
+  and counters, per-byte chi² over bytes 0-15 and their entropy, with QUIC
+  long headers counted apart — the DirectSeal proof, docs/nat.md §5.3).
 - `mesh [--nodes "T1 T2 ..."]`: every node behind its own NAT, one public
   relay, every ordered pair pings at 1 pps. Per pair: seconds to direct in
   each direction; overall % direct and the relay's steady-state packet/byte

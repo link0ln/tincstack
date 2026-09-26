@@ -448,6 +448,8 @@ scenario_run() { # A_TYPE B_TYPE IMAGE OUTDIR -> 0 pass / 1 fail
         meta_a="$(meta_carriers nodea)"; meta_b="$(meta_carriers nodeb)"
         kill "$cap_pid" 2>/dev/null || true; wait "$cap_pid" 2>/dev/null || true
         dpi-fingerprint "$d/peer.pcap" --port 0 > "$d/peer.report.txt" 2>&1 || true
+        # every tinc marker counted, not thresholded, plus byte/size statistics
+        wirestats "$d/peer.pcap" > "$d/peer.wirestats.report.txt" 2>&1 || true
         rm -f "$d/peer.pcap"
     fi
     save_state "$d" relay nodea nodeb

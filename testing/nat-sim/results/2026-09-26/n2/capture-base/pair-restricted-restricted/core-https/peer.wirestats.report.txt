@@ -1,0 +1,14 @@
+datagrams                0
+quic_long_header         0
+analysed                 0
+zero6                    0
+sfmagic                  0
+size51                   0
+const_srcid              {}
+counter                  {}
+eq6_consec               0/0
+distinct_sizes           0
+size_histogram_top10     {}
+chi2_flagged_positions   []
+chi2_min_p               None
+entropy_bytes_0_15       None

@@ -1,0 +1,9 @@
+dpi-fingerprint: port=0 tcp_segments=0 udp_datagrams=527
+  tcp_id_line              absent   n=0     []
+  tcp_sptps_handshake      absent   n=0     []
+  udp_size_histogram       info     n=527   {"51": 485, "1200": 42}
+  udp_null_dstid           PRESENT  n=485   485/527 datagrams start with 6 zero bytes
+  udp_constant_srcid       PRESENT  n=8     {"100.64.0.3:41655": "c5888a302717", "100.64.0.2:40655": "0babe5ea84dc", "100.64.0.3:49874": "33ec6ab39286", "100.64.0.2:38884": "403959110fea", "100.64.0.3:57385": "b260deb2b258", "100.64.0.2:39827": "c32c29655692", "100.64.0.3:41071": "1cf8ef6acb10", "100.64.0.2:33067": "a1335a7fefe9"}
+  udp_seqno_counter        PRESENT  n=2     {"100.64.0.3:41655": {"first": 3, "last": 463, "monotone_ratio": 1.0}, "100.64.0.2:40655": {"first": 4, "last": 359, "monotone_ratio": 1.0}}
+  udp_probe_size           PRESENT  n=485   485 datagrams of exactly 51 bytes (tinc MIN_PROBE_SIZE)
+present: udp_constant_srcid, udp_null_dstid, udp_probe_size, udp_seqno_counter

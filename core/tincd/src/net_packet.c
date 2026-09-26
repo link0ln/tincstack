@@ -146,6 +146,49 @@ static bool carrier_datagram_path(const node_t *n) {
 	return n->connection && n->connection->transport && n->connection->transport->send_datagram;
 }
 
+/* DirectSeal (obfs.h): may we probe `n' over the plain UDP socket at all?
+   Not while we seal and do not yet know whether it reads sealed datagrams
+   (asked over the graph; the answer takes one relay round trip, about as long
+   as the SPTPS handshake that has to finish before the first probe anyway),
+   and never when it cannot read them. A node that does not seal waits for
+   the same answer for at most DSEAL_UNKNOWN_HOLD seconds -- the peer may be
+   one that wants its direct path sealed -- and then probes as upstream does.
+   A carrier datagram path or an obfs link is sealed or carried anyway. */
+#define DSEAL_UNKNOWN_HOLD 3
+
+static bool direct_seal_permits(node_t *n, bool probing) {
+	if(carrier_datagram_path(n) || obfs_link_is_active(n)) {
+		return true;
+	}
+
+	dseal_verdict_t dv = dseal_verdict(n);
+
+	switch(dv) {
+	case DSEAL_SEND_HOLD:
+		send_req_dseal(n);
+		dseal_log_hold(n, dv);
+		return false;
+
+	case DSEAL_SEND_BLOCK:
+		dseal_log_hold(n, dv);
+		return false;
+
+	case DSEAL_SEND_PLAIN_UNKNOWN:
+		if(!probing) {
+			return true;
+		}
+
+		send_req_dseal(n);
+		return !(n->last_req_transports && now.tv_sec - n->last_req_transports < DSEAL_UNKNOWN_HOLD);
+
+	case DSEAL_SEND_PLAIN:
+	case DSEAL_SEND_SEAL:
+		return true;
+	}
+
+	return true;
+}
+
 static void udp_probe_timeout_handler(void *data) {
 	node_t *n = data;
 
@@ -195,6 +238,14 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 	if(!DATA(packet)[0]) {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got UDP probe request %d from %s (%s)", packet->len, n->name, n->hostname);
 		send_udp_probe_reply(n, packet, len);
+		return;
+	}
+
+	/* A reply that arrived in the clear from a peer we do not send direct
+	   datagrams to (DirectSeal: it cannot read them, or we do not know yet)
+	   must not confirm a path we would then have to use in the clear. */
+	if(!direct_seal_permits(n, false)) {
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Ignoring UDP probe reply from %s (%s): no direct UDP to it (DirectSeal)", n->name, n->hostname);
 		return;
 	}
 
@@ -878,6 +929,17 @@ static void send_udppacket(node_t *n, vpn_packet_t *origpkt) {
 		return;
 	}
 
+	/* DirectSeal (obfs.h): a legacy (tinc 1.0 protocol) peer cannot read a
+	   sealed datagram, so a sealing node sends it none; probes are not sent
+	   at all (try_udp), data goes inside the meta connection. */
+	if(dseal_self_wants()) {
+		if(DATA(origpkt)[12] | DATA(origpkt)[13]) {
+			send_tcppacket(n->nexthop->connection, origpkt);
+		}
+
+		return;
+	}
+
 	if(n->options & OPTION_PMTU_DISCOVERY && inpkt->len > n->minmtu && (DATA(inpkt)[12] | DATA(inpkt)[13])) {
 		logger(DEBUG_TRAFFIC, LOG_INFO,
 		       "Packet for %s (%s) larger than minimum MTU, forwarding via %s",
@@ -997,6 +1059,37 @@ end:
 #endif
 }
 
+/* The meta-connection half of send_sptps_data(): the record goes to the next
+   hop inside the meta connection (SPTPS_PACKET, or REQ_KEY/ANS_KEY for older
+   hops and handshakes). */
+static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void *data, size_t len) {
+	if(type != SPTPS_HANDSHAKE && (to->nexthop->connection->options >> 24) >= 7) {
+		const size_t buflen = len + sizeof(to->id) + sizeof(from->id);
+		uint8_t *buf = alloca(buflen);
+		uint8_t *buf_ptr = buf;
+		memcpy(buf_ptr, &to->id, sizeof(to->id));
+		buf_ptr += sizeof(to->id);
+		memcpy(buf_ptr, &from->id, sizeof(from->id));
+		buf_ptr += sizeof(from->id);
+		memcpy(buf_ptr, data, len);
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Sending packet from %s (%s) to %s (%s) via %s (%s) (TCP)", from->name, from->hostname, to->name, to->hostname, to->nexthop->name, to->nexthop->hostname);
+		return send_sptps_tcppacket(to->nexthop->connection, buf, buflen);
+	}
+
+	char *buf = alloca(B64_SIZE(len));
+	b64encode_tinc(data, buf, len);
+
+	/* If this is a handshake packet, use ANS_KEY instead of REQ_KEY, for two reasons:
+	    - We don't want intermediate nodes to switch to UDP to relay these packets;
+	    - ANS_KEY allows us to learn the reflexive UDP address. */
+	if(type == SPTPS_HANDSHAKE) {
+		to->incompression = myself->incompression;
+		return send_request(to->nexthop->connection, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, from->name, to->name, buf, to->incompression);
+	} else {
+		return send_request(to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, from->name, to->name, SPTPS_PACKET, buf);
+	}
+}
+
 bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_t len) {
 	size_t origlen = len - SPTPS_DATAGRAM_OVERHEAD;
 	node_t *relay = (to->via != myself && (type == PKT_PROBE || origlen <= to->via->minmtu)) ? to->via : to->nexthop;
@@ -1007,31 +1100,7 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, this is a relay packet that the other node cannot understand, or this packet is larger than the MTU. */
 
 	if(type == SPTPS_HANDSHAKE || tcponly || (!direct && !relay_supported) || (type != PKT_PROBE && origlen > relay->minmtu)) {
-		if(type != SPTPS_HANDSHAKE && (to->nexthop->connection->options >> 24) >= 7) {
-			const size_t buflen = len + sizeof(to->id) + sizeof(from->id);
-			uint8_t *buf = alloca(buflen);
-			uint8_t *buf_ptr = buf;
-			memcpy(buf_ptr, &to->id, sizeof(to->id));
-			buf_ptr += sizeof(to->id);
-			memcpy(buf_ptr, &from->id, sizeof(from->id));
-			buf_ptr += sizeof(from->id);
-			memcpy(buf_ptr, data, len);
-			logger(DEBUG_TRAFFIC, LOG_INFO, "Sending packet from %s (%s) to %s (%s) via %s (%s) (TCP)", from->name, from->hostname, to->name, to->hostname, to->nexthop->name, to->nexthop->hostname);
-			return send_sptps_tcppacket(to->nexthop->connection, buf, buflen);
-		}
-
-		char *buf = alloca(B64_SIZE(len));
-		b64encode_tinc(data, buf, len);
-
-		/* If this is a handshake packet, use ANS_KEY instead of REQ_KEY, for two reasons:
-		    - We don't want intermediate nodes to switch to UDP to relay these packets;
-		    - ANS_KEY allows us to learn the reflexive UDP address. */
-		if(type == SPTPS_HANDSHAKE) {
-			to->incompression = myself->incompression;
-			return send_request(to->nexthop->connection, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, from->name, to->name, buf, to->incompression);
-		} else {
-			return send_request(to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, from->name, to->name, SPTPS_PACKET, buf);
-		}
+		return send_sptps_data_meta(to, from, type, data, len);
 	}
 
 	size_t overhead = 0;
@@ -1116,6 +1185,36 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 
 	case OBFS_SEND_PLAIN:
 		break;
+	}
+
+	/* DirectSeal (obfs.h): a node that runs a masking carrier seals its
+	   direct datagrams -- probes, replies and data alike -- with the peer's
+	   obfs link, and sends none at all to a peer that could not read them.
+	   Between two nodes that do not seal, this is upstream tinc's wire. */
+	dseal_verdict_t dv = dseal_verdict(relay);
+
+	if(dv == DSEAL_SEND_SEAL) {
+		if(obfs_seal_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay, &obfs_excess) == OBFS_SEND_TOOBIG) {
+			reduce_mtu(relay, (int)origlen - (int)(obfs_excess ? obfs_excess : 1));
+		}
+
+		return true;
+	}
+
+	if(dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK) {
+		if(dv == DSEAL_SEND_HOLD) {
+			send_req_dseal(relay);
+		}
+
+		dseal_log_hold(relay, dv);
+
+		/* A probe is simply not sent (we are not probing that path); a
+		   record goes inside the meta connection instead. */
+		if(type == PKT_PROBE) {
+			return true;
+		}
+
+		return send_sptps_data_meta(to, from, type, data, len);
 	}
 
 	if(sendto(listen_socket[sock].udp.fd, buf, buf_ptr - buf, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
@@ -1309,6 +1408,10 @@ static void try_udp(node_t *n) {
 		return;
 	}
 
+	if(!direct_seal_permits(n, true)) {
+		return;
+	}
+
 	/* Send gratuitous probe replies to 1.1 nodes. */
 
 	if((n->options >> 24) >= 3 && n->status.udp_confirmed) {
@@ -1352,6 +1455,10 @@ static void try_udp(node_t *n) {
 		   brief inbound window a restricted-cone / CGNAT firewall opens. Once
 		   confirmed we send exactly one keepalive probe. */
 		int burst = n->status.udp_confirmed ? 1 : udp_discovery_burst;
+
+		if(!n->status.udp_confirmed) {
+			dseal_note_probe(n);
+		}
 
 		for(int i = 0; i < burst; i++) {
 			send_udp_probe_packet(n, MIN_PROBE_SIZE);

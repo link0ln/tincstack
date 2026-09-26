@@ -1,0 +1,15 @@
+datagrams                527
+quic_long_header         42
+analysed                 485
+zero6                    485
+sfmagic                  0
+size51                   485
+const_srcid              {"100.64.0.3:41655": "c5888a302717", "100.64.0.2:40655": "0babe5ea84dc"}
+counter                  {"100.64.0.3:41655": [3, 463], "100.64.0.2:40655": [4, 359]}
+eq6_consec               483/483
+distinct_sizes           1
+top_size                 51 B x485 (100.0 %)
+size_histogram_top10     {"51": 485}
+chi2_flagged_positions   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+chi2_min_p               0.0
+entropy_bytes_0_15       3.1839
