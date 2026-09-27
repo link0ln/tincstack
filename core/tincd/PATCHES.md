@@ -932,6 +932,106 @@ checked. Proof: `testing/nat-sim/results/2026-09-26/core-fix/`, `tcponly/`
 
 ---
 
+## 33. DirectSeal: the direct peer-to-peer path is sealed under masking carriers (tincstack, 2026-09-26)
+
+`net_packet.c send_sptps_data()`, `try_udp()`, `udp_probe_h()`, `send_udppacket()`;
+`obfs.c dseal_*` (verdict, capability token, `DSEAL_KEX`); `protocol_auth.c`
+`send_ack()`/`ack_h()`; `protocol_key.c` (ANS_PUBKEY token, REQ_KEY ext 97);
+`transport.c transport_udp_meta_fallback()`.
+
+Upstream's direct UDP path is fingerprintable tinc: six zero bytes (the direct
+destination id), the sender's constant node id, 51-byte PMTU probes. A node
+that dials obfs, https or quic (or runs `AllowPlainMeta = no`) now seals every
+direct datagram -- data, probes, probe replies -- in obfs frame v3 (§28) with
+the peer's obfs link: header protection, random tails, the obfs replay window.
+Keys: the pair's bootstrap key (from both Ed25519 public keys, as obfs) until a
+session key exists; the session key from an ephemeral X25519 exchange carried
+in REQ_KEY ext 97 and signed with each end's Ed25519 key (a relay can neither
+read nor substitute it). SPTPS inside is untouched. The capability rides a
+trailing `dseal=<hex>` token on ACK and ANS_PUBKEY (older parsers stop before
+it). A sealing node sends no UDP at all to a peer that cannot read sealed
+datagrams (upstream, tinc 1.0, a tincstack without obfs) and logs why; an
+older tincstack that reads frame v2 only is relayed after 30 s with a log
+line. `plain`/`sf`-only pairs keep upstream's wire byte for byte.
+`UdpMetaFallback` builds its side link over obfs when either end seals.
+Option `DirectSeal = auto|yes|no` (default auto). Proof:
+`testing/nat-sim/results/2026-09-26/n2/capture-*`, `docs/nat.md` §5.3,
+`docs/transports.md` §5 "DirectSeal"; `mixed-version-test.sh` direct section.
+Price: PMTU 1439 -> 1413 between sealing nodes; mean time to direct 8.3 ->
+9.5 s (n = 1 per pair); pairs with upstream/legacy peers are relayed.
+
+## 34. quic: a carrier datagram is not the node's UDP address (tincstack, 2026-09-26)
+
+`transport_quic.c cb_recv_datagram()`; `net_packet.c
+handle_incoming_carrier_datagram()`, `process_sptps_udp()`,
+`send_carrier_beacon()`.
+
+A record that arrived in a QUIC DATAGRAM frame went through the UDP path and
+moved `n->address` to the QUIC flow's source; the relay then handed that flow
+out as the node's UDP address (UDP_INFO, the ANS_KEY hint) and every pair
+behind a port-changing NAT punched at the wrong port. Carrier datagrams are
+now attributed to the node of the carrier's authenticated connection and
+never call `update_node_udp()`. The relay learns the data-socket mapping from
+a sealed beacon the node sends from its UDP socket, only while it punches
+towards a peer behind that quic neighbour. Proof: `docs/nat.md` §5.1 (6 of 6
+expected-direct quic pairs direct, was 1 of 6).
+
+## 35. Coordinated hole punch with back-off (tincstack, 2026-09-26)
+
+`net_packet.c punch_*()`, `try_udp()`; `protocol_key.c` (REQ_KEY ext 98);
+`obfs.c` (`DSEAL_PUNCH` bit of the capability token).
+
+Upstream probes a peer as soon as it has a key and every 2 s after; behind a
+NAT that creates an entry for an unsolicited inbound datagram, the first early
+probe takes the port the peer needs and the repeats keep it taken. For a peer
+that advertises `DSEAL_PUNCH` and is reached through a relay, a node now asks
+for a round (`98 0`); the relay that has both ends as meta neighbours answers
+both at once (`98 2 <addr> <port>`) once it has confirmed both ends' UDP
+addresses; each end runs one 8 s round; a failed round is followed by 35 s
+without probes to that peer. An older relay forwards the request, the far end
+answers `98 1` and starts after half the weighted meta distance; after 5
+unanswered requests a node runs a round alone. Peers without the bit and
+direct meta neighbours are probed as before. Proof: `docs/nat.md` §9.3.
+
+## 36. A relayed rekey keeps a confirmed direct path (tincstack, 2026-09-26)
+
+`protocol_key.c ans_key_h()` (SPTPS and legacy branches), `node.c
+update_node_udp()`.
+
+`ans_key_h()` applied the relay's reflexive address on every ANS_KEY,
+including a rekey of a pair with a confirmed direct path, and
+`update_node_udp()` cleared `udp_confirmed` and the PMTU even for an unchanged
+address. Now the hint applies only while `!udp_confirmed` (as `udp_info_h()`
+always did) and an unchanged, already-indexed address is a no-op. Proof:
+`lab.sh rekey restricted symmetric --keyexpire 20 --node-conf
+UdpMetaFallback=no`: 45/36 address resets and 11.4 % via relay -> 0/0, 0 %
+(`docs/nat.md` §7.6).
+
+New configuration options table row:
+
+
+## 37. obfs: closing a dial that never authenticated keeps the link's session (tincstack, 2026-09-27)
+
+`obfs.c obfs_close()`; self-test `test/fuzz/fuzz_obfs.c
+selftest_unauth_close_keeps_session()`.
+
+The obfs link (keys, address) is per node. `obfs_close()` reset it when no
+other connection served the node, but looked the node up as `c->node`, which
+tinc sets only in `ack_h()`: for a dial that never authenticated it is NULL
+and no survivor was ever found. When two NATed obfs nodes dial each other at
+the same second and both dials stall, the end whose dial times out first
+falls back to a dial over the confirmed UDP data path (`UdpMetaFallback`),
+which activates and keys the link; the other end's stalled dial then times
+out and its close wiped the session just promoted -- that end opened nothing
+its peer sealed from then on and, with the link marked inactive, never
+re-keyed (ping 0 %, `tinc info` "directly with UDP" on both ends, ~15 s until
+the meta connection died). The scan now uses the link's node, and a
+connection that never authenticated (it ran no `OBFS_KEY`) never drops the
+link's keys -- they belong to another connection or to `DSEAL_KEX`. Proof:
+the self-test aborts on the old code and on the first half of the fix alone;
+lab and mechanism: `docs/transports.md`, obfs "Key schedule"; runs
+`testing/nat-sim/results/2026-09-26/n2/obfs-close/`.
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):
@@ -963,6 +1063,7 @@ Windows (mingw-w64 cross-build, for the laptop):
 | `HttpsPort` / `QuicPort` | `443` on a listening node | any node offering `https`/`quic` | front-only TCP/UDP listeners, advertised in the node's own host record (§14); `0` = off |
 | `FRONT_PORT` | unset (`443`) | Linux node image (env) | sets both and is the port compose publishes |
 | `InterfaceRoute` | unset | any node that must reach a subnet a peer announces | `"<prefix> [via] [gateway]"`, one per route; installed on the tunnel interface by the built-in tinc-up (Linux) or the Wintun backend (Windows) |
+| `DirectSeal` | `auto` | any node | seal direct peer-to-peer datagrams in obfs frame v3; `auto` = when `PreferredTransports` lists obfs/https/quic or `AllowPlainMeta = no`; `no` keeps upstream's wire (still seals towards a peer that seals) |
 
 ## Recommended deployment
 

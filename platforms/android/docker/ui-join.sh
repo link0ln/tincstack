@@ -16,7 +16,7 @@ set -euo pipefail
 NAME=${1:?usage: ui-join.sh <emulator-container> <invitation>}
 INVITATION=${2:?}
 PKG=${PKG:-net.tincstack.android}
-# shellcheck source=ui-lib.sh
+# shellcheck source-path=SCRIPTDIR source=ui-lib.sh
 . "$(dirname "$0")/ui-lib.sh"
 UI_TIMEOUT=${UI_TIMEOUT:-90}
 
