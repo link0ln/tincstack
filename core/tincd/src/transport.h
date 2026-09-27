@@ -231,8 +231,11 @@ bool transport_outranks_connection(struct outgoing_t *outgoing, const struct con
 
    Nothing about authentication changes -- the sf carrier hands the same ID
    exchange and the same SPTPS session to the same code -- and the acceptor
-   still enforces its own Transports/AllowPlainMeta. */
-bool transport_udp_meta_fallback(struct outgoing_t *outgoing, sockaddr_t *sa);
+   still enforces its own Transports/AllowPlainMeta.
+
+   Returns the carrier to dial (sf; obfs when either side seals its direct
+   path, DirectSeal in obfs.h), or TRANSPORT_MAX for "no fallback". */
+transport_id_t transport_udp_meta_fallback(struct outgoing_t *outgoing, sockaddr_t *sa);
 
 /* Meta-channel plumbing. */
 void transport_meta_flush(struct connection_t *c);           /* c->outbuf has new bytes */

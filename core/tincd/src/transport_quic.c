@@ -1088,8 +1088,13 @@ static int cb_recv_datagram(ngtcp2_conn *conn, uint32_t flags, const uint8_t *da
 
 	/* The SPTPS data record, byte-for-byte what send_sptps_data() would have
 	   put on the wire; hand it straight to the SPTPS receive path with the
-	   session's validated peer address, bypassing the front classifier. */
-	handle_incoming_vpn_packet_decap(&listen_socket[s->sock], data, datalen, &s->peer);
+	   session's validated peer address, bypassing the front classifier.
+	   That address is the QUIC flow's, not the peer's UDP data socket, so
+	   the record must not become the node's UDP address (stream N2).
+	   The sender is the node of the session's connection (NULL until the
+	   connection is authenticated -- it has an edge: dropped then). */
+	handle_incoming_carrier_datagram(&listen_socket[s->sock], data, datalen, &s->peer,
+	                                 (s->c && s->c->edge) ? s->c->node : NULL);
 	return 0;
 }
 

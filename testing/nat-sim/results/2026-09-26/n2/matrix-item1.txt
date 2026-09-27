@@ -1,0 +1,194 @@
+built tincstack/natlab:ww-n2
+build rc=0
+built tincstack/natlab:ww-n2
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-mat-n2
+15:21:23 scenario fullcone x fullcone [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:21:37 scenario fullcone x restricted [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:21:55 scenario fullcone x portrestricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:22:11 scenario fullcone x masq [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:22:28 scenario fullcone x symmetric [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:22:45 scenario restricted x fullcone [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:22:58 scenario restricted x restricted [core]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:23:15 scenario restricted x portrestricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:23:32 scenario restricted x masq [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:23:49 scenario restricted x symmetric [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:24:10 scenario portrestricted x fullcone [core]: PASS (expected=yes direct a->b=1/12s b->a=1/2s ping=1 reach=[directly with UDP | directly with UDP])
+15:24:28 scenario portrestricted x restricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/2s ping=1 reach=[directly with UDP | directly with UDP])
+15:24:45 scenario portrestricted x portrestricted [core]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:26:28 scenario portrestricted x masq [core]: PASS (expected=no direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:28:12 scenario portrestricted x symmetric [core]: PASS (expected=no direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:28:27 scenario masq x fullcone [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:28:42 scenario masq x restricted [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:30:25 scenario masq x portrestricted [core]: PASS (expected=no direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:32:09 scenario masq x masq [core]: PASS (expected=no direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:33:52 scenario masq x symmetric [core]: PASS (expected=no direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:34:07 scenario symmetric x fullcone [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:34:22 scenario symmetric x restricted [core]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:36:05 scenario symmetric x portrestricted [core]: PASS (expected=no direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:37:48 scenario symmetric x masq [core]: PASS (expected=no direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:39:31 scenario symmetric x symmetric [core]: PASS (expected=no direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:41:16 scenario udpblock x fullcone [core]: PASS (expected=tcp direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:42:59 scenario udpblock x portrestricted [core]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+15:44:43 scenario udpblock x udpblock [core]: PASS (expected=tcp direct a->b=0/90s b->a=0/7s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+# NAT lab summary — 2026-09-26T15:44Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | plain | yes | 10s | 0s | ok | PASS |
+| fullcone x masq | core | plain | yes | 10s | 0s | ok | PASS |
+| fullcone x portrestricted | core | plain | yes | 10s | 0s | ok | PASS |
+| fullcone x restricted | core | plain | yes | 8s | 0s | ok | PASS |
+| fullcone x symmetric | core | plain | yes | 10s | 0s | ok | PASS |
+| masq x fullcone | core | plain | yes | 8s | 0s | ok | PASS |
+| masq x masq | core | plain | no | - | - | ok | PASS |
+| masq x portrestricted | core | plain | no | - | - | ok | PASS |
+| masq x restricted | core | plain | yes | 8s | 0s | ok | PASS |
+| masq x symmetric | core | plain | no | - | - | ok | PASS |
+| portrestricted x fullcone | core | plain | yes | 12s | 2s | ok | PASS |
+| portrestricted x masq | core | plain | no | - | - | ok | PASS |
+| portrestricted x portrestricted | core | plain | yes | 10s | 0s | ok | PASS |
+| portrestricted x restricted | core | plain | yes | 10s | 2s | ok | PASS |
+| portrestricted x symmetric | core | plain | no | - | - | ok | PASS |
+| restricted x fullcone | core | plain | yes | 10s | 0s | ok | PASS |
+| restricted x masq | core | plain | yes | 10s | 0s | ok | PASS |
+| restricted x portrestricted | core | plain | yes | 10s | 0s | ok | PASS |
+| restricted x restricted | core | plain | yes | 6s | 0s | ok | PASS |
+| restricted x symmetric | core | plain | yes | 10s | 0s | ok | PASS |
+| symmetric x fullcone | core | plain | yes | 8s | 0s | ok | PASS |
+| symmetric x masq | core | plain | no | - | - | ok | PASS |
+| symmetric x portrestricted | core | plain | no | - | - | ok | PASS |
+| symmetric x restricted | core | plain | yes | 8s | 0s | ok | PASS |
+| symmetric x symmetric | core | plain | no | - | - | ok | PASS |
+| udpblock x fullcone | core | plain | tcp | - | - | ok | PASS |
+| udpblock x portrestricted | core | plain | tcp | - | - | ok | PASS |
+| udpblock x udpblock | core | plain | tcp | - | - | ok | PASS |
+rc=0 ww-n2 ww-n2-mat-n2 matrix --image core
+built tincstack/natlab:ww-n2-base
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-mat-base-obfs
+15:56:14 scenario restricted x restricted [core/obfs]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:56:27 scenario fullcone x fullcone [core/obfs]: PASS (expected=yes direct a->b=1/6s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:56:42 scenario masq x restricted [core/obfs]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:56:53 scenario masqfw x masqfw [core/obfs]: PASS (expected=yes direct a->b=1/4s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+15:57:10 scenario portrestricted x portrestricted [core/obfs]: PASS (expected=yes direct a->b=1/8s b->a=1/2s ping=1 reach=[directly with UDP | directly with UDP])
+15:57:26 scenario symmetric x restricted [core/obfs]: PASS (expected=yes direct a->b=1/6s b->a=1/2s ping=1 reach=[directly with UDP | directly with UDP])
+# NAT lab summary — 2026-09-26T15:57Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | obfs | yes | 6s | 0s | ok | PASS |
+| masq x restricted | core | obfs | yes | 8s | 0s | ok | PASS |
+| masqfw x masqfw | core | obfs | yes | 4s | 0s | ok | PASS |
+| portrestricted x portrestricted | core | obfs | yes | 8s | 2s | ok | PASS |
+| restricted x restricted | core | obfs | yes | 8s | 0s | ok | PASS |
+| symmetric x restricted | core | obfs | yes | 6s | 2s | ok | PASS |
+rc=0 ww-n2-base ww-n2-mat-base-obfs matrix --image core --transport obfs --pairs restricted/restricted fullcone/fullcone masq/restricted masqfw/masqfw portrestricted/portrestricted symmetric/restricted
+built tincstack/natlab:ww-n2
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-mat-n2-obfs
+16:19:35 scenario restricted x restricted [core/obfs]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+16:19:51 scenario fullcone x fullcone [core/obfs]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+16:20:06 scenario masq x restricted [core/obfs]: PASS (expected=yes direct a->b=1/8s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+16:20:15 scenario masqfw x masqfw [core/obfs]: PASS (expected=yes direct a->b=1/3s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+16:20:32 scenario portrestricted x portrestricted [core/obfs]: PASS (expected=yes direct a->b=1/11s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+16:20:49 scenario symmetric x restricted [core/obfs]: PASS (expected=yes direct a->b=1/10s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+# NAT lab summary — 2026-09-26T16:20Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | obfs | yes | 8s | 0s | ok | PASS |
+| masq x restricted | core | obfs | yes | 8s | 0s | ok | PASS |
+| masqfw x masqfw | core | obfs | yes | 3s | 0s | ok | PASS |
+| portrestricted x portrestricted | core | obfs | yes | 11s | 0s | ok | PASS |
+| restricted x restricted | core | obfs | yes | 10s | 0s | ok | PASS |
+| symmetric x restricted | core | obfs | yes | 10s | 0s | ok | PASS |
+rc=0 ww-n2 ww-n2-mat-n2-obfs matrix --image core --transport obfs --pairs restricted/restricted fullcone/fullcone masq/restricted masqfw/masqfw portrestricted/portrestricted symmetric/restricted
+built tincstack/natlab:ww-n2-base
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-mat-base-quic
+16:41:06 scenario restricted x restricted [core/quic]: FAIL (expected=yes direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+16:42:49 scenario fullcone x fullcone [core/quic]: FAIL (expected=yes direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+16:44:33 scenario masq x restricted [core/quic]: FAIL (expected=yes direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+16:44:44 scenario masqfw x masqfw [core/quic]: PASS (expected=yes direct a->b=1/4s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+16:46:28 scenario portrestricted x portrestricted [core/quic]: FAIL (expected=yes direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+16:48:12 scenario symmetric x restricted [core/quic]: FAIL (expected=yes direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+# NAT lab summary — 2026-09-26T16:48Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | quic | yes | - | - | ok | FAIL |
+| masq x restricted | core | quic | yes | - | - | ok | FAIL |
+| masqfw x masqfw | core | quic | yes | 4s | 0s | ok | PASS |
+| portrestricted x portrestricted | core | quic | yes | - | - | ok | FAIL |
+| restricted x restricted | core | quic | yes | - | - | ok | FAIL |
+| symmetric x restricted | core | quic | yes | - | - | ok | FAIL |
+rc=1 ww-n2-base ww-n2-mat-base-quic matrix --image core --transport quic --pairs restricted/restricted fullcone/fullcone masq/restricted masqfw/masqfw portrestricted/portrestricted symmetric/restricted
+built tincstack/natlab:ww-n2
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-mat-n2-quic
+17:04:40 scenario restricted x restricted [core/quic]: FAIL (expected=yes direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+17:06:23 scenario fullcone x fullcone [core/quic]: FAIL (expected=yes direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+17:08:07 scenario masq x restricted [core/quic]: FAIL (expected=yes direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+17:08:18 scenario masqfw x masqfw [core/quic]: PASS (expected=yes direct a->b=1/4s b->a=1/0s ping=1 reach=[directly with UDP | directly with UDP])
+17:10:01 scenario portrestricted x portrestricted [core/quic]: FAIL (expected=yes direct a->b=0/90s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+17:11:45 scenario symmetric x restricted [core/quic]: FAIL (expected=yes direct a->b=0/91s b->a=0/6s ping=1 reach=[none, forwarded via relay | none, forwarded via relay])
+# NAT lab summary — 2026-09-26T17:11Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | quic | yes | - | - | ok | FAIL |
+| masq x restricted | core | quic | yes | - | - | ok | FAIL |
+| masqfw x masqfw | core | quic | yes | 4s | 0s | ok | PASS |
+| portrestricted x portrestricted | core | quic | yes | - | - | ok | FAIL |
+| restricted x restricted | core | quic | yes | - | - | ok | FAIL |
+| symmetric x restricted | core | quic | yes | - | - | ok | FAIL |
+rc=1 ww-n2 ww-n2-mat-n2-quic matrix --image core --transport quic --pairs restricted/restricted fullcone/fullcone masq/restricted masqfw/masqfw portrestricted/portrestricted symmetric/restricted
+built tincstack/natlab:ww-n2-base
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-mat-base-https
+17:34:52 scenario restricted x restricted [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:36:36 scenario fullcone x fullcone [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:38:20 scenario masq x restricted [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:40:04 scenario masqfw x masqfw [core/https]: PASS (expected=tcp direct a->b=0/90s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:41:47 scenario portrestricted x portrestricted [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:43:31 scenario symmetric x restricted [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+# NAT lab summary — 2026-09-26T17:43Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | https | tcp | - | - | ok | PASS |
+| masq x restricted | core | https | tcp | - | - | ok | PASS |
+| masqfw x masqfw | core | https | tcp | - | - | ok | PASS |
+| portrestricted x portrestricted | core | https | tcp | - | - | ok | PASS |
+| restricted x restricted | core | https | tcp | - | - | ok | PASS |
+| symmetric x restricted | core | https | tcp | - | - | ok | PASS |
+rc=0 ww-n2-base ww-n2-mat-base-https matrix --image core --transport https --pairs restricted/restricted fullcone/fullcone masq/restricted masqfw/masqfw portrestricted/portrestricted symmetric/restricted
+built tincstack/natlab:ww-n2
+results: /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-ae8bfe74621a8bff1/testing/nat-sim/results/run/ww-n2-mat-n2-https
+17:50:42 scenario restricted x restricted [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:52:26 scenario fullcone x fullcone [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:54:10 scenario masq x restricted [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:55:54 scenario masqfw x masqfw [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:57:37 scenario portrestricted x portrestricted [core/https]: PASS (expected=tcp direct a->b=0/90s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+17:59:21 scenario symmetric x restricted [core/https]: PASS (expected=tcp direct a->b=0/91s b->a=0/6s ping=1 reach=[indirectly via nodea | indirectly via nodeb])
+# NAT lab summary — 2026-09-26T17:59Z
+
+Cell = seconds until `tinc info <peer>` reported *directly with UDP* on that side; `-` = never within the wait. `expected` = yes (direct UDP must come up), no (pair cannot hole-punch: traffic must still flow via the relay), tcp (UDP blocked: meta/TCP path must carry traffic).
+
+| A x B | image | carrier | expected | direct a->b | direct b->a | ping | verdict |
+|---|---|---|---|---|---|---|---|
+| fullcone x fullcone | core | https | tcp | - | - | ok | PASS |
+| masq x restricted | core | https | tcp | - | - | ok | PASS |
+| masqfw x masqfw | core | https | tcp | - | - | ok | PASS |
+| portrestricted x portrestricted | core | https | tcp | - | - | ok | PASS |
+| restricted x restricted | core | https | tcp | - | - | ok | PASS |
+| symmetric x restricted | core | https | tcp | - | - | ok | PASS |
+rc=0 ww-n2 ww-n2-mat-n2-https matrix --image core --transport https --pairs restricted/restricted fullcone/fullcone masq/restricted masqfw/masqfw portrestricted/portrestricted symmetric/restricted
+ALLDONE

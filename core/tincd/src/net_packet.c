@@ -146,6 +146,53 @@ static bool carrier_datagram_path(const node_t *n) {
 	return n->connection && n->connection->transport && n->connection->transport->send_datagram;
 }
 
+/* DirectSeal (obfs.h): may we probe `n' over the plain UDP socket at all?
+   Not while we seal and do not yet know whether it reads sealed datagrams
+   (asked over the graph; the answer takes one relay round trip, about as long
+   as the SPTPS handshake that has to finish before the first probe anyway),
+   and never when it cannot read them. A node that does not seal waits for
+   the same answer for at most DSEAL_UNKNOWN_HOLD seconds -- the peer may be
+   one that wants its direct path sealed -- and then probes as upstream does.
+   A carrier datagram path or an obfs link is sealed or carried anyway. */
+#define DSEAL_UNKNOWN_HOLD 3
+
+/* Set while send_carrier_beacon() sends: the probe goes out of the plain UDP
+   data socket even though the peer's meta connection carries datagrams. */
+static bool carrier_beacon_raw;
+
+static bool direct_seal_permits(node_t *n, bool probing) {
+	if(carrier_datagram_path(n) || obfs_link_is_active(n)) {
+		return true;
+	}
+
+	dseal_verdict_t dv = dseal_verdict(n);
+
+	switch(dv) {
+	case DSEAL_SEND_HOLD:
+		send_req_dseal(n);
+		dseal_log_hold(n, dv);
+		return false;
+
+	case DSEAL_SEND_BLOCK:
+		dseal_log_hold(n, dv);
+		return false;
+
+	case DSEAL_SEND_PLAIN_UNKNOWN:
+		if(!probing) {
+			return true;
+		}
+
+		send_req_dseal(n);
+		return !(n->last_req_transports && now.tv_sec - n->last_req_transports < DSEAL_UNKNOWN_HOLD);
+
+	case DSEAL_SEND_PLAIN:
+	case DSEAL_SEND_SEAL:
+		return true;
+	}
+
+	return true;
+}
+
 static void udp_probe_timeout_handler(void *data) {
 	node_t *n = data;
 
@@ -198,6 +245,14 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 		return;
 	}
 
+	/* A reply that arrived in the clear from a peer we do not send direct
+	   datagrams to (DirectSeal: it cannot read them, or we do not know yet)
+	   must not confirm a path we would then have to use in the clear. */
+	if(!direct_seal_permits(n, false)) {
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Ignoring UDP probe reply from %s (%s): no direct UDP to it (DirectSeal)", n->name, n->hostname);
+		return;
+	}
+
 	if(DATA(packet)[0] == 2) {
 		// It's a type 2 probe reply, use the length field inside the packet
 		uint16_t len16;
@@ -221,6 +276,12 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 	   packet used. */
 	if(!n->status.udp_confirmed) {
 		n->status.udp_confirmed = true;
+		n->punch_go = (struct timeval) {
+			0, 0
+		};
+		n->punch_backoff_until = 0;
+		n->punch_unanswered = 0;
+		timeout_del(&n->punch_timer);
 
 		if(!n->address_cache) {
 			n->address_cache = open_address_cache(n);
@@ -878,6 +939,17 @@ static void send_udppacket(node_t *n, vpn_packet_t *origpkt) {
 		return;
 	}
 
+	/* DirectSeal (obfs.h): a legacy (tinc 1.0 protocol) peer cannot read a
+	   sealed datagram, so a sealing node sends it none; probes are not sent
+	   at all (try_udp), data goes inside the meta connection. */
+	if(dseal_self_wants()) {
+		if(DATA(origpkt)[12] | DATA(origpkt)[13]) {
+			send_tcppacket(n->nexthop->connection, origpkt);
+		}
+
+		return;
+	}
+
 	if(n->options & OPTION_PMTU_DISCOVERY && inpkt->len > n->minmtu && (DATA(inpkt)[12] | DATA(inpkt)[13])) {
 		logger(DEBUG_TRAFFIC, LOG_INFO,
 		       "Packet for %s (%s) larger than minimum MTU, forwarding via %s",
@@ -997,6 +1069,37 @@ end:
 #endif
 }
 
+/* The meta-connection half of send_sptps_data(): the record goes to the next
+   hop inside the meta connection (SPTPS_PACKET, or REQ_KEY/ANS_KEY for older
+   hops and handshakes). */
+static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void *data, size_t len) {
+	if(type != SPTPS_HANDSHAKE && (to->nexthop->connection->options >> 24) >= 7) {
+		const size_t buflen = len + sizeof(to->id) + sizeof(from->id);
+		uint8_t *buf = alloca(buflen);
+		uint8_t *buf_ptr = buf;
+		memcpy(buf_ptr, &to->id, sizeof(to->id));
+		buf_ptr += sizeof(to->id);
+		memcpy(buf_ptr, &from->id, sizeof(from->id));
+		buf_ptr += sizeof(from->id);
+		memcpy(buf_ptr, data, len);
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Sending packet from %s (%s) to %s (%s) via %s (%s) (TCP)", from->name, from->hostname, to->name, to->hostname, to->nexthop->name, to->nexthop->hostname);
+		return send_sptps_tcppacket(to->nexthop->connection, buf, buflen);
+	}
+
+	char *buf = alloca(B64_SIZE(len));
+	b64encode_tinc(data, buf, len);
+
+	/* If this is a handshake packet, use ANS_KEY instead of REQ_KEY, for two reasons:
+	    - We don't want intermediate nodes to switch to UDP to relay these packets;
+	    - ANS_KEY allows us to learn the reflexive UDP address. */
+	if(type == SPTPS_HANDSHAKE) {
+		to->incompression = myself->incompression;
+		return send_request(to->nexthop->connection, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, from->name, to->name, buf, to->incompression);
+	} else {
+		return send_request(to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, from->name, to->name, SPTPS_PACKET, buf);
+	}
+}
+
 bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_t len) {
 	size_t origlen = len - SPTPS_DATAGRAM_OVERHEAD;
 	node_t *relay = (to->via != myself && (type == PKT_PROBE || origlen <= to->via->minmtu)) ? to->via : to->nexthop;
@@ -1007,31 +1110,7 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, this is a relay packet that the other node cannot understand, or this packet is larger than the MTU. */
 
 	if(type == SPTPS_HANDSHAKE || tcponly || (!direct && !relay_supported) || (type != PKT_PROBE && origlen > relay->minmtu)) {
-		if(type != SPTPS_HANDSHAKE && (to->nexthop->connection->options >> 24) >= 7) {
-			const size_t buflen = len + sizeof(to->id) + sizeof(from->id);
-			uint8_t *buf = alloca(buflen);
-			uint8_t *buf_ptr = buf;
-			memcpy(buf_ptr, &to->id, sizeof(to->id));
-			buf_ptr += sizeof(to->id);
-			memcpy(buf_ptr, &from->id, sizeof(from->id));
-			buf_ptr += sizeof(from->id);
-			memcpy(buf_ptr, data, len);
-			logger(DEBUG_TRAFFIC, LOG_INFO, "Sending packet from %s (%s) to %s (%s) via %s (%s) (TCP)", from->name, from->hostname, to->name, to->hostname, to->nexthop->name, to->nexthop->hostname);
-			return send_sptps_tcppacket(to->nexthop->connection, buf, buflen);
-		}
-
-		char *buf = alloca(B64_SIZE(len));
-		b64encode_tinc(data, buf, len);
-
-		/* If this is a handshake packet, use ANS_KEY instead of REQ_KEY, for two reasons:
-		    - We don't want intermediate nodes to switch to UDP to relay these packets;
-		    - ANS_KEY allows us to learn the reflexive UDP address. */
-		if(type == SPTPS_HANDSHAKE) {
-			to->incompression = myself->incompression;
-			return send_request(to->nexthop->connection, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, from->name, to->name, buf, to->incompression);
-		} else {
-			return send_request(to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, from->name, to->name, SPTPS_PACKET, buf);
-		}
+		return send_sptps_data_meta(to, from, type, data, len);
 	}
 
 	size_t overhead = 0;
@@ -1083,7 +1162,7 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	   `false' return means it does not fit the carrier's datagram ceiling:
 	   treated exactly like EMSGSIZE so tinc's MTU discovery converges. With
 	   plain/sf/obfs the hook is NULL and this is byte-identical to before. */
-	if(relay->connection && relay->connection->transport && relay->connection->transport->send_datagram) {
+	if(!carrier_beacon_raw && relay->connection && relay->connection->transport && relay->connection->transport->send_datagram) {
 		size_t excess = 0;
 
 		if(!relay->connection->transport->send_datagram(relay->connection, buf, (size_t)(buf_ptr - buf), &excess)) {
@@ -1116,6 +1195,36 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 
 	case OBFS_SEND_PLAIN:
 		break;
+	}
+
+	/* DirectSeal (obfs.h): a node that runs a masking carrier seals its
+	   direct datagrams -- probes, replies and data alike -- with the peer's
+	   obfs link, and sends none at all to a peer that could not read them.
+	   Between two nodes that do not seal, this is upstream tinc's wire. */
+	dseal_verdict_t dv = dseal_verdict(relay);
+
+	if(dv == DSEAL_SEND_SEAL) {
+		if(obfs_seal_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay, &obfs_excess) == OBFS_SEND_TOOBIG) {
+			reduce_mtu(relay, (int)origlen - (int)(obfs_excess ? obfs_excess : 1));
+		}
+
+		return true;
+	}
+
+	if(dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK) {
+		if(dv == DSEAL_SEND_HOLD) {
+			send_req_dseal(relay);
+		}
+
+		dseal_log_hold(relay, dv);
+
+		/* A probe is simply not sent (we are not probing that path); a
+		   record goes inside the meta connection instead. */
+		if(type == PKT_PROBE) {
+			return true;
+		}
+
+		return send_sptps_data_meta(to, from, type, data, len);
 	}
 
 	if(sendto(listen_socket[sock].udp.fd, buf, buf_ptr - buf, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
@@ -1300,12 +1409,279 @@ static void send_udp_probe_packet(node_t *n, size_t len) {
 // This function tries to establish a UDP tunnel to a node so that packets can be sent.
 // If a tunnel is already established, it makes sure it stays up.
 // This function makes no guarantees - it is up to the caller to check the node's state to figure out if UDP is usable.
+/* A neighbour reached over a datagram carrier (quic) sees our QUIC socket,
+   not our UDP data socket, and since the carrier's records no longer move
+   n->address (process_sptps_udp) it would know no mapping of the data socket
+   at all -- yet it is the one that tells other peers where to punch
+   (UDP_INFO, the ANS_KEY hint). So while we try UDP to a node behind it, send it one
+   probe from the data socket every udp_discovery_keepalive_interval: sealed
+   like any direct datagram (DirectSeal), never in the clear to a peer that
+   cannot read it, and answered over the carrier. It also keeps our NAT's
+   mapping for the data socket alive. */
+static void send_carrier_beacon(node_t *n) {
+	if(!n->status.validkey || !n->status.sptps || (n->options >> 24) < 4 ||
+	                ((myself->options | n->options) & OPTION_TCPONLY)) {
+		return;
+	}
+
+	if(n->carrier_beacon_sent && now.tv_sec - n->carrier_beacon_sent < udp_discovery_keepalive_interval) {
+		return;
+	}
+
+	dseal_verdict_t dv = dseal_verdict(n);
+
+	if(dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK) {
+		return;
+	}
+
+	n->carrier_beacon_sent = now.tv_sec;
+	carrier_beacon_raw = true;
+	send_udp_probe_packet(n, MIN_PROBE_SIZE);
+	carrier_beacon_raw = false;
+}
+
+/* ---- coordinated hole punch (stream N2) ------------------------------------
+
+   tinc used to probe a peer it has no direct path to as soon as it had a key,
+   every 2 s, for as long as there was traffic. Behind a NAT that creates an
+   entry for an unsolicited inbound datagram (Linux MASQUERADE with its input
+   open, a CGN tier built the same way), the first probe to arrive before the
+   peer's own outgoing one takes the port the peer then needs, and probing
+   every 2 s keeps that entry alive for ever (docs/nat.md §3.2, §9). So for a
+   peer that speaks this (DSEAL_PUNCH in its capability token) and that we
+   reach through a relay:
+
+   - nobody probes it unsolicited: we ask for a round with
+     `REQ_KEY <me> <peer> 98 0 - -' through the meta graph;
+   - the relay whose meta neighbours both ends are answers instead of
+     forwarding, once it has confirmed both ends' UDP addresses (until then
+     it stays silent and the asker retries): `98 2 <addr> <port>' to both
+     ends at the same instant, each carrying the other end's UDP address as
+     the relay sees it. An older relay forwards the request, and
+     the far end answers `98 1 - -' itself and starts after half the meta
+     path's weighted distance, so both first probes leave about together;
+   - a GO starts a PUNCH_ROUND-second round of the usual probe bursts; a
+     round that ends without a confirmed path is followed by PUNCH_BACKOFF
+     seconds without a single probe to that peer -- longer than the 30 s a
+     Linux conntrack entry for unreplied UDP lives -- so that entries left
+     by the failed round expire before the next one.
+
+   Peers without the capability (upstream, older tincstack) and direct meta
+   neighbours are probed exactly as before. */
+#define PUNCH_ROUND 8
+#define PUNCH_BACKOFF 35
+#define PUNCH_REQ_RETRY 2
+#define PUNCH_MAX_UNANSWERED 5
+#define PUNCH_MAX_DELAY_MS 1000
+
+static void try_udp(node_t *n);
+
+static bool punch_coordinated(const node_t *n) {
+	return (n->dseal & DSEAL_KNOWN) && (n->dseal & DSEAL_PUNCH) && !n->connection &&
+	       n->nexthop && n->nexthop != n && n->nexthop->connection;
+}
+
+static void punch_timer_handler(void *data) {
+	node_t *n = data;
+	timeout_del(&n->punch_timer);
+
+	if(!n->status.reachable || n->status.udp_confirmed) {
+		return;
+	}
+
+	/* The round starts now: the first burst goes out at once. */
+	n->udp_ping_sent = (struct timeval) {
+		0, 0
+	};
+	try_udp(n);
+}
+
+static void punch_start(node_t *n, int delay_ms, const sockaddr_t *sa, const char *why) {
+	if(!n->status.reachable || n->status.udp_confirmed) {
+		return;
+	}
+
+	if(timerisset(&n->punch_go)) {
+		struct timeval end;
+		timeradd(&n->punch_go, &((struct timeval) {
+			PUNCH_ROUND, 0
+		}), &end);
+
+		if(timercmp(&now, &end, <)) {
+			return; /* a round is on already (both ends asked, or a duplicate) */
+		}
+	}
+
+	if(sa && sa->sa.sa_family != AF_UNKNOWN && sockaddrcmp(sa, &n->address)) {
+		update_node_udp(n, sa);
+	}
+
+	if(delay_ms < 0) {
+		delay_ms = 0;
+	} else if(delay_ms > PUNCH_MAX_DELAY_MS) {
+		delay_ms = PUNCH_MAX_DELAY_MS;
+	}
+
+	struct timeval d = {delay_ms / 1000, (delay_ms % 1000) * 1000};
+	timeradd(&now, &d, &n->punch_go);
+	n->punch_backoff_until = 0;
+	n->punch_unanswered = 0;
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Coordinated hole punch with %s (%s): %s, first probes in %d ms", n->name, n->hostname, why, delay_ms);
+	timeout_del(&n->punch_timer);
+	timeout_add(&n->punch_timer, punch_timer_handler, n, &d);
+}
+
+/* May try_udp() probe `n' (not confirmed, coordinated) now? */
+static bool punch_may_probe(node_t *n) {
+	if(timerisset(&n->punch_go)) {
+		if(timercmp(&now, &n->punch_go, <)) {
+			return false; /* the round starts later */
+		}
+
+		struct timeval end;
+		timeradd(&n->punch_go, &((struct timeval) {
+			PUNCH_ROUND, 0
+		}), &end);
+
+		if(timercmp(&now, &end, <)) {
+			return true;
+		}
+
+		n->punch_go = (struct timeval) {
+			0, 0
+		};
+		n->punch_backoff_until = now.tv_sec + PUNCH_BACKOFF;
+		n->status.ping_sent = false;
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "No direct UDP path to %s (%s) after a coordinated %d s round; no probes to it for %d s, so that NAT entries the round left expire",
+		       n->name, n->hostname, PUNCH_ROUND, PUNCH_BACKOFF);
+		return false;
+	}
+
+	if(now.tv_sec < n->punch_backoff_until || !n->status.validkey) {
+		return false;
+	}
+
+	if(n->punch_req_sent && now.tv_sec - n->punch_req_sent < PUNCH_REQ_RETRY) {
+		return false;
+	}
+
+	if(n->punch_unanswered >= PUNCH_MAX_UNANSWERED) {
+		/* It advertised the capability but nothing answers: do not stay
+		   relayed for that, run a round on our own. */
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "No answer from %s (%s) to %d coordinated hole-punch requests; probing it on our own this round",
+		       n->name, n->hostname, PUNCH_MAX_UNANSWERED);
+		punch_start(n, 0, NULL, "no answer, uncoordinated round");
+		return false;
+	}
+
+	n->punch_req_sent = now.tv_sec;
+	n->punch_unanswered++;
+	logger(DEBUG_PROTOCOL, LOG_INFO, "Asking for a coordinated hole punch with %s (%s) via %s", n->name, n->hostname, n->nexthop->name);
+	send_request(n->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, n->name, PUNCH_REQ, 0);
+	return false;
+}
+
+/* Tell `b' to start punching towards `a' now, with `a''s UDP address as we
+   see it (the relay's view; only if we confirmed it). */
+static bool punch_send_go(node_t *a, node_t *b) {
+	char *addr = NULL, *port = NULL;
+
+	if(a->status.udp_confirmed && a->address.sa.sa_family != AF_UNSPEC && a->address.sa.sa_family != AF_UNKNOWN) {
+		sockaddr2str(&a->address, &addr, &port);
+	}
+
+	bool ok = send_request(b->connection, "%d %s %s %d %d %s %s", REQ_KEY, a->name, b->name, PUNCH_REQ, 2, addr ? addr : "-", port ? port : "-");
+	free(addr);
+	free(port);
+	return ok;
+}
+
+bool punch_h(node_t *from, node_t *to, const char *request) {
+	int flag = -1;
+	char addr[MAX_STRING_SIZE] = "";
+	char port[MAX_STRING_SIZE] = "";
+
+	if(sscanf(request, "%*d %*s %*s %*d %d " MAX_STRING " " MAX_STRING, &flag, addr, port) < 1 || flag < 0 || flag > 2) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "PUNCH_REQ", from->name, from->hostname);
+		return true;
+	}
+
+	if(to != myself) {
+		/* The rendezvous: both ends are our meta neighbours, so both hear
+		   "go" from us at the same instant. */
+		if(flag == 0 && from->connection && to->connection && from->connection->edge && to->connection->edge) {
+			/* Only with both ends' real UDP addresses: a GO without them
+			   sends each end at its edge guess (the TCP address, port 655),
+			   which a port-changing NAT never maps, and the round is spent
+			   there (lab: masq x portrestricted, 10 s -> 45 s). Stay silent
+			   until we have confirmed both; the asker retries every
+			   PUNCH_REQ_RETRY s and runs a round on its own after
+			   PUNCH_MAX_UNANSWERED requests (a relay that never has UDP to
+			   them, e.g. TCP-only links). */
+			if(!from->status.udp_confirmed || !to->status.udp_confirmed) {
+				logger(DEBUG_PROTOCOL, LOG_INFO, "Coordinated hole punch between %s and %s: not yet, no confirmed UDP address of %s", from->name, to->name,
+				       !from->status.udp_confirmed ? from->name : to->name);
+				return true;
+			}
+
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "Coordinated hole punch between %s and %s: telling both to start", from->name, to->name);
+			punch_send_go(from, to);
+			punch_send_go(to, from);
+			return true;
+		}
+
+		return send_request(to->nexthop->connection, "%s", request);
+	}
+
+	if(!punch_coordinated(from)) {
+		/* Not a peer we coordinate with (a meta neighbour now, or its token
+		   changed): it asked, so still answer, and probe as usual. */
+		if(flag == 0) {
+			send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
+		}
+
+		return true;
+	}
+
+	if(flag == 0) {
+		/* The relay forwarded the request instead of answering it (an older
+		   build): answer the peer ourselves and start once our answer has
+		   crossed the meta path, estimated as half its weighted distance. */
+		send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
+		punch_start(from, from->weighted_distance / 2, NULL, "the peer asked through an older relay");
+		return true;
+	}
+
+	sockaddr_t sa = {0};
+	bool have = *addr && *port && strcmp(addr, "-") && strcmp(port, "-");
+
+	if(have) {
+		sa = str2sockaddr(addr, port);
+	}
+
+	punch_start(from, 0, have ? &sa : NULL, flag == 2 ? "the relay says go" : "the peer says go");
+	return true;
+}
+
 static void try_udp(node_t *n) {
 	if(!udp_discovery) {
 		return;
 	}
 
+	/* Punching towards a node we reach through a quic neighbour: that
+	   neighbour is the one that tells it where our data socket is, so it has
+	   to have seen that socket (send_carrier_beacon). Nothing is sent to a
+	   quic neighbour that relays for nobody: between two quic nodes the wire
+	   stays QUIC only. */
+	if(n->nexthop && n->nexthop != n && n->nexthop != myself && carrier_datagram_path(n->nexthop)) {
+		send_carrier_beacon(n->nexthop);
+	}
+
 	if(n->status.udp_confirmed && carrier_datagram_path(n)) {
+		return;
+	}
+
+	if(!direct_seal_permits(n, true)) {
 		return;
 	}
 
@@ -1330,6 +1706,11 @@ static void try_udp(node_t *n) {
 		}
 	}
 
+	/* Coordinated hole punch: no unsolicited probe outside a round. */
+	if(!n->status.udp_confirmed && punch_coordinated(n) && !punch_may_probe(n)) {
+		return;
+	}
+
 	/* Probe request */
 
 	struct timeval ping_tx_elapsed;
@@ -1352,6 +1733,10 @@ static void try_udp(node_t *n) {
 		   brief inbound window a restricted-cone / CGNAT firewall opens. Once
 		   confirmed we send exactly one keepalive probe. */
 		int burst = n->status.udp_confirmed ? 1 : udp_discovery_burst;
+
+		if(!n->status.udp_confirmed) {
+			dseal_note_probe(n);
+		}
 
 		for(int i = 0; i < burst; i++) {
 			send_udp_probe_packet(n, MIN_PROBE_SIZE);
@@ -1885,7 +2270,20 @@ bool sptps_udp_addresses_known_nodes(const node_t *n, const uint8_t *buf, size_t
 /* The SPTPS / legacy UDP data path, split out so the obfs carrier can
    re-inject a datagram it just unsealed without going back through the carrier
    dispatcher (which would try to classify the inner bytes again). */
-static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr) {
+/* `via_carrier': the record arrived inside a carrier flow (a QUIC DATAGRAM
+   frame), so `addr' is that flow's remote -- the peer's QUIC socket as its
+   NAT maps it -- and says nothing about where its UDP data socket is. Such a
+   record must not move n->address: a relay that did so handed the QUIC flow
+   out as the node's UDP address (UDP_INFO, the ANS_KEY hint), and every pair
+   behind a port-changing NAT punched at the wrong port (stream N,
+   docs/nat.md §5.1). The node's data-socket mapping reaches the relay from
+   the node's carrier beacons instead (send_carrier_beacon).
+   `carrier_node' (non-NULL only with via_carrier) is the node at the other
+   end of the carrier's authenticated meta connection: the sender of the
+   record, whatever its address. Looking the sender up by address no longer
+   works once the flow is not n->address, and a relayed record (non-zero
+   destination id) has no other way to be attributed. */
+static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr, bool via_carrier, node_t *carrier_node) {
 	char *hostname;
 	node_id_t nullid = {0};
 	node_t *from, *to;
@@ -1895,9 +2293,13 @@ static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t
 
 	// Try to figure out who sent this packet.
 
-	node_t *n = lookup_node_udp(addr);
+	node_t *n = via_carrier ? carrier_node : lookup_node_udp(addr);
 
-	if(n && !n->status.udp_confirmed) {
+	if(via_carrier && !n) {
+		return;         // the carrier's connection is not authenticated yet
+	}
+
+	if(n && !via_carrier && !n->status.udp_confirmed) {
 		n = NULL;        // Don't believe it if we don't have confirmation yet.
 	}
 
@@ -2000,7 +2402,7 @@ skip_harder:
 
 	n->sock = ls - listen_socket;
 
-	if(direct && sockaddrcmp(addr, &n->address)) {
+	if(direct && !via_carrier && sockaddrcmp(addr, &n->address)) {
 		update_node_udp(n, addr);
 	}
 
@@ -2023,7 +2425,7 @@ static void handle_incoming_vpn_packet(listen_socket_t *ls, vpn_packet_t *pkt, s
 		return;
 	}
 
-	process_sptps_udp(ls, pkt, addr);
+	process_sptps_udp(ls, pkt, addr, false, NULL);
 }
 
 /* Re-inject an inner SPTPS datagram that the obfs carrier just unsealed. It
@@ -2040,7 +2442,24 @@ void handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t *buf, s
 	pkt.len = len;
 
 	sockaddr_t a = *addr;
-	process_sptps_udp(ls, &pkt, &a);
+	process_sptps_udp(ls, &pkt, &a, false, NULL);
+}
+
+/* A record a carrier delivered inside its own flow (quic's DATAGRAM frames):
+   the data path, but `addr' is the carrier flow's (see process_sptps_udp). */
+void handle_incoming_carrier_datagram(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr, node_t *from) {
+	if(len > MAXSIZE) {
+		return;
+	}
+
+	vpn_packet_t pkt;
+	pkt.offset = 0;
+	pkt.priority = 0;
+	memcpy(pkt.data, buf, len);
+	pkt.len = len;
+
+	sockaddr_t a = *addr;
+	process_sptps_udp(ls, &pkt, &a, true, from);
 }
 
 void handle_incoming_vpn_data(void *data, int flags) {

@@ -1,0 +1,31 @@
+=== OLD=tincstack/core:ww-n2-base
+Assigned address 10.229.140.2/24 to leafa.
+Assigned address 10.229.140.3/24 to leafb.
+00:04:34 PASS direct pair, current leaf b: 'Reachability: directly with UDP', ping=1; wire a->b: 45 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.157.236.2/24 to leafa.
+Assigned address 10.157.236.3/24 to leafb.
+00:05:06 PASS direct pair, older leaf b (reads frame v3): 'Reachability: directly with UDP', ping=1; wire a->b: 42 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.165.147.2/24 to leafa.
+Assigned address 10.165.147.3/24 to leafb.
+00:06:22 PASS direct pair, older leaf b without obfs: 'Reachability: none, forwarded via founder', ping=1; wire a->b: 0 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.241.109.2/24 to leafa.
+Assigned address 10.241.109.3/24 to leafb.
+00:06:45 PASS direct pair, current leaves, older relay: 'Reachability: directly with UDP', ping=1; wire a->b: 45 datagrams, 0 with the zero dst id, 0 of 51 bytes
+00:06:46 mixed versions: all pairs connect
+rc=0 OLD=tincstack/core:ww-n2-base
+=== OLD=tincstack/core:ww-n2-pre-deb13
+Assigned address 10.218.175.2/24 to leafa.
+Assigned address 10.218.175.3/24 to leafb.
+00:07:10 PASS direct pair, current leaf b: 'Reachability: directly with UDP', ping=1; wire a->b: 45 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.114.172.2/24 to leafa.
+Assigned address 10.114.172.3/24 to leafb.
+00:08:32 PASS direct pair, older leaf b (frame v2 only): 'Reachability: none, forwarded via founder', ping=1; wire a->b: 321 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.218.44.2/24 to leafa.
+Assigned address 10.218.44.3/24 to leafb.
+00:10:01 PASS direct pair, older leaf b without obfs: 'Reachability: none, forwarded via founder', ping=1; wire a->b: 0 datagrams, 0 with the zero dst id, 0 of 51 bytes
+Assigned address 10.132.253.2/24 to leafa.
+Assigned address 10.132.253.3/24 to leafb.
+00:10:30 PASS direct pair, current leaves, older relay: 'Reachability: directly with UDP', ping=1; wire a->b: 46 datagrams, 0 with the zero dst id, 0 of 51 bytes
+00:10:30 mixed versions: all pairs connect
+rc=0 OLD=tincstack/core:ww-n2-pre-deb13
+ALLDONE

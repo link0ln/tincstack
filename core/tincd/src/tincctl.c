@@ -1699,6 +1699,7 @@ const var_t variables[] = {
 	   invitee's machine (invitation.c, security review R). */
 	{"AllowPlainMeta", VAR_SERVER},
 	{"UdpMetaFallback", VAR_SERVER},
+	{"DirectSeal", VAR_SERVER},
 	{"AutoConnect", VAR_SERVER | VAR_SAFE},
 	{"BindToAddress", VAR_SERVER | VAR_MULTIPLE},
 	{"BindToInterface", VAR_SERVER},

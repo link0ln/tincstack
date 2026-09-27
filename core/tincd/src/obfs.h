@@ -233,4 +233,96 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
    Junk carries no valid tag, so the peer drops it after the keyed check. */
 void obfs_send_junk(size_t sock, const sockaddr_t *addr);
 
+/* ---- direct seal (DirectSeal, stream N2 2026-09-26) ------------------------
+
+   The direct peer-to-peer UDP path (SPTPS data datagrams, UDP probes, probe
+   replies) used to be cleartext tinc whatever carrier hid the meta
+   connection: six zero bytes, the sender's node id, 51-byte probes
+   (docs/nat.md §5.3). A node that runs a masking carrier now seals every such
+   datagram in an obfs frame v3 -- the obfs link of that peer, i.e. the same
+   keys, counters, replay window and random tails as the obfs carrier -- from
+   the very first probe.
+
+   Keys: until a session exists, the pair's bootstrap key (derived from the
+   two Ed25519 public keys, as obfs). The session key is negotiated end to end
+   by DSEAL_KEX: a signed ephemeral X25519 exchange carried as a REQ_KEY
+   extension through the meta graph, signed with each node's Ed25519 key, so
+   a relay forwards it but can neither read nor forge the key. SPTPS is not
+   touched and not weakened: the seal is an outer layer, SPTPS inside it is
+   unchanged.
+
+   Who seals (DirectSeal = auto, the default): a node whose
+   PreferredTransports lists obfs, https or quic, or that refuses cleartext
+   meta (AllowPlainMeta = no). `yes' always seals, `no' never. A node that
+   does not seal itself still seals towards a peer that asks for it (the
+   peer's `wants' flag) and answers a peer that sealed to it in kind, so a
+   masking node's direct path is sealed in both directions; between two
+   nodes that do not seal the wire is upstream tinc's, byte for byte.
+
+   Capability travels as one trailing token, `dseal=<hex flags>', on ACK and
+   ANS_PUBKEY; older parsers stop before it. A peer without the token is an
+   older tincstack (it reads a sealed datagram iff it accepts obfs: its
+   cold-scan classifier unseals bootstrap-key frames) or upstream tinc (it
+   reads none). A sealing node sends no direct UDP at all to a peer that
+   cannot read it -- the pair stays on the relay, and the log says why. The
+   one peer that cannot be told apart in advance is a tincstack from before
+   obfs frame v3 (reads v2 only): it gets sealed probes it drops, the direct
+   path never confirms, the pair stays on the relay, and after
+   DSEAL_UNREAD_NOTE seconds the log says so. */
+
+#define DSEAL_READS 0x01  /* reads sealed direct datagrams */
+#define DSEAL_WANTS 0x02  /* seals its own and wants ours sealed */
+#define DSEAL_KEX   0x04  /* speaks DSEAL_KEX (end-to-end session key) */
+#define DSEAL_PUNCH 0x08  /* coordinated hole punch (net_packet.c, PUNCH_REQ);
+                             not a seal property, but the same capability token */
+#define DSEAL_OLD   0x40  /* learned without a token: older tincstack or upstream */
+#define DSEAL_KNOWN 0x80  /* learned at all (token, or a definitive answer without one) */
+
+/* REQ_KEY extension number of the direct-seal key exchange. Outside the
+   request_t range; only ever sent to a peer that advertised DSEAL_KEX, and
+   forwarded verbatim by any relay (upstream included). */
+#define DSEAL_KEX_REQ 97
+
+typedef enum dseal_verdict_t {
+	DSEAL_SEND_PLAIN,          /* neither side seals: upstream format */
+	DSEAL_SEND_PLAIN_UNKNOWN,  /* we do not seal and do not know the peer yet */
+	DSEAL_SEND_SEAL,           /* seal it */
+	DSEAL_SEND_HOLD,           /* we seal, the peer is not known yet: send nothing direct */
+	DSEAL_SEND_BLOCK,          /* we seal, the peer cannot read it: send nothing direct */
+} dseal_verdict_t;
+
+bool dseal_self_wants(void);
+bool dseal_self_reads(void);
+
+/* The capability token for ACK / ANS_PUBKEY (`dseal=<hex>'). */
+const char *dseal_token(char *buf, size_t len);
+
+/* Learn a peer's capability from its token (NULL or not a dseal token: the
+   peer sent none, which is itself an answer). Call after n->transports. */
+void dseal_learn(node_t *n, const char *token);
+
+/* What to do with a datagram for next hop `n' on the plain UDP socket (not
+   for a carrier datagram path, not for an active obfs link: those are sealed
+   or carried anyway). */
+dseal_verdict_t dseal_verdict(node_t *n);
+
+/* Log once per minute per node why no direct UDP goes to it. */
+void dseal_log_hold(node_t *n, dseal_verdict_t v);
+
+/* True when an obfs link to `n' is up (its datagrams are sealed anyway). */
+bool obfs_link_is_active(const node_t *n);
+
+/* Seal one SPTPS datagram for `to' with its obfs link, creating the link if
+   needed (DSEAL_SEND_SEAL). Same contract as obfs_wrap_send, except that it
+   never returns OBFS_SEND_PLAIN: a datagram that cannot be sealed is dropped,
+   never sent in the clear. */
+obfs_send_t obfs_seal_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
+
+/* One probe round to an unconfirmed peer: log once when an older peer
+   (no capability token) never answers sealed datagrams. */
+void dseal_note_probe(node_t *to);
+
+/* REQ_KEY DSEAL_KEX addressed to us. */
+bool dseal_kex_h(node_t *from, const char *request);
+
 #endif /* TINC_OBFS_H */

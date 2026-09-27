@@ -235,6 +235,16 @@ New profiles, core, run `ww-n-ext` (`--pairs`):
 | cgnat x masq | relay | both sides Linux NAT with open INPUT (the carrier tier) |
 | cgnat x cgnat | relay | same |
 
+**After N2** (final image `65010402a900`, run `ww-n2-fin2-mat`,
+`results/2026-09-26/n2/regression-final/`): 28/28 PASS, **19/25 direct**,
+median 6 s, max 8 s. The two new direct pairs are `masq x portrestricted`
+(6 s) and `portrestricted x masq` (4 s), which the coordinated start (§9.3)
+brings through; the six still relayed are `masq x masq`, `masq x symmetric`,
+`portrestricted x symmetric`, `symmetric x masq`, `symmetric x
+portrestricted`, `symmetric x symmetric` at rtt 0 (`masq x masq` goes direct
+at rtt 40, §9.3). n = 1 per pair; the image before the obfs fix (`bc86d234ee94`,
+`ww-n2-final-mat`) gave the same 19, with `portrestricted x masq` at 91 s.
+
 ### 3.2 Linux MASQUERADE: EIM until poisoned (`masq` vs `masqfw`)
 
 `lab.sh portmap` (nattrav, no tincd; two trials each; full table in
@@ -416,6 +426,37 @@ Only pairs whose edge address is already right (port-preserving EIM on both
 sides: `masqfw x masqfw`, 4 s) survive. Every NAT that changes the port loses
 its direct path under quic.
 
+**Fixed in N2** (docs/transports.md §9.3.1): a record that arrives in a QUIC
+DATAGRAM frame is attributed to the carrier connection's node and never moves
+`n->address`; the relay learns the data-socket mapping from a sealed beacon the
+node sends from its UDP socket while it punches through that relay. Runs
+`ww-n2-i2c-quic3`, `ww-n2-i2c-quic6`, `ww-n2-i2c-quicrelay` (image
+`ww-n2-i2c`; evidence `results/2026-09-26/n2/quic-item2/`):
+
+| pair (core) | `--transport quic` before (`ww-n2-mat-n2-quic`) | after |
+|---|---|---|
+| restricted x restricted | relay (FAIL) | direct 6 s |
+| fullcone x fullcone | relay (FAIL) | direct 6 s |
+| masqfw x masqfw | direct 4 s | direct 4 s |
+| masq x restricted | relay (FAIL) | direct 10 s |
+| portrestricted x portrestricted | relay (FAIL) | direct 8 s |
+| symmetric x restricted | relay (FAIL) | direct 10 s |
+| masq x masq, masq x portrestricted, symmetric x symmetric (expected relay) | relay, ping ok | relay, ping ok |
+
+n = 1 run per pair. The `--capture` row (restricted x restricted, quic) now
+goes direct in 4 s with 430 sealed datagrams: 0 zero dst id, 0 sf magic, 2 of
+51 B, no chi² position flagged, entropy 7.97 bit, PMTU 1413.
+`quic-carrier-test.sh`, `quic-loss-test.sh` and `mixed-version-test.sh`
+(`CARRIERS=quic`, both old images) pass on the same image. On the final N2
+image (`65010402a900`, run `ww-n2-fin2-mat-quic`) the same six pairs are 6/6
+direct in 4-6 s.
+
+A first version of the fix (image `ww-n2-i2`) got the three pairs above
+direct but lost *every* relayed quic packet (ping 0 on the pairs that stay
+relayed): the relay identified the sender of a carrier record by its source
+address, which by design no longer matched. Now the carrier passes the node
+of its authenticated connection (`handle_incoming_carrier_datagram(..., from)`).
+
 ### 5.2 https: relayed traffic between two https nodes is dropped
 
 `matrix --transport https` (4 pairs, all FAIL, ping 0): both NATed nodes reach
@@ -482,6 +523,86 @@ traffic is relayed, §5.2). By the owner's rule (a carrier must look like the pr
 it claims, failure paths included) the direct path is the uncovered one. This
 also interacts with every traversal technique in §9: anything that makes
 more pairs direct makes more plain tinc UDP.
+
+**Since stream N2 (DirectSeal, docs/transports.md §5)** a node that dials
+obfs, https or quic seals its direct datagrams in obfs frame v3. The same
+rows, `wirestats` added to the capture (runs `ww-n2-cap-base` on the
+pre-N2 image `11e02ef`, `ww-n2-cap-n2` after):
+
+| pair, carrier | before: datagrams / zero dst id / sf magic / 51 B | after: datagrams / zero dst id / sf magic / 51 B | after: distinct sizes, chi² flagged byte positions 0-15, entropy of bytes 0-15 | PMTU before → after | direct |
+|---|---|---|---|---|---|
+| restricted x restricted, plain | 194 / 120 / 74 / 56 | 173 / 103 / 70 / 42 (unchanged by design: plain nodes do not seal) | 12, all 16, 4.17 bit | 1439 → 1439 | 8 s → 6 s |
+| restricted x restricted, obfs | 340 / 61 / 196 / 48 | 291 / **0 / 0 / 1** | 140, none, 7.96 bit | 1413 → 1413 | 10 s → 8 s |
+| masq x restricted, obfs | 313 / 69 / 196 / 39 | 335 / **0 / 0 / 1** | 151, none, 7.97 bit | 1439 → 1413 | 6 s → 8 s |
+| masqfw x masqfw, quic | 294 / 98 / 196 / 33 (+11 QUIC long headers) | 338 / **0 / 0 / 2** (+27 QUIC long headers) | 138, none, 7.97 bit | 1439 → 1413 | 4 s → 4 s |
+| restricted x restricted, quic | 485 / 485 / 0 / 485, constant src id + counter | 495 / **0 / 0 / 0** (+42 QUIC long headers) | 65, none, 7.98 bit | relay (§5.1) | relay → relay (§5.1) |
+| restricted x restricted, https | 0 (TCP only) | 0 (TCP only) | — | — | relayed (§5.2) |
+
+The one or two 51-byte datagrams after the change are sealed frames whose
+random tail happened to land on 51 (1 of 291-338, against 13-29 % before).
+`dpi-fingerprint` still reports `udp_constant_srcid` in the quic rows: those
+flows are the QUIC connections themselves (ephemeral ports, a QUIC short
+header carries its connection id in the clear), not the direct path on 655 —
+QUIC looking like QUIC. The sealed `obfs`/`quic` rows no longer flag
+`udp_null_dstid` or `udp_probe_size`. The sf-magic datagrams before were
+`UdpMetaFallback`'s `sf` side link; it now runs over `obfs` when either end
+seals. Evidence: `results/2026-09-26/n2/capture-*`. A repeat on the final
+item-1 image (run `ww-n2-cap-n2b`, `capture-n2b`) gives the same picture:
+obfs 304 and 229 datagrams, quic masqfw 331, quic restricted 495 — 0 zero dst
+id, 0 sf magic, 0-1 of 51 B, no chi² position flagged, entropy 7.95-7.98 bit,
+PMTU 1413; plain unchanged (170 / 106 / 64 / 40, PMTU 1439).
+
+No direct pair lost (`results/2026-09-26/n2/matrix-item1.txt`): the full
+plain matrix on the N2 image is 28 PASS, 17/25 direct (the same set as §3.1);
+`--transport obfs` on six pairs 6/6 direct before and after; `--transport
+quic` 1/6 before and after (masqfw only — §5.1, fixed separately); `--transport
+https` 6/6 PASS (TCP only, relayed) before and after.
+
+**An obfs black hole the final regression found (fixed, b1c71d7).** On the
+image with all N2 items, `--transport obfs` failed a pair in 6 of 10 runs of
+the six pairs above (`masq x restricted` 4, `symmetric x restricted` 1,
+`portrestricted x portrestricted` 1): both ends "directly with UDP", ping
+0 %, one end logging "unknown source and/or destination ID" for every
+datagram of its peer. Not the seal itself: both ends `AutoConnect` to each
+other over obfs at the same second and both dials stall; the end whose dial
+gives up first dials again over the confirmed data path (`UdpMetaFallback`)
+and keys the obfs link, or the pair has just keyed its sealed path
+(`DSEAL_KEX`); then the other end's own stalled dial times out and its close
+wiped the shared link's keys (`obfs_close()` looked for other connections of
+`c->node`, which is NULL before `ack_h()`). The close path is older than N2;
+what most likely exposed it is item 3, which confirms the direct path within
+the 5 s the stalled dials live (not bisected: the item-1 image passed
+`masq x restricted` over obfs 3 of 3, n too small to say more). After the fix: 0 of 5 runs,
+0 of 30 pair-runs; the same race fired 7 times, each followed by at most one
+unreadable datagram. Runs failing 6/10 vs 0/5 is p = 0.04 (Fisher, one-sided)
+— the mechanism is proven by the `fuzz_obfs` self-test
+`selftest_unauth_close_keeps_session` and by the log trace, not by that count
+(`results/2026-09-26/n2/obfs-close/`, `docs/transports.md` obfs "Key
+schedule").
+
+**The same capture rows on the final N2 image** (`65010402a900`, all items
+and the obfs fix; run `ww-n2-fin2-cap`, `results/2026-09-26/n2/capture-final/`):
+
+| pair, carrier | datagrams / zero dst id / sf magic / 51 B | distinct sizes, chi² flagged positions 0-15, entropy 0-15 | `dpi-fingerprint` present | PMTU | direct |
+|---|---|---|---|---|---|
+| restricted x restricted, plain | 168 / 98 / 70 / 31 | 15, all 16, 4.25 bit | `udp_null_dstid`, `udp_probe_size` (plain nodes keep upstream's wire, by design) | 1439 | 6 s |
+| restricted x restricted, obfs | 264 / **0 / 0 / 1** | 125, none, 7.95 bit | none | 1413 | 4 s |
+| masq x restricted, obfs | 289 / **0 / 0 / 1** | 140, none, 7.96 bit | none | 1413 | 8 s |
+| masqfw x masqfw, quic | 367 / **0 / 0 / 1** (+25 QUIC long headers) | 138, none, 7.95 bit | `udp_constant_srcid` | 1413 | 4 s |
+| restricted x restricted, quic | 360 / **0 / 0 / 3** (+25 QUIC long headers) | 139, none, 7.97 bit | `udp_constant_srcid`, `udp_probe_size` | 1413 | 4 s |
+| restricted x restricted, https | 0 (TCP only) | — | none | — | relayed (§5.2) |
+
+Two flags in the quic rows, neither of them the direct path looking like
+tinc: `udp_constant_srcid` names flows on ephemeral ports (e.g.
+`100.64.0.3:60033`) — the QUIC connections themselves, whose short header
+carries the connection id in the clear, QUIC looking like QUIC; and
+`udp_probe_size` fires on `dpi-fingerprint`'s absolute rule (3 or more
+datagrams of exactly 51 B): 3 of 360 here, at the bottom edge of a flat size
+distribution (50/51/52/53 B: 1/3/2/1 datagrams), against 31 of 168 on the
+plain row. A classifier with a relative test would not see it; one with this
+exact rule would, on long enough flows, for any carrier with random-length
+tails — the tail cannot avoid one size without making that absence the tell.
+Recorded, not changed.
 
 ## 6. IPv4 and IPv6
 
@@ -574,6 +695,26 @@ flips (relay hint → the peer's real datagram → ...) and a few relayed
 packets; no ping was lost in any run (578/600 replies everywhere, the same
 count as without rekeys). At the default `KeyExpire` of 3600 s the cost is a
 few seconds of relaying per hour: real, measurable, not urgent (W7).
+
+**Fixed in N2**: `ans_key_h()` applies the relay's reflexive address only
+while the peer's direct path is not confirmed (the rule `udp_info_h()` always
+had), and `update_node_udp()` returns early for the address the node already
+uses. Same command (`results/2026-09-26/n2/rekey/`):
+
+| image (config) | KeyExpire | rekeys | peer-address resets A / B | A→B via relay / direct | relayed share |
+|---|---|---|---|---|---|
+| N2 before this fix (`ww-n2-i3`), `UdpMetaFallback = no` | 20 s | 6 | 45 / 36 | 83 / 642 | 11.4 % |
+| N2 (`ww-n2-i4`), `UdpMetaFallback = no`, run 1 | 20 s | 6 | **0 / 0** | 0 / 632 | **0 %** |
+| N2 (`ww-n2-i4`), `UdpMetaFallback = no`, run 2 | 20 s | 6 | 0 / 0 | 0 / 631 | 0 % |
+| N2 (`ww-n2-i4`), defaults | 20 s | 6 | 0 / 0 | 0 / 641 | 0 % |
+| N2 before the obfs fix (`bc86d234ee94`), `UdpMetaFallback = no` | 20 s | 6 | 0 / 0 | 0 / 634 | 0 % |
+| N2 final image (`65010402a900`), `UdpMetaFallback = no` | 20 s | 6 | 0 / 0 | 0 / 632 | 0 % |
+| upstream, same run (`ww-n2-fin2-rekey`) | 20 s | 6 | 38 / 33 | 143 / 515 | 21.7 % |
+
+577-580/600 ping replies in every run, as before (the missing ones are the
+window's edges, the same count without rekeys). `ww-n2-i4` carries the first
+version of item 3; the change here is independent of it, and the final image
+repeats the result.
 
 ## 8. Weak points
 
@@ -688,6 +829,69 @@ uncoordinated, repeating probe schedule.
   class; on a real CGN this pair stays relayed. It should stay relayed rather
   than grow a port scanner — the relay path works.
 
+### 9.3 The coordinated start in tincd (N2 item 3)
+
+Implemented in `net_packet.c` (`punch_*`), wire-compatible: a node with the
+`DSEAL_PUNCH` bit in its capability token does not probe such a peer
+unsolicited; it sends `REQ_KEY <me> <peer> 98 0 - -` through the meta graph.
+The relay that has both ends as meta neighbours answers — once it has
+confirmed both ends' UDP addresses — with `98 2 <addr> <port>` to both at
+once, each carrying the other end's address as the relay sees it; both start
+an 8 s round of the usual probe bursts at once. A round without a confirmed
+path is followed by 35 s without a single probe to that peer (longer than the
+30 s an unreplied conntrack entry lives). An older relay forwards the request
+(REQ_KEY extensions are forwarded verbatim) and the far end answers `98 1`
+itself and starts after half the weighted meta distance; after 5 unanswered
+requests (2 s apart) a node runs a round on its own. Peers without the bit
+(upstream, older tincstack) and direct meta neighbours are probed as before.
+
+`lab.sh matrix --image core --rtt R --pairs "masq/masq masq/portrestricted
+cgnat/cgnat cgnat/masq"`, one matrix per run (`results/2026-09-26/n2/punch/`):
+
+| pair | pre-N2 `11e02ef`, rtt 40 (n=3) | N2 items 1-2 (`ww-n2-i2c`), rtt 40 (n=5) | + item 3 (`ww-n2-i3b`), rtt 40 (n=5) | items 1-2, rtt 0 (n=3) | + item 3, rtt 0 (n=3) |
+|---|---|---|---|---|---|
+| masq x masq | 0/3 | 5/5, 2 s | 5/5, 4-6 s | 0/3 | 1/3 |
+| masq x portrestricted | 3/3, 10 s | 5/5, 10 s | 5/5, 4-6 s | 2/3 | 3/3, 4-6 s |
+| cgnat x cgnat | 0/3 | 5/5, 2 s | 5/5, 4-6 s | 0/3 | 1/3 |
+| cgnat x masq | 0/3 | 5/5, 2 s | 5/5, 4-6 s | 0/3 | 2/3 |
+
+What the numbers say, without flattering them:
+
+- Most of the rtt-40 gain over pre-N2 came from item 1, not from this item:
+  DirectSeal holds the first probe until the peer's capability token has
+  arrived, and both ends learn it from the same key exchange, so their first
+  probes already left together. Item 3 makes that explicit and adds the
+  back-off; at rtt 40 it costs 2-4 s on three pairs (the relay waits for
+  confirmed addresses) and saves 4-6 s on masq x portrestricted.
+- rtt 0 is where it helps: 7 of 12 pair-runs direct against 2 of 12. It is
+  not 3/3: with no path delay the two GOs arrive with a skew comparable to
+  the RTT itself, one end's first probe still reaches the other NAT before
+  that NAT's own outbound packet, and every following round repeats it (logs
+  of `after2-rtt0-2`: three rounds, addresses right, all fail). The pair
+  stays relayed and pings; no regression. Residual.
+- A first version (`ww-n2-i3`) let the relay say GO before it had confirmed
+  either end's address: each end probed the other's edge guess (port 655)
+  for the whole round, and masq x portrestricted went from 10 s to 44-46 s
+  (5/5 runs). The relay now stays silent until it has both.
+- n = 3-5 per cell: a 5/5 vs 0/3 difference is not luck; 1/3 vs 0/3 is not
+  significant on its own.
+- `lab.sh laptop` and `lab.sh glare` PASS on `ww-n2-i3b`.
+  `mixed-version-test.sh` (direct section, image `ww-n2-i3c` = `i3b` with
+  the round lines logged at level 1) gains a case "current leaves, older
+  relay": the older relay forwards the request, the far leaf answers and
+  starts, the pair goes direct — PASS against `ww-n2-base` and `pre-deb13`
+  (`results/2026-09-26/n2/punch/mixed-version-direct.txt`).
+- Repeated on the final N2 image (`65010402a900`: items 1-4 and the obfs
+  fix; item 4 changed `update_node_udp()`, which the GO path uses; runs
+  `punch/ww-n2-fin2-punch-*`): rtt 40, n = 5: all four pairs 5/5 direct,
+  4-6 s, except one `cgnat x masq` run at 49 s — its first round failed and
+  the second came after the 35 s back-off (the design working, and its price).
+  rtt 0, n = 3: `masq x portrestricted` 3/3, `masq x masq` 1/3, `cgnat x
+  cgnat` 1/3, `cgnat x masq` 0/3 — 5 of 12 pair-runs, against 7/12 on
+  `ww-n2-i3b` and 2/12 without item 3. 5/12 vs 7/12 is within noise at this
+  n (Fisher p ≈ 0.7); the rtt-0 residual above stands. Every pair pinged in
+  every run.
+
 ## 10. Ranked fixes for stream N2
 
 Ranked by what a user loses today, not by how interesting the fix is. Each
@@ -716,6 +920,8 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
 
 2. 🟠 **P1 — quic: the relay hands out the QUIC flow as the node's UDP
    address (W2).**
+   **Status: fixed in N2** (§5.1): the proof pairs go direct, and so do the
+   three more that were relayed under quic.
    Pairs: every expected-direct pair with a port-changing NAT on either side
    loses its direct path under `quic` (lab: `restricted x restricted`,
    `fullcone x fullcone` relay instead of 6 s; only port-preserving EIM pairs
@@ -735,6 +941,10 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
 
 3. 🟠 **P1 — decide what the peer-to-peer path is when the carrier disguises
    the meta connection (W3).**
+   **Status: decided and done in N2 — option (b), `DirectSeal`**
+   (docs/transports.md §5; wire numbers in §5.3). plain/sf-only nodes keep
+   upstream's wire; a sealing node sends no UDP to a peer that cannot read
+   it.
    Pairs: none change reachability; every direct pair of a node on
    quic/obfs puts plain (obfs: partly plain), fingerprintable tinc UDP
    between the sites.
@@ -747,6 +957,8 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
    Code: net_packet.c `send_sptps_data`, `try_udp`; obfs.c `obfs_wrap_send`.
 
 4. 🟠 **P1 — coordinated start + back-off for unconfirmed peers (W4, W6).**
+   **Status: done in N2** (§9.3): all four pairs 5/5 at rtt 40; at rtt 0
+   better than before (7/12 vs 2/12 pair-runs) but not 2/3 on every pair.
    Pairs: `masq x masq`, `masq x portrestricted`, `portrestricted x masq`,
    `cgnat x cgnat`, `cgnat x masq` (5 of the 8 + 2 relay-only pairs in the
    lab); harness proof 3/3 at 40 ms RTT (§9).
@@ -764,6 +976,8 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
    `send_udp_info`/`udp_info_h` (carry a "go" flag or a new request).
 
 5. 🟡 **P2 — a confirmed direct path must survive a relayed rekey (W7).**
+   **Status: done in N2** (§7.6): 0 address resets, 0 % relayed (was 45/36,
+   11.4 %).
    Pairs: every direct pair whose rekey handshake goes through a relay (no
    `sf` side link): 8.6 % of A→B packets relayed at KeyExpire 20 s in
    the lab (`UdpMetaFallback = no`), 30.7 % for upstream; ~8 address
@@ -780,6 +994,14 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
    router) and one carrier row (`--transport quic`, `--transport https`), so
    W1/W2 cannot come back silently. Done in this stream for the lab; the
    `make check` wiring is N2's.
+   **Status: done in N2.** `matrix --quick` has `masqfw/masqfw` as its sixth
+   pair, and `nat-quick` adds `--transport https` and `--transport quic` on
+   `restricted/restricted` (a W1 regression fails the https row's ping, a W2
+   regression the quic row's direct path). Timed on `ww-n2`
+   (`results/2026-09-26/n2/natquick/timing.txt`, n = 1): quick matrix 289 s
+   (the old five pairs ~276 s; `masqfw/masqfw` 13 s), https row 105 s (a
+   `tcp` pair waits the whole 90 s budget), quic row 15 s: `nat-quick` ~6.8
+   min, was ~4.6 min, inside the CI job's 40-minute budget.
    Code: testing/nat-sim (this stream), Makefile.
 
 7. 🟡 **P2 — dual-stack hints (W10).** Probe both families when a peer has
@@ -798,6 +1020,36 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
 10. 🟢 **P3 — port spray for APDM peers.** Lab-only gain (§9.1); a port scan on
     the wire. Recommend *not* doing it.
 
+### 10.1 An idle quic link behind a short UDP timeout (N2 item 5)
+
+`lab.sh idle cgnat --transport quic --ping-interval P --cgnat-udp-timeout T
+--cgnat-udp-stream-timeout T --duration 120` (new): one node behind the
+two-tier CGN, meta connection to the relay over quic, no traffic at all for
+120 s; every 5 s the relay's view of the node's port is sampled, then the
+relay pings the node (server-initiated traffic is what a lost binding eats).
+Image `ww-n2-i4`, n = 1-2 per row (`results/2026-09-26/n2/idle/`):
+
+| carrier | PingInterval | CGN UDP timeout | NAT rebinds in 120 s (relay saw a new port) | QUIC path validations | re-dials / closes | relay→node after idle |
+|---|---|---|---|---|---|---|
+| quic | 60 s | 10 s | 1 (run 1), 3 (run 2) | 1, 3 | 0 / 0 | 5/5, 5/5 |
+| quic | 60 s | 20 s | 0 | 0 | 0 / 0 | 5/5 |
+| quic | 10 s (lab default) | 10 s | 0 | 0 | 0 / 0 | 5/5 |
+| quic | 10 s | 30 s / 120 s stream | 0 | 0 | 0 / 0 | 5/5 |
+| plain | 10 s | 10 s | 0 | 0 | 0 / 0 | 5/5 |
+
+The answer: with only the carrier's own 15 s QUIC keepalive (tinc's PINGs at
+60 s) a 10 s UDP timeout does drop the binding — 1 and 3 times in two
+120-second windows. The link survives it: the node's next packet creates a
+new mapping, the relay validates the new path (ngtcp2 migration, §9.3
+`quic_udp_try`) and nothing is re-dialled or closed. What is lost is
+server-to-node traffic in the gap between the drop and the node's next packet
+(up to the 15 s keepalive); the pings after the idle window all arrived
+because by then the node had spoken. With a 20 s timeout, or tinc's PINGs at
+10 s, the binding never dropped. Not fixed: a keepalive under 10 s would
+change the carrier's traffic shape away from Chromium's 15 s (the owner's
+wire rule), and a CGN with a 10 s UDP timeout is below RFC 4787's 2-minute
+floor. Residual recorded.
+
 ## 11. Not measured
 
 - **Real NAT hardware.** Everything above is Linux 6.8 netfilter. Whether a
@@ -814,8 +1066,8 @@ entry: the pairs it changes, the lab proof that must turn green, the code.
   lab has no IGD; no number exists.
 - **One-way traffic** (W9) — every scenario pings, which is two-way.
 - **Sleep between 30 and 60 s** (no "Awaking from dead", no rebind).
-- **The tinc daemon with a coordinated start** — §9 proves the NAT side in
-  the harness, not a tincd implementation.
+- **The coordinated start on real NATs** — §9 proves the NAT side in the
+  harness and §9.3 the tincd implementation, both on Linux netfilter only.
 - **Carriers other than plain on the mesh arm**, and `obfs` beyond the two
   capture pairs.
 - **Loss and jitter** — only fixed delay (`--rtt`) was used.

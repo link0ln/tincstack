@@ -1,0 +1,23 @@
+== obfs-test
+PASS: obfs cold-start works, fingerprint gone, junk per-handshake, relay intact, defaults plain;
+== quic-carrier-test
+PASS: quic carrier negotiates, survives NAT rebind, falls back, rejects bad auth, relays, keeps its carrier across link drops
+== https-carrier-test
+PASS: https carrier tunnels, is TLS-only, and resists probing
+== quic-loss-test
+  ok: 2000/2000 answered under 10% loss (>= 99%)
+  ok: the link answers after the loss
+  ok: still on quic
+  ok: the leaf dialled once
+  ok: f: no AddressSanitizer report
+  ok: l: no AddressSanitizer report
+  ok: every connection was answered
+  ok: tincd still runs
+  ok: f: no AddressSanitizer report
+PASS
+== mixed-version-base
+== mixed-version-pre-deb13
+== same-nat-meta-test
+PASS: two nodes behind one NAT peer directly over a UDP carrier, with no ERROR loop
+== obfs-confirmed-peer-test
+PASS: a running network with a confirmed UDP path can be switched to obfs

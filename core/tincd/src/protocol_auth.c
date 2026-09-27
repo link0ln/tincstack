@@ -1082,8 +1082,10 @@ bool send_ack(connection_t *c) {
 	   that sends no list is treated as `plain'. This is how carriers are
 	   negotiated without host records (ARCHITECTURE.md §4). */
 	char transports[TRANSPORT_LIST_MAX];
+	/* ... and the direct-seal capability after it (obfs.h). */
+	char dseal[32];
 
-	return send_request(c, "%d %s %d %x %s", ACK, myport.udp, c->estimated_weight, (c->options & 0xffffff) | (experimental ? (PROT_MINOR << 24) : 0), transport_accept_string(transports));
+	return send_request(c, "%d %s %d %x %s %s", ACK, myport.udp, c->estimated_weight, (c->options & 0xffffff) | (experimental ? (PROT_MINOR << 24) : 0), transport_accept_string(transports), dseal_token(dseal, sizeof(dseal)));
 }
 
 static void send_everything(connection_t *c) {
@@ -1171,12 +1173,13 @@ bool ack_h(connection_t *c, const char *request) {
 
 	char hisport[MAX_STRING_SIZE];
 	char histransports[MAX_STRING_SIZE] = "";
+	char hisdseal[MAX_STRING_SIZE] = "";
 	int weight, mtu;
 	uint32_t options;
 	node_t *n;
 	bool choice;
 
-	if(sscanf(request, "%*d " MAX_STRING " %d %x " MAX_STRING, hisport, &weight, &options, histransports) < 3) {
+	if(sscanf(request, "%*d " MAX_STRING " %d %x " MAX_STRING " " MAX_STRING, hisport, &weight, &options, histransports, hisdseal) < 3) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "ACK", c->name,
 		       c->hostname);
 		return false;
@@ -1237,6 +1240,10 @@ bool ack_h(connection_t *c, const char *request) {
 	} else if(!n->transports) {
 		transport_node_read_config(n, c->config_tree);
 	}
+
+	/* The live daemon's own word on the direct seal (obfs.h); no token is an
+	   older build. */
+	dseal_learn(n, *hisdseal ? hisdseal : NULL);
 
 	/* A carrier was negotiated successfully: remember it as the one that
 	   works for this peer and let the next reconnect start its preference

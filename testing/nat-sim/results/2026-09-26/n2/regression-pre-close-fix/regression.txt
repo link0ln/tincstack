@@ -1,0 +1,24 @@
+# N2 final regression, image tincstack/core:ww-n2 (bc86d234ee94), branch dfb3009
+obfs-test rc=1 seconds=518 00:59
+quic-carrier-test rc=0 seconds=208 01:02
+https-carrier-test rc=0 seconds=179 01:05
+quic-loss-test rc=1 seconds=64 01:06
+mixed-version-base rc=0 seconds=172 01:09
+mixed-version-pre-deb13 rc=0 seconds=271 01:13
+laptop rc=0 seconds=636 01:24
+glare rc=0 seconds=370 01:30
+matrix-plain rc=0 seconds=1238 01:51
+matrix-obfs rc=1 seconds=76 01:52
+matrix-quic rc=0 seconds=75 01:53
+matrix-https rc=0 seconds=621 02:04
+capture-plain rc=0 seconds=223 02:07
+capture-obfs rc=0 seconds=166 02:10
+capture-quic rc=0 seconds=146 02:13
+capture-https rc=0 seconds=216 02:16
+ALLDONE 02:16
+# Reruns (logs *-rerun1.log, obfs-test-fixed.log):
+obfs-test-rerun1 rc=0 (the rc=1 above: the sf positive control missed the SF magic; fixed in 66ff1ab)
+obfs-test-fixed rc=0 (66ff1ab's obfs-test.sh on the same image)
+quic-loss-test-rerun1 rc=0 (the rc=1 above: tincstack/fp-prober:ww-f pruned; rerun with PROBER_IMAGE=tincstack/fp-prober:ww-n2)
+# The core/ code of this image is identical to 66ff1ab (commits after dfb3009 touched tests and docs only).
+# matrix-obfs rc=1 is the obfs_close black hole (../obfs-close/). Superseded by ../regression-final/ (image after b1c71d7).

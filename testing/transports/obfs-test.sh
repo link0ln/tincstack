@@ -306,14 +306,22 @@ print('sent',$4,'x',len(data),'bytes')
 echo "===== PART 1: obfs, two nodes, cold-start + fingerprint + junk ====="
 
 # Reference (BEFORE): SingleFlow only -> SF magic is visible on the wire.
+# The capture covers the same window as the obfs one below: from before A's
+# first dial until the link pings clean, then three pings. Three pings on a
+# link that is already up are not a reliable control: they can all go out as
+# direct SPTPS datagrams, and then no single-flow frame need cross the wire
+# in those two seconds (0 SF frames once in 2026-09-27's regression; 20-34
+# in each of four repeats of that window). The single-flow handshake always
+# carries the magic.
 gen "$BASE-b" nodeb "      SingleFlow: yes"
 gen "$BASE-a" nodea "      SingleFlow: yes
       ConnectTo: [nodeb]"
 materialise b a
 crossinject a b
-start b "$B_IP" "$BASE-b"; start a "$A_IP" "$BASE-a"
+start b "$B_IP" "$BASE-b"
+capture_start b
+start a "$A_IP" "$BASE-a"
 wait_link a "$A_VPN" b "$B_VPN" || fail=1
-capture_start a
 docker exec "$LAB-a" ping -c3 -W2 "$B_VPN" >/dev/null 2>&1 || true
 sf_cap=$(capture_stop)
 sf_magic=$(sfmagic "$(hex_of "$sf_cap")")

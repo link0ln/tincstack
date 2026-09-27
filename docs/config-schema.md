@@ -99,6 +99,21 @@ networks:
                                # Server-scoped, re-read on `tinc reload'.
                                # Deliberately NOT carried by invitations: it is a
                                # per-node listener policy, not a network-wide one.
+      DirectSeal: auto         # seal the DIRECT peer-to-peer UDP datagrams
+                               # (and the probes) in obfs frame v3, so the data
+                               # path looks like the carrier the node declares
+                               # instead of plain tinc UDP. auto (default) = on
+                               # when PreferredTransports lists obfs, https or
+                               # quic, or AllowPlainMeta is no; yes = always;
+                               # no = never send sealed (still reads sealed
+                               # datagrams while Transports accepts obfs).
+                               # A sealing node sends NO clear UDP to a peer
+                               # that cannot read sealed datagrams (upstream
+                               # tinc, a peer without obfs): that pair is
+                               # relayed, with a log line saying why
+                               # (docs/transports.md §5, "DirectSeal").
+                               # Per-node, server-scoped, not carried by
+                               # invitations, re-read on `tinc reload'.
 
       # obfuscated-UDP tier (point 6, cheap tier; redesigned mechanism).
       # Active only when `obfs' is selected (PreferredTransports: [obfs, plain]);

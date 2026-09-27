@@ -1,0 +1,31 @@
+== mixed-version-wire-ww-n2-base
+04:30:51 PASS quic: founder tincstack/core:ww-n2-base, leaf tincstack/core:ww-n2 (tunnel carries traffic, quic dialled once)
+04:30:59 PASS quic: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-base (tunnel carries traffic, quic dialled once)
+04:31:06 PASS quic: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, quic dialled once)
+04:31:13 PASS https: founder tincstack/core:ww-n2-base, leaf tincstack/core:ww-n2 (tunnel carries traffic, https dialled once)
+04:31:20 PASS https: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-base (tunnel carries traffic, https dialled once)
+04:31:28 PASS https: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, https dialled once)
+04:31:36 PASS obfs: founder tincstack/core:ww-n2-base, leaf tincstack/core:ww-n2 (tunnel carries traffic, obfs dialled once)
+04:31:43 PASS obfs: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-base (tunnel carries traffic, obfs dialled once)
+04:31:51 PASS obfs: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, obfs dialled once)
+04:32:13 PASS direct pair, current leaf b: 'Reachability: directly with UDP', ping=1; wire a->b: 43 datagrams, 0 with the zero dst id, 0 of 51 bytes
+04:32:32 PASS direct pair, older leaf b (reads frame v3): 'Reachability: directly with UDP', ping=1; wire a->b: 38 datagrams, 0 with the zero dst id, 0 of 51 bytes
+04:33:43 PASS direct pair, older leaf b without obfs: 'Reachability: none, forwarded via founder', ping=1; wire a->b: 0 datagrams, 0 with the zero dst id, 0 of 51 bytes
+04:34:00 PASS direct pair, current leaves, older relay: 'Reachability: directly with UDP', ping=1; wire a->b: 43 datagrams, 0 with the zero dst id, 0 of 51 bytes
+04:34:01 mixed versions: all pairs connect
+== mixed-version-wire-ww-n2-pre-deb13
+04:39:52 PASS quic: founder tincstack/core:ww-n2-pre-deb13, leaf tincstack/core:ww-n2: an older listener cannot send datagrams to a current dialler; the leaf gave quic up once and is on 'plain', tunnel carries traffic
+04:40:17 PASS quic: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-pre-deb13: an older dialler carries no authenticator in its request headers, and a current listener answers it as a web server; the leaf gave quic up once
+04:40:26 PASS quic: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, quic dialled once)
+04:40:34 PASS https: founder tincstack/core:ww-n2-pre-deb13, leaf tincstack/core:ww-n2 (tunnel carries traffic, https dialled once)
+04:40:42 PASS https: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-pre-deb13 (tunnel carries traffic, https dialled once)
+04:40:50 PASS https: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, https dialled once)
+04:41:11 PASS obfs: founder tincstack/core:ww-n2-pre-deb13, leaf tincstack/core:ww-n2: an older founder cannot read a current dialler's obfs v3 frames; the leaf gave obfs up once and is on 'plain', tunnel carries traffic
+04:41:19 PASS obfs: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2-pre-deb13 (tunnel carries traffic, obfs dialled once)
+04:41:19 PASS obfs: the current founder saw frame v2 from the older leaf and answered in v2
+04:41:26 PASS obfs: founder tincstack/core:ww-n2, leaf tincstack/core:ww-n2 (tunnel carries traffic, obfs dialled once)
+04:41:48 PASS direct pair, current leaf b: 'Reachability: directly with UDP', ping=1; wire a->b: 43 datagrams, 0 with the zero dst id, 0 of 51 bytes
+04:42:58 PASS direct pair, older leaf b (frame v2 only): 'Reachability: none, forwarded via founder', ping=1; wire a->b: 310 datagrams, 0 with the zero dst id, 0 of 51 bytes
+04:44:08 PASS direct pair, older leaf b without obfs: 'Reachability: none, forwarded via founder', ping=1; wire a->b: 0 datagrams, 0 with the zero dst id, 0 of 51 bytes
+04:44:36 PASS direct pair, current leaves, older relay: 'Reachability: directly with UDP', ping=1; wire a->b: 46 datagrams, 0 with the zero dst id, 0 of 51 bytes
+04:44:37 mixed versions: all pairs connect

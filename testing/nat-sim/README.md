@@ -23,7 +23,8 @@ never sees forwarded traffic. The netns design is host-independent and CI-safe.
 ```
 testing/nat-sim/lab.sh validate-nat        # prove the NAT emulation (udpprobe)
 testing/nat-sim/lab.sh scenario masq restricted --image core
-testing/nat-sim/lab.sh matrix --quick --image core     # what `make check` runs
+testing/nat-sim/lab.sh matrix --quick --image core     # what `make check` runs (6 pairs,
+                                                       # plus one https and one quic row)
 testing/nat-sim/lab.sh matrix                          # 5x5 + udpblock, core AND baseline
 testing/nat-sim/lab.sh laptop                          # the named regression, core vs baseline
 testing/nat-sim/lab.sh glare                           # simultaneous REQ_KEY
@@ -302,7 +303,11 @@ nothing about it.
   `--ipv6 both|a` (a routed 2001:db8::/32 behind stateful ip6tables
   firewalls, `AddressFamily = any`, the relay's IPv6 address first),
   `--capture` (tcpdump of gwa's WAN side towards gwb, classified by
-  `dpi-fingerprint`: what the direct peer-to-peer path looks like on the wire).
+  `dpi-fingerprint`: what the direct peer-to-peer path looks like on the wire;
+  and by `wirestats` (`peer.wirestats.report.txt`): counts of datagrams with
+  tinc's zero destination id, sf's magic, 51-byte probes, constant source ids
+  and counters, per-byte chi² over bytes 0-15 and their entropy, with QUIC
+  long headers counted apart — the DirectSeal proof, docs/nat.md §5.3).
 - `mesh [--nodes "T1 T2 ..."]`: every node behind its own NAT, one public
   relay, every ordered pair pings at 1 pps. Per pair: seconds to direct in
   each direction; overall % direct and the relay's steady-state packet/byte
@@ -312,6 +317,13 @@ nothing about it.
 - `rekey A B --keyexpire S --duration S`: a direct pair under SPTPS rekeys;
   counts peer-address resets and data packets sent via the relay instead of
   direct after the pair went direct.
+- `idle TYPE [--transport C] [--ping-interval S] --duration S`: one node
+  behind TYPE (`cgnat`: the `--cgnat-udp-*` windows) with a meta connection
+  to the relay and no traffic at all; every 5 s the relay's view of the
+  node's port (a new port = the NAT dropped the binding), then pings
+  relay->node and node->relay. Counts rebinds, re-dials, QUIC path
+  validations and closes (docs/nat.md §10.1). `--ping-interval` sets tinc's
+  `PingInterval` on every node (default 10, for every command).
 - `portmap`: see "masq vs masqfw" above.
 - `punch [A/B ...]`: `nattrav punch` on both sides through the real gateway
   profiles, no tincd: `--strategies "first second burn burn-keep"`,

@@ -1,0 +1,9 @@
+dpi-fingerprint: port=0 tcp_segments=0 udp_datagrams=0
+  tcp_id_line              absent   n=0     []
+  tcp_sptps_handshake      absent   n=0     []
+  udp_size_histogram       info     n=0     {}
+  udp_null_dstid           absent   n=0     0/0 datagrams start with 6 zero bytes
+  udp_constant_srcid       absent   n=0     {}
+  udp_seqno_counter        absent   n=0     {}
+  udp_probe_size           absent   n=0     0 datagrams of exactly 51 bytes (tinc MIN_PROBE_SIZE)
+present: none

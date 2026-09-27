@@ -35,6 +35,7 @@
 #include "chacha-poly1305/chacha.h"
 #include "chacha-poly1305/chacha-poly1305.h"
 #include "conf.h"
+#include "ecdh.h"
 #include "ecdsa.h"
 #include "ed25519/sha512.h"
 #include "event.h"
@@ -101,6 +102,7 @@ typedef struct obfs_keyset_t {
 	struct chacha_ctx hprx;      /* header protection key, rx (v3) */
 	uint64_t ctr_tx;             /* our monotone counter for this key */
 	obfs_replay_t rw;            /* replay window on the rx counter */
+	time_t last_ok;              /* last time a fresh frame verified under this keyset */
 	bool valid;
 } obfs_keyset_t;
 
@@ -112,7 +114,20 @@ struct obfs_link_t {
 	obfs_keyset_t boot;         /* bootstrap keyset (public-key derived) */
 	obfs_keyset_t sess;         /* current session keyset (once negotiated) */
 	obfs_keyset_t next;         /* pending session keyset during (re)negotiation */
+	obfs_keyset_t prev;         /* the session keyset before the last promotion: receive only */
+	time_t prev_until;          /* ... until then (the peer may still seal with it for a moment) */
 	bool sess_tx_ready;         /* the peer confirmed it can decrypt our sess frames */
+
+	/* Direct seal (DSEAL_KEX, obfs.h): the session key of a pair that has no
+	   obfs meta connection, negotiated end to end over the meta graph. */
+	ecdh_t *dk_ecdh;            /* our pending ephemeral as initiator */
+	uint8_t dk_pub[ECDH_SIZE];  /* its public half */
+	uint8_t dk_rpub[ECDH_SIZE]; /* our public half as responder (bound into the confirm) */
+	time_t dk_sent;             /* when our pending offer went out */
+	bool dseal_used;            /* the direct path to this node is sealed with this link */
+	bool dseal_noted_old;       /* "bootstrap key only" was logged */
+	time_t dseal_old_since;     /* first unanswered sealed datagram to an older peer */
+	bool dseal_noted_unread;    /* "has not answered sealed datagrams" was logged */
 
 	/* session-key handshake state */
 	uint8_t local_seed[OBFS_SEED_LEN];
@@ -169,6 +184,11 @@ static list_t obfs_links = {
 
 static timeout_t obfs_rekey_timer;
 static timeout_t obfs_selfheal_timer;
+
+/* Direct seal (end of file). */
+static bool dseal_obfs_connected(const node_t *n);
+static void dseal_kex_start(obfs_link_t *l);
+static void dseal_read_config(void);
 
 /* Delay before the send-path self-heal fires. Bounds the worst-case
    bootstrap-key window to roughly this plus one meta-channel round trip. */
@@ -299,6 +319,12 @@ static void obfs_link_free(obfs_link_t *l) {
 	keyset_free(&l->boot);
 	keyset_free(&l->sess);
 	keyset_free(&l->next);
+	keyset_free(&l->prev);
+
+	if(l->dk_ecdh) {
+		ecdh_free(l->dk_ecdh);
+	}
+
 	memset(l->base, 0, sizeof(l->base));
 	memset(l->local_seed, 0, sizeof(l->local_seed));
 	memset(l->peer_seed, 0, sizeof(l->peer_seed));
@@ -330,6 +356,18 @@ obfs_link_t *obfs_link_for_node(node_t *n) {
 		return NULL;
 	}
 
+	/* The bootstrap key outlives both daemons, and a counter that restarts
+	   below the peer's replay window is dropped there (obfs_epoch_restart).
+	   A random 48-bit start lands below about half the time. Start from the
+	   clock instead, 2^20 counter values per second of wall time plus random
+	   low bits: a restarted daemon then starts above everything its previous
+	   run sent unless that run averaged over a million frames a second. The
+	   wire never shows it: the nonce is whitened and, in frame v3,
+	   header-protected. */
+	uint64_t low;
+	randomize(&low, sizeof(low));
+	l->boot.ctr_tx = ((uint64_t)time(NULL) << 20) | (low & 0xfffff);
+
 	list_insert_tail(&obfs_links, l);
 	return l;
 }
@@ -359,6 +397,14 @@ void obfs_link_reset_for_test(node_t *n) {
 			l->have_addr = false;
 			keyset_free(&l->sess);
 			keyset_free(&l->next);
+			keyset_free(&l->prev);
+
+			if(l->dk_ecdh) {
+				ecdh_free(l->dk_ecdh);
+				l->dk_ecdh = NULL;
+			}
+
+			l->dseal_used = false;
 			l->sess_tx_ready = false;
 			l->ack_sent = false;
 			l->have_peer_seed = false;
@@ -619,6 +665,28 @@ static void obfs_rekey_start(obfs_link_t *l) {
 	obfs_send_key(l, 0);
 }
 
+/* Promote the pending keyset: we seal with it from now on. The keyset it
+   replaces stays readable for OBFS_PREV_GRACE seconds, because the peer
+   switches one meta-channel trip later (or earlier) than we do and its
+   datagrams in between are sealed with the old one. */
+#define OBFS_PREV_GRACE 10
+
+static void obfs_link_promote(obfs_link_t *l) {
+	keyset_free(&l->prev);
+
+	if(l->sess.valid) {
+		l->prev = l->sess;
+		l->prev_until = now.tv_sec + OBFS_PREV_GRACE;
+	} else {
+		keyset_free(&l->sess);
+	}
+
+	l->sess = l->next;
+	memset(&l->next, 0, sizeof(l->next));
+	l->sess_tx_ready = true;
+	l->sess_time = now.tv_sec;
+}
+
 bool obfs_key_h(connection_t *c, const char *request) {
 	int flag;
 	int ver = 0;
@@ -690,11 +758,7 @@ bool obfs_key_h(connection_t *c, const char *request) {
 	   it can decrypt our session frames: promote the pending keyset and start
 	   sending with it. */
 	if(flag == 1 && l->next.valid) {
-		keyset_free(&l->sess);
-		l->sess = l->next;
-		memset(&l->next, 0, sizeof(l->next));
-		l->sess_tx_ready = true;
-		l->sess_time = now.tv_sec;
+		obfs_link_promote(l);
 		logger(DEBUG_CONNECTIONS, LOG_DEBUG, "obfs session key established with %s", c->name);
 	}
 
@@ -910,7 +974,7 @@ static ssize_t obfs_open(obfs_link_t *l, const uint8_t *buf, size_t len, uint8_t
 		mlens[nm++] = OBFS_MAGIC_LEN;
 	}
 
-	obfs_keyset_t *order[3];
+	obfs_keyset_t *order[4];
 	int no = 0;
 
 	if(l->next.valid) {
@@ -919,6 +983,10 @@ static ssize_t obfs_open(obfs_link_t *l, const uint8_t *buf, size_t len, uint8_t
 
 	if(l->sess.valid) {
 		order[no++] = &l->sess;
+	}
+
+	if(l->prev.valid && now.tv_sec <= l->prev_until) {
+		order[no++] = &l->prev;
 	}
 
 	order[no++] = &l->boot;
@@ -995,6 +1063,8 @@ static void obfs_log_toobig(obfs_link_t *l, size_t size, size_t budget) {
 	       (unsigned long)size, l->node ? l->node->name : "?", l->node ? l->node->hostname : "?", (unsigned long)budget);
 }
 
+static obfs_send_t obfs_link_send(obfs_link_t *l, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
+
 obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
 	if(excess) {
 		*excess = 0;
@@ -1017,6 +1087,10 @@ obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, s
 		return OBFS_SEND_PLAIN; /* not an obfs link: caller sends the datagram unchanged */
 	}
 
+	return obfs_link_send(l, sock, sa, buf, len, to, excess);
+}
+
+static obfs_send_t obfs_link_send(obfs_link_t *l, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
 	/* The SPTPS data path cannot chunk: tinc sized this datagram to what it
 	   believes the path carries, which knows nothing about the seal. Check the
 	   sealed size against the path budget BEFORE the kernel does, and report
@@ -1142,6 +1216,13 @@ static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerl
 	   the same key. The SPTPS path re-enters handle_incoming_vpn_packet with
 	   obfs disabled, so the inner is never scanned as obfs again. */
 	if(innerlen >= SF_MAGIC_LEN && !memcmp(inner, sf_magic, SF_MAGIC_LEN)) {
+		/* A node that reads sealed direct datagrams without accepting the
+		   obfs carrier (DirectSeal) unseals obfs meta frames too; they are
+		   not for it. */
+		if(!(transport_accept_mask & TRANSPORT_BIT(TRANSPORT_OBFS))) {
+			return true;
+		}
+
 		sf_udp_receive_obfs(ls, inner, innerlen, addr, l);
 		return true;
 	}
@@ -1186,8 +1267,27 @@ static bool obfs_opens_session(const uint8_t *inner, size_t innerlen) {
    under SPTPS and fails closed without the peer's private key, and the burst
    limiter in sf_accept() bounds the sessions such a flood can create. The live
    session's own keyset has its own window, which is untouched. */
+/* The direct seal (obfs.h) puts plain SPTPS data under the bootstrap key too,
+   and data never opens a single-flow session. A peer that restarted -- an
+   older tincstack draws a random 48-bit counter start -- would then be dropped
+   here for good. So a bootstrap-key DATA frame may also start a new epoch,
+   but only after the keyset has been silent for OBFS_EPOCH_SILENCE seconds
+   (a restart is a silence; a live peer's frames are never below the window
+   by more than reordering) and within the same rate limit. What a replay of
+   an old frame buys an attacker is the same as above: the inner record goes
+   to SPTPS, whose own replay window and session key reject it, and the
+   node's UDP address moves only after SPTPS accepted a record. */
+#define OBFS_EPOCH_SILENCE 5
+
 static bool obfs_epoch_restart(obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, const uint8_t *inner, size_t innerlen) {
-	if(ks != &l->boot || !obfs_opens_session(inner, innerlen)) {
+	if(ks != &l->boot) {
+		return false;
+	}
+
+	bool silent_data = !(innerlen >= SF_MAGIC_LEN && !memcmp(inner, sf_magic, SF_MAGIC_LEN))
+	                   && now.tv_sec - ks->last_ok >= OBFS_EPOCH_SILENCE;
+
+	if(!silent_data && !obfs_opens_session(inner, innerlen)) {
 		return false;
 	}
 
@@ -1200,8 +1300,9 @@ static bool obfs_epoch_restart(obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, 
 	ks->rw.max = seq;
 	ks->rw.bits = 1;
 
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Restarting the obfs replay window for %s at counter %llu: this frame opens a new single-flow session under the bootstrap key, so the peer has restarted",
-	       l->node ? l->node->name : "(unknown)", (unsigned long long)seq);
+	logger(DEBUG_CONNECTIONS, LOG_INFO, "Restarting the obfs replay window for %s at counter %llu: %s under the bootstrap key, so the peer has restarted",
+	       l->node ? l->node->name : "(unknown)", (unsigned long long)seq,
+	       silent_data ? "a data frame after a silence" : "this frame opens a new single-flow session");
 	return true;
 }
 
@@ -1243,6 +1344,7 @@ static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, 
 		return true;
 	}
 
+	ks->last_ok = now.tv_sec;
 	obfs_follow_version(l, ver);
 	l->rx_since_dial = true;
 	obfs_link_activate(l, addr);
@@ -1275,9 +1377,10 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 		}
 	}
 
-	/* Cold start: an unknown source. Only scan when obfs is accepted and the
-	   source is not an already-confirmed plain peer. */
-	if(!(transport_accept_mask & TRANSPORT_BIT(TRANSPORT_OBFS))) {
+	/* Cold start: an unknown source. Only scan when obfs is accepted (or
+	   sealed direct datagrams are, DirectSeal) and the source is not an
+	   already-confirmed plain peer. */
+	if(!dseal_self_reads()) {
 		return false;
 	}
 
@@ -1463,8 +1566,30 @@ void obfs_close(connection_t *c) {
 	   and silently drop the link back to the mesh-wide bootstrap key (review R
 	   M5-2). So only reset the link when NO other connection to the node
 	   remains. If a wipe does happen and the link is still carrying data, the
-	   send-path self-heal (see obfs_encode) renegotiates within a second. */
-	bool superseded = obfs_node_has_other_connection(c->node, c);
+	   send-path self-heal (see obfs_encode) renegotiates within a second.
+
+	   The node is the link's, not c->node: tinc sets c->node only in ack_h,
+	   so for a dial that never got that far c->node is NULL and the check
+	   above found no survivor however many there were. Measured (N2 lab,
+	   masq x restricted over obfs, 3 of 3 failing runs): both ends dial
+	   each other at the same second and both dials stall; the end whose
+	   dial times out first falls back to a dial over the confirmed UDP data
+	   path, which activates and completes OBFS_KEY; the other end's own
+	   stalled dial then timed out -- and its close wiped the session the
+	   live connection had just promoted. From there that end sealed under
+	   the bootstrap key, could not open anything its peer sealed under the
+	   session key ("unknown source and/or destination ID" for every
+	   datagram), and, with the link marked inactive, neither self-heal nor
+	   the periodic rekey ever ran for it. */
+	bool superseded = obfs_node_has_other_connection(l && l->node ? l->node : c->node, c);
+
+	/* A connection that never authenticated has negotiated no session key
+	   (OBFS_KEY runs only after ack_h), so whatever session the link holds
+	   belongs to someone else: another connection, or DSEAL_KEX for the
+	   sealed direct path, whose peer would keep sealing under it while we
+	   could no longer open a single datagram. Its close drops the link's
+	   address and activity, never its keys. */
+	bool negotiated = c->allow_request == ALL;
 
 	/* Our dial ended and not one frame from the peer verified in the whole
 	   attempt. Among the possible reasons (peer down, UDP blocked) is one
@@ -1480,11 +1605,15 @@ void obfs_close(connection_t *c) {
 	if(l && !superseded) {
 		l->active = false;
 		l->have_addr = false;
+	}
+
+	if(l && !superseded && negotiated) {
 		/* Drop the session state so the next connection re-negotiates a fresh
 		   session key. The bootstrap keyset (counter + replay window) is kept
 		   so its counter stays monotone across reconnects. */
 		keyset_free(&l->sess);
 		keyset_free(&l->next);
+		keyset_free(&l->prev);
 		l->sess_tx_ready = false;
 		l->ack_sent = false;
 		l->have_peer_seed = false;
@@ -1519,6 +1648,16 @@ static void obfs_selfheal(void *data) {
 
 		/* Already on a session key: nothing to heal. */
 		if(l->sess_tx_ready && l->sess.valid) {
+			continue;
+		}
+
+		/* A sealed direct path with no obfs meta connection under it: the
+		   session key is DSEAL_KEX's (rate-limited there). */
+		if(l->node && !dseal_obfs_connected(l->node)) {
+			if(l->dseal_used) {
+				dseal_kex_start(l);
+			}
+
 			continue;
 		}
 
@@ -1558,6 +1697,16 @@ static void obfs_periodic(void *data) {
 	(void)data;
 
 	for list_each(obfs_link_t, l, &obfs_links) {
+		/* A sealed direct path with no obfs meta connection: DSEAL_KEX
+		   negotiates (and re-negotiates) its session key end to end. */
+		if(l->dseal_used && l->node && !dseal_obfs_connected(l->node)) {
+			if(!(l->sess_tx_ready && l->sess.valid) || now.tv_sec - l->sess_time > keylifetime) {
+				dseal_kex_start(l);
+			}
+
+			continue;
+		}
+
 		if(l->active && l->sess_tx_ready && l->sess.valid) {
 			if(now.tv_sec - l->sess_time > keylifetime) {
 				obfs_rekey_start(l);
@@ -1637,6 +1786,7 @@ bool obfs_read_config(void) {
 		obfs_junk_max = obfs_junk_min;
 	}
 
+	dseal_read_config();
 	return true;
 }
 
@@ -1654,4 +1804,483 @@ void obfs_exit(void) {
 	timeout_del(&obfs_rekey_timer);
 	timeout_del(&obfs_selfheal_timer);
 	list_empty_list(&obfs_links);
+}
+
+/* ---- direct seal (DirectSeal) -------------------------------------------
+
+   See obfs.h for the model. The seal is exactly the obfs link's: a node's
+   direct SPTPS datagrams are sealed with the same per-node link (keys,
+   counters, replay window, random tails) the obfs carrier uses for that node,
+   so an older tincstack that accepts obfs reads them with the classifier it
+   already has, and a node with an obfs meta link to the peer seals nothing
+   twice. */
+
+static int direct_seal_mode;     /* 0 auto, 1 yes, -1 no */
+static bool dseal_wants;
+static bool dseal_reads;
+
+#define DSEAL_KEX_RETRY 5        /* seconds before an unanswered offer is re-issued */
+#define DSEAL_LOG_INTERVAL 60    /* the "no direct UDP to X" line, per node */
+
+bool dseal_self_wants(void) {
+	return dseal_wants;
+}
+
+bool dseal_self_reads(void) {
+	return dseal_reads;
+}
+
+static void dseal_read_config(void) {
+	char *s = NULL;
+	direct_seal_mode = 0;
+
+	if(get_config_string(lookup_config(&config_tree, "DirectSeal"), &s) && s) {
+		if(!strcasecmp(s, "yes") || !strcasecmp(s, "on") || !strcasecmp(s, "true")) {
+			direct_seal_mode = 1;
+		} else if(!strcasecmp(s, "no") || !strcasecmp(s, "off") || !strcasecmp(s, "false")) {
+			direct_seal_mode = -1;
+		} else if(strcasecmp(s, "auto")) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "DirectSeal: unknown value `%s' (auto, yes or no); using auto", s);
+		}
+
+		free(s);
+	}
+
+	/* "Runs a masking carrier": it dials one (PreferredTransports), or it
+	   refuses to be seen as tinc on its own port (AllowPlainMeta = no).
+	   Accepting obfs/https/quic -- which every default build does -- is not
+	   enough: that is what a relay offers, not what a node hides behind. */
+	const char *why = NULL;
+
+	for(int i = 0; i < transport_pref_count && !why; i++) {
+		transport_id_t t = transport_pref[i];
+
+		if(t == TRANSPORT_OBFS || t == TRANSPORT_HTTPS || t == TRANSPORT_QUIC) {
+			why = transport_name(t);
+		}
+	}
+
+	if(!why && !allow_plain_meta) {
+		why = "AllowPlainMeta = no";
+	}
+
+	bool was = dseal_wants;
+	dseal_wants = direct_seal_mode > 0 || (direct_seal_mode == 0 && why);
+	dseal_reads = dseal_wants || (transport_accept_mask & TRANSPORT_BIT(TRANSPORT_OBFS));
+
+	if(dseal_wants && !was) {
+		logger(DEBUG_ALWAYS, LOG_INFO, "DirectSeal: direct UDP datagrams to peers are sealed (%s)", direct_seal_mode > 0 ? "DirectSeal = yes" : why);
+	}
+}
+
+const char *dseal_token(char *buf, size_t len) {
+	unsigned flags = 0;
+
+	if(dseal_reads) {
+		flags |= DSEAL_READS | DSEAL_KEX;
+	}
+
+	if(dseal_wants) {
+		flags |= DSEAL_WANTS;
+	}
+
+	flags |= DSEAL_PUNCH;
+
+	snprintf(buf, len, "dseal=%x", flags);
+	return buf;
+}
+
+void dseal_learn(node_t *n, const char *token) {
+	unsigned flags;
+	uint8_t was = n->dseal;
+
+	if(token && !strncmp(token, "dseal=", 6) && sscanf(token + 6, "%x", &flags) == 1) {
+		n->dseal = DSEAL_KNOWN | (flags & (DSEAL_READS | DSEAL_WANTS | DSEAL_KEX | DSEAL_PUNCH));
+	} else {
+		/* No token: an older tincstack reads our frames iff it accepts obfs
+		   (its cold-scan classifier unseals bootstrap-key frames); upstream
+		   tinc accepts only plain and reads none. */
+		bool reads = transport_node_mask(n) & TRANSPORT_BIT(TRANSPORT_OBFS);
+		n->dseal = DSEAL_KNOWN | DSEAL_OLD | (reads ? DSEAL_READS : 0);
+	}
+
+	if(was != n->dseal) {
+		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Direct seal capability of %s: %s%s%s%s%s", n->name,
+		       n->dseal & DSEAL_OLD ? "no token (older build)" : "token",
+		       n->dseal & DSEAL_READS ? ", reads sealed datagrams" : ", reads none",
+		       n->dseal & DSEAL_WANTS ? ", seals its own" : "",
+		       n->dseal & DSEAL_KEX ? ", key exchange" : "",
+		       n->dseal & DSEAL_PUNCH ? ", coordinated punch" : "");
+	}
+}
+
+bool obfs_link_is_active(const node_t *n) {
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(l->node == n) {
+			return l->active;
+		}
+	}
+
+	return false;
+}
+
+/* Is the node's meta connection an obfs link? Then OBFS_KEY owns the
+   session key and DSEAL_KEX stays out of it. */
+static bool dseal_obfs_connected(const node_t *n) {
+	return n->connection && n->connection->transport && n->connection->transport->id == TRANSPORT_OBFS;
+}
+
+dseal_verdict_t dseal_verdict(node_t *n) {
+	if(!n || n == myself) {
+		return DSEAL_SEND_PLAIN;
+	}
+
+	/* A legacy (tinc 1.0 protocol) peer reads no sealed datagram. */
+	if(!n->status.sptps) {
+		return dseal_wants ? DSEAL_SEND_BLOCK : DSEAL_SEND_PLAIN;
+	}
+
+	if(!(n->dseal & DSEAL_KNOWN)) {
+		return dseal_wants ? DSEAL_SEND_HOLD : DSEAL_SEND_PLAIN_UNKNOWN;
+	}
+
+	if(!dseal_wants && !(n->dseal & DSEAL_WANTS)) {
+		return DSEAL_SEND_PLAIN;
+	}
+
+	if(n->dseal & DSEAL_READS) {
+		return DSEAL_SEND_SEAL;
+	}
+
+	if(!dseal_wants) {
+		return DSEAL_SEND_PLAIN;   /* it wants a seal it cannot read: not a real peer state */
+	}
+
+	/* A direct meta neighbour whose meta connection is cleartext tinc
+	   already (the carrier walk ended on plain or sf) is not hidden by
+	   refusing it UDP: that hop keeps working as before. */
+	if(n->connection && (!n->connection->transport ||
+	                     n->connection->transport->id == TRANSPORT_PLAIN || n->connection->transport->id == TRANSPORT_SF)) {
+		return DSEAL_SEND_PLAIN;
+	}
+
+	return DSEAL_SEND_BLOCK;
+}
+
+void dseal_log_hold(node_t *n, dseal_verdict_t v) {
+	if(v != DSEAL_SEND_BLOCK && v != DSEAL_SEND_HOLD) {
+		return;
+	}
+
+	/* A change of verdict (HOLD -> BLOCK once the capability is learnt) is
+	   logged at once; only a repeat of the same verdict is rate limited. */
+	if(n->dseal_logged && n->dseal_logged_verdict == (int)v && now.tv_sec - n->dseal_logged < DSEAL_LOG_INTERVAL) {
+		return;
+	}
+
+	n->dseal_logged = now.tv_sec;
+	n->dseal_logged_verdict = (int)v;
+
+	if(v == DSEAL_SEND_BLOCK) {
+		logger(DEBUG_ALWAYS, LOG_INFO, "Not sending UDP to %s (%s) directly: DirectSeal is on here and %s cannot read sealed datagrams (%s); its traffic goes through the relay",
+		       n->name, n->hostname, n->name,
+		       ((n->dseal & DSEAL_KNOWN) && !(n->dseal & DSEAL_OLD)) ? "it says so" : "upstream or legacy tinc, or an older tincstack that does not accept obfs");
+	} else {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Not sending UDP to %s (%s) directly yet: DirectSeal is on here and %s has not said whether it reads sealed datagrams; asked over the meta graph",
+		       n->name, n->hostname, n->name);
+	}
+}
+
+#define DSEAL_UNREAD_NOTE 30
+
+obfs_send_t obfs_seal_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
+	if(excess) {
+		*excess = 0;
+	}
+
+	node_read_ecdsa_public_key(to);
+	obfs_link_t *l = obfs_link_for_node(to);
+
+	if(!l) {
+		/* No Ed25519 key for it yet: nothing to seal with, and the clear is
+		   not an option. */
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Dropping a direct datagram to %s: no key to seal it with yet", to->name);
+		return OBFS_SEND_OK;
+	}
+
+	l->dseal_used = true;
+
+	if(!(l->sess_tx_ready && l->sess.valid) && !dseal_obfs_connected(to)) {
+		if(to->dseal & DSEAL_KEX) {
+			/* Negotiate a session key -- not from the send path, from the
+			   self-heal timer (see obfs_arm_selfheal). */
+			if(!l->need_selfheal) {
+				l->need_selfheal = true;
+				obfs_arm_selfheal();
+			}
+		} else if(!l->dseal_noted_old) {
+			l->dseal_noted_old = true;
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "%s runs a tincstack without the direct-seal key exchange: its direct datagrams are sealed with the pair's bootstrap key only", to->name);
+		}
+	}
+
+	return obfs_link_send(l, sock, sa, buf, len, to, excess);
+}
+
+/* An older peer announces nothing, so whether it reads frame v3 is only
+   known from its answers: one from before frame v3 (2026-09-26) drops every
+   sealed datagram, the direct path never confirms and tinc keeps the pair on
+   the relay. Say so once instead of leaving it silent. Called for every
+   probe round towards an unconfirmed peer (net_packet.c try_udp). */
+void dseal_note_probe(node_t *to) {
+	if(!dseal_wants || !(to->dseal & DSEAL_OLD) || !(to->dseal & DSEAL_READS)) {
+		return;
+	}
+
+	obfs_link_t *l = obfs_link_for_node(to);
+
+	if(!l) {
+		return;
+	}
+
+	if(to->status.udp_confirmed) {
+		l->dseal_old_since = 0;
+	} else if(!l->dseal_old_since) {
+		l->dseal_old_since = now.tv_sec;
+	} else if(!l->dseal_noted_unread && now.tv_sec - l->dseal_old_since >= DSEAL_UNREAD_NOTE) {
+		l->dseal_noted_unread = true;
+		logger(DEBUG_ALWAYS, LOG_INFO, "%s has not answered sealed direct datagrams for %d s: an older tincstack that reads obfs frame v2 only cannot read them (or UDP to it is blocked); its traffic goes through the relay",
+		       to->name, DSEAL_UNREAD_NOTE);
+	}
+}
+
+/* ---- DSEAL_KEX: the direct path's session key, end to end ----------------
+
+   REQ_KEY <from> <to> DSEAL_KEX_REQ <flag> <pub> <sig>
+
+     flag 0  offer:   the initiator's ephemeral X25519 public key
+     flag 1  answer:  the responder's ephemeral public key
+     flag 2  confirm: the responder's public key again (binds the confirm to
+                      this exchange)
+
+   <sig> is the sender's Ed25519 signature over
+   "tincstack-dseal-kex-v1" NUL from NUL to NUL flag pub, verified with the
+   sender's public key (the key SPTPS authenticates it with). A relay forwards
+   the request verbatim; it can neither learn the shared secret (X25519) nor
+   substitute its own key (signature). The initiator seals with the new key
+   once it has the answer, the responder once it has the confirm; the keyset
+   each replaces stays readable for OBFS_PREV_GRACE. Glare (both offer at
+   once): the node whose Ed25519 key sorts lower keeps its offer, the other
+   answers it. */
+
+static size_t dseal_kex_msglen(const char *from, const char *to) {
+	return sizeof("tincstack-dseal-kex-v1") + strlen(from) + 1 + strlen(to) + 1 + 1 + ECDH_SIZE;
+}
+
+static size_t dseal_kex_msg(uint8_t *out, const char *from, const char *to, int flag, const uint8_t *pub) {
+	static const char ctx[] = "tincstack-dseal-kex-v1";
+	size_t n = 0;
+	memcpy(out + n, ctx, sizeof(ctx));
+	n += sizeof(ctx);
+	memcpy(out + n, from, strlen(from) + 1);
+	n += strlen(from) + 1;
+	memcpy(out + n, to, strlen(to) + 1);
+	n += strlen(to) + 1;
+	out[n++] = (uint8_t)flag;
+	memcpy(out + n, pub, ECDH_SIZE);
+	return n + ECDH_SIZE;
+}
+
+static bool dseal_kex_send(obfs_link_t *l, int flag, const uint8_t pub[ECDH_SIZE]) {
+	node_t *n = l->node;
+
+	if(!n || !n->status.reachable || !n->nexthop || !n->nexthop->connection || !myself->connection->ecdsa) {
+		return false;
+	}
+
+	size_t siglen = ecdsa_size(myself->connection->ecdsa);
+
+	if(siglen != 64) {
+		return false;
+	}
+
+	uint8_t *msg = xmalloc(dseal_kex_msglen(myself->name, n->name));
+	size_t mlen = dseal_kex_msg(msg, myself->name, n->name, flag, pub);
+	uint8_t sig[64];
+	bool ok = ecdsa_sign(myself->connection->ecdsa, msg, mlen, sig);
+	free(msg);
+
+	if(!ok) {
+		return false;
+	}
+
+	char pub64[B64_SIZE(ECDH_SIZE)];
+	char sig64[B64_SIZE(64)];
+	b64encode_tinc(pub, pub64, ECDH_SIZE);
+	b64encode_tinc(sig, sig64, sizeof(sig));
+	return send_request(n->nexthop->connection, "%d %s %s %d %d %s %s", REQ_KEY, myself->name, n->name, DSEAL_KEX_REQ, flag, pub64, sig64);
+}
+
+static void dseal_kex_start(obfs_link_t *l) {
+	node_t *n = l->node;
+
+	if(!n || !dseal_reads || dseal_obfs_connected(n) || !(n->dseal & DSEAL_KEX) || !(n->dseal & DSEAL_READS)) {
+		return;
+	}
+
+	if(!n->status.reachable || !myself->connection->ecdsa) {
+		return;
+	}
+
+	if(l->dk_sent && now.tv_sec - l->dk_sent < DSEAL_KEX_RETRY) {
+		return;
+	}
+
+	if(l->dk_ecdh) {
+		ecdh_free(l->dk_ecdh);
+	}
+
+	l->dk_ecdh = ecdh_generate_public(l->dk_pub);
+
+	if(!l->dk_ecdh) {
+		return;
+	}
+
+	l->dk_sent = now.tv_sec;
+
+	if(dseal_kex_send(l, 0, l->dk_pub)) {
+		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Offered a direct-seal session key to %s", n->name);
+	}
+}
+
+/* Pending keyset from the X25519 secret and both ephemeral publics. */
+static bool dseal_build_next(obfs_link_t *l, const uint8_t shared[ECDH_SHARED_SIZE], const uint8_t ipub[ECDH_SIZE], const uint8_t rpub[ECDH_SIZE]) {
+	uint8_t base[64];
+	sha512_context md;
+	sha512_init(&md);
+	static const char context[] = "tincstack-dseal-sess-v1";
+	sha512_update(&md, context, sizeof(context));
+	sha512_update(&md, shared, ECDH_SHARED_SIZE);
+	sha512_update(&md, ipub, ECDH_SIZE);
+	sha512_update(&md, rpub, ECDH_SIZE);
+	sha512_final(&md, base);
+	bool ok = keyset_build(&l->next, base, "tincstack-dseal-key", "tincstack-dseal-iv", "tincstack-dseal-hp", l->i_am_lo);
+	memset(base, 0, sizeof(base));
+	return ok;
+}
+
+bool dseal_kex_h(node_t *from, const char *request) {
+	int flag;
+	char pub64[MAX_STRING_SIZE];
+	char sig64[MAX_STRING_SIZE];
+
+	if(sscanf(request, "%*d %*s %*s %*d %d " MAX_STRING " " MAX_STRING, &flag, pub64, sig64) != 3 || flag < 0 || flag > 2) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "DSEAL_KEX", from->name, from->hostname);
+		return true;
+	}
+
+	uint8_t pub[ECDH_SIZE];
+	uint8_t sig[64];
+
+	/* 32 bytes are exactly 43 base64 characters, 64 bytes 86; check before
+	   decoding (b64decode_tinc bounds the source, not the destination). */
+	if(strlen(pub64) != 43 || b64decode_tinc(pub64, pub, 43) != ECDH_SIZE ||
+	                strlen(sig64) != 86 || b64decode_tinc(sig64, sig, 86) != sizeof(sig)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Got malformed %s from %s (%s)", "DSEAL_KEX", from->name, from->hostname);
+		return true;
+	}
+
+	if(!node_read_ecdsa_public_key(from) || ecdsa_size(from->ecdsa) != sizeof(sig)) {
+		return true;
+	}
+
+	uint8_t *msg = xmalloc(dseal_kex_msglen(from->name, myself->name));
+	size_t mlen = dseal_kex_msg(msg, from->name, myself->name, flag, pub);
+	bool ok = ecdsa_verify(from->ecdsa, msg, mlen, sig);
+	free(msg);
+
+	if(!ok) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Got %s from %s (%s) with a bad signature", "DSEAL_KEX", from->name, from->hostname);
+		return true;
+	}
+
+	if(!dseal_reads || dseal_obfs_connected(from)) {
+		return true;
+	}
+
+	obfs_link_t *l = obfs_link_for_node(from);
+
+	if(!l) {
+		return true;
+	}
+
+	/* It speaks the exchange, so it is a current build even if its token has
+	   not reached us yet. */
+	if(!(from->dseal & DSEAL_KNOWN)) {
+		from->dseal = DSEAL_KNOWN | DSEAL_READS | DSEAL_KEX;
+	}
+
+	uint8_t shared[ECDH_SHARED_SIZE];
+
+	switch(flag) {
+	case 0: {
+		if(l->dk_ecdh && l->i_am_lo && now.tv_sec - l->dk_sent < DSEAL_KEX_RETRY) {
+			logger(DEBUG_PROTOCOL, LOG_DEBUG, "Direct-seal key exchange glare with %s: keeping ours", from->name);
+			return true;
+		}
+
+		if(l->dk_ecdh) {
+			ecdh_free(l->dk_ecdh);
+			l->dk_ecdh = NULL;
+			l->dk_sent = 0;
+		}
+
+		ecdh_t *e = ecdh_generate_public(l->dk_rpub);
+
+		if(!e) {
+			return true;
+		}
+
+		/* ecdh_compute_shared() frees `e' */
+		if(!ecdh_compute_shared(e, pub, shared) || !dseal_build_next(l, shared, pub, l->dk_rpub)) {
+			memset(shared, 0, sizeof(shared));
+			return true;
+		}
+
+		memset(shared, 0, sizeof(shared));
+		dseal_kex_send(l, 1, l->dk_rpub);
+		return true;
+	}
+
+	case 1: {
+		if(!l->dk_ecdh) {
+			return true;   /* not ours, or already answered */
+		}
+
+		ecdh_t *e = l->dk_ecdh;
+		l->dk_ecdh = NULL;
+		l->dk_sent = 0;
+
+		if(!ecdh_compute_shared(e, pub, shared)) {
+			return true;
+		}
+
+		if(dseal_build_next(l, shared, l->dk_pub, pub)) {
+			obfs_link_promote(l);
+			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Direct-seal session key established with %s", from->name);
+			dseal_kex_send(l, 2, pub);
+		}
+
+		memset(shared, 0, sizeof(shared));
+		return true;
+	}
+
+	default:
+		if(l->next.valid && !memcmp(pub, l->dk_rpub, ECDH_SIZE)) {
+			obfs_link_promote(l);
+			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Direct-seal session key established with %s", from->name);
+		}
+
+		return true;
+	}
 }

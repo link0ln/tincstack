@@ -843,6 +843,27 @@ proven deterministically by the `fuzz_obfs` self-test
 `selftest_close_preserves_session`, which reproduces that exact ordering and
 aborts on the pre-fix condition.
 
+Two more rules since stream N2. The survivor scan looks for the **link's**
+node, not `c->node`: tinc sets `c->node` only in `ack_h()`, so for a dial that
+never got that far it is NULL and the scan found no survivor however many
+there were. And a connection that **never authenticated** drops the link's
+address and activity on close but never its keys: `OBFS_KEY` runs only after
+`ack_h()`, so whatever session the link holds was negotiated by someone else —
+another connection, or `DSEAL_KEX` for a sealed direct path (§5), whose peer
+keeps sealing under it. Measured before the fix (N2 lab, obfs, both ends of a
+pair `AutoConnect` to each other at the same second and both dials stall):
+the end whose dial timed out first fell back to a dial over the confirmed UDP
+data path (§2.2), which activated and completed `OBFS_KEY`; the other end's
+own stalled dial timed out a moment later and its close wiped the session
+just promoted. That end then sealed under the bootstrap key, opened nothing
+its peer sealed under the session key ("unknown source and/or destination ID"
+for every datagram), and — the link now marked inactive — neither self-heal
+nor the periodic rekey ran for it: ping 0 %, both sides still reporting
+"directly with UDP" (lab counts before and after: `docs/nat.md` §5.3). The `fuzz_obfs`
+self-test `selftest_unauth_close_keeps_session` covers both orderings (a live
+connection on the list; no connection at all) and aborts on the pre-fix code
+and on a fix of the first rule alone.
+
 Two backstops bound the window in the cases the reset does fire (a genuine
 owner-only close, or the rare scheduler interleaving where a wiped session is
 not immediately re-negotiated). First, the **send path self-heals**: whenever a
@@ -1112,6 +1133,99 @@ double-prefix corruption cannot occur.
 The TCP `OBFS` class in §3 (first byte `0xA0..0xAF`) is reserved and unused by
 this UDP-only carrier; obfs never sends a TCP preamble, so an inbound match with
 no obfs TCP `accept` hook is simply closed.
+
+### DirectSeal: the direct peer-to-peer path is sealed too (stream N2, 2026-09-26)
+
+Until stream N2 the carrier hid the meta connection and nothing else: the
+direct UDP path between two NATed peers was upstream tinc's datagrams —
+six zero bytes (the "direct" destination id), the sender's constant 6-byte
+node id, 51-byte probes — whichever carrier the node had chosen
+(docs/nat.md §5.3). By the owner's rule a node that runs a masking carrier
+must not do that. Now it seals every direct datagram (data, UDP probes, probe
+replies) in **obfs frame v3**, with the peer's obfs link: the same key
+schedule, counters, replay window, header protection and random tails as the
+obfs carrier, from the first probe on. There is no second format.
+
+**Who seals** (`DirectSeal`, server-scoped, re-read on reload):
+
+| value | seals its own direct datagrams | reads sealed ones |
+|---|---|---|
+| `auto` (default) | when `PreferredTransports` lists `obfs`, `https` or `quic`, or `AllowPlainMeta = no` | yes if it seals or `Transports` accepts `obfs` |
+| `yes` | always | yes |
+| `no` | never | if `Transports` accepts `obfs` |
+
+A node that does not seal itself still seals *towards* a peer that seals
+(the peer's `wants` flag), so a masking node's direct path is sealed in both
+directions. Between two nodes that both do not seal — `plain`/`sf`-only
+nodes, the owner's decision for that case — the wire is upstream tinc's,
+byte for byte: they chose not to hide, and sealing them would break upstream
+and legacy peers for nothing.
+
+**Keys.** Until a session key exists the pair's bootstrap key (derived from
+the two Ed25519 public keys, exactly as obfs). The session key comes from
+`DSEAL_KEX`: a REQ_KEY extension (`97`) carrying an ephemeral X25519 public
+key, signed with the sender's Ed25519 key over
+`"tincstack-dseal-kex-v1" NUL from NUL to NUL flag pub` (offer, answer,
+confirm). Relays forward it verbatim; they can neither compute the shared
+secret nor substitute a key. Session keys are
+`SHA512("tincstack-dseal-sess-v1" || shared || initiator pub || responder pub)`,
+expanded into the obfs keyset; the keyset being replaced stays readable for
+10 s. A pair that has an obfs meta connection uses `OBFS_KEY` as before and
+no `DSEAL_KEX`. SPTPS inside the seal is untouched. What the bootstrap key
+does *not* hide: a mesh member that knows both public keys can unseal a
+pair's frames until the session key is up (as with the obfs carrier), and
+with an older tincstack (no `DSEAL_KEX`) that stays so for the life of the
+pair.
+
+**Capability** travels as one trailing token `dseal=<hex>` on ACK and
+ANS_PUBKEY (`1` reads, `2` seals, `4` speaks DSEAL_KEX); an older parser
+stops before it. A sealing node asks (REQ_PUBKEY, via the graph) before its
+first probe to a peer it has no token from, and sends nothing direct until
+it knows. A peer that answers without a token is an older tincstack — it
+reads bootstrap-sealed frames iff it accepts `obfs` (its cold-scan
+classifier already unseals them, and it answers in kind once its obfs link
+is active) — or upstream tinc, which reads none.
+
+**When the peer cannot read sealed datagrams** (upstream tinc, a tinc 1.0
+peer, a tincstack whose `Transports` has no `obfs`), a sealing node sends it
+**no UDP at all**: its data rides the meta graph (the relay), and the log
+says, once a minute,
+`Not sending UDP to X (...) directly: DirectSeal is on here and X cannot read sealed datagrams (...); its traffic goes through the relay`.
+The one peer that cannot be recognised in advance is a tincstack from before
+obfs frame v3 (reads v2 only): it drops the sealed probes, the direct path
+never confirms, tinc keeps the pair relayed, and after 30 s the log says
+`X has not answered sealed direct datagrams for 30 s: ...`. Exception: a
+direct meta neighbour whose meta connection is cleartext already (`plain` or
+`sf`) keeps its plain UDP — refusing it would hide nothing.
+
+**UdpMetaFallback** (§2.2) builds its direct meta link over `obfs` instead of
+`sf` when either end seals, so the side link stops putting `sf`'s cleartext
+magic on the wire. Residual: an *older* node still dials `sf` to a sealing
+node, and the sealing node accepts it (compatibility).
+
+**What it costs.** The seal's overhead is the obfs frame's (nonce, length,
+tag, tail room): PMTU between two sealing nodes drops from 1439 to 1413
+(`--capture` rows, docs/nat.md §5.3). Datagrams that fill the path budget
+get no tail, so a bulk transfer still shows one constant size at the path
+MTU (as the obfs carrier does). A node with `DirectSeal` on refuses direct
+UDP to upstream/legacy peers — that is the point, and it is logged.
+Time to a direct path for the 17 direct plain matrix pairs, one run each
+(n = 1 per pair, not significant per pair;
+`testing/nat-sim/results/2026-09-26/n2/time-to-direct.txt`): mean 8.3 s before, 9.5 s with
+DirectSeal (the first probe waits until the peer's capability token is known);
+every pair still goes direct.
+
+**Mixed versions** (`mixed-version-test.sh`, DirectSeal section; evidence
+`testing/nat-sim/results/2026-09-26/n2/mixed-version-*.txt`). Leaf a is
+current and dials obfs; leaf b varies:
+
+| leaf b | vs `ww-n2-base` (reads frame v3) | vs `pre-deb13` (frame v2 only) |
+|---|---|---|
+| current | direct, 39 sealed datagrams, 0 zero dst id, 0 of 51 B | direct, 39 / 0 / 0 |
+| older, accepts obfs | direct (bootstrap key), 40 / 0 / 0 | relayed, 321 sealed datagrams, 0 / 0, "has not answered" logged |
+| older, `Transports = plain, sf` | relayed, 0 UDP a→b, "cannot read" logged | relayed, 0 UDP a→b, "cannot read" logged |
+
+Every pair keeps ping; none puts the zero dst id or a 51-byte probe on the wire.
 
 ### Config surface
 
@@ -1646,6 +1760,31 @@ not send (datagrams: §9.4). The dialler, as curl: also
 packets at most and never probes the path MTU; on the wire it writes its
 parameters as curl does (§9.8): `active_connection_id_limit` 2 and no
 `max_datagram_frame_size`, although it accepts 8 and 65536.
+
+### 9.3.1 A carrier datagram is not the node's UDP address (stream N2)
+
+Until N2 a record that arrived in a QUIC DATAGRAM frame went through the
+ordinary UDP path, which moves `n->address` to the datagram's source. For a
+quic neighbour that source is the peer's *QUIC* socket (an ephemeral dial
+port, or 443 on a listener), so a relay handed that flow out as the node's
+UDP address in UDP_INFO and the ANS_KEY hint, and every pair behind a
+port-changing NAT punched at the wrong port (docs/nat.md §5.1).
+
+Now `transport_quic.c` delivers DATAGRAM records through
+`handle_incoming_carrier_datagram()`, which never calls `update_node_udp()`.
+The relay learns the node's data-socket mapping from a *carrier beacon*
+instead: while a node tries UDP towards a peer whose next hop is a quic
+neighbour, it sends that neighbour one PMTU-probe-shaped datagram from its UDP
+data socket every `UDPDiscoveryKeepaliveInterval` (`send_carrier_beacon()`).
+The beacon is a direct datagram like any other: DirectSeal seals it, and it is
+not sent at all to a peer that cannot read sealed datagrams. The reply comes
+back over the carrier. Two quic neighbours with nobody behind either exchange
+no beacon, so their wire stays QUIC only (`quic-carrier-test.sh` (a) checks
+exactly that; a first version that beaconed every quic neighbour failed it with
+2 non-QUIC datagrams in 280). Side effect: while punching, the beacon also keeps
+the node's NAT mapping for the data socket alive.
+
+Proof: docs/nat.md §5.1 (6 of 6 expected-direct quic pairs direct, was 1 of 6).
 
 ### 9.4 Framing: an HTTP/3 request (since 2026-09-23)
 

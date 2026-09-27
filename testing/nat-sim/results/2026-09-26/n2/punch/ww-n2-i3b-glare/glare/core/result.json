@@ -1,0 +1,1 @@
+{"image":"core","expected":"clean","verdict":"PASS","t_key":1,"seqno_lines":0,"reqkey_lines":2,"sptps_restarts":0,"why":"key in 1s (limit 10s), no SPTPS restart, no seqno error"}

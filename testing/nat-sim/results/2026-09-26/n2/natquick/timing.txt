@@ -1,0 +1,7 @@
+# make nat-quick on tincstack/core:ww-n2 (branch dfb3009 + the Makefile/natlab.sh change), lab run ww-n2-i6-natquick, 2026-09-27
+# seconds = wall time of each lab.sh call inside the lab lock (includes the cached lab image build)
+quick rc=0 seconds=289
+https rc=0 seconds=105
+quic rc=0 seconds=15
+# per scenario (lab clock, UTC): fullcone 21:44:13, portrestricted 21:44:26, masq/restricted 21:44:37, masqfw/masqfw 21:44:50 (+13 s), symmetric/symmetric 21:46:34, udpblock/portrestricted 21:48:17
+# old quick set (5 pairs) = 289 - 13 = ~276 s; new nat-quick total = 289 + 105 + 15 = 409 s (~6.8 min), +133 s

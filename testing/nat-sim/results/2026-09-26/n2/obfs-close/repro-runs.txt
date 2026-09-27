@@ -1,0 +1,9 @@
+# Reproduction runs of the obfs black hole, before its cause was known (6-pair obfs matrix).
+# ww-n2 = image bc86d234ee94 (branch 66ff1ab code); ww-n2-f = the same plus a discarded fallback tie-break experiment (same obfs_close). quic rows: control.
+ww-n2-fg-ww-n2-obfs-1 rc=1 02:09
+ww-n2-fg-ww-n2-quic-1 rc=0 02:12
+ww-n2-fg-ww-n2-f-obfs-1 rc=1 02:14
+ww-n2-fg-ww-n2-f-quic-1 rc=0 02:18
+ww-n2-fg-ww-n2-obfs-2 rc=1 02:19
+ww-n2-fg-ww-n2-quic-2 rc=0 02:20
+ww-n2-fg-ww-n2-f-obfs-2 rc=0 02:21

@@ -14,6 +14,9 @@
 #                                  (--nodes "t1 t2 ...", --relay-down S)
 #   natlab rekey A_TYPE B_TYPE     direct pair under frequent SPTPS rekeys
 #                                  (--keyexpire S, --duration S)
+#   natlab idle TYPE               one NATed node + relay, no traffic for
+#                                  --duration S: does the carrier's binding
+#                                  survive the NAT's UDP timeout
 #   natlab portmap                 NAT port-allocation map (nattrav, no tinc)
 #   natlab punch A_TYPE B_TYPE     hole-punch strategies (nattrav, no tinc;
 #                                  --trials N, --strategies "first second ...",
@@ -24,6 +27,7 @@
 # opts: --image core|baseline|both  --image-b core|baseline  --out DIR  --rtt MS
 #       --wait S  --recover S  --expect clean|defect|any  --clean-max S
 #       --pause S  --cgnat-udp-timeout S  --cgnat-udp-stream-timeout S
+#       --ping-interval S (tinc PingInterval on every node; default 10)
 #       --transport CARRIER (PreferredTransports of the NATed nodes, e.g. quic)
 #       --pairs "a/b c/d" (matrix subset)
 #       --capture (scenario/matrix: pcap of the A<->B datagrams on gwa's
@@ -80,6 +84,7 @@ parse_opts() {
             --relay-down) RELAY_DOWN="$2"; shift 2 ;;
             --keyexpire) KEYEXPIRE="$2"; shift 2 ;;
             --duration) DURATION="$2"; shift 2 ;;
+            --ping-interval) PING_INTERVAL="$2"; shift 2 ;;
             --trials) TRIALS="$2"; shift 2 ;;
             --strategies) STRATEGIES="$2"; shift 2 ;;
             --node-conf) NODE_CONF="$2"; shift 2 ;;
@@ -206,7 +211,7 @@ write_node() {
         echo "Mode = router"
         echo "Port = $TINC_PORT"
         if [ -n "$IPV6" ]; then echo "AddressFamily = any"; else echo "AddressFamily = ipv4"; fi
-        echo "PingInterval = 10"
+        echo "PingInterval = ${PING_INTERVAL:-10}"
         echo "PingTimeout = 5"
         for l in "$@"; do echo "$l"; done
     } > "$d/tinc.conf"
@@ -448,6 +453,8 @@ scenario_run() { # A_TYPE B_TYPE IMAGE OUTDIR -> 0 pass / 1 fail
         meta_a="$(meta_carriers nodea)"; meta_b="$(meta_carriers nodeb)"
         kill "$cap_pid" 2>/dev/null || true; wait "$cap_pid" 2>/dev/null || true
         dpi-fingerprint "$d/peer.pcap" --port 0 > "$d/peer.report.txt" 2>&1 || true
+        # every tinc marker counted, not thresholded, plus byte/size statistics
+        wirestats "$d/peer.pcap" > "$d/peer.wirestats.report.txt" 2>&1 || true
         rm -f "$d/peer.pcap"
     fi
     save_state "$d" relay nodea nodeb
@@ -476,7 +483,7 @@ matrix() {
     if [ -n "$PAIRS" ]; then
         read -r -a pairs <<<"$PAIRS"
     elif [ "$QUICK" -eq 1 ]; then
-        pairs=(fullcone/fullcone portrestricted/portrestricted masq/restricted symmetric/symmetric udpblock/portrestricted)
+        pairs=(fullcone/fullcone portrestricted/portrestricted masq/restricted masqfw/masqfw symmetric/symmetric udpblock/portrestricted)
     else
         for a in "${MATRIX_TYPES[@]}"; do for b in "${MATRIX_TYPES[@]}"; do pairs+=("$a/$b"); done; done
         pairs+=(udpblock/fullcone udpblock/portrestricted udpblock/udpblock)
@@ -1065,6 +1072,63 @@ PY
     cat "$d/summary.md"
 }
 
+# ---------------------------------------------------------------- idle
+# One NATed node (TYPE; cgnat = two tiers, the carrier tier with the
+# --cgnat-udp-* conntrack windows) and the public relay, meta connection on
+# --transport, and then NO traffic at all for --duration seconds. Every 5 s:
+# is the meta connection still there, which address/port does the relay see
+# it from (a new port = the NAT dropped the binding and the node's next packet
+# made a new one). Afterwards the relay pings the node first (server-initiated
+# traffic is what a lost binding eats), then the node pings the relay.
+idle_run() { # TYPE IMAGE OUTDIR
+    local t="$1" img="$2" d="$3"
+    CUR_IMG="$img"; mkdir -p "$d"
+    teardown; internet_up
+    write_node relay "$VPN_RELAY"
+    # shellcheck disable=SC2046
+    write_node nodea "$VPN_A" "ConnectTo = relay" $(transport_conf)
+    share_hosts
+    side_up gwa nodea "$t" "$GWA_EXT" "$GWA_INT" "$NODEA_IP" "$MAP_A" 10.201.0 > "$d/gw-setup.txt"
+    tinc_start relay; sleep 1
+    tinc_start nodea
+    local i up=0 carrier=""
+    for i in $(seq "$WAIT"); do
+        carrier="$(meta_carriers nodea 2>/dev/null | tr ' ' '\n' | awk -F: '$1=="relay"{print $2}' || true)"
+        if [ -n "$carrier" ] && [ "$carrier" != "?" ] && ping_ok nodea "$VPN_RELAY"; then up=1; break; fi
+        sleep 1
+    done
+    local la lr; la=$(wc -l < "$LOGS/nodea.log"); lr=$(wc -l < "$LOGS/relay.log")
+    local samples="" gone=0 ports=() s
+    for i in $(seq 0 5 "$DURATION"); do
+        s="$(tincctl relay dump connections 2>/dev/null | awk '$1=="nodea"{for(i=1;i<NF;i++) if($i=="port"){print $(i+1); exit}}' || true)"
+        if [ -z "$s" ]; then s=none; gone=$((gone + 1)); fi
+        ports+=("$s"); samples="$samples${samples:+ }$i:$s"
+        if [ "$i" -lt "$DURATION" ]; then sleep 5; fi
+    done
+    local r2a a2r
+    r2a="$(ns relay ping -c 5 -i 1 -W 2 "$VPN_A" 2>/dev/null | awk -F'[ ,]+' '/packets transmitted/{print $4}' || true)"
+    a2r="$(ns nodea ping -c 5 -i 1 -W 2 "$VPN_RELAY" 2>/dev/null | awk -F'[ ,]+' '/packets transmitted/{print $4}' || true)"
+    save_state "$d" relay nodea
+    save_gw "$d" gwa
+    if [ "$t" = cgnat ]; then save_gw "$d" gwa2; fi
+    tail -n +"$((la + 1))" "$d/nodea.log" > "$d/nodea.window.txt"
+    tail -n +"$((lr + 1))" "$d/relay.log" > "$d/relay.window.txt"
+    local distinct redials migr closes
+    distinct="$(printf '%s\n' "${ports[@]}" | grep -v none | sort -u | wc -l || true)"
+    redials="$(grep -c "Dialling relay .* via" "$d/nodea.window.txt" || true)"
+    migr="$(grep -c "path validated for nodea" "$d/relay.window.txt" || true)"
+    closes="$(grep -ciE "Closing connection with nodea|Timeout from nodea|nodea .* closed" "$d/relay.window.txt" || true)"
+    printf '{"type":"%s","image":"%s","transport":"%s","ping_interval":%s,"udp_timeout":%s,"udp_stream_timeout":%s,"idle_s":%s,"up_before":%s,"samples":"%s","samples_without_connection":%s,"distinct_ports_seen_by_relay":%s,"redials":%s,"relay_path_validations":%s,"relay_closes":%s,"relay_to_node_pings":"%s/5","node_to_relay_pings":"%s/5"}\n' \
+        "$t" "$img" "${TRANSPORT:-plain}" "${PING_INTERVAL:-10}" "$CGNAT_UDP_TO" "$CGNAT_UDP_STO" "$DURATION" "$up" "$samples" "$gone" "$distinct" "$redials" "$migr" "$closes" "${r2a:-0}" "${a2r:-0}" > "$d/result.json"
+    log "idle $t [$img/${TRANSPORT:-plain}] ${DURATION}s, PingInterval ${PING_INTERVAL:-10}s, udp timeouts ${CGNAT_UDP_TO}/${CGNAT_UDP_STO}s: up=$up, relay saw ports [$samples], redials=$redials, path validations=$migr, closes=$closes, relay->node ${r2a:-0}/5, node->relay ${a2r:-0}/5"
+    teardown
+}
+
+idle() {
+    local t="$1"; shift; parse_opts "$@"
+    idle_run "$t" "${IMAGE_SEL:-core}" "$OUT/idle/$t-${IMAGE_SEL:-core}-${TRANSPORT:-plain}-pi${PING_INTERVAL:-10}-to$CGNAT_UDP_TO-$CGNAT_UDP_STO-$DURATION"
+}
+
 # ---------------------------------------------------------------- portmap / punch
 # Both run nattrav (stdlib python) instead of tincd: they measure what a NAT
 # does and what a hole puncher could do with it, so a technique is proven here
@@ -1230,6 +1294,7 @@ case "$cmd" in
     glare) glare "$@" ;;
     mesh) mesh "$@" ;;
     rekey) rekey "$@" ;;
+    idle) idle "$@" ;;
     portmap) portmap "$@" ;;
     punch) punch "$@" ;;
     summarize) parse_opts "$@"; summarize ;;

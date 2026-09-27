@@ -40,11 +40,12 @@
 #
 # Usage: OLD_IMAGE=tincstack/core:<tag> [CORE_IMAGE=...] [CARRIERS="quic https obfs"]
 #        testing/transports/mixed-version-test.sh
+#        DIRECT=no skips the DirectSeal direct-pair section below.
 #   OLD_IMAGE: a core image built from an earlier commit (e.g. `git archive
 #   <commit> core | tar x -C /tmp/old && docker build -f /tmp/old/core/Dockerfile.build /tmp/old/core').
 set -uo pipefail
 NEW="${CORE_IMAGE:-tincstack/core:${TINCSTACK_TAG:-dev}}"
-CARRIERS=${CARRIERS:-quic https obfs}
+CARRIERS=${CARRIERS-quic https obfs}   # CARRIERS="" DIRECT=yes: the direct pairs only
 OLD="${OLD_IMAGE:?set OLD_IMAGE to a core image from an earlier commit}"
 PFX=mvt
 NET=${PFX}net
@@ -55,7 +56,7 @@ FAILED=0
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
 cleanup() {
-	docker rm -f "$PFX-f" "$PFX-l" >/dev/null 2>&1 || true
+	docker rm -f "$PFX-f" "$PFX-l" "$PFX-a" "$PFX-b" "$PFX-w" >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -160,6 +161,134 @@ answers_v2() {
 	fi
 }
 
+# ---- DirectSeal: the direct pair between two leaves -------------------------
+#
+# A founder (current image, the relay) and two leaves that talk to each other
+# directly over UDP. Leaf `a' is current and dials obfs, so DirectSeal (auto)
+# seals every direct datagram it sends; leaf `b' is the image under test.
+# Expected per `b':
+#   current                     direct, sealed both ways (session key by DSEAL_KEX)
+#   older, reads obfs frame v3  direct; `a' seals with the bootstrap key only and says so
+#   older, frame v2 only        relayed; `a' says `b' never answered sealed datagrams
+#   older, Transports w/o obfs  relayed; `a' says `b' cannot read sealed datagrams
+#                               and sends it no UDP at all
+# In every case the tunnel carries traffic between the leaves, and -- when
+# WIRE_IMAGE (a natlab image: tcpdump + wirestats) is present -- no datagram
+# `a' sends to `b' starts with six zero bytes (tinc's direct dst id), and 51
+# bytes (tinc's fixed probe size) is no more common than any size a random
+# tail gives (at most 5 %).
+WIRE_IMAGE=${WIRE_IMAGE:-tincstack/natlab:${TINCSTACK_TAG:-dev}}
+
+# <leaf name> <tinc name> <image> <ip> [tinc settings...]
+dleaf() {
+	local s=$1 name=$2 img=$3 ip=$4 inv
+	shift 4
+	node "$s" "$ip" "$img"
+	inv=$(t f invite "$name")
+	t "$s" join "$inv" >/dev/null 2>&1
+	t "$s" set AutoConnect no
+	while [[ $# -gt 0 ]]; do
+		if [[ $1 == Transports ]]; then
+			# the accept list lives in the node's own host record (written by
+			# the invitation), which tincd joins with the server section: edit
+			# it there, or `set' would only add to it
+			docker exec "$PFX-$s" sed -i "/^      $name: |/,/^      [a-z0-9_]*: |/ s/Transports = .*/Transports = $2/" "$Y"
+			shift 2
+			continue
+		fi
+		t "$s" set "$1" "$2"
+		shift 2
+	done
+	docker exec -d "$PFX-$s" sh -c "tincd -n lab -c $Y -D -d3 >>/tmp/tincd.log 2>&1"
+}
+
+# <label> <b image> <expect: direct|relay> <a's log line> [b settings...]
+dpair() {
+	local label=$1 bi=$2 expect=$3 why=$4 reach="" bip ok=0 n z6 s51 cap=0
+	shift 4
+	cleanup
+	docker network create --internal --subnet "$SUBNET.0/24" "$NET" >/dev/null
+	node f "$SUBNET.10" "${DFOUNDER:-$NEW}"
+	docker exec "$PFX-f" sh -c "install -m600 /dev/null $Y && tinc -n lab -c $Y set Name founder && tinc -n lab -c $Y set Port 655"
+	docker exec -d "$PFX-f" sh -c "tincd -n lab -c $Y -D -d3 >>/tmp/tincd.log 2>&1"
+	for _ in $(seq 20); do t f pid >/dev/null 2>&1 && break; sleep 1; done
+	t f set founder.Address "$SUBNET.10"
+	if docker image inspect "$WIRE_IMAGE" >/dev/null 2>&1; then
+		cap=1
+	fi
+	dleaf a leafa "$NEW" "$SUBNET.11" PreferredTransports obfs
+	if [[ $cap -eq 1 ]]; then
+		docker run -d --name "$PFX-w" --network "container:$PFX-a" --cap-add NET_ADMIN --cap-add NET_RAW \
+			--entrypoint sh "$WIRE_IMAGE" -c "tcpdump -i any -U -n -w /tmp/a2b.pcap udp and src host $SUBNET.11 and dst host $SUBNET.12 2>/dev/null" >/dev/null
+	fi
+	dleaf b leafb "$bi" "$SUBNET.12" "$@"
+	# traffic a -> b is what makes tinc key the pair and try a direct path
+	for _ in $(seq 20); do
+		bip=$(docker exec "$PFX-b" ip -4 -br addr show lab 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
+		[[ -n $bip ]] && break
+		sleep 1
+	done
+	docker exec -d "$PFX-a" ping -i 0.5 "$bip"
+	for _ in $(seq 45); do
+		reach=$(t a info leafb 2>/dev/null | grep -i "^Reachability" | head -1)
+		[[ $expect == direct && $reach == *"directly with UDP"* ]] && break
+		sleep 1
+	done
+	[[ $expect == relay* ]] && sleep 5
+	reach=$(t a info leafb 2>/dev/null | grep -i "^Reachability" | head -1)
+	bip=$(docker exec "$PFX-b" ip -4 -br addr show lab 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
+	docker exec "$PFX-a" ping -c5 -i0.5 -W2 "$bip" >/dev/null 2>&1 && ok=1
+	local verdict=PASS msg=""
+	if [[ $expect == direct && $reach != *"directly with UDP"* ]]; then
+		verdict=FAIL msg="expected direct, got '$reach'"
+	elif [[ $expect == relay* && $reach == *"directly with UDP"* ]]; then
+		verdict=FAIL msg="expected the relay, got '$reach'"
+	elif [[ $ok -ne 1 ]]; then
+		verdict=FAIL msg="tunnel a->b does not carry traffic ('$reach')"
+	elif [[ -n $why ]] && ! docker exec "$PFX-a" grep -q "$why" /tmp/tincd.log; then
+		verdict=FAIL msg="leaf a never said '$why'"
+	fi
+	if [[ $cap -eq 1 ]]; then
+		docker stop "$PFX-w" >/dev/null 2>&1
+		docker cp "$PFX-w:/tmp/a2b.pcap" "/tmp/$PFX-a2b.pcap" >/dev/null 2>&1
+		n=$(docker run --rm -v "/tmp/$PFX-a2b.pcap:/p.pcap:ro" --entrypoint wirestats "$WIRE_IMAGE" /p.pcap 2>/dev/null |
+			awk '$1=="datagrams"{d=$2} $1=="zero6"{z=$2} $1=="size51"{s=$2} END{if(d!="")print d, z, s}')
+		rm -f "/tmp/$PFX-a2b.pcap"
+		read -r n z6 s51 <<<"${n:-? ? ?}"
+		msg="$msg${msg:+; }wire a->b: $n datagrams, $z6 with the zero dst id, $s51 of 51 bytes"
+		if [[ $n == "?" ]] || [[ $z6 != 0 ]] || [[ $((s51 * 20)) -gt $n ]]; then
+			verdict=FAIL
+		elif [[ $expect == relay-noudp && $n != 0 ]]; then
+			verdict=FAIL
+		fi
+	else
+		msg="$msg${msg:+; }wire not checked ($WIRE_IMAGE absent)"
+	fi
+	log "$verdict direct pair, $label: '$reach', ping=$ok; $msg"
+	if [[ $verdict == FAIL ]]; then
+		t a dump nodes 2>/dev/null | grep -E "^leaf|^founder" >&2 || true
+		docker exec "$PFX-a" grep -iE "DirectSeal|seal|leafb" /tmp/tincd.log | tail -12 >&2 || true
+		FAILED=1
+	fi
+	cleanup
+}
+
+direct_section() {
+	local oldv3=no
+	docker run --rm "$OLD" sh -c 'grep -q "speaks obfs frame v2" "$(command -v tincd)"' 2>/dev/null && oldv3=yes
+	dpair "current leaf b" "$NEW" direct ""
+	if [[ $oldv3 == yes ]]; then
+		dpair "older leaf b (reads frame v3)" "$OLD" direct "sealed with the pair's bootstrap key only"
+	else
+		dpair "older leaf b (frame v2 only)" "$OLD" relay "has not answered sealed direct datagrams"
+	fi
+	dpair "older leaf b without obfs" "$OLD" relay-noudp "cannot read sealed datagrams" Transports "plain, sf"
+	# Two current leaves behind an older relay: it forwards the coordinated
+	# hole-punch request (REQ_KEY 98) instead of answering it, and the far
+	# leaf answers and starts itself (docs/nat.md §9.3).
+	DFOUNDER=$OLD dpair "current leaves, older relay" "$NEW" direct "the peer says go\\|the peer asked through an older relay"
+}
+
 # An OLD_IMAGE from before 2026-09-24 knows nothing of datagrams a dialler does not announce.
 old_quic=carrier
 docker run --rm "$OLD" sh -c 'grep -q "too old to send datagrams" "$(command -v tincd)"' 2>/dev/null || old_quic=fallback
@@ -189,6 +318,8 @@ for tr in $CARRIERS; do
 	fi
 	pair "$NEW" "$NEW" "$tr"
 done
+
+[[ ${DIRECT:-yes} == yes ]] && direct_section
 
 if [[ $FAILED -eq 0 ]]; then
 	log "mixed versions: all pairs connect"

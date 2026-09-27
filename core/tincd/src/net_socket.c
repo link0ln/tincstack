@@ -818,9 +818,11 @@ begin:
 		   connection over that flow with the single-flow carrier, which is
 		   the same path the packets already take. SPTPS and the ID exchange
 		   are untouched; the acceptor still enforces its own accept list. */
-		if(transport_udp_meta_fallback(outgoing, &udpsa)) {
+		transport_id_t ft = transport_udp_meta_fallback(outgoing, &udpsa);
+
+		if(ft != TRANSPORT_MAX) {
 			sa = &udpsa;
-			t = transport_get(TRANSPORT_SF);
+			t = transport_get(ft);
 			fallback = true;
 		} else {
 			log_outgoing_failure(outgoing);

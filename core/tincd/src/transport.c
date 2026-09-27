@@ -673,19 +673,29 @@ bool transport_next_candidate(outgoing_t *outgoing) {
 	return false;
 }
 
-bool transport_udp_meta_fallback(outgoing_t *outgoing, sockaddr_t *sa) {
+transport_id_t transport_udp_meta_fallback(outgoing_t *outgoing, sockaddr_t *sa) {
 	if(!udp_meta_fallback || !outgoing || outgoing->udp_fallback_used) {
-		return false;
-	}
-
-	if(!(transport_accept_mask & TRANSPORT_BIT(TRANSPORT_SF)) || !transports[TRANSPORT_SF].dial) {
-		return false;
+		return TRANSPORT_MAX;
 	}
 
 	node_t *n = outgoing->node;
 
+	/* DirectSeal (obfs.h): when either side seals its direct path, the meta
+	   connection on that path must not be cleartext single-flow frames (a
+	   fixed six-byte magic on every datagram). Use the sealed single flow,
+	   obfs, when both ends take it; otherwise there is no fallback. */
+	transport_id_t t = TRANSPORT_SF;
+
+	if(n && (dseal_self_wants() || (n->dseal & DSEAL_WANTS))) {
+		t = TRANSPORT_OBFS;
+	}
+
+	if(!(transport_accept_mask & TRANSPORT_BIT(t)) || !transports[t].dial) {
+		return TRANSPORT_MAX;
+	}
+
 	if(!n || n == myself || !n->status.reachable || !n->status.udp_confirmed) {
-		return false;
+		return TRANSPORT_MAX;
 	}
 
 	/* The UDP path must go to the peer itself. `via' is the node the data
@@ -693,16 +703,16 @@ bool transport_udp_meta_fallback(outgoing_t *outgoing, sockaddr_t *sa) {
 	   relay and dialling a meta connection at that address would talk to the
 	   wrong node. */
 	if(n->via != n || n->address.sa.sa_family == AF_UNKNOWN || !n->address.sa.sa_family) {
-		return false;
+		return TRANSPORT_MAX;
 	}
 
-	if(!(transport_node_mask(n) & TRANSPORT_BIT(TRANSPORT_SF))) {
-		return false;
+	if(!(transport_node_mask(n) & TRANSPORT_BIT(t))) {
+		return TRANSPORT_MAX;
 	}
 
 	outgoing->udp_fallback_used = true;
 	*sa = n->address;
-	return true;
+	return t;
 }
 
 /* Global carrier ranking for the acceptor-side rule. The transport_id_t order
@@ -990,7 +1000,7 @@ bool transport_udp_dispatch(listen_socket_t *ls, const uint8_t *buf, size_t len,
 		   inner datagram straight into the SF or SPTPS receive path (not back
 		   through this dispatcher), so there is no re-entrancy and a plain
 		   SPTPS datagram is never scanned when obfs is not in use. */
-		if((transport_accept_mask & TRANSPORT_BIT(TRANSPORT_OBFS)) && obfs_udp_try(ls, buf, len, addr)) {
+		if(dseal_self_reads() && obfs_udp_try(ls, buf, len, addr)) {
 			return true;
 		}
 

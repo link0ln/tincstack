@@ -18,6 +18,8 @@
 #                                      direct per pair, % direct, relay load;
 #                                      --relay-down S stops the relay's tincd
 #   lab.sh rekey A B [--keyexpire S]   a direct pair under SPTPS rekeys
+#   lab.sh idle TYPE                   an idle carrier link behind TYPE (cgnat: the
+#                                      --cgnat-udp-* timeouts) for --duration S
 #   lab.sh portmap                     what each NAT profile does to source ports
 #                                      (nattrav, no tincd)
 #   lab.sh punch [A/B ...]             hole punch without tinc (nattrav):
@@ -113,7 +115,7 @@ promote() { # SRC [DEST]
 cmd="${1:-}"; shift || true
 case "$cmd" in
     build) build ;;
-    validate-nat|scenario|matrix|laptop|glare|mesh|rekey|portmap|punch|summarize) build; run_lab "$cmd" "$@" ;;
+    validate-nat|scenario|matrix|laptop|glare|mesh|rekey|idle|portmap|punch|summarize) build; run_lab "$cmd" "$@" ;;
     shell) build; docker run --rm -it --privileged --name "$NAME" "$LAB_IMAGE" bash ;;
     clean) clean ;;
     promote) promote "$@" ;;

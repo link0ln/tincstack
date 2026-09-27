@@ -27,6 +27,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "obfs.h"
 #include "protocol.h"
 #include "route.h"
 #include "sptps.h"
@@ -173,8 +174,14 @@ bool send_req_pubkey(node_t *to) {
    once a minute for ever). */
 #define REQ_TRANSPORTS_INTERVAL 60
 
-bool send_req_transports(node_t *to) {
-	if(!to || to == myself || to->transports) {
+/* The same question also carries the direct-seal capability (obfs.h), which
+   a sealing node needs before it sends a peer a single direct datagram; it is
+   asked while that is unknown too, every REQ_DSEAL_INTERVAL when the answer
+   holds up the direct path (send_req_dseal). */
+#define REQ_DSEAL_INTERVAL 10
+
+static bool send_req_carriers(node_t *to, int interval) {
+	if(!to || to == myself || (to->transports && (to->dseal & DSEAL_KNOWN))) {
 		return false;
 	}
 
@@ -182,13 +189,21 @@ bool send_req_transports(node_t *to) {
 		return false;
 	}
 
-	if(to->last_req_transports && now.tv_sec - to->last_req_transports < REQ_TRANSPORTS_INTERVAL) {
+	if(to->last_req_transports && now.tv_sec - to->last_req_transports < interval) {
 		return false;
 	}
 
 	to->last_req_transports = now.tv_sec;
 	logger(DEBUG_PROTOCOL, LOG_DEBUG, "Asking %s (%s) for its carrier list over the meta graph", to->name, to->hostname);
 	return send_request(to->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, to->name, REQ_PUBKEY);
+}
+
+bool send_req_transports(node_t *to) {
+	return send_req_carriers(to, REQ_TRANSPORTS_INTERVAL);
+}
+
+bool send_req_dseal(node_t *to) {
+	return send_req_carriers(to, REQ_DSEAL_INTERVAL);
 }
 
 bool send_req_key(node_t *to) {
@@ -209,6 +224,10 @@ bool send_req_key(node_t *to) {
 		to->status.sptps_route_stale = false;   /* this one goes out over the route we have now */
 		to->last_req_key = now.tv_sec;
 		to->incompression = myself->incompression;
+		/* DirectSeal: learn whether it reads sealed datagrams while the
+		   handshake runs, so the first probe after it need not wait for the
+		   answer (a no-op once known). */
+		send_req_dseal(to);
 		return sptps_start(&to->sptps, to, true, true, myself->connection->ecdsa, to->ecdsa, label, labellen, send_initial_sptps_data, receive_sptps_record);
 	}
 
@@ -270,6 +289,12 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		return true;
 	}
 
+	/* The coordinated hole punch: a relay between the two ends answers it
+	   instead of forwarding it (punch_h). */
+	if(reqno == PUNCH_REQ) {
+		return punch_h(from, to, request);
+	}
+
 	/* Requests that are not SPTPS data packets are forwarded as-is. */
 
 	if(to != myself) {
@@ -298,7 +323,10 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		   enforces its own Transports/AllowPlainMeta, so the worst a lying
 		   relay can do is cause a dial the other end refuses. */
 		char acceptlist[TRANSPORT_LIST_MAX];
-		send_request(from->nexthop->connection, "%d %s %s %d %s %s", REQ_KEY, myself->name, from->name, ANS_PUBKEY, pubkey, transport_accept_string(acceptlist));
+		/* ... and after it the direct-seal capability (obfs.h), one more
+		   space-free token that older parsers never reach. */
+		char dseal[32];
+		send_request(from->nexthop->connection, "%d %s %s %d %s %s %s", REQ_KEY, myself->name, from->name, ANS_PUBKEY, pubkey, transport_accept_string(acceptlist), dseal_token(dseal, sizeof(dseal)));
 		free(pubkey);
 		return true;
 	}
@@ -306,7 +334,8 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 	case ANS_PUBKEY: {
 		char pubkey[MAX_STRING_SIZE];
 		char histransports[MAX_STRING_SIZE] = "";
-		int fields = sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING, pubkey, histransports);
+		char hisdseal[MAX_STRING_SIZE] = "";
+		int fields = sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING " " MAX_STRING, pubkey, histransports, hisdseal);
 
 		/* Learn the peer's accept mask even when we already had its key: the
 		   key is cached forever, the mask is what goes stale. */
@@ -324,6 +353,12 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			   tincstack older than stream AC: it is plain-only and saying so
 			   is what stops send_req_transports() asking again for ever. */
 			from->transports = TRANSPORT_MASK_PLAIN;
+		}
+
+		/* An answer is definitive: with the token, or without it (an older
+		   build, which answers the same question every time). */
+		if(fields >= 1) {
+			dseal_learn(from, fields >= 3 ? hisdseal : NULL);
 		}
 
 		if(node_read_ecdsa_public_key(from)) {
@@ -429,11 +464,15 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		from->status.validkey = false;
 		from->status.waitingforkey = true;
 		from->last_req_key = now.tv_sec;
+		send_req_dseal(from);   /* see send_req_key() */
 		sptps_start(&from->sptps, from, false, true, myself->connection->ecdsa, from->ecdsa, label, labellen, send_sptps_data_myself, receive_sptps_record);
 		sptps_receive_data(&from->sptps, buf, len);
 		send_mtu_info(myself, from, MTU);
 		return true;
 	}
+
+	case DSEAL_KEX_REQ:
+		return dseal_kex_h(from, request);
 
 	default:
 		logger(DEBUG_ALWAYS, LOG_ERR, "Unknown extended REQ_KEY request from %s (%s): %s", from->name, from->hostname, request);
@@ -734,8 +773,17 @@ bool ans_key_h(connection_t *c, const char *request) {
 			return true;
 		}
 
-		if(from->status.validkey) {
-			if(*address && *port) {
+		/* A relay's view of the peer is a hint for finding a path, not news
+		   about one we have: every rekey of a pair whose handshake goes
+		   through a relay carries it, and applying it to a confirmed direct
+		   path reset that path (udp_confirmed cleared, PMTU restarted) and
+		   moved the pair to the relay for seconds -- 8.6 % of packets at
+		   KeyExpire 20 s in the lab (docs/nat.md §7.6). udp_info_h() has
+		   always had this rule. */
+		if(from->status.validkey && *address && *port) {
+			if(from->status.udp_confirmed) {
+				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Not using reflexive UDP address from %s (%s port %s): the direct path is confirmed", from->name, address, port);
+			} else {
 				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 				sockaddr_t sa = str2sockaddr(address, port);
 				update_node_udp(from, &sa);
@@ -807,7 +855,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 	from->status.sptps_route_stale = false;   /* the exchange completed; see receive_sptps_record */
 	from->sent_seqno = 0;
 
-	if(*address && *port) {
+	if(*address && *port && !from->status.udp_confirmed) {
 		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 		sockaddr_t sa = str2sockaddr(address, port);
 		update_node_udp(from, &sa);
