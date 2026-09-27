@@ -115,8 +115,9 @@ ui_settle() {
 }
 
 # the app's networks: directories under files/networks/ with a non-empty tinc.yaml
+# (none, and no failure, before the app has ever run: there is no files/ yet)
 app_networks() {
-    adb shell "run-as ${PKG:-net.tincstack.android} find files/networks -mindepth 2 -maxdepth 2 -name tinc.yaml -size +0" 2>/dev/null \
+    { adb shell "run-as ${PKG:-net.tincstack.android} find files/networks -mindepth 2 -maxdepth 2 -name tinc.yaml -size +0" 2>/dev/null || true; } \
         | tr -d '\r' | sed -n 's|^files/networks/\([^/]*\)/tinc.yaml$|\1|p' | sort
 }
 
