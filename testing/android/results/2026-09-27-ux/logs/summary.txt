@@ -1,0 +1,13 @@
+build+unit exit 0
+754d2c20f521d9c0ada59f28b2200993cb0da01c1f52670870a24c4c7b023246  /opt/gitrepo/vpn-experiments/tincstack/.claude/worktrees/agent-a2d3a893766b5b013/platforms/android/app/build/outputs/apk/debug/app-debug.apk
+unit tests: 77 failures: 0 errors: 0
+ui-flows exit 0
+sweep exit 1
+lock-cycle exit 1
+split-routing exit 125
+transports exit 1
+ui-flows-2 exit 0
+sweep-2 exit 0
+lock-cycle-2 exit 0
+split-routing-2 exit 0
+transports-2 exit 0

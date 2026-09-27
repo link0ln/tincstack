@@ -1,0 +1,20 @@
+>>> waiting for the framework to come up (timeout 600s)
+>>> booted: 14 (API 34)
+03:54:52 android 14 (API 34), guest NAT source 10.47.14.2: tinc version 1.1pre18 (built Sep 26 2026 21:06:32, protocol 17.7) Features: openssl comp_zlib legacy_protocol 
+Assigned address 10.218.197.2/24 to aleaf.
+Assigned address 10.218.197.3/24 to lleaf.
+03:55:04 PASS the Android node connects to a Linux founder over https
+Warning: removing PreferredTransports = https
+03:55:08 PASS the Android node connects to a Linux founder over quic
+Warning: removing PreferredTransports = https
+03:55:11 android: QUIC carrier ready (ngtcp2 1.25.0, OpenSSL 3.5.7 9 Jun 2026), on the tinc port
+03:55:19 PASS dialling an IP, the Linux https ClientHello has curl's extensions (t13i3012h2; handshake: curl 1542 bytes, ours 1542)
+03:55:19 PASS the Android https ClientHello is the Linux one: t13i3012h2, 1542-byte handshake, same extensions
+03:55:21 PASS dialling an IP, the Linux quic ClientHello has curl's extensions (q13i0311h3; handshake: curl 1477 bytes, ours 1477) and transport parameters 12,15,1,3,14,4,5,6,7,8,9
+03:55:21 PASS the Android quic ClientHello is the Linux one: q13i0311h3, 1477-byte handshake, same extensions, transport parameters 12,15,1,3,14,4,5,6,7,8,9
+03:55:22      NOT COMPARED the Android quic second flight looks like ngtcp2's PTO path (no Initial with the Finished): I 1208 B, I 1208 B, I 1208 B, H 62 B, HS 170 B
+03:55:22 android (emulator): all checks passed
+
+real	20m37,859s
+user	0m0,751s
+sys	0m0,712s

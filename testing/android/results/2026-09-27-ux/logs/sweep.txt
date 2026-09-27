@@ -1,0 +1,46 @@
+== plant what a failed join of the OLD app left behind (and worse)
+--- before app start:
+joining
+joining/join-1
+joining/join-1/net2
+networks
+networks/empty
+networks/empty/tinc.yaml
+networks/home
+networks/home/home
+networks/net1
+networks/net1/net1
+networks/stray.txt
+== start the app
+--- after app start:
+networks
+OK: every phantom and the staging leftover removed
+--- app log (sweep lines):
+00:12:20.355 [main] WARN  org.pacien.tincapp.data.Networks - Removing /data/user/0/net.tincstack.android/files/networks/home: no tinc.yaml in it, not a network
+00:12:20.356 [main] WARN  org.pacien.tincapp.data.Networks - Removing /data/user/0/net.tincstack.android/files/networks/net1: no tinc.yaml in it, not a network
+00:12:20.356 [main] WARN  org.pacien.tincapp.data.Networks - Removing /data/user/0/net.tincstack.android/files/networks/empty: no tinc.yaml in it, not a network
+00:12:20.357 [main] WARN  org.pacien.tincapp.data.Networks - Removing /data/user/0/net.tincstack.android/files/networks/stray.txt: no tinc.yaml in it, not a network
+--- screen:
+text="Invitation" text="Join and connect" text="Paste the invitation you were sent, or scan its QR code." 
+shot 32-after-sweep-light (65406 B)
+== CONNECT intent for a network that has no configuration
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+shot 33-connect-ghost-light (77023 B)
+text="ghost has no configuration (its tinc.yaml is missing or empty). Remove it and join again with a new invitation."
+OK: CONNECT tinc:ghost says so
+== the service's own check: a listed network whose tinc.yaml is broken
+Assigned address 10.1.244.4/24 to svccheck.
+>>> open the app
+>>> invitation into the field (the one paste and the QR scanner fill)
+>>> Join and connect
+>>> joined: networks/node_a
+joined: node_a
+connected
+disconnected
+networks:
+  node_a:
+    options: [
+state: 'Couldn't connect / The configuration of node_a can't be used: tinc.yaml: while parsing a flow node&#10; in 'string', line 4, column 1:&#10;    &#10;    ^&#10;expected the node content, but found '&lt;stream end&gt;'&#10; in 'string', line 4, column 1:&#10;    &#10;    ^&#10;'
+OK: the service refuses a broken tinc.yaml in words
+shot 34-broken-config-light (88466 B)
+done, FAILS=0

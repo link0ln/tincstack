@@ -1,0 +1,202 @@
+
+== [03:31:36] lab: join + connect (join-on-emulator.sh, KEEP=1)
+
+== images
+tinc version 1.1pre18 (built Sep 26 2026 21:07:04, protocol 17.7)
+
+== inviter: a Linux node at 10.44.82.10 (PUBLIC_ADDRESS so the invitation is dialable)
+2026-09-27 00:31:37 NOTICE  Materialised defaults into `/etc/tincstack/tinc.yaml' [tincstack]: Mode=router AddressPool=10.217.120.0/24 Subnet=10.217.120.1/32 Transports=plain, sf, obfs, https, quic tls_cert/tls_key TlsFingerprint ed25519_priv Ed25519PublicKey rsa_priv RSA-public 
+2026-09-27 00:31:37 INFO    AddressPool 10.217.120.0/24 (first host 10.217.120.1/32)
+2026-09-27 00:31:37 NOTICE  Listening on 0.0.0.0 port 655
+
+== emulator on wsu-d2-lab
+>>> waiting for the framework to come up (timeout 600s)
+>>> booted: 14 (API 34)
+
+== install the debug APK (clean: the app's data must start empty)
+Performing Streamed Install
+Success
+
+== grant the VpnService consent and notifications non-interactively
+
+== invitation for the phone
+Assigned address 10.217.120.2/24 to phone.
+invitation: 10.44.82.10:655/<token>
+
+== join through the UI (the field paste and the QR scanner fill)
+>>> open the app
+>>> invitation into the field (the one paste and the QR scanner fill)
+>>> Join and connect
+>>> joined: networks/node_a
+the app named the network: node_a
+
+== the file the core wrote
+networks:
+  tincstack:
+    options:
+      Name: phone
+      ConnectTo: node_a
+      Mode: router
+      AddressPool: 10.217.120.0/24
+      InterfaceAddress: 10.217.120.2/24
+      Port: 0
+      UDPRebindOnWake: yes
+    hosts:
+      phone: |
+        Subnet = 10.217.120.2/32
+        Transports = plain, sf, obfs, https, quic
+        TlsFingerprint = bf45080e08f3b9f2f7fefec02ccd40c25655bdceecaea58c4b48301e9a2f1133
+        Ed25519PublicKey = Cus68D6bzwxoB98hmOiDvkKxqdBSPtdMjIyar3V1JKO
+        <key redacted>
+      node_a: |
+        Address = 10.44.82.10
+        Subnet = 10.217.120.1/32
+        Transports = plain, sf, obfs, https, quic
+        TlsFingerprint = 481abcae4e9cd4c357102c3bf1e452d67fec07d4b088569e3c42d4a871a7d3a7
+        Ed25519PublicKey = A29D9yXO9fhVendyiElZfB31xt7ZeTHqQziQ2DWB9CK
+        <key redacted>
+        HttpsPort = 443
+        QuicPort = 443
+        Port = 655
+    keys:
+      tls_cert: |
+        <key redacted>
+      tls_key: |
+        <key redacted>
+      ed25519_priv: |
+        <key redacted>
+      rsa_priv: |
+        <key redacted>
+stanza: tincstack
+OK: schema-conformant, pool address present
+OK: tinc.yaml is mode 600
+
+== the app connected on its own after the join
+OK: tun0 up
+
+== disconnect; prefer the https carrier (the app's libtinc.so, run as the app)
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+tinc version 1.1pre18 (built Sep 26 2026 21:06:32, protocol 17.7)
+Features: openssl comp_zlib legacy_protocol
+
+== connect and ping the inviter through the tunnel
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+tun0             UNKNOWN        10.217.120.2/24 fe80::f4a3:b3ee:d9e7:4b96/64 
+PING 10.217.120.1 (10.217.120.1) 56(84) bytes of data.
+64 bytes from 10.217.120.1: icmp_seq=1 ttl=64 time=0.816 ms
+64 bytes from 10.217.120.1: icmp_seq=2 ttl=64 time=0.889 ms
+64 bytes from 10.217.120.1: icmp_seq=3 ttl=64 time=0.788 ms
+
+--- 10.217.120.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2043ms
+rtt min/avg/max/mdev = 0.788/0.831/0.889/0.042 ms
+
+== the inviter's link to the phone runs over https
+phone at 10.44.82.2 port 53704 options 700000b socket 18 status 60100 transport https
+
+== and back: the inviter reaches the phone's pool address
+PING 10.217.120.2 (10.217.120.2) 56(84) bytes of data.
+64 bytes from 10.217.120.2: icmp_seq=1 ttl=64 time=0.833 ms
+64 bytes from 10.217.120.2: icmp_seq=2 ttl=64 time=9.45 ms
+64 bytes from 10.217.120.2: icmp_seq=3 ttl=64 time=2.47 ms
+
+--- 10.217.120.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2018ms
+rtt min/avg/max/mdev = 0.833/4.252/9.452/3.737 ms
+
+PASS: joined on Android, schema-conformant config, tunnel carries traffic over https
+KEEP=1: wsu-d2-a-node-1, wsu-d2-emulator and wsu-d2-lab left up
+network: node_a
+inviter tunnel address: 10.217.120.1
+
+== [03:33:06] probe apps
+total 40
+-rw-r--r-- 1 root root 8532 Sep 27 00:33 probe-a.apk
+-rw-r--r-- 1 root root 5475 Sep 27 00:33 probe-a.apk.idsig
+-rw-r--r-- 1 root root 8532 Sep 27 00:33 probe-b.apk
+-rw-r--r-- 1 root root 5475 Sep 27 00:33 probe-b.apk.idsig
+Performing Streamed Install
+Success
+Performing Streamed Install
+Success
+
+== [03:33:10] no split routing: both probes reach 10.217.120.1
+OK: a=reach b=reach
+
+== [03:33:12] WHITELIST via the settings screen: only net.tincstack.probe.a
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+>>> open the app, Apps using the VPN
+>>> tick net.tincstack.probe.a
+>>> Save
+>>> saved
+>>> lock-pause switch: false -> false
+>>> done
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+      Name: phone
+      ConnectTo: node_a
+      Mode: router
+      AddressPool: 10.217.120.0/24
+      InterfaceAddress: 10.217.120.2/24
+      Port: 0
+      UDPRebindOnWake: yes
+      PreferredTransports: https
+      AllowApplication: net.tincstack.probe.a
+OK: whitelist: a=reach b=NO
+--- UIDs: package:net.tincstack.probe.a uid:10193 package:net.tincstack.probe.b uid:10194 
+--- VPN network (dumpsys connectivity):
+  NetworkAgentInfo{network{100}  handle{432902426637}  ni{WIFI CONNECTED extra: } created=2026-09-27T00:32:11.624Z Score(Policies : TRANSPORT_PRIMARY&EVER_EVALUATED&IS_UNMETERED&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 28914 firstValidated 31073 lastValidated 31073  lp{{InterfaceName: wlan0 LinkAddresses: [ fe80::a49a:5d25:5f27:7757/64,10.0.2.16/24,fec0::f08:b731:c2fa:5587/64,fec0::764e:5012:d44c:9e7c/64 ] DnsAddresses: [ /10.0.2.3 ] Domains: null MTU: 0 ServerAddress: /10.0.2.2 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576 Routes: [ fe80::/64 -> :: wlan0 mtu 0,::/0 -> fe80::2 wlan0 mtu 0,fec0::/64 -> :: wlan0 mtu 0,10.0.2.0/24 -> 0.0.0.0 wlan0 mtu 0,0.0.0.0/0 -> 10.0.2.2 wlan0 mtu 0 ]}}  nc{[ Transports: WIFI Capabilities: NOT_METERED&INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED LinkUpBandwidth>=12000Kbps LinkDnBandwidth>=30000Kbps Specifier: <WifiNetworkAgentSpecifier [WifiConfiguration=, SSID="AndroidWifi", BSSID=00:13:10:85:fe:01, band=1, mMatchLocalOnlySpecifiers=false]> TransportInfo: <SSID: "AndroidWifi", BSSID: 00:13:10:85:fe:01, MAC: 02:15:b2:00:00:00, IP: /10.0.2.16, Security type: 0, Supplicant state: COMPLETED, Wi-Fi standard: 1, RSSI: -50, Link speed: 1Mbps, Tx Link speed: 1Mbps, Max Supported Tx Link speed: 11Mbps, Rx Link speed: 2Mbps, Max Supported Rx Link speed: 11Mbps, Frequency: 2447MHz, Net ID: 0, Metered hint: false, score: 60, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none>"AndroidWifi"openMLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>> SignalStrength: -50 OwnerUid: 10157 AdminUids: [10157] SSID: "AndroidWifi" UnderlyingNetworks: Null]}  factorySerialNumber=5}
+  NetworkAgentInfo{network{103}  handle{445787328525}  ni{VPN CONNECTED extra: } created=2026-09-27T00:34:00.585Z Score(Policies : EVER_EVALUATED&IS_UNMETERED&IS_VPN&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 137057 firstValidated 137098 lastValidated 137098  lp{{InterfaceName: tun0 LinkAddresses: [ 10.217.120.2/24 ] DnsAddresses: [ ] Domains:  MTU: 0 Routes: [ 10.217.120.0/24 -> 0.0.0.0 tun0 mtu 0,::/0 unreachable mtu 0 ]}}  nc{[ Transports: WIFI|VPN Capabilities: NOT_METERED&INTERNET&NOT_RESTRICTED&TRUSTED&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED LinkUpBandwidth>=12000Kbps LinkDnBandwidth>=30000Kbps TransportInfo: <VpnTransportInfo{type=1, sessionId=node_a, bypassable=false longLivedTcpConnectionsExpensive=false}> Uids: <{10193-10193, 20193-20193}> OwnerUid: 10192 AdminUids: [10192] UnderlyingNetworks: [100]]}  factorySerialNumber=2}
+--- ip rule (uid ranges into the VPN table):
+11000:	from all iif lo oif dummy0 uidrange 0-0 lookup dummy0 
+11000:	from all iif lo oif wlan0 uidrange 0-0 lookup wlan0 
+13000:	from all fwmark 0x0/0x20000 iif lo uidrange 10193-10193 lookup tun0 
+13000:	from all fwmark 0x0/0x20000 iif lo uidrange 20193-20193 lookup tun0 
+16000:	from all fwmark 0x10067/0x1ffff iif lo uidrange 10193-10193 lookup tun0 
+16000:	from all fwmark 0x10067/0x1ffff iif lo uidrange 20193-20193 lookup tun0 
+16000:	from all fwmark 0x10067/0x1ffff iif lo uidrange 0-0 lookup tun0 
+17000:	from all iif lo oif tun0 uidrange 10193-10193 lookup tun0 
+17000:	from all iif lo oif tun0 uidrange 20193-20193 lookup tun0 
+
+== [03:34:07] BLACKLIST via the settings screen: all but net.tincstack.probe.a
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+>>> open the app, Apps using the VPN
+>>> Save
+>>> saved
+>>> lock-pause switch: false -> false
+>>> done
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+      Name: phone
+      ConnectTo: node_a
+      Mode: router
+      AddressPool: 10.217.120.0/24
+      InterfaceAddress: 10.217.120.2/24
+      Port: 0
+      UDPRebindOnWake: yes
+      PreferredTransports: https
+      DisallowApplication: net.tincstack.probe.a
+OK: blacklist: a=NO b=reach
+--- UIDs: package:net.tincstack.probe.a uid:10193 package:net.tincstack.probe.b uid:10194 
+--- VPN network (dumpsys connectivity):
+  NetworkAgentInfo{network{100}  handle{432902426637}  ni{WIFI CONNECTED extra: } created=2026-09-27T00:32:11.624Z Score(Policies : TRANSPORT_PRIMARY&EVER_EVALUATED&IS_UNMETERED&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 28914 firstValidated 31073 lastValidated 31073  lp{{InterfaceName: wlan0 LinkAddresses: [ fe80::a49a:5d25:5f27:7757/64,10.0.2.16/24,fec0::f08:b731:c2fa:5587/64,fec0::764e:5012:d44c:9e7c/64 ] DnsAddresses: [ /10.0.2.3 ] Domains: null MTU: 0 ServerAddress: /10.0.2.2 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576 Routes: [ fe80::/64 -> :: wlan0 mtu 0,::/0 -> fe80::2 wlan0 mtu 0,fec0::/64 -> :: wlan0 mtu 0,10.0.2.0/24 -> 0.0.0.0 wlan0 mtu 0,0.0.0.0/0 -> 10.0.2.2 wlan0 mtu 0 ]}}  nc{[ Transports: WIFI Capabilities: NOT_METERED&INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED LinkUpBandwidth>=12000Kbps LinkDnBandwidth>=30000Kbps Specifier: <WifiNetworkAgentSpecifier [WifiConfiguration=, SSID="AndroidWifi", BSSID=00:13:10:85:fe:01, band=1, mMatchLocalOnlySpecifiers=false]> TransportInfo: <SSID: "AndroidWifi", BSSID: 00:13:10:85:fe:01, MAC: 02:15:b2:00:00:00, IP: /10.0.2.16, Security type: 0, Supplicant state: COMPLETED, Wi-Fi standard: 1, RSSI: -50, Link speed: 1Mbps, Tx Link speed: 1Mbps, Max Supported Tx Link speed: 11Mbps, Rx Link speed: 2Mbps, Max Supported Rx Link speed: 11Mbps, Frequency: 2447MHz, Net ID: 0, Metered hint: false, score: 60, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none>"AndroidWifi"openMLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>> SignalStrength: -50 OwnerUid: 10157 AdminUids: [10157] SSID: "AndroidWifi" UnderlyingNetworks: Null]}  factorySerialNumber=5}
+  NetworkAgentInfo{network{104}  handle{450082295821}  ni{VPN CONNECTED extra: } created=2026-09-27T00:34:37.547Z Score(Policies : EVER_EVALUATED&IS_UNMETERED&IS_VPN&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 174018 firstValidated 174068 lastValidated 174068  lp{{InterfaceName: tun0 LinkAddresses: [ 10.217.120.2/24 ] DnsAddresses: [ ] Domains:  MTU: 0 Routes: [ 10.217.120.0/24 -> 0.0.0.0 tun0 mtu 0,::/0 unreachable mtu 0 ]}}  nc{[ Transports: WIFI|VPN Capabilities: NOT_METERED&INTERNET&NOT_RESTRICTED&TRUSTED&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED LinkUpBandwidth>=12000Kbps LinkDnBandwidth>=30000Kbps TransportInfo: <VpnTransportInfo{type=1, sessionId=node_a, bypassable=false longLivedTcpConnectionsExpensive=false}> Uids: <{0-10191, 10194-20191, 20194-99999}> OwnerUid: 10192 AdminUids: [10192] UnderlyingNetworks: [100]]}  factorySerialNumber=2}
+--- ip rule (uid ranges into the VPN table):
+11000:	from all iif lo oif dummy0 uidrange 0-0 lookup dummy0 
+11000:	from all iif lo oif wlan0 uidrange 0-0 lookup wlan0 
+13000:	from all fwmark 0x0/0x20000 iif lo uidrange 0-10191 lookup tun0 
+13000:	from all fwmark 0x0/0x20000 iif lo uidrange 10194-20191 lookup tun0 
+13000:	from all fwmark 0x0/0x20000 iif lo uidrange 20194-99999 lookup tun0 
+16000:	from all fwmark 0x10068/0x1ffff iif lo uidrange 0-10191 lookup tun0 
+16000:	from all fwmark 0x10068/0x1ffff iif lo uidrange 10194-20191 lookup tun0 
+16000:	from all fwmark 0x10068/0x1ffff iif lo uidrange 20194-99999 lookup tun0 
+16000:	from all fwmark 0x10068/0x1ffff iif lo uidrange 0-0 lookup tun0 
+17000:	from all iif lo oif tun0 uidrange 0-10191 lookup tun0 
+17000:	from all iif lo oif tun0 uidrange 10194-20191 lookup tun0 
+17000:	from all iif lo oif tun0 uidrange 20194-99999 lookup tun0 
+
+PASS: split routing per app: whitelist and blacklist written by the settings screen, enforced per UID (transport https)
+
+== [03:34:44] cleanup
+
+real	7m22,966s
+user	0m1,511s
+sys	0m1,531s

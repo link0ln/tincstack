@@ -1,0 +1,14 @@
+> Task :app:testDebugUnitTest
+BUILD SUCCESSFUL in 24s
+commands.JoinFailureTest tests=5 skipped=0 failures=0 errors=0
+commands.JoinNameTest tests=4 skipped=0 failures=0 errors=0
+data.InvitationTest tests=9 skipped=0 failures=0 errors=0
+data.NetworksTest tests=2 skipped=0 failures=0 errors=0
+data.PeerStatusTest tests=5 skipped=0 failures=0 errors=0
+data.SplitRoutingTest tests=5 skipped=0 failures=0 errors=0
+data.TincYamlTest tests=9 skipped=0 failures=0 errors=0
+data.TransportTest tests=4 skipped=0 failures=0 errors=0
+data.VpnInterfaceConfigurationTest tests=6 skipped=0 failures=0 errors=0
+extensions.VpnServiceBuilderTest tests=5 skipped=0 failures=0 errors=0
+service.ScreenStateReceiverTest tests=5 skipped=0 failures=0 errors=0
+service.SessionStateMachineTest tests=18 skipped=0 failures=0 errors=0

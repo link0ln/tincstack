@@ -1,0 +1,54 @@
+
+== [03:08:19] lab: founder node_a at 10.44.81.10 (core tincstack/core:ws-u)
+founder tunnel address: 10.1.244.1
+
+== [03:08:22] emulator on wsu-ui-lab, the APK installed fresh, nothing granted
+>>> waiting for the framework to come up (timeout 600s)
+>>> booted: 14 (API 34)
+
+== [03:08:50] first launch: the join form, its button disabled
+OK: join form, button disabled
+
+== [03:09:04] text that is no invitation
+OK: rejected before dialling, with a message
+
+== [03:09:24] failed join: 03-unreachable
+after 27s the app says: No answer from 10.44.81.99:655. The inviting device may be offline, or port 655 may be blocked on your network. Check your connection and try again.&#10;&#10;Nothing was saved; you can try again.
+OK: 03-unreachable: message shown, nothing saved
+
+== [03:10:11] failed join: 04-bad-token
+after 12s the app says: 10.44.81.10:655 answered, but this invitation doesn't match it. It may be mistyped or meant for another network; ask for a new one.&#10;&#10;Nothing was saved; you can try again.
+OK: 04-bad-token: message shown, nothing saved
+Assigned address 10.1.244.2/24 to used1.
+spending 10.44.81.10:655/<token> from another node
+Invitation successfully accepted.
+
+== [03:10:45] failed join: 05-used-invitation
+after 15s the app says: 10.44.81.10:655 turned this invitation down. It was probably used already (an invitation works only once) or has expired. Ask for a new one.&#10;&#10;Nothing was saved; you can try again.
+OK: 05-used-invitation: message shown, nothing saved
+
+== [03:11:20] the owner's case: blanks in front, a line break after
+Assigned address 10.1.244.3/24 to phone.
+invitation: 10.44.81.10:655/<token>
+OK: padded invitation accepted: '  10.44.81.10:655/<token>&#10;'
+
+== [03:11:38] Join and connect; answer the system dialogs by tapping them
+notification permission: Allow
+VPN consent: OK
+Connected after 32s: Linked to node_a over Standard
+OK: one network, named by the app: node_a
+
+== [03:12:12] ping the founder's tunnel address (10.1.244.1) from the phone
+3 packets transmitted, 3 received, 0% packet loss, time 2052ms
+rtt min/avg/max/mdev = 0.527/0.609/0.671/0.063 ms
+OK: tunnel carries traffic, the founder sees the phone
+
+== [03:12:14] Disconnect on the big button
+OK: Disconnected, tun0 gone
+
+PASS: first launch, 3 failed joins leaving nothing, padded invitation joined and connected through the UI, ping 10.1.244.1, disconnect
+KEEP=1: wsu-ui-founder, wsu-ui-emulator and wsu-ui-lab left up
+
+real	4m40,425s
+user	0m1,699s
+sys	0m1,728s
