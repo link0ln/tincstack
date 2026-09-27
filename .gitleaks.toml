@@ -34,3 +34,8 @@ paths = [
   # `Sec-WebSocket-Key` is a per-handshake base64 nonce, not a credential.
   '''testing/transports/(https-carrier|tls-front)-test\.sh''',
 ]
+regexes = [
+  # the synthetic invitation token of the Android unit test (with TEST-NET-3
+  # 203.0.113.7), InvitationTest.kt; it was never issued by any node.
+  '''^Qx3kL9mZpR2vT8wYbN4cF6hJ1sD5gA7eU0iO-_KqWrXtYzMn$''',
+]
