@@ -1,0 +1,341 @@
+
+== [03:15:31] lab: join + connect (join-on-emulator.sh, KEEP=1)
+
+== images
+tinc version 1.1pre18 (built Sep 26 2026 21:07:04, protocol 17.7)
+
+== inviter: a Linux node at 10.44.82.10 (PUBLIC_ADDRESS so the invitation is dialable)
+2026-09-27 00:15:32 NOTICE  Materialised defaults into `/etc/tincstack/tinc.yaml' [tincstack]: Mode=router AddressPool=10.78.110.0/24 Subnet=10.78.110.1/32 Transports=plain, sf, obfs, https, quic tls_cert/tls_key TlsFingerprint ed25519_priv Ed25519PublicKey rsa_priv RSA-public 
+2026-09-27 00:15:32 INFO    AddressPool 10.78.110.0/24 (first host 10.78.110.1/32)
+2026-09-27 00:15:32 NOTICE  Listening on 0.0.0.0 port 655
+
+== emulator on wsu-d2-lab
+>>> waiting for the framework to come up (timeout 600s)
+>>> booted: 14 (API 34)
+
+== install the debug APK (clean: the app's data must start empty)
+Performing Streamed Install
+Success
+
+== grant the VpnService consent and notifications non-interactively
+
+== invitation for the phone
+Assigned address 10.78.110.2/24 to phone.
+invitation: 10.44.82.10:655/<token>
+
+== join through the UI (the field paste and the QR scanner fill)
+>>> open the app
+>>> invitation into the field (the one paste and the QR scanner fill)
+>>> Join and connect
+>>> joined: networks/node_a
+the app named the network: node_a
+
+== the file the core wrote
+networks:
+  tincstack:
+    options:
+      Name: phone
+      ConnectTo: node_a
+      Mode: router
+      AddressPool: 10.78.110.0/24
+      InterfaceAddress: 10.78.110.2/24
+      Port: 0
+      UDPRebindOnWake: yes
+    hosts:
+      phone: |
+        Subnet = 10.78.110.2/32
+        Transports = plain, sf, obfs, https, quic
+        TlsFingerprint = e4e27942c66e3f95576b8e26bb2f80880216419170f07a62f086044ebdedd23e
+        Ed25519PublicKey = nQV295t3TRaHwFnl6ywognd04Caq589ZZeKCqmKLKCH
+        <key redacted>
+      node_a: |
+        Address = 10.44.82.10
+        Subnet = 10.78.110.1/32
+        Transports = plain, sf, obfs, https, quic
+        TlsFingerprint = 43b11b8c976d800a7897b5a7d65b82118cfb9f708041fe2082e4c3c7d166d27b
+        Ed25519PublicKey = oX5+s9PqROuOSvJvrKhEon713DPVV8VaMcg64HD80gL
+        <key redacted>
+        HttpsPort = 443
+        QuicPort = 443
+        Port = 655
+    keys:
+      tls_cert: |
+        <key redacted>
+      tls_key: |
+        <key redacted>
+      ed25519_priv: |
+        <key redacted>
+      rsa_priv: |
+        <key redacted>
+stanza: tincstack
+OK: schema-conformant, pool address present
+OK: tinc.yaml is mode 600
+
+== the app connected on its own after the join
+OK: tun0 up
+
+== disconnect; prefer the https carrier (the app's libtinc.so, run as the app)
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+tinc version 1.1pre18 (built Sep 26 2026 21:06:32, protocol 17.7)
+Features: openssl comp_zlib legacy_protocol
+
+== connect and ping the inviter through the tunnel
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+tun0             UNKNOWN        10.78.110.2/24 fe80::5d9:3f72:1711:e851/64 
+PING 10.78.110.1 (10.78.110.1) 56(84) bytes of data.
+64 bytes from 10.78.110.1: icmp_seq=1 ttl=64 time=0.874 ms
+64 bytes from 10.78.110.1: icmp_seq=2 ttl=64 time=0.716 ms
+64 bytes from 10.78.110.1: icmp_seq=3 ttl=64 time=0.763 ms
+
+--- 10.78.110.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2050ms
+rtt min/avg/max/mdev = 0.716/0.784/0.874/0.070 ms
+
+== the inviter's link to the phone runs over https
+phone at 10.44.82.2 port 53938 options 700000b socket 18 status 60100 transport https
+
+== and back: the inviter reaches the phone's pool address
+PING 10.78.110.2 (10.78.110.2) 56(84) bytes of data.
+64 bytes from 10.78.110.2: icmp_seq=1 ttl=64 time=0.741 ms
+64 bytes from 10.78.110.2: icmp_seq=2 ttl=64 time=18.4 ms
+64 bytes from 10.78.110.2: icmp_seq=3 ttl=64 time=29.9 ms
+
+--- 10.78.110.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2063ms
+rtt min/avg/max/mdev = 0.741/16.343/29.868/11.981 ms
+
+PASS: joined on Android, schema-conformant config, tunnel carries traffic over https
+KEEP=1: wsu-d2-a-node-1, wsu-d2-emulator and wsu-d2-lab left up
+network: node_a
+   [03:17:08] inviter pool address: 10.78.110.1
+
+== [03:17:09] switch DisconnectOnScreenOff on through the settings screen, reconnect
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+>>> open the app, Apps using the VPN
+>>> Save
+>>> saved
+>>> lock-pause switch: false -> true
+>>> done
+      DisconnectOnScreenOff: yes
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+   [03:17:46] connected, ping answered after 1s; service: isForeground=true foregroundId=1 types=00000400
+
+== [03:17:46] cycle 1 (swipe keyguard): lock
+   [03:17:47] before: tincd=6672 app=3555 mWakefulness=Awake
+   [03:17:48] tincd gone 1s after lock; mWakefulness=Asleep isKeyguardShowing=false
+   [03:17:50] tun0 kept, traffic into it dropped (ping unanswered)
+   [03:18:05] locked 15s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:18:21] locked 31s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:18:36] locked 46s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:18:52] locked 61s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:19:07] locked 77s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:19:22] locked 92s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:19:37] locked 107s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+
+== [03:19:38] cycle 1: unlock
+   [03:19:38] tincd back 0s after unlock (pid 6911)
+   [03:19:39] inviter answers through the tunnel 1s after tincd came back
+   [03:19:40] tun fds: app 1, tincd 1
+
+== [03:19:40] cycle 2 (swipe keyguard): lock
+   [03:19:40] before: tincd=6911 app=3555 mWakefulness=Awake
+   [03:19:41] tincd gone 1s after lock; mWakefulness=Asleep isKeyguardShowing=false
+   [03:19:43] tun0 kept, traffic into it dropped (ping unanswered)
+   [03:19:59] locked 15s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:20:14] locked 31s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:20:29] locked 46s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:20:45] locked 62s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:21:00] locked 77s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:21:15] locked 92s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:21:31] locked 107s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+
+== [03:21:31] cycle 2: unlock
+   [03:21:31] tincd back 0s after unlock (pid 7131)
+   [03:21:32] inviter answers through the tunnel 1s after tincd came back
+   [03:21:33] tun fds: app 1, tincd 1
+
+== [03:21:33] cycle 3 (swipe keyguard): lock
+   [03:21:33] before: tincd=7131 app=3555 mWakefulness=Awake
+   [03:21:34] tincd gone 1s after lock; mWakefulness=Asleep isKeyguardShowing=false
+   [03:21:37] tun0 kept, traffic into it dropped (ping unanswered)
+   [03:21:52] locked 15s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:22:07] locked 30s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:22:23] locked 45s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:22:38] locked 61s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:22:53] locked 76s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:23:09] locked 92s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:23:24] locked 107s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+
+== [03:23:24] cycle 3: unlock
+   [03:23:25] tincd back 0s after unlock (pid 7306)
+   [03:23:26] inviter answers through the tunnel 1s after tincd came back
+   [03:23:26] tun fds: app 1, tincd 1
+
+== [03:23:26] transport after the cycles
+phone at 10.44.82.2 port 54626 options 700000b socket 18 status 60100 transport https
+
+== [03:23:26] negative: explicit disconnect, then lock/unlock -> stays disconnected
+Warning: Activity not started, its current task has been brought to the front
+   [03:24:18] stays disconnected: no tincd, no tun0; service: stopped
+
+== [03:24:18] secure keyguard: PIN 1234
+Pin set to '1234'
+Warning: Activity not started, intent has been delivered to currently running top-most instance.
+
+== [03:24:22] cycle 4 (PIN keyguard): lock
+   [03:24:22] before: tincd=7437 app=3555 mWakefulness=Awake
+   [03:24:24] tincd gone 1s after lock; mWakefulness=Asleep isKeyguardShowing=true
+   [03:24:26] tun0 kept, traffic into it dropped (ping unanswered)
+   [03:24:41] locked 15s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:24:56] locked 30s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:25:12] locked 46s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:25:27] locked 61s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:25:43] locked 76s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:25:58] locked 92s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+   [03:26:13] locked 107s: app=3555 tun0=up isForeground=true foregroundId=1 types=00000400
+
+== [03:26:14] cycle 4: screen on, PIN bouncer still up -> must stay suspended
+   [03:26:18] mWakefulness=Awake isKeyguardShowing=true tincd=[]
+
+== [03:26:18] cycle 4: PIN unlock
+   [03:26:21] tincd back 1s after unlock (pid 7693)
+   [03:26:21] inviter answers through the tunnel 0s after tincd came back
+   [03:26:21] tun fds: app 1, tincd 1
+
+== [03:26:21] negative 2: disconnect from the notification while locked -> stays disconnected after unlock
+   [03:26:26] screen on: mWakefulness=Awake isKeyguardShowing=true tincd=[]
+ui: no element matching 'text="Disconnect"' within 20s; screen:
+content-desc="12:26"
+content-desc="Battery charging, 100 percent."
+content-desc="Device locked"
+content-desc="Expand"
+content-desc="Sun, Sep 27"
+content-desc="VPN on."
+content-desc="Wifi signal full."
+resource-id="android:id/alternate_expand_target"
+resource-id="android:id/app_name_text"
+resource-id="android:id/expand_button"
+resource-id="android:id/expand_button_icon"
+resource-id="android:id/expand_button_number"
+resource-id="android:id/expand_button_pill"
+resource-id="android:id/expand_button_touch_container"
+resource-id="android:id/icon"
+resource-id="android:id/notification_header"
+resource-id="android:id/notification_headerless_view_column"
+resource-id="android:id/notification_headerless_view_row"
+resource-id="android:id/notification_main_column"
+resource-id="android:id/notification_top_line"
+resource-id="android:id/status_bar_latest_event_content"
+resource-id="android:id/text"
+resource-id="android:id/title"
+resource-id="com.android.systemui:id/ambient_indication"
+resource-id="com.android.systemui:id/ambient_indication_container"
+resource-id="com.android.systemui:id/backgroundDimmed"
+resource-id="com.android.systemui:id/backgroundNormal"
+resource-id="com.android.systemui:id/battery"
+resource-id="com.android.systemui:id/battery_percentage_view"
+resource-id="com.android.systemui:id/cutout_space_view"
+resource-id="com.android.systemui:id/date"
+resource-id="com.android.systemui:id/date_smartspace_view"
+resource-id="com.android.systemui:id/expandableNotificationRow"
+resource-id="com.android.systemui:id/expanded"
+resource-id="com.android.systemui:id/expanded_qs_scroll_view"
+resource-id="com.android.systemui:id/fake_shadow"
+resource-id="com.android.systemui:id/keyguard_bottom_area"
+resource-id="com.android.systemui:id/keyguard_carrier_text"
+resource-id="com.android.systemui:id/keyguard_clock_container"
+resource-id="com.android.systemui:id/keyguard_header"
+ui: no element matching 'text="Disconnect"' within 20s; screen:
+content-desc="12:27"
+content-desc="Battery charging, 100 percent."
+content-desc="Device locked"
+content-desc="Expand"
+content-desc="Sun, Sep 27"
+content-desc="VPN on."
+content-desc="Wifi signal full."
+resource-id="android:id/alternate_expand_target"
+resource-id="android:id/app_name_text"
+resource-id="android:id/expand_button"
+resource-id="android:id/expand_button_icon"
+resource-id="android:id/expand_button_number"
+resource-id="android:id/expand_button_pill"
+resource-id="android:id/expand_button_touch_container"
+resource-id="android:id/icon"
+resource-id="android:id/notification_header"
+resource-id="android:id/notification_headerless_view_column"
+resource-id="android:id/notification_headerless_view_row"
+resource-id="android:id/notification_main_column"
+resource-id="android:id/notification_top_line"
+resource-id="android:id/status_bar_latest_event_content"
+resource-id="android:id/text"
+resource-id="android:id/title"
+resource-id="com.android.systemui:id/ambient_indication"
+resource-id="com.android.systemui:id/ambient_indication_container"
+resource-id="com.android.systemui:id/backgroundDimmed"
+resource-id="com.android.systemui:id/backgroundNormal"
+resource-id="com.android.systemui:id/battery"
+resource-id="com.android.systemui:id/battery_percentage_view"
+resource-id="com.android.systemui:id/cutout_space_view"
+resource-id="com.android.systemui:id/date"
+resource-id="com.android.systemui:id/date_smartspace_view"
+resource-id="com.android.systemui:id/expandableNotificationRow"
+resource-id="com.android.systemui:id/expanded"
+resource-id="com.android.systemui:id/expanded_qs_scroll_view"
+resource-id="com.android.systemui:id/fake_shadow"
+resource-id="com.android.systemui:id/keyguard_bottom_area"
+resource-id="com.android.systemui:id/keyguard_carrier_text"
+resource-id="com.android.systemui:id/keyguard_clock_container"
+resource-id="com.android.systemui:id/keyguard_header"
+   [03:27:17] the notification's Disconnect action was not reachable: step not proven here (unit test: userDisconnectWhileLockedIsFinal)
+Warning: Activity not started, its current task has been brought to the front
+Lock credential cleared
+
+== [03:27:21] service log excerpt
+00:19:38.884 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session resumed: tinc daemon relaunched (DaemonRun(session=3, launch=1)).
+00:19:38.885 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$UserPresent@e0d8e97: Connected(netName=node_a, run=DaemonRun(session=3, launch=1), suspendOnScreenOff=true) (no action)
+00:19:40.777 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$ScreenOff@e2d5b5c: -> Suspended(netName=node_a, lastRun=DaemonRun(session=3, launch=1)) [StopDaemon(netName=node_a)]
+00:19:40.778 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: StopDaemon(netName=node_a)
+00:19:40.824 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session suspended: tinc daemon stopped, VPN interface kept.
+00:21:31.538 [main] INFO  o.p.tincapp.service.TincVpnService - Session event ScreenOn(keyguardLocked=false): -> Connected(netName=node_a, run=DaemonRun(session=3, launch=2), suspendOnScreenOff=true) [StartDaemon(netName=node_a, run=DaemonRun(session=3, launch=2))]
+00:21:31.552 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: StartDaemon(netName=node_a, run=DaemonRun(session=3, launch=2))
+00:21:32.090 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session resumed: tinc daemon relaunched (DaemonRun(session=3, launch=2)).
+00:21:32.095 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$UserPresent@e0d8e97: Connected(netName=node_a, run=DaemonRun(session=3, launch=2), suspendOnScreenOff=true) (no action)
+00:21:34.189 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$ScreenOff@e2d5b5c: -> Suspended(netName=node_a, lastRun=DaemonRun(session=3, launch=2)) [StopDaemon(netName=node_a)]
+00:21:34.193 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: StopDaemon(netName=node_a)
+00:21:34.226 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session suspended: tinc daemon stopped, VPN interface kept.
+00:23:25.084 [main] INFO  o.p.tincapp.service.TincVpnService - Session event ScreenOn(keyguardLocked=false): -> Connected(netName=node_a, run=DaemonRun(session=3, launch=3), suspendOnScreenOff=true) [StartDaemon(netName=node_a, run=DaemonRun(session=3, launch=3))]
+00:23:25.089 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: StartDaemon(netName=node_a, run=DaemonRun(session=3, launch=3))
+00:23:25.602 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session resumed: tinc daemon relaunched (DaemonRun(session=3, launch=3)).
+00:23:25.605 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$UserPresent@e0d8e97: Connected(netName=node_a, run=DaemonRun(session=3, launch=3), suspendOnScreenOff=true) (no action)
+00:23:26.969 [main] INFO  o.p.tincapp.service.TincVpnService - Intent received: Intent { act=net.tincstack.android.intent.action.DISCONNECT cmp=net.tincstack.android/org.pacien.tincapp.service.TincVpnService }
+00:23:26.970 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$UserDisconnect@72a732: -> Idle [TearDown(session=3, reason=USER)]
+00:23:26.972 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: TearDown(session=3, reason=USER)
+00:23:26.973 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Ending session 3 (USER).
+00:24:19.901 [main] INFO  o.p.tincapp.service.TincVpnService - Intent received: Intent { act=net.tincstack.android.intent.action.CONNECT dat=tinc: cmp=net.tincstack.android/org.pacien.tincapp.service.TincVpnService }
+00:24:19.992 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session event SessionStarted(netName=node_a, run=DaemonRun(session=4, launch=0), suspendOnScreenOff=true): Connected(netName=node_a, run=DaemonRun(session=4, launch=0), suspendOnScreenOff=true) (no action)
+00:24:19.997 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Running in the foreground (systemExempted).
+00:24:23.174 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$ScreenOff@e2d5b5c: -> Suspended(netName=node_a, lastRun=DaemonRun(session=4, launch=0)) [StopDaemon(netName=node_a)]
+00:24:23.175 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: StopDaemon(netName=node_a)
+00:24:23.201 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session suspended: tinc daemon stopped, VPN interface kept.
+00:26:14.249 [main] INFO  o.p.tincapp.service.TincVpnService - Session event ScreenOn(keyguardLocked=true): Suspended(netName=node_a, lastRun=DaemonRun(session=4, launch=0)) (no action)
+00:26:21.021 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$UserPresent@e0d8e97: -> Connected(netName=node_a, run=DaemonRun(session=4, launch=1), suspendOnScreenOff=true) [StartDaemon(netName=node_a, run=DaemonRun(session=4, launch=1))]
+00:26:21.023 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: StartDaemon(netName=node_a, run=DaemonRun(session=4, launch=1))
+00:26:21.534 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session resumed: tinc daemon relaunched (DaemonRun(session=4, launch=1)).
+00:26:22.514 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$ScreenOff@e2d5b5c: -> Suspended(netName=node_a, lastRun=DaemonRun(session=4, launch=1)) [StopDaemon(netName=node_a)]
+00:26:22.515 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: StopDaemon(netName=node_a)
+00:26:22.553 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session suspended: tinc daemon stopped, VPN interface kept.
+00:26:23.260 [main] INFO  o.p.tincapp.service.TincVpnService - Session event ScreenOn(keyguardLocked=true): Suspended(netName=node_a, lastRun=DaemonRun(session=4, launch=1)) (no action)
+00:26:33.761 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$ScreenOff@e2d5b5c: Suspended(netName=node_a, lastRun=DaemonRun(session=4, launch=1)) (no action)
+00:27:17.342 [main] INFO  o.p.tincapp.service.TincVpnService - Session event ScreenOn(keyguardLocked=true): Suspended(netName=node_a, lastRun=DaemonRun(session=4, launch=1)) (no action)
+00:27:18.933 [main] INFO  o.p.tincapp.service.TincVpnService - Intent received: Intent { act=net.tincstack.android.intent.action.DISCONNECT cmp=net.tincstack.android/org.pacien.tincapp.service.TincVpnService }
+00:27:18.934 [main] INFO  o.p.tincapp.service.TincVpnService - Session event org.pacien.tincapp.service.SessionStateMachine$Event$UserDisconnect@72a732: -> Idle [TearDown(session=4, reason=USER)]
+00:27:18.935 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Session action: TearDown(session=4, reason=USER)
+00:27:18.936 [tinc-session] INFO  o.p.tincapp.service.TincVpnService - Ending session 4 (USER).
+
+PASS: DisconnectOnScreenOff: 3 lock/unlock cycles over https, locked 95s each, tincd stopped while locked and back on unlock; explicit disconnect is final
+
+== [03:27:21] cleanup
+
+real	11m51,770s
+user	0m3,495s
+sys	0m3,651s

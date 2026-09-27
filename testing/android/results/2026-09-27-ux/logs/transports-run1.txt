@@ -1,0 +1,11 @@
+>>> waiting for the framework to come up (timeout 600s)
+>>> booted: 14 (API 34)
+03:07:35 android 14 (API 34), guest NAT source 10.47.14.2: tinc version 1.1pre18 (built Sep 26 2026 21:06:32, protocol 17.7) Features: openssl comp_zlib legacy_protocol 
+Assigned address 10.64.142.2/24 to aleaf.
+Could not connect to 10.47.14.12 port 655: Network is unreachable
+Could not connect to inviter. Please make sure the URL you entered is valid.
+03:07:37 FAIL the Android node joins by invitation
+
+real	3m8,218s
+user	0m0,327s
+sys	0m0,373s

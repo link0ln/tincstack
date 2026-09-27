@@ -1,6 +1,7 @@
 /*
- * Tinc Mesh VPN: Android client and user interface
- * Copyright (C) 2017-2024 Euxane P. TRAN-GIRARD
+ * tincstack for Android
+ * Copyright (C) 2017-2020 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,13 +19,10 @@
 
 package org.pacien.tincapp.utils
 
-import android.annotation.SuppressLint
 import java.io.File
+import java.io.RandomAccessFile
 
-/**
- * @author euxane
- */
-
+/** Owner-only permissions, recursively: the network directory holds private keys. */
 fun File.makePrivate() {
   this.setExecutable(this.isDirectory, false)
   this.setReadable(true, true)
@@ -35,34 +33,23 @@ fun File.makePrivate() {
       file.makePrivate()
 }
 
-@SuppressLint("SetWorldReadable", "SetWorldWritable")
-fun File.makePublic() {
-  this.setExecutable(this.isDirectory, false)
-  this.setReadable(true, false)
-  this.setWritable(true, false)
-
-  if (this.isDirectory)
-    for (file in this.listFiles()!!)
-      file.makePublic()
-}
-
-fun File.isParentOf(childCandidate: File, strict: Boolean = true): Boolean {
-  var parentOfChild: File? = childCandidate.canonicalFile
-
-  if (strict)
-    parentOfChild = parentOfChild?.parentFile
-
-  while (parentOfChild != null) {
-    if (parentOfChild.equals(canonicalFile)) return true
-    parentOfChild = parentOfChild.parentFile
+/**
+ * The last [n] lines of the file, in order, read from at most its last
+ * [maxBytes]; empty if it does not exist or cannot be read. Plain
+ * RandomAccessFile: commons-io's reverse reader needs java.nio.file (API 26).
+ */
+fun File.lastLines(n: Int, maxBytes: Int = 256 * 1024): List<String> = try {
+  if (!isFile) emptyList()
+  else RandomAccessFile(this, "r").use { f ->
+    val start = maxOf(0L, f.length() - maxBytes)
+    val bytes = ByteArray((f.length() - start).toInt())
+    f.seek(start)
+    f.readFully(bytes)
+    val lines = String(bytes, Charsets.UTF_8).lines()
+      .let { if (start > 0) it.drop(1) else it } // the first one is cut
+      .let { if (it.lastOrNull()?.isEmpty() == true) it.dropLast(1) else it }
+    lines.takeLast(n)
   }
-
-  return false
-}
-
-fun File.pathUnder(parent: File): String {
-  if (!parent.isParentOf(this, false))
-    throw IllegalArgumentException("File is not under the given parent.")
-
-  return canonicalPath.removePrefix(parent.canonicalPath)
+} catch (e: Exception) {
+  emptyList()
 }

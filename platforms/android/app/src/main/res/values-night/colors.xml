@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+ * tincstack for Android
+ * Copyright (C) 2026 tincstack contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<!-- Material 3 colour scheme (dark), same seed as values/colors.xml. -->
+<resources>
+	<color name="md_primary">#BAC3FF</color>
+	<color name="md_on_primary">#08218A</color>
+	<color name="md_primary_container">#293CA0</color>
+	<color name="md_on_primary_container">#DEE0FF</color>
+	<color name="md_secondary">#C4C5DD</color>
+	<color name="md_on_secondary">#2D2F42</color>
+	<color name="md_secondary_container">#434659</color>
+	<color name="md_on_secondary_container">#E0E1F9</color>
+	<color name="md_tertiary">#E6BAD7</color>
+	<color name="md_on_tertiary">#44263D</color>
+	<color name="md_tertiary_container">#5D3C55</color>
+	<color name="md_on_tertiary_container">#FFD7F1</color>
+	<color name="md_error">#FFB4AB</color>
+	<color name="md_on_error">#690005</color>
+	<color name="md_error_container">#93000A</color>
+	<color name="md_on_error_container">#FFDAD6</color>
+	<color name="md_background">#121318</color>
+	<color name="md_on_background">#E4E1E9</color>
+	<color name="md_surface">#121318</color>
+	<color name="md_on_surface">#E4E1E9</color>
+	<color name="md_surface_variant">#46464F</color>
+	<color name="md_on_surface_variant">#C7C5D0</color>
+	<color name="md_outline">#90909A</color>
+	<color name="md_outline_variant">#46464F</color>
+	<color name="md_surface_container_lowest">#0D0E13</color>
+	<color name="md_surface_container_low">#1B1B21</color>
+	<color name="md_surface_container">#1F1F25</color>
+	<color name="md_surface_container_high">#292A2F</color>
+	<color name="md_surface_container_highest">#34343A</color>
+	<color name="md_inverse_surface">#E4E1E9</color>
+	<color name="md_inverse_on_surface">#303036</color>
+	<color name="md_inverse_primary">#4355B9</color>
+
+	<color name="state_on">#7DDB94</color>
+	<color name="state_on_content">#003919</color>
+	<color name="state_on_container">#0B5226</color>
+	<color name="state_on_on_container">#B8F0C5</color>
+
+	<color name="icon_background_start">#283593</color>
+	<color name="icon_background_end">#6A3FC0</color>
+</resources>

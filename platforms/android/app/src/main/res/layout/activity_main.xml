@@ -1,0 +1,241 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+ * tincstack for Android
+ * Copyright (C) 2026 tincstack contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:app="http://schemas.android.com/apk/res-auto"
+	xmlns:tools="http://schemas.android.com/tools"
+	android:id="@+id/main_root"
+	android:layout_width="match_parent"
+	android:layout_height="match_parent"
+	android:background="?attr/colorSurface">
+
+	<com.google.android.material.appbar.AppBarLayout
+		android:layout_width="match_parent"
+		android:layout_height="wrap_content"
+		android:background="?attr/colorSurface"
+		app:liftOnScroll="true">
+
+		<com.google.android.material.appbar.MaterialToolbar
+			android:id="@+id/toolbar"
+			android:layout_width="match_parent"
+			android:layout_height="?attr/actionBarSize"
+			app:title="@string/app_name"
+			app:titleTextAppearance="?attr/textAppearanceTitleLarge" />
+	</com.google.android.material.appbar.AppBarLayout>
+
+	<androidx.core.widget.NestedScrollView
+		android:id="@+id/main_scroll"
+		android:layout_width="match_parent"
+		android:layout_height="match_parent"
+		android:fillViewport="true"
+		app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+		<FrameLayout
+			android:layout_width="match_parent"
+			android:layout_height="wrap_content">
+
+			<include
+				android:id="@+id/join_panel"
+				layout="@layout/join_panel"
+				android:visibility="gone" />
+
+			<LinearLayout
+				android:id="@+id/network_panel"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:orientation="vertical"
+				android:paddingStart="16dp"
+				android:paddingTop="4dp"
+				android:paddingEnd="16dp"
+				android:paddingBottom="24dp"
+				android:visibility="gone"
+				tools:visibility="visible">
+
+				<com.google.android.material.button.MaterialButton
+					android:id="@+id/network_selector"
+					style="@style/Widget.Material3.Button.TextButton"
+					android:layout_width="wrap_content"
+					android:layout_height="wrap_content"
+					android:layout_gravity="center_horizontal"
+					android:textAppearance="?attr/textAppearanceTitleMedium"
+					app:icon="@drawable/ic_expand_more"
+					app:iconGravity="end"
+					tools:text="phonenet" />
+
+				<com.google.android.material.card.MaterialCardView
+					android:id="@+id/status_card"
+					style="@style/Tincstack.Card"
+					android:layout_width="match_parent"
+					android:layout_height="wrap_content"
+					android:layout_marginTop="4dp">
+
+					<LinearLayout
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content"
+						android:gravity="center_horizontal"
+						android:orientation="vertical"
+						android:paddingStart="24dp"
+						android:paddingTop="32dp"
+						android:paddingEnd="24dp"
+						android:paddingBottom="24dp">
+
+						<FrameLayout
+							android:layout_width="136dp"
+							android:layout_height="136dp">
+
+							<com.google.android.material.progressindicator.CircularProgressIndicator
+								android:id="@+id/connect_progress"
+								android:layout_width="match_parent"
+								android:layout_height="match_parent"
+								android:indeterminate="true"
+								android:visibility="invisible"
+								app:indicatorSize="136dp"
+								app:trackThickness="4dp" />
+
+							<com.google.android.material.button.MaterialButton
+								android:id="@+id/connect_button"
+								style="@style/Widget.Material3.Button.Icon"
+								android:layout_width="112dp"
+								android:layout_height="112dp"
+								android:layout_gravity="center"
+								android:contentDescription="@string/main_connect"
+								android:insetLeft="0dp"
+								android:insetTop="0dp"
+								android:insetRight="0dp"
+								android:insetBottom="0dp"
+								android:padding="0dp"
+								app:cornerRadius="56dp"
+								app:icon="@drawable/ic_power"
+								app:iconGravity="textStart"
+								app:iconPadding="0dp"
+								app:iconSize="48dp" />
+						</FrameLayout>
+
+						<TextView
+							android:id="@+id/state_title"
+							android:layout_width="wrap_content"
+							android:layout_height="wrap_content"
+							android:layout_marginTop="20dp"
+							android:textAppearance="?attr/textAppearanceHeadlineSmall"
+							android:textColor="?attr/colorOnSurface"
+							tools:text="Connected" />
+
+						<TextView
+							android:id="@+id/state_detail"
+							android:layout_width="wrap_content"
+							android:layout_height="wrap_content"
+							android:layout_marginTop="6dp"
+							android:gravity="center"
+							android:textAppearance="?attr/textAppearanceBodyMedium"
+							android:textColor="?attr/colorOnSurfaceVariant"
+							tools:text="Linked to node_a over HTTPS" />
+
+						<LinearLayout
+							android:id="@+id/state_actions"
+							android:layout_width="wrap_content"
+							android:layout_height="wrap_content"
+							android:layout_marginTop="8dp"
+							android:orientation="horizontal"
+							android:visibility="gone">
+
+							<Button
+								android:id="@+id/state_log_button"
+								style="@style/Widget.Material3.Button.TonalButton"
+								android:layout_width="wrap_content"
+								android:layout_height="wrap_content"
+								android:text="@string/action_view_log"
+								app:icon="@drawable/ic_log" />
+
+							<Button
+								android:id="@+id/state_dismiss_button"
+								style="@style/Widget.Material3.Button.TextButton"
+								android:layout_width="wrap_content"
+								android:layout_height="wrap_content"
+								android:layout_marginStart="8dp"
+								android:text="@string/action_dismiss" />
+						</LinearLayout>
+					</LinearLayout>
+				</com.google.android.material.card.MaterialCardView>
+
+				<com.google.android.material.card.MaterialCardView
+					style="@style/Tincstack.Card"
+					android:layout_width="match_parent"
+					android:layout_height="wrap_content"
+					android:layout_marginTop="12dp">
+
+					<LinearLayout
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content"
+						android:orientation="vertical">
+
+						<include
+							android:id="@+id/address_row"
+							layout="@layout/row_item" />
+
+						<include
+							android:id="@+id/peers_row"
+							layout="@layout/row_item" />
+					</LinearLayout>
+				</com.google.android.material.card.MaterialCardView>
+
+				<TextView
+					style="@style/Tincstack.SectionLabel"
+					android:text="@string/main_settings_label" />
+
+				<com.google.android.material.card.MaterialCardView
+					style="@style/Tincstack.Card"
+					android:layout_width="match_parent"
+					android:layout_height="wrap_content">
+
+					<LinearLayout
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content"
+						android:orientation="vertical">
+
+						<include
+							android:id="@+id/transport_row"
+							layout="@layout/row_item" />
+
+						<include
+							android:id="@+id/apps_row"
+							layout="@layout/row_item" />
+
+						<include
+							android:id="@+id/screen_off_row"
+							layout="@layout/row_item" />
+					</LinearLayout>
+				</com.google.android.material.card.MaterialCardView>
+
+				<TextView
+					style="@style/Tincstack.SectionLabel"
+					android:text="@string/main_help_label" />
+
+				<com.google.android.material.card.MaterialCardView
+					style="@style/Tincstack.Card"
+					android:layout_width="match_parent"
+					android:layout_height="wrap_content">
+
+					<include
+						android:id="@+id/log_row"
+						layout="@layout/row_item" />
+				</com.google.android.material.card.MaterialCardView>
+			</LinearLayout>
+		</FrameLayout>
+	</androidx.core.widget.NestedScrollView>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

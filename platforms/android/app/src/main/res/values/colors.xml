@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <!--
- * Tinc Mesh VPN: Android client and user interface
- * Copyright (C) 2017-2023 Euxane P. TRAN-GIRARD
+ * tincstack for Android
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,17 +17,50 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
+<!-- Material 3 colour scheme (light), indigo seed. Android 12+ replaces the
+     roles with the wallpaper's dynamic colours (App.onCreate); the state
+     colours below are semantic and stay. -->
 <resources>
-	<color name="headerBackgroundPrimary">#13af96</color>
-	<color name="headerBackgroundPrimaryDark">#007f68</color>
+	<color name="md_primary">#4355B9</color>
+	<color name="md_on_primary">#FFFFFF</color>
+	<color name="md_primary_container">#DEE0FF</color>
+	<color name="md_on_primary_container">#00105C</color>
+	<color name="md_secondary">#5B5D72</color>
+	<color name="md_on_secondary">#FFFFFF</color>
+	<color name="md_secondary_container">#E0E1F9</color>
+	<color name="md_on_secondary_container">#181A2C</color>
+	<color name="md_tertiary">#77536D</color>
+	<color name="md_on_tertiary">#FFFFFF</color>
+	<color name="md_tertiary_container">#FFD7F1</color>
+	<color name="md_on_tertiary_container">#2D1228</color>
+	<color name="md_error">#BA1A1A</color>
+	<color name="md_on_error">#FFFFFF</color>
+	<color name="md_error_container">#FFDAD6</color>
+	<color name="md_on_error_container">#410002</color>
+	<color name="md_background">#FBF8FF</color>
+	<color name="md_on_background">#1B1B21</color>
+	<color name="md_surface">#FBF8FF</color>
+	<color name="md_on_surface">#1B1B21</color>
+	<color name="md_surface_variant">#E3E1EC</color>
+	<color name="md_on_surface_variant">#46464F</color>
+	<color name="md_outline">#767680</color>
+	<color name="md_outline_variant">#C7C5D0</color>
+	<color name="md_surface_container_lowest">#FFFFFF</color>
+	<color name="md_surface_container_low">#F5F2FA</color>
+	<color name="md_surface_container">#EFEDF4</color>
+	<color name="md_surface_container_high">#E9E7EF</color>
+	<color name="md_surface_container_highest">#E4E1E9</color>
+	<color name="md_inverse_surface">#303036</color>
+	<color name="md_inverse_on_surface">#F3F0F7</color>
+	<color name="md_inverse_primary">#BAC3FF</color>
 
-	<color name="textTitle">#FFFFFFFF</color>
-	<color name="textAccent">#007f68</color>
-	<color name="textSecondary">#212121</color>
-	<color name="textError">#F44336</color>
+	<!-- connection states -->
+	<color name="state_on">#1E7B3A</color>
+	<color name="state_on_content">#FFFFFF</color>
+	<color name="state_on_container">#B8F0C5</color>
+	<color name="state_on_on_container">#00210B</color>
 
-	<color name="separator">#d9d9d9</color>
-
-	<color name="backgroundPrimary">#FFFFFF</color>
-	<color name="backgroundSecondary">#dddddd</color>
+	<!-- launcher icon background -->
+	<color name="icon_background_start">#283593</color>
+	<color name="icon_background_end">#6A3FC0</color>
 </resources>

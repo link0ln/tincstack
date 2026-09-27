@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# ui-pick-apps.sh <emulator-container> <whitelist|blacklist> <lock-pause yes|no> [package...]
+# ui-pick-apps.sh <emulator-container> <all|whitelist|blacklist> <lock-pause yes|no> [package...]
 #
-# Drive the app's per-network settings screen (Configure -> "Choose which apps
-# use the VPN", activities/apps/AppPickerActivity) through the UI: pick the
-# split-routing mode, tick each package (found through the search field), set
-# the "Pause the VPN while the screen is locked" switch, Save. The caller reads
-# back the tinc.yaml it wrote. Packages are *toggled*: start from a network
-# with no selection. The app must have exactly one network (the picker then
-# opens it directly).
+# Drive the app's per-network settings through the UI, on the main screen of
+# the (only) network: "Apps using the VPN" opens the picker
+# (activities/apps/AppPickerActivity) -- pick the split-routing mode, tick
+# each package (found through the search field), Save; then set the "Pause
+# while the screen is locked" switch on the main screen. The caller reads back
+# the tinc.yaml they wrote. Packages are *toggled*: start from a network with
+# no selection. whitelist/blacklist without packages means all apps.
 set -euo pipefail
-NAME=${1:?usage: ui-pick-apps.sh <container> <whitelist|blacklist> <yes|no> [package...]}
+NAME=${1:?usage: ui-pick-apps.sh <container> <all|whitelist|blacklist> <yes|no> [package...]}
 MODE=${2:?}
 LOCK=${3:?}
 shift 3
@@ -17,50 +17,51 @@ PKG=${PKG:-net.tincstack.android}
 # shellcheck source=ui-lib.sh
 . "$(dirname "$0")/ui-lib.sh"
 
-echo ">>> open the app, Configure"
-# a fresh task: whatever screen the app was left on (status, a dialog) must not
-# stand in front of the network list
-adb shell am start --activity-clear-task -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
-    -n "$PKG/org.pacien.tincapp.activities.start.StartActivity" >/dev/null
-ui_tap 'content-desc="Configure"'
-
-echo ">>> open the picker"
-ui_tap 'Choose which apps use the VPN'
-ui_wait "resource-id=\"$PKG:id/apps_search\"" >/dev/null
-# the list loads asynchronously; the radio group is set from the file once it has
-ui_wait "resource-id=\"$PKG:id/app_package\"" >/dev/null
-
 case $MODE in
-    whitelist) ui_tap 'Only the selected apps use the VPN' ;;
-    blacklist) ui_tap 'All apps except the selected ones use the VPN' ;;
-    *) echo "ui-pick-apps: mode is whitelist or blacklist" >&2; exit 64 ;;
+    all) mode_id=apps_mode_all ;;
+    whitelist) mode_id=apps_mode_whitelist ;;
+    blacklist) mode_id=apps_mode_blacklist ;;
+    *) echo "ui-pick-apps: mode is all, whitelist or blacklist" >&2; exit 64 ;;
 esac
+
+echo ">>> open the app, Apps using the VPN"
+app_open
+ui_tap "resource-id=\"$PKG:id/apps_row\""
+# the list loads asynchronously; the mode is set from the file once it has
+ui_wait "resource-id=\"$PKG:id/apps_mode_all\"" >/dev/null
+deadline=$(( SECONDS + UI_TIMEOUT ))
+while ui_find "resource-id=\"$PKG:id/apps_progress\"" >/dev/null; do
+    (( SECONDS < deadline )) || { echo "ui-pick-apps: the app list did not load" >&2; exit 1; }
+    sleep 2
+done
+
+ui_tap "resource-id=\"$PKG:id/$mode_id\""
+[[ $(ui_attr "resource-id=\"$PKG:id/$mode_id\"" checked) == true ]] || { echo "ui-pick-apps: mode $MODE not selected" >&2; exit 1; }
 
 for p in "$@"; do
     echo ">>> tick $p"
-    ui_tap "resource-id=\"$PKG:id/apps_search\""
-    adb shell input keyevent $(printf '67 %.0s' $(seq 60)) >/dev/null   # clear the field
-    adb shell "input text '$p'" >/dev/null
+    ui_type "resource-id=\"$PKG:id/apps_search\"" "$p"
     # the row's package line, not the search field that now holds the same text
     ui_tap "text=\"$p\" resource-id=\"$PKG:id/app_package\""
 done
-ui_tap "resource-id=\"$PKG:id/apps_search\""
-adb shell input keyevent $(printf '67 %.0s' $(seq 60)) >/dev/null
-adb shell input keyevent 111 >/dev/null   # hide the IME
-
-want=false; [[ $LOCK == yes ]] && want=true
-have=$(ui_attr "resource-id=\"$PKG:id/apps_disconnect_on_screen_off\"" checked)
-echo ">>> lock-pause switch: $have -> $want"
-[[ $have == "$want" ]] || ui_tap "resource-id=\"$PKG:id/apps_disconnect_on_screen_off\""
-have=$(ui_attr "resource-id=\"$PKG:id/apps_disconnect_on_screen_off\"" checked)
-[[ $have == "$want" ]] || { echo "ui-pick-apps: the switch did not move" >&2; exit 1; }
-
 echo ">>> Save"
 ui_tap "resource-id=\"$PKG:id/apps_picker_save\""
-# the picker finishes after writing
-deadline=$(( SECONDS + UI_TIMEOUT ))
-while ui_find "resource-id=\"$PKG:id/apps_search\"" >/dev/null; do
-    (( SECONDS < deadline )) || { echo "ui-pick-apps: the picker did not close after Save" >&2; exit 1; }
-    sleep 2
-done
+# the picker finishes after writing, back on the main screen
+ui_wait "resource-id=\"$PKG:id/apps_row\"" >/dev/null
 echo ">>> saved"
+
+want=false; [[ $LOCK == yes ]] && want=true
+switch="resource-id=\"$PKG:id/row_switch\""
+ui_scroll_to "resource-id=\"$PKG:id/screen_off_row\""
+# the only visible switch on the main screen is the screen-off row's
+have=$(ui_attr "$switch" checked)
+echo ">>> lock-pause switch: $have -> $want"
+if [[ $have != "$want" ]]; then
+    ui_tap "resource-id=\"$PKG:id/screen_off_row\""
+    deadline=$(( SECONDS + 20 ))
+    until [[ $(ui_attr "$switch" checked) == "$want" ]]; do
+        (( SECONDS < deadline )) || { echo "ui-pick-apps: the switch did not move" >&2; exit 1; }
+        sleep 1
+    done
+fi
+echo ">>> done"

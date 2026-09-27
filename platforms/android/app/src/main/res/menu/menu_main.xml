@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:app="http://schemas.android.com/apk/res-auto">
+
+	<item
+		android:id="@+id/menu_add_network"
+		android:icon="@drawable/ic_add"
+		android:title="@string/menu_add_network"
+		app:showAsAction="ifRoom" />
+
+	<item
+		android:id="@+id/menu_log"
+		android:title="@string/menu_log"
+		app:showAsAction="never" />
+
+	<item
+		android:id="@+id/menu_remove_network"
+		android:title="@string/menu_remove_network"
+		app:showAsAction="never" />
+
+	<item
+		android:id="@+id/menu_about"
+		android:title="@string/menu_about"
+		app:showAsAction="never" />
+</menu>

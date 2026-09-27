@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+ * tincstack for Android
+ * Copyright (C) 2026 tincstack contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<!-- A row of the connection type dialog: radio, title, description. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+	android:layout_width="match_parent"
+	android:layout_height="wrap_content"
+	android:background="?attr/selectableItemBackground"
+	android:minHeight="56dp"
+	android:orientation="horizontal"
+	android:paddingStart="16dp"
+	android:paddingTop="10dp"
+	android:paddingEnd="24dp"
+	android:paddingBottom="10dp">
+
+	<com.google.android.material.radiobutton.MaterialRadioButton
+		android:id="@+id/transport_radio"
+		android:layout_width="wrap_content"
+		android:layout_height="wrap_content"
+		android:clickable="false"
+		android:focusable="false"
+		android:minWidth="0dp"
+		android:minHeight="0dp" />
+
+	<LinearLayout
+		android:layout_width="0dp"
+		android:layout_height="wrap_content"
+		android:layout_marginStart="8dp"
+		android:layout_weight="1"
+		android:orientation="vertical"
+		android:paddingTop="4dp">
+
+		<TextView
+			android:id="@+id/transport_name"
+			style="@style/Tincstack.RowTitle" />
+
+		<TextView
+			android:id="@+id/transport_desc"
+			style="@style/Tincstack.RowSummary" />
+	</LinearLayout>
+</LinearLayout>

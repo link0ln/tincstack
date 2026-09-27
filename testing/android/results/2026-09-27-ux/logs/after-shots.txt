@@ -1,0 +1,90 @@
+== [light] main, disconnected
+shot 10-main-disconnected-light (91889 B)
+== [light] connect
+shot 11-main-connected-light (95532 B)
+shot 12-main-settings-light (101948 B)
+shot 12b-network-locked-light (81424 B)
+== [light] peers
+shot 13-peers-light (37168 B)
+shot 14-peer-info-light (116174 B)
+== [light] transport
+shot 15-transport-light (152237 B)
+== [light] apps
+shot 16-apps-all-light (58182 B)
+shot 17-apps-whitelist-light (187664 B)
+== [light] log
+shot 18-log-connection-light (253569 B)
+shot 18b-log-app-light (224016 B)
+== [light] menus, about
+shot 19-overflow-menu-light (101866 B)
+shot 20-about-light (135726 B)
+shot 21-notification-light (86453 B)
+== [light] founder paused: looking for node_a, then the slow hint
+shot 22-looking-light (99188 B)
+text="Looking for node_a…"
+shot 23-not-answering-light (89255 B)
+text="node_a isn't answering yet. tincstack keeps trying; the log shows why."
+== [light] VPN permission refused
+shot 24-vpn-consent-light (119055 B)
+shot 25-failed-no-permission-light (83600 B)
+text="tincstack needs your permission to set up a VPN."
+== [light] add network, failed joins
+shot 26-add-network-light (62009 B)
+shot 27-join-contacting-light (76546 B)
+shot 28-join-unreachable-light (106101 B)
+shot 29-join-bad-token-light (109689 B)
+Assigned address 10.69.239.4/24 to shotlight.
+shot 30-join-used-details-light (140798 B)
+shot 31-remove-confirm-light (99267 B)
+== [dark] main, disconnected
+shot 10-main-disconnected-dark (91642 B)
+== [dark] connect
+shot 11-main-connected-dark (94829 B)
+shot 12-main-settings-dark (101906 B)
+shot 12b-network-locked-dark (80455 B)
+== [dark] peers
+shot 13-peers-dark (37136 B)
+shot 14-peer-info-dark (111804 B)
+== [dark] transport
+shot 15-transport-dark (163202 B)
+== [dark] apps
+shot 16-apps-all-dark (58400 B)
+shot 17-apps-whitelist-dark (190029 B)
+== [dark] log
+shot 18-log-connection-dark (248787 B)
+shot 18b-log-app-dark (228557 B)
+== [dark] menus, about
+shot 19-overflow-menu-dark (100911 B)
+shot 20-about-dark (131882 B)
+shot 21-notification-dark (86601 B)
+== [dark] founder paused: looking for node_a, then the slow hint
+shot 22-looking-dark (101219 B)
+text="Looking for node_a…"
+shot 23-not-answering-dark (90654 B)
+text="node_a isn't answering yet. tincstack keeps trying; the log shows why."
+== [dark] VPN permission refused
+shot 24-vpn-consent-dark (114058 B)
+shot 25-failed-no-permission-dark (84684 B)
+text="tincstack needs your permission to set up a VPN."
+== [dark] add network, failed joins
+shot 26-add-network-dark (63107 B)
+shot 27-join-contacting-dark (78122 B)
+shot 28-join-unreachable-dark (108632 B)
+shot 29-join-bad-token-dark (111965 B)
+Assigned address 10.69.239.5/24 to shotdark.
+shot 30-join-used-details-dark (142180 B)
+shot 31-remove-confirm-dark (96777 B)
+== remove the network -> first launch again
+shot 01-first-launch-light (65536 B)
+shot 01-first-launch-dark (66508 B)
+== clipboard: an invitation copied elsewhere is offered
+Assigned address 10.69.239.6/24 to clip.
+field after cut: 'Invitation'
+text="Invitation in your clipboard"
+text="Use it"
+shot 02-clipboard-offer-light (76126 B)
+shot 02-clipboard-offer-dark (77545 B)
+shot 03-invitation-detected-light (76071 B)
+shot 03-invitation-detected-dark (78485 B)
+done
+exit 0

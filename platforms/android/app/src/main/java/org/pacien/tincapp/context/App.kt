@@ -1,6 +1,7 @@
 /*
- * Tinc Mesh VPN: Android client and user interface
+ * tincstack for Android
  * Copyright (C) 2017-2020 Euxane P. TRAN-GIRARD
+ * Copyright (C) 2026 tincstack contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,14 +21,16 @@ package org.pacien.tincapp.context
 
 import android.app.Application
 import android.content.Context
-import android.content.Intent
 import android.content.pm.ApplicationInfo
-import android.net.Uri
 import android.os.Build
-import android.os.Handler
-import androidx.annotation.StringRes
+import com.google.android.material.color.DynamicColors
 import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.R
+import org.pacien.tincapp.commands.Join
+import org.pacien.tincapp.data.Networks
+import org.pacien.tincapp.service.ConnectionState
+import org.pacien.tincapp.service.TincVpnService
+import org.pacien.tincapp.service.VpnStatus
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
@@ -38,16 +41,30 @@ class App : Application() {
   override fun onCreate() {
     super.onCreate()
     appContext = applicationContext
-    handler = Handler()
     AppLogger.configure()
 
     val logger = LoggerFactory.getLogger(this.javaClass)
     setupCrashHandler(logger)
 
-    logger.info("Starting tinc app {} ({} build), running on {} ({})",
-      BuildConfig.VERSION_NAME, BuildConfig.BUILD_TYPE, Build.VERSION.CODENAME, Build.VERSION.RELEASE)
+    logger.info("Starting tincstack {} ({} build), running on Android {} (API {})",
+      BuildConfig.VERSION_NAME, BuildConfig.BUILD_TYPE, Build.VERSION.RELEASE, Build.VERSION.SDK_INT)
 
-    StorageMigrator().migrate()
+    // Material You: the wallpaper's palette on Android 12+, the app's own below.
+    DynamicColors.applyToActivitiesIfAvailable(this)
+
+    // A join the process did not live to finish, and network directories left
+    // behind by earlier versions without a tinc.yaml, are not networks.
+    Join.sweepStaging()
+    Networks.sweepBroken()
+
+    // A session is recorded until it ends; one still recorded in a fresh
+    // process ended with the process (a crash, or Android killing the app).
+    // Say so instead of showing a plain "Disconnected". An always-on restart
+    // replaces this with Connecting a moment later.
+    TincVpnService.getCurrentNetName()?.let { net ->
+      if (VpnStatus.current() !is ConnectionState.Failed)
+        VpnStatus.set(ConnectionState.Failed(net, getString(R.string.error_process_died), lost = true))
+    }
   }
 
   private fun setupCrashHandler(logger: Logger) {
@@ -58,9 +75,6 @@ class App : Application() {
 
   companion object {
     private var appContext: Context? = null
-    private var handler: Handler? = null
-
-    val notificationManager: AppNotificationManager by lazy { AppNotificationManager(appContext!!) }
 
     fun getContext() = appContext!!
     fun getResources() = getContext().resources!!
@@ -69,37 +83,5 @@ class App : Application() {
       getContext()
         .packageManager
         .getApplicationInfo(BuildConfig.APPLICATION_ID, 0)
-
-    fun alert(
-      @StringRes title: Int,
-      msg: String,
-      manualLink: String? = null,
-      configDir: String? = null,
-      proposeLogs: Boolean = false,
-    ) =
-      notificationManager.notifyError(
-        appContext!!.getString(title),
-        msg,
-        manualLink,
-        configDir,
-        proposeLogs,
-      )
-
-    fun openURL(url: String) {
-      val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-      val chooser = Intent.createChooser(intent, getResources().getString(R.string.generic_action_open_web_page))
-      appContext?.startActivity(chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
-
-    // https://developer.android.com/guide/components/intents-common#Email
-    fun sendMail(recipient: String, subject: String, body: String) {
-      val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:"))
-        .putExtra(Intent.EXTRA_EMAIL, arrayOf(recipient))
-        .putExtra(Intent.EXTRA_SUBJECT, subject)
-        .putExtra(Intent.EXTRA_TEXT, body)
-
-      val chooser = Intent.createChooser(intent, getResources().getString(R.string.crash_modal_action_send_email))
-      appContext?.startActivity(chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
   }
 }

@@ -22,7 +22,6 @@ cd "$(dirname "$0")"
 export LAB=${LAB:-ww-d2}
 export SUBNET=${SUBNET:-10.44.78.0/24}
 export INVITER_IP=${INVITER_IP:-10.44.78.10}
-export NETNAME=${NETNAME:-phonenet}
 export NAME=${NAME:-$LAB-emulator}
 PKG=net.tincstack.android
 PA=net.tincstack.probe.a
@@ -70,6 +69,11 @@ routing_evidence() {
 
 step "lab: join + connect (join-on-emulator.sh, KEEP=1)"
 KEEP=1 ./join-on-emulator.sh
+# the app names the network after the invitation; there is exactly one
+# shellcheck source=ui-lib.sh
+. ./ui-lib.sh
+NETNAME=$(app_network) || fail "no single joined network"
+echo "network: $NETNAME"
 pool_a=$(docker exec "$INVITER" tincstack-cli get node_a.Subnet | head -n1 | tr -d '\r'); pool_a=${pool_a%%/*}
 echo "inviter tunnel address: $pool_a"
 

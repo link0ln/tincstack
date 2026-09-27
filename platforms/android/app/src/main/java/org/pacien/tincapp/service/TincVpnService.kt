@@ -1,5 +1,5 @@
 /*
- * Tinc Mesh VPN: Android client and user interface
+ * tincstack for Android
  * Copyright (C) 2017-2023 Euxane P. TRAN-GIRARD
  * Copyright (C) 2026 tincstack contributors
  *
@@ -32,15 +32,15 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import java8.util.concurrent.CompletableFuture
 import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.R
-import org.pacien.tincapp.activities.start.StartActivity
+import org.pacien.tincapp.activities.main.MainActivity
 import org.pacien.tincapp.commands.Executor
 import org.pacien.tincapp.commands.Tinc
 import org.pacien.tincapp.commands.Tincd
 import org.pacien.tincapp.context.App
+import org.pacien.tincapp.utils.lastLines
 import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.data.VpnInterfaceConfiguration
@@ -138,40 +138,34 @@ class TincVpnService : VpnService() {
   // ---- session start (worker thread) ---------------------------------------
 
   private fun startVpn(netName: String) {
-    if (netName.isBlank())
-      return reportError(resources.getString(R.string.notification_error_message_no_network_name_provided), docTopic = "doc.html#intent-api")
-
-    if (!AppPaths.confDir(netName).exists())
-      return reportError(resources.getString(R.string.notification_error_message_no_configuration_for_network_format, netName), docTopic = "doc.html#configuration-files")
+    if (netName.isBlank()) return fail(null, getString(R.string.error_no_config_format, "?"))
+    VpnStatus.set(ConnectionState.Connecting(netName))
 
     log.info("Starting tinc daemon for network \"$netName\".")
     if (state !is State.Idle || tunFd != null || getCurrentNetName() != null) {
       setState(State.Idle)
-      endSession(null, TearDownReason.USER, stopService = false, anySession = true)
+      endSession(null, TearDownReason.USER, stopService = false, anySession = true, keepStatus = true)
     }
 
-    // The one config file. A missing file is fine: the daemon materialises it
-    // (name, keys, pool) at first start; the interface then gets the pool's first
-    // address and route, so a fresh network is usable right away.
-    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-    val stanza = yaml.resolveNetwork(netName)
+    // The one config file. A network directory is only ever created by a
+    // successful join (commands/Join.kt), so a missing or empty file is a
+    // broken network, not a zero-config one: say so instead of letting
+    // establish() fail with "At least one address must be specified".
+    val yamlFile = AppPaths.tincYamlFile(netName)
+    if (!yamlFile.isFile || yamlFile.length() == 0L)
+      return fail(netName, getString(R.string.error_no_config_format, netName))
+    val yaml = TincYaml(yamlFile)
 
-    val interfaceCfg = try {
-      VpnInterfaceConfiguration.fromTincYaml(yaml, stanza)
-    } catch (e: TincYaml.InvalidConfigurationException) {
-      return reportError(
-        resources.getString(R.string.notification_error_message_network_config_invalid_format, e.defaultMessage()),
-        e,
-        docTopic = "doc.html#network-interface",
-        configDir = netName,
-      )
+    val (stanza, interfaceCfg) = try {
+      val stanza = yaml.resolveNetwork(netName)
+      if (stanza !in yaml.networkNames())
+        return fail(netName, getString(R.string.error_no_config_format, netName))
+      stanza to VpnInterfaceConfiguration.fromTincYaml(yaml, stanza)
     } catch (e: Exception) {
-      return reportError(
-        resources.getString(R.string.notification_error_message_could_not_read_network_configuration_format, e.defaultMessage()),
-        e,
-        configDir = netName,
-      )
+      return fail(netName, getString(R.string.error_config_invalid_format, netName, e.defaultMessage()), e)
     }
+    if (interfaceCfg.addresses.isEmpty())
+      return fail(netName, getString(R.string.error_no_address))
 
     val deviceFd = try {
       Builder().setSession(netName)
@@ -179,27 +173,12 @@ class TincVpnService : VpnService() {
         .also { applyIgnoringException(it::addDisallowedApplication, BuildConfig.APPLICATION_ID) }
         // inherit metered property from underlying network
         .also { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) it.setMetered(false) }
-        .establish()!!
+        .establish()
     } catch (e: IllegalArgumentException) {
-      return reportError(
-        resources.getString(R.string.notification_error_message_network_config_invalid_format, e.defaultMessage()),
-        e,
-        docTopic = "doc.html#network-interface",
-        configDir = netName,
-      )
-    } catch (e: NullPointerException) {
-      return reportError(
-        resources.getString(R.string.notification_error_message_could_not_bind_iface),
-        e,
-        proposeLogs = true,
-      )
+      return fail(netName, getString(R.string.error_config_invalid_format, netName, e.defaultMessage()), e)
     } catch (e: Exception) {
-      return reportError(
-        resources.getString(R.string.notification_error_message_could_not_configure_iface, e.defaultMessage()),
-        e,
-        proposeLogs = true,
-      )
-    }
+      return fail(netName, getString(R.string.error_iface_format, e.defaultMessage()), e)
+    } ?: return fail(netName, getString(R.string.error_vpn_busy)) // not prepared: another VPN app took the slot
 
     val run = DaemonRun(++sessionCounter, 0)
     saveConnection(netName)
@@ -215,14 +194,14 @@ class TincVpnService : VpnService() {
     val startup = launchDaemon(netName, stanza, run)
     startup.whenComplete { _, exception ->
       if (exception != null) {
-        reportError(
-          resources.getString(R.string.notification_error_message_daemon_exited, (exception.cause ?: exception).defaultMessage()),
-          exception,
-          proposeLogs = true,
-        )
+        log.error("tinc daemon did not start", exception)
+        failedDaemonStart = true
+        VpnStatus.set(ConnectionState.Failed(netName,
+          getString(R.string.error_daemon_start_format, daemonFailureReason(netName, exception)),
+          daemonLogTail(netName)))
       } else {
         log.info("tinc daemon started.")
-        broadcastEvent(Actions.EVENT_CONNECTED)
+        if (session == run.session) VpnStatus.set(ConnectionState.Connected(netName))
         if (interfaceCfg.reconnectOnNetworkChange)
           connectivityChangeReceiver.registerWatcher(this)
       }
@@ -269,6 +248,7 @@ class TincVpnService : VpnService() {
     connectivityChangeReceiver.unregisterWatcher(this)
     stopDaemon(netName)
     updateNotification(netName, suspended = true)
+    VpnStatus.set(ConnectionState.Paused(netName))
     log.info("Session suspended: tinc daemon stopped, VPN interface kept.")
   }
 
@@ -283,16 +263,13 @@ class TincVpnService : VpnService() {
       launchDaemon(netName, stanza ?: netName, run).get(STOP_TIMEOUT_S, TimeUnit.SECONDS)
     } catch (e: Exception) {
       log.error("Could not relaunch the tinc daemon after unlock.", e)
-      reportError(
-        resources.getString(R.string.notification_error_message_daemon_exited, (e.cause ?: e).defaultMessage()),
-        e,
-        proposeLogs = true,
-      )
+      resumeFailure = getString(R.string.error_resume_format, daemonFailureReason(netName, e))
       dispatch(Event.ResumeFailed(run))
       return
     }
     if (cfg?.reconnectOnNetworkChange == true) connectivityChangeReceiver.registerWatcher(this)
     updateNotification(netName, suspended = false)
+    VpnStatus.set(ConnectionState.Connected(netName))
     log.info("Session resumed: tinc daemon relaunched ({}).", run)
   }
 
@@ -318,7 +295,8 @@ class TincVpnService : VpnService() {
    * for with no session up; the worker runs in order, so it applies to
    * whatever was started before it was queued (a connect still starting).
    */
-  private fun endSession(forSession: Long?, reason: TearDownReason, stopService: Boolean, anySession: Boolean = false) {
+  private fun endSession(forSession: Long?, reason: TearDownReason, stopService: Boolean, anySession: Boolean = false,
+                         keepStatus: Boolean = false) {
     if (!anySession && forSession != null && forSession != session) {
       log.info("Stale tear-down for session {} ignored (current {}).", forSession, session)
       return
@@ -327,7 +305,8 @@ class TincVpnService : VpnService() {
     screenStateReceiver.unregister(applicationContext)
     connectivityChangeReceiver.unregisterWatcher(this)
 
-    getCurrentNetName()?.let { stopDaemon(it) }
+    val netName = getCurrentNetName()
+    netName?.let { stopDaemon(it) }
     try {
       tunFd?.close()
     } catch (e: Exception) {
@@ -340,7 +319,9 @@ class TincVpnService : VpnService() {
     session = null
     saveConnection(null)
     log.info("All tinc daemons stopped.")
-    broadcastEvent(Actions.EVENT_DISCONNECTED)
+    if (!keepStatus) VpnStatus.set(endStatus(netName, reason))
+    failedDaemonStart = false
+    resumeFailure = null
 
     leaveForeground()
     if (stopService) stopSelf()
@@ -352,20 +333,20 @@ class TincVpnService : VpnService() {
     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(NOTIFICATION_CHANNEL) == null)
       manager.createNotificationChannel(
-        NotificationChannel(NOTIFICATION_CHANNEL, getString(R.string.notification_vpn_channel_name), NotificationManager.IMPORTANCE_LOW))
+        NotificationChannel(NOTIFICATION_CHANNEL, getString(R.string.notification_channel_vpn), NotificationManager.IMPORTANCE_LOW))
 
-    val open = PendingIntentUtils.getActivity(this, 0, Intent(this, StartActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT)
+    val open = PendingIntentUtils.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT)
     val disconnect = PendingIntent.getService(
       this, 1,
       Intent(this, TincVpnService::class.java).setAction(Actions.ACTION_DISCONNECT),
       PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0))
 
     return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL)
-      .setSmallIcon(R.drawable.ic_launcher_foreground)
-      .setContentTitle(getString(R.string.status_activity_state_connected_to_format, netName))
-      .setContentText(getString(if (suspended) R.string.notification_vpn_suspended else R.string.notification_vpn_running))
+      .setSmallIcon(R.drawable.ic_stat_tincstack)
+      .setContentTitle(getString(R.string.notification_connected_format, netName))
+      .setContentText(getString(if (suspended) R.string.notification_paused else R.string.notification_running))
       .setContentIntent(open)
-      .addAction(0, getString(R.string.status_activity_menu_disconnect), disconnect)
+      .addAction(0, getString(R.string.main_disconnect), disconnect)
       .setOngoing(true)
       .setOnlyAlertOnce(true)
       .setShowWhen(false)
@@ -422,31 +403,42 @@ class TincVpnService : VpnService() {
 
   // ---- misc ----------------------------------------------------------------
 
-  private fun reportError(
-    msg: String,
-    e: Throwable? = null,
-    docTopic: String? = null,
-    configDir: String? = null,
-    proposeLogs: Boolean = false,
-  ) {
-    if (e != null)
-      log.error(msg, e)
-    else
-      log.error(msg)
-
-    broadcastEvent(Actions.EVENT_ABORTED)
-    App.alert(
-      R.string.notification_error_title_unable_to_start_tinc,
-      msg,
-      if (docTopic != null) resources.getString(R.string.app_doc_url_format, docTopic) else null,
-      configDir,
-      proposeLogs,
-    )
+  /** A connect that did not get as far as a session: say why, and stop. */
+  private fun fail(netName: String?, msg: String, e: Throwable? = null) {
+    if (e != null) log.error(msg, e) else log.error(msg)
+    VpnStatus.set(ConnectionState.Failed(netName, msg))
+    if (state is State.Idle && tunFd == null) {
+      leaveForeground()
+      stopSelf()
+    }
   }
 
-  private fun broadcastEvent(event: String) {
-    LocalBroadcastManager.getInstance(this).sendBroadcast(Intent(event))
+  /** What the UI shows once a session is over. */
+  private fun endStatus(netName: String?, reason: TearDownReason): ConnectionState = when (reason) {
+    TearDownReason.USER -> ConnectionState.Disconnected
+    TearDownReason.REVOKED -> ConnectionState.Failed(netName, getString(R.string.error_revoked), lost = true)
+    TearDownReason.RESUME_FAILED ->
+      ConnectionState.Failed(netName, resumeFailure ?: getString(R.string.error_resume_format, getString(R.string.error_unknown)),
+        netName?.let(::daemonLogTail), lost = true)
+    TearDownReason.DAEMON_EXITED ->
+      // a start failure was already reported with its own words
+      (VpnStatus.current() as? ConnectionState.Failed)?.takeIf { failedDaemonStart }
+        ?: ConnectionState.Failed(netName,
+          getString(R.string.error_daemon_exited_format, netName?.let { daemonLogReason(it) } ?: getString(R.string.error_unknown)),
+          netName?.let(::daemonLogTail), lost = true)
   }
+
+  /** The daemon logs to its file, not to stderr: the reason is the last error line there. */
+  private fun daemonFailureReason(netName: String, e: Throwable): String =
+    daemonLogReason(netName) ?: (e.cause ?: e).defaultMessage()
+
+  private fun daemonLogReason(netName: String): String? =
+    AppPaths.logFile(netName).lastLines(40)
+      .map { it.replace(Regex("^\\S+ \\S+ (ERROR|WARNING|NOTICE|INFO|DEBUG)?\\s*"), "") }
+      .lastOrNull { l -> ERROR_HINTS.any { l.contains(it, ignoreCase = true) } }
+
+  private fun daemonLogTail(netName: String): String =
+    AppPaths.logFile(netName).lastLines(40).joinToString("\n")
 
   private fun serveDeviceFd(serverSocket: LocalServerSocket, deviceFd: ParcelFileDescriptor) {
     val socket = try {
@@ -478,6 +470,7 @@ class TincVpnService : VpnService() {
     private val log by lazy { LoggerFactory.getLogger(TincVpnService::class.java)!! }
 
     private const val SETUP_DELAY = 500L // ms
+    private val ERROR_HINTS = listOf("error", "can't", "cannot", "could not", "unable", "failed", "invalid", "denied", "refus")
     private const val STOP_TIMEOUT_S = 15L
     private const val DEVICE_FD_ABSTRACT_SOCKET = "${BuildConfig.APPLICATION_ID}.daemon.socket"
     private const val NOTIFICATION_CHANNEL = "vpn"
@@ -502,6 +495,8 @@ class TincVpnService : VpnService() {
     @Volatile private var stanza: String? = null
     @Volatile private var tunFd: ParcelFileDescriptor? = null
     @Volatile private var daemon: CompletableFuture<Unit>? = null
+    @Volatile private var failedDaemonStart = false
+    @Volatile private var resumeFailure: String? = null
 
     private val screenStateReceiver = ScreenStateReceiver { event -> dispatch(event) }
 
@@ -555,8 +550,7 @@ class TincVpnService : VpnService() {
     fun isSuspended() = state is State.Suspended
 
     fun connect(netName: String) {
-      App.notificationManager.dismissAll()
-
+      VpnStatus.set(ConnectionState.Connecting(netName))
       App.getContext().startService(
         Intent(App.getContext(), TincVpnService::class.java)
           .setAction(Actions.ACTION_CONNECT)

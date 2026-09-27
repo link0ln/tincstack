@@ -19,12 +19,24 @@ What changed against tincapp
   are the daemon's own `InterfaceAddress` / `InterfaceRoute` keys, the same
   spellings the Linux built-in tinc-up reads. Private keys are embedded in it;
   the key-passphrase feature is gone.
-- **App picker**: Configure → Tools → "Choose which apps use the VPN" — one
-  mode switch (only selected apps / all apps except selected), search,
-  multi-select; written straight into `tinc.yaml`.
-- **Join**: `tinc join` runs against `tinc.yaml` and the core writes the whole
-  joined network into it, `InterfaceAddress` / `InterfaceRoute` included; the
-  app folds nothing in and reads no side-file (there is no `invitation-data`).
+- **One screen** (2026-09-27): with no network the main screen *is* the join
+  form (paste, clipboard offer or QR scan, one "Join and connect" button,
+  enabled only for text that holds an invitation); with one it is a big
+  connect button, the state in words ("Linked to node_a over HTTPS",
+  "node_a isn't answering yet", "Couldn't connect: ..."), this device and its
+  address, peers, and the settings: connection type (`PreferredTransports`),
+  apps using the VPN, pause while locked. Log one tap away. Material 3,
+  light and dark, English only. The legacy screens (Configure, Directories
+  and its DocumentsProvider, Generate, the manual link, the network-name
+  field) are gone.
+- **App picker**: "Apps using the VPN" — all apps / only these / all except
+  these, search, ticked apps first; written straight into `tinc.yaml`.
+- **Join**: `tinc join` runs against a staging `tinc.yaml` under
+  `files/joining/` and only a successful join is moved into
+  `networks/<name>`, the name taken from the network itself; a failed join
+  leaves nothing and says why. The core writes the whole joined network into
+  the file, `InterfaceAddress` / `InterfaceRoute` included; the app folds
+  nothing in and reads no side-file (there is no `invitation-data`).
 
 Build
 -----
@@ -81,12 +93,13 @@ at a fixed address, boots the emulator on that network (the guest reaches the
 inviter through the emulator's user-mode NAT — a lab container's address works,
 `10.0.2.2` is only needed for services on the emulator's own host), installs
 the APK, grants the VpnService consent with `appops set <pkg> ACTIVATE_VPN
-allow`, drives *the UI* (`docker/ui-join.sh`: Configure → "Join network via
-invitation URL or QR code" → the invitation goes into the `invitation_url`
-field, which is exactly what the QR scanner fills → Join), asserts the file the
-core wrote is the shared YAML schema, then connects and pings the inviter both
-ways. Screens are located with `uiautomator dump` and every wait has a
-deadline; nothing is a fixed sleep.
+allow`, drives *the UI* (`docker/ui-join.sh`: the main screen's join form,
+or "Add a network" once one exists → the invitation goes into the field that
+paste, the clipboard offer and the QR scanner fill → "Join and connect"; the
+app names the network itself), asserts the file the core wrote is the shared
+YAML schema, then pings the inviter both ways over the tunnel the app brought
+up on its own. Screens are located with `uiautomator dump` and every wait has
+a deadline.
 
 ```
 ./gradlew --no-daemon -PtincAbis=x86_64 assembleDebug
@@ -94,7 +107,19 @@ docker/join-on-emulator.sh          # KEEP=1 leaves the lab and the emulator up
 TRANSPORT=https docker/join-on-emulator.sh   # the same, the tunnel over https (or quic)
 ```
 
-Two more proofs build on it (both run `join-on-emulator.sh` with `KEEP=1`
+`docker/ui-flows-on-emulator.sh` is the app's own flows, through the UI only
+(system dialogs included, nothing granted up front): first launch, text that
+is no invitation, three failed joins that must leave nothing behind and say
+why (unreachable, wrong token, used invitation), an invitation pasted with
+blanks and a line break, the notification permission and VPN consent tapped,
+"Connected", a ping through the tunnel, Disconnect. Evidence:
+`testing/android/results/2026-09-27-ux/`.
+
+```
+flock /tmp/tincstack-lab.lock docker/ui-flows-on-emulator.sh   # SHOTS=<dir> saves a screenshot per step
+```
+
+Two more proofs build on `join-on-emulator.sh` (both run it with `KEEP=1`
 first, and take the same variables, `TRANSPORT` included):
 
 ```
@@ -103,10 +128,12 @@ docker/lock-cycle-on-emulator.sh     # DisconnectOnScreenOff: lock -> tincd stop
 ```
 
 `split-routing-on-emulator.sh` installs two code-less debuggable apps of their
-own packages (`docker/probe-apps.sh`) and pings the inviter's tunnel address
+own packages (`docker/probe-apps.sh`, built in `BUILD_IMAGE`, default
+`tincstack/android-build`) and pings the inviter's tunnel address
 as each app's UID (`run-as <pkg> ping`), after setting the whitelist and then
-the blacklist through the app's settings screen (`docker/ui-pick-apps.sh`).
-`lock-cycle-on-emulator.sh` switches the option on through the same screen,
+the blacklist through the app's "Apps using the VPN" screen
+(`docker/ui-pick-apps.sh`). `lock-cycle-on-emulator.sh` switches the option on
+with the main screen's "Pause while the screen is locked" switch,
 runs lock/unlock cycles (`LOCKED_WAIT`, default 95 s, each), one with a PIN
 keyguard, and checks that an explicit disconnect survives a lock/unlock.
 
