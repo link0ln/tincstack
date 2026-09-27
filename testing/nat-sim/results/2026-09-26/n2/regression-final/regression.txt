@@ -1,0 +1,34 @@
+# N2 final regression, image tincstack/core:ww-n2 (65010402a900), branch b1c71d7
+obfs-test rc=0 seconds=306 02:43
+quic-carrier-test rc=0 seconds=179 02:46
+https-carrier-test rc=0 seconds=401 02:52
+quic-loss-test rc=0 seconds=152 02:55
+mixed-version-base rc=0 seconds=156 02:57
+mixed-version-pre-deb13 rc=0 seconds=302 03:02
+same-nat-meta-test rc=0 seconds=251 03:07
+obfs-confirmed-peer-test rc=0 seconds=71 03:08
+laptop rc=0 seconds=423 03:15
+glare rc=0 seconds=9 03:15
+matrix-quick rc=0 seconds=965 03:31
+matrix-plain rc=0 seconds=1353 03:54
+matrix-obfs rc=0 seconds=152 03:56
+matrix-quic rc=0 seconds=80 03:58
+matrix-https rc=0 seconds=622 04:08
+rekey rc=0 seconds=268 04:12
+capture-plain rc=0 seconds=34 04:13
+capture-obfs rc=0 seconds=68 04:14
+capture-quic rc=0 seconds=63 04:15
+capture-https rc=0 seconds=126 04:17
+ALLDONE 04:17
+punch-rtt40-1 rc=0 seconds=53 04:18
+punch-rtt40-2 rc=0 seconds=48 04:19
+punch-rtt40-3 rc=0 seconds=52 04:20
+punch-rtt40-4 rc=0 seconds=48 04:21
+punch-rtt40-5 rc=0 seconds=97 04:22
+punch-rtt0-1 rc=0 seconds=143 04:25
+punch-rtt0-2 rc=0 seconds=326 04:30
+mixed-version-wire-ww-n2-base rc=0 seconds=361 04:34
+punch-rtt0-3 rc=0 seconds=523 04:39
+PUNCHDONE 04:39
+mixed-version-wire-ww-n2-pre-deb13 rc=0 seconds=636 04:44
+MVDONE 04:44

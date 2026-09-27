@@ -1,0 +1,15 @@
+datagrams                289
+quic_long_header         0
+analysed                 289
+zero6                    0
+sfmagic                  0
+size51                   1
+const_srcid              {}
+counter                  {}
+eq6_consec               0/286
+distinct_sizes           140
+top_size                 113 B x6 (2.1 %)
+size_histogram_top10     {"113": 6, "88": 6, "111": 5, "103": 5, "98": 5, "161": 5, "90": 4, "106": 4, "1472": 4, "191": 4}
+chi2_flagged_positions   []
+chi2_min_p               0.14629067607169877
+entropy_bytes_0_15       7.9584

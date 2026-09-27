@@ -235,6 +235,16 @@ New profiles, core, run `ww-n-ext` (`--pairs`):
 | cgnat x masq | relay | both sides Linux NAT with open INPUT (the carrier tier) |
 | cgnat x cgnat | relay | same |
 
+**After N2** (final image `65010402a900`, run `ww-n2-fin2-mat`,
+`results/2026-09-26/n2/regression-final/`): 28/28 PASS, **19/25 direct**,
+median 6 s, max 8 s. The two new direct pairs are `masq x portrestricted`
+(6 s) and `portrestricted x masq` (4 s), which the coordinated start (§9.3)
+brings through; the six still relayed are `masq x masq`, `masq x symmetric`,
+`portrestricted x symmetric`, `symmetric x masq`, `symmetric x
+portrestricted`, `symmetric x symmetric` at rtt 0 (`masq x masq` goes direct
+at rtt 40, §9.3). n = 1 per pair; the image before the obfs fix (`bc86d234ee94`,
+`ww-n2-final-mat`) gave the same 19, with `portrestricted x masq` at 91 s.
+
 ### 3.2 Linux MASQUERADE: EIM until poisoned (`masq` vs `masqfw`)
 
 `lab.sh portmap` (nattrav, no tincd; two trials each; full table in
@@ -437,7 +447,9 @@ n = 1 run per pair. The `--capture` row (restricted x restricted, quic) now
 goes direct in 4 s with 430 sealed datagrams: 0 zero dst id, 0 sf magic, 2 of
 51 B, no chi² position flagged, entropy 7.97 bit, PMTU 1413.
 `quic-carrier-test.sh`, `quic-loss-test.sh` and `mixed-version-test.sh`
-(`CARRIERS=quic`, both old images) pass on the same image.
+(`CARRIERS=quic`, both old images) pass on the same image. On the final N2
+image (`65010402a900`, run `ww-n2-fin2-mat-quic`) the same six pairs are 6/6
+direct in 4-6 s.
 
 A first version of the fix (image `ww-n2-i2`) got the three pairs above
 direct but lost *every* relayed quic packet (ping 0 on the pairs that stay
@@ -568,6 +580,30 @@ unreadable datagram. Runs failing 6/10 vs 0/5 is p = 0.04 (Fisher, one-sided)
 (`results/2026-09-26/n2/obfs-close/`, `docs/transports.md` obfs "Key
 schedule").
 
+**The same capture rows on the final N2 image** (`65010402a900`, all items
+and the obfs fix; run `ww-n2-fin2-cap`, `results/2026-09-26/n2/capture-final/`):
+
+| pair, carrier | datagrams / zero dst id / sf magic / 51 B | distinct sizes, chi² flagged positions 0-15, entropy 0-15 | `dpi-fingerprint` present | PMTU | direct |
+|---|---|---|---|---|---|
+| restricted x restricted, plain | 168 / 98 / 70 / 31 | 15, all 16, 4.25 bit | `udp_null_dstid`, `udp_probe_size` (plain nodes keep upstream's wire, by design) | 1439 | 6 s |
+| restricted x restricted, obfs | 264 / **0 / 0 / 1** | 125, none, 7.95 bit | none | 1413 | 4 s |
+| masq x restricted, obfs | 289 / **0 / 0 / 1** | 140, none, 7.96 bit | none | 1413 | 8 s |
+| masqfw x masqfw, quic | 367 / **0 / 0 / 1** (+25 QUIC long headers) | 138, none, 7.95 bit | `udp_constant_srcid` | 1413 | 4 s |
+| restricted x restricted, quic | 360 / **0 / 0 / 3** (+25 QUIC long headers) | 139, none, 7.97 bit | `udp_constant_srcid`, `udp_probe_size` | 1413 | 4 s |
+| restricted x restricted, https | 0 (TCP only) | — | none | — | relayed (§5.2) |
+
+Two flags in the quic rows, neither of them the direct path looking like
+tinc: `udp_constant_srcid` names flows on ephemeral ports (e.g.
+`100.64.0.3:60033`) — the QUIC connections themselves, whose short header
+carries the connection id in the clear, QUIC looking like QUIC; and
+`udp_probe_size` fires on `dpi-fingerprint`'s absolute rule (3 or more
+datagrams of exactly 51 B): 3 of 360 here, at the bottom edge of a flat size
+distribution (50/51/52/53 B: 1/3/2/1 datagrams), against 31 of 168 on the
+plain row. A classifier with a relative test would not see it; one with this
+exact rule would, on long enough flows, for any carrier with random-length
+tails — the tail cannot avoid one size without making that absence the tell.
+Recorded, not changed.
+
 ## 6. IPv4 and IPv6
 
 - `n->address` is one address of one family. `update_node_udp()` picks the
@@ -671,9 +707,11 @@ uses. Same command (`results/2026-09-26/n2/rekey/`):
 | N2 (`ww-n2-i4`), `UdpMetaFallback = no`, run 1 | 20 s | 6 | **0 / 0** | 0 / 632 | **0 %** |
 | N2 (`ww-n2-i4`), `UdpMetaFallback = no`, run 2 | 20 s | 6 | 0 / 0 | 0 / 631 | 0 % |
 | N2 (`ww-n2-i4`), defaults | 20 s | 6 | 0 / 0 | 0 / 641 | 0 % |
-| N2 final image (`ww-n2`), `UdpMetaFallback = no` | 20 s | 6 | 0 / 0 | 0 / 634 | 0 % |
+| N2 before the obfs fix (`bc86d234ee94`), `UdpMetaFallback = no` | 20 s | 6 | 0 / 0 | 0 / 634 | 0 % |
+| N2 final image (`65010402a900`), `UdpMetaFallback = no` | 20 s | 6 | 0 / 0 | 0 / 632 | 0 % |
+| upstream, same run (`ww-n2-fin2-rekey`) | 20 s | 6 | 38 / 33 | 143 / 515 | 21.7 % |
 
-578-580/600 ping replies in every run, as before (the missing ones are the
+577-580/600 ping replies in every run, as before (the missing ones are the
 window's edges, the same count without rekeys). `ww-n2-i4` carries the first
 version of item 3; the change here is independent of it, and the final image
 repeats the result.
@@ -843,6 +881,16 @@ What the numbers say, without flattering them:
   relay": the older relay forwards the request, the far leaf answers and
   starts, the pair goes direct — PASS against `ww-n2-base` and `pre-deb13`
   (`results/2026-09-26/n2/punch/mixed-version-direct.txt`).
+- Repeated on the final N2 image (`65010402a900`: items 1-4 and the obfs
+  fix; item 4 changed `update_node_udp()`, which the GO path uses; runs
+  `punch/ww-n2-fin2-punch-*`): rtt 40, n = 5: all four pairs 5/5 direct,
+  4-6 s, except one `cgnat x masq` run at 49 s — its first round failed and
+  the second came after the 35 s back-off (the design working, and its price).
+  rtt 0, n = 3: `masq x portrestricted` 3/3, `masq x masq` 1/3, `cgnat x
+  cgnat` 1/3, `cgnat x masq` 0/3 — 5 of 12 pair-runs, against 7/12 on
+  `ww-n2-i3b` and 2/12 without item 3. 5/12 vs 7/12 is within noise at this
+  n (Fisher p ≈ 0.7); the rtt-0 residual above stands. Every pair pinged in
+  every run.
 
 ## 10. Ranked fixes for stream N2
 
