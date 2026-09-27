@@ -2480,6 +2480,14 @@ Defects identified during the source audit, to fix as their milestone is reached
     migration (no re-dials); 20 s, or PingInterval 10 s: 0.*
     - [ ] 🟢 not fixed: a keepalive under 10 s would break the Chromium
       15 s shape (owner's wire rule); such a timeout is below RFC 4787's floor.
+  - [ ] 🟢 `tinc info` says "Reachability: directly with UDP" (and shows a
+    UDP address) for a peer whose data rides the quic carrier's DATAGRAM
+    frames. Measured 2026-09-27 on ruvds2 with the owner's phone (v0.5.0
+    release APK, PreferredTransports quic): raw capture on ens3, 48/48
+    datagrams on UDP 8443 were QUIC short-header packets (pings padded to
+    1200 B), 0 on 655, while `info phone` reported "directly with UDP", port
+    46871, PMTU 1119. Misleads anyone diagnosing a path; say "via the quic
+    carrier" there.
   - Compatibility: a dialler from before 2026-09-26 sends no cookie and
     drops quic once per reconnect towards an upgraded listener
     (`mixed-version-test.sh` expects it).
