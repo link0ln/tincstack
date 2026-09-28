@@ -1058,6 +1058,10 @@ bool send_ack(connection_t *c) {
 		c->options |= OPTION_INDIRECT;
 	}
 
+	if(myself->options & OPTION_DECLARED_INDIRECT) {
+		c->options |= OPTION_DECLARED_INDIRECT;
+	}
+
 	if((get_config_bool(lookup_config(c->config_tree, "TCPOnly"), &choice) && choice) || myself->options & OPTION_TCPONLY) {
 		c->options |= OPTION_TCPONLY | OPTION_INDIRECT;
 	}
@@ -1270,7 +1274,8 @@ bool ack_h(connection_t *c, const char *request) {
 		options &= ~OPTION_PMTU_DISCOVERY;
 	}
 
-	c->options |= options;
+	/* The peer's declaration stays on the peer's own edge (connection.h). */
+	c->options |= options & ~OPTION_DECLARED_INDIRECT;
 
 	if(get_config_int(lookup_config(c->config_tree, "PMTU"), &mtu) && mtu < n->mtu) {
 		n->mtu = mtu;

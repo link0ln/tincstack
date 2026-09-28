@@ -34,6 +34,12 @@
 #define OPTION_TCPONLY          0x0002
 #define OPTION_PMTU_DISCOVERY   0x0004
 #define OPTION_CLAMP_MSS        0x0008
+/* The node that advertises the edge set IndirectData itself (not the
+   INDIRECT that TCPOnly or the https carrier imply). Never merged from the
+   peer's ACK, so it is on a node's own edges only and says who declared it:
+   nobody without a meta connection to that node may contact it directly,
+   and AutoConnect does not dial it. */
+#define OPTION_DECLARED_INDIRECT 0x0010
 #define OPTION_VERSION(x) ((x) >> 24) /* Top 8 bits are for protocol minor version */
 
 typedef union connection_status_t {

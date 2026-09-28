@@ -22,16 +22,31 @@
 #include "autoconnect.h"
 #include "connection.h"
 #include "crypto.h"
+#include "edge.h"
 #include "logger.h"
 #include "node.h"
 #include "xalloc.h"
+
+/* It set IndirectData itself: only the nodes it dials or that it lets dial it
+   may talk to it, everyone else goes through them (OPTION_DECLARED_INDIRECT).
+   An AutoConnect dial is a direct contact, and a firewalled node sees it
+   anyway on the wire, so it is never made. */
+static bool declared_indirect(node_t *n) {
+	for splay_each(edge_t, e, &n->edge_tree) {
+		if(e->options & OPTION_DECLARED_INDIRECT) {
+			return true;
+		}
+	}
+
+	return false;
+}
 
 static void make_new_connection(void) {
 	/* Select a random node we haven't connected to yet. */
 	uint32_t count = 0;
 
 	for splay_each(node_t, n, &node_tree) {
-		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable)) {
+		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n)) {
 			continue;
 		}
 
@@ -45,7 +60,7 @@ static void make_new_connection(void) {
 	uint32_t r = prng(count);
 
 	for splay_each(node_t, n, &node_tree) {
-		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable)) {
+		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n)) {
 			continue;
 		}
 
@@ -91,7 +106,7 @@ static void connect_to_unreachable(void) {
 		}
 
 		/* Is it unreachable and do we know an address for it? If not, return. */
-		if(n == myself || n->connection || n->status.reachable || !n->status.has_address) {
+		if(n == myself || n->connection || n->status.reachable || !n->status.has_address || declared_indirect(n)) {
 			return;
 		}
 

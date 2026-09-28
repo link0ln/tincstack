@@ -1,0 +1,32 @@
+# IndirectData lab: relay dials exit, client dials relay (see run.sh).
+name: ${IND_PROJECT:-wind-indirect}
+x-node: &node
+  image: ${CORE_IMAGE:-tincstack/core:dev}
+  cap_add: [NET_ADMIN]
+  devices: ["/dev/net/tun:/dev/net/tun"]
+services:
+  relay:
+    <<: *node
+    image: ${RELAY_IMAGE:-${CORE_IMAGE:-tincstack/core:dev}}
+    volumes: ["./${IND_RUN:-run}/relay:/etc/tincstack"]
+    command: ["tincd", "-D", "-d3", "-c", "/etc/tincstack/tinc.yaml"]
+    networks:
+      lab: {ipv4_address: "${IND_SUBNET:-172.31.78}.11"}
+  exit:
+    <<: *node
+    volumes: ["./${IND_RUN:-run}/exit:/etc/tincstack"]
+    command: ["tincd", "-D", "-d3", "-c", "/etc/tincstack/tinc.yaml"]
+    networks:
+      lab: {ipv4_address: "${IND_SUBNET:-172.31.78}.12"}
+  client:
+    <<: *node
+    volumes: ["./${IND_RUN:-run}/client:/etc/tincstack"]
+    command: ["tincd", "-D", "-d3", "-c", "/etc/tincstack/tinc.yaml"]
+    depends_on: [relay, exit]
+    networks:
+      lab: {ipv4_address: "${IND_SUBNET:-172.31.78}.13"}
+networks:
+  lab:
+    name: ${IND_PROJECT:-wind-indirect}
+    ipam:
+      config: [{subnet: "${IND_SUBNET:-172.31.78}.0/24"}]

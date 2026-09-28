@@ -422,7 +422,7 @@ bool setup_myself_reloadable(void) {
 	bool choice;
 
 	if(get_config_bool(lookup_config(&config_tree, "IndirectData"), &choice) && choice) {
-		myself->options |= OPTION_INDIRECT;
+		myself->options |= OPTION_INDIRECT | OPTION_DECLARED_INDIRECT;
 	}
 
 	if(get_config_bool(lookup_config(&config_tree, "TCPOnly"), &choice) && choice) {

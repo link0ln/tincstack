@@ -338,7 +338,11 @@ coordinated start (fix 4), not for tuning timers.
   graph (`sssp_bfs()`, edge weight = measured RTT); `via` = static relay only
   with `IndirectData = yes` on the path (`OPTION_INDIRECT`). With `via != n`
   tinc never tries UDP to the peer at all (`try_tx_sptps()` forwards to the
-  relay only). `TCPOnly` (option on either side) skips SPTPS-over-UDP
+  relay only). A node that sets `IndirectData` itself also marks its own
+  edges `OPTION_DECLARED_INDIRECT` (0x10, never merged from the peer's ACK),
+  and AutoConnect never dials such a node: only its meta neighbours ever
+  contact it (the euvds exit, reached only through ruvds2; 2026-09-28).
+  `TCPOnly` (option on either side) skips SPTPS-over-UDP
   entirely: data rides the meta connection (`send_sptps_data()` `tcponly`).
 - **How data is relayed.** Per hop: over UDP if the hop's PMTU is known,
   otherwise inside the meta connection; a relaying node re-sends with
