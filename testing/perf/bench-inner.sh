@@ -98,6 +98,18 @@ ip netns exec a ip link set va up
 ip netns exec b ip link set vb up
 ip netns exec a ip link set lo up
 ip netns exec b ip link set lo up
+# DELAY=<netem delay> on each veth end (RTT = 2 x DELAY). A per-wakeup cost
+# hides in a LAN burst, where one wakeup carries many packets, and shows on a
+# WAN, where packets arrive one at a time. LOSS=<netem loss> drops that share
+# in each direction: a carrier with a congestion controller of its own under
+# the tunnel's TCP is judged on a lossy path, not on a clean veth.
+if [ -n "${DELAY:-}${LOSS:-}" ]; then
+	# shellcheck disable=SC2086  # deliberate word split into netem arguments
+	for end in a:va b:vb; do
+		ip netns exec "${end%%:*}" tc qdisc add dev "${end#*:}" root netem \
+			${DELAY:+delay $DELAY} ${LOSS:+loss $LOSS}
+	done
+fi
 
 # -------------------------------------------------------------------- config
 # Classic tinc.conf, byte-for-byte the same for both daemons except the extra
@@ -151,6 +163,10 @@ esac
 
 write_node a "$A_VPN" "$A_IP" "$EXTRA"
 write_node b "$B_VPN" "$B_IP" "$EXTRA"
+# INDIRECT=1: b declares IndirectData, as the euvds exit does, so a carries
+# b's data over the carrier's own channel (QUIC DATAGRAMs for quic) instead
+# of the sealed direct UDP path.
+[ -n "${INDIRECT:-}" ] && echo "IndirectData = yes" >> "$NODES/b/tinc.conf"
 echo "ConnectTo = b" >> "$NODES/a/tinc.conf"
 cp "$NODES/a/hosts/a" "$NODES/b/hosts/a"
 cp "$NODES/b/hosts/b" "$NODES/a/hosts/b"
@@ -186,6 +202,7 @@ case "$ARM" in
 	https) WANT=meta ;;
 	*)     WANT=udp ;;
 esac
+[ -n "${INDIRECT:-}" ] && WANT=meta
 
 t0=$(date +%s)
 while [ "$ARM" != none ]; do

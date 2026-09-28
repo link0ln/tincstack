@@ -6,7 +6,8 @@
 #
 # Env: RATE (default 100M), SECONDS_RUN (30), REPEATS (3), CPUSET (0-3),
 #      ARMS ("baseline plain sf obfs"), MODE (udp|tcp, default udp),
-#      DGRAM (UDP payload, default 1300).
+#      DGRAM (UDP payload, default 1300), DELAY (netem delay per veth end, none),
+#      LOSS (netem loss per veth end, none), INDIRECT (1: b sets IndirectData).
 #
 # Both daemons run in ONE privileged container from ONE image, in two network
 # namespaces joined by a veth pair -- no NAT, no shaping, no docker bridge. The
@@ -51,7 +52,8 @@ while [ "$i" -lt "$REPEATS" ]; do
 		# repeats already collected: record it on stderr and carry on.
 		docker run --rm --privileged --cpuset-cpus="$CPUSET" \
 			-e "RATE=$RATE" -e "SECONDS_RUN=$SECONDS_RUN" \
-			-e "MODE=$MODE" -e "DGRAM=$DGRAM" \
+			-e "MODE=$MODE" -e "DGRAM=$DGRAM" -e "DELAY=${DELAY:-}" \
+			-e "LOSS=${LOSS:-}" -e "INDIRECT=${INDIRECT:-}" \
 			-v "$HERE/bench-inner.sh:/bench-inner.sh:ro" \
 			"$BENCH_IMAGE" sh /bench-inner.sh "$arm" \
 			|| echo "bench: arm $arm failed in repeat $i, skipping it" >&2
