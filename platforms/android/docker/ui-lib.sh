@@ -115,9 +115,14 @@ ui_settle() {
 }
 
 # the app's networks: directories under files/networks/ with a non-empty tinc.yaml
-# (none, and no failure, before the app has ever run: there is no files/ yet)
+# (none, and no failure, before the app has ever run: there is no files/ yet).
+# run-as needs a debuggable build; a release APK is read through the
+# emulator's root shell instead, so the proofs can run on what ships.
 app_networks() {
-    { adb shell "run-as ${PKG:-net.tincstack.android} find files/networks -mindepth 2 -maxdepth 2 -name tinc.yaml -size +0" 2>/dev/null || true; } \
+    local pkg=${PKG:-net.tincstack.android}
+    local find="find files/networks -mindepth 2 -maxdepth 2 -name tinc.yaml -size +0"
+    { adb shell "run-as $pkg $find" 2>/dev/null \
+        || adb shell "su 0 sh -c 'cd /data/data/$pkg && $find'" 2>/dev/null || true; } \
         | tr -d '\r' | sed -n 's|^files/networks/\([^/]*\)/tinc.yaml$|\1|p' | sort
 }
 

@@ -565,7 +565,10 @@ Rules:
   of the same fd. Consequence to know before enabling it on a full-tunnel
   network (`InterfaceRoute: 0.0.0.0/0`): every routed app is offline while the
   phone is locked, push notifications included; with mesh-only routes only
-  mesh traffic (and a mesh `DNSServer`) waits for the unlock. Unlock means
+  mesh traffic (and a mesh `DNSServer`) waits for the unlock. That is the
+  intended behaviour (owner, 2026-09-28): whatever the VPN routes — the
+  allowlisted apps, every app not blacklisted, or all traffic — stays inside
+  it while paused, never around it. Unlock means
   `USER_PRESENT`, or `SCREEN_ON` while no keyguard is locked. An explicit
   disconnect (app, notification action) or a revoke (another VPN app) ends the
   session for good; a lock/unlock never starts one. `Blocking` is unrelated: it
@@ -577,6 +580,40 @@ Rules:
 - Private keys are embedded (`keys:`) and unencrypted; the app's former
   passphrase feature (encrypted `*.priv` files + unlock dialog) does not apply
   and was removed.
+
+### Android takes every announced route
+
+No toggle on Android (owner, 2026-09-28: "all routes announced by other nodes
+must be picked up automatically"). While a network is connected the app polls
+`tinc dump subnets` / `tinc dump reachable nodes` and routes into the tunnel
+every subnet another *reachable* node announces
+(`data/AnnouncedRoutes.kt`, `service/TincVpnService.kt`):
+
+- left out: its own subnets, broadcast/multicast/MAC subnets, IPv6 unless the
+  interface has an IPv6 address, and whatever `InterfaceRoute` (else
+  `AddressPool`) or a wider announced subnet already covers;
+- a tun's routes are fixed at `establish()`, so a change rebuilds the
+  interface and relaunches tincd on the new fd (a few seconds of reconnect). A
+  new set must be seen on two polls in a row, and nothing is decided while the
+  daemon is linked to nobody, so a restart does not take the routes away;
+- `0.0.0.0/0` from the network's exit makes it a full tunnel. The app's own
+  package is outside the VPN, so tincd's sockets are not looped. With no
+  `DNSServer` configured the interface then gets `1.1.1.1` and `8.8.8.8`,
+  reached through the exit: otherwise Android keeps asking the underlying
+  network's resolver outside the tunnel. IPv6 stays blocked for routed apps
+  (a v4-only VPN; `VpnService.Builder` blocks a family it has no address for);
+- an exit that becomes unreachable takes its default route with it and
+  traffic goes out directly again (fail-open, as on Windows);
+- the last set is kept per network and used at the next connect, so a known
+  exit carries traffic from the first packet.
+
+**The cost, stated:** any node of the network can now steer this phone's
+traffic by announcing a subnet — the principle the Linux and Windows builds
+keep. With a full tunnel that is already true inside tinc (the most specific
+announced subnet wins there), so it adds little once `0.0.0.0/0` is routed;
+without one, a node announcing, say, a bank's /24 captures it. Acceptable
+while every node belongs to one owner; `StrictSubnets` on the phone is the
+lever if that stops being so.
 
 ## Lists: both block styles are read
 
@@ -608,7 +645,9 @@ That is only half of it. The operating system still has no reason to hand those
 packets to the tunnel adapter in the first place, and `autoif.c` deliberately
 installs system routes **only** from explicit `InterfaceRoute` entries, never
 from what peers announce — a peer must not be able to change this machine's
-routing table by announcing a subnet.
+routing table by announcing a subnet. That holds on Linux and Windows; the
+Android app is the exception, by the owner's decision (2026-09-28): it takes
+every announced route on its own (below).
 
 So the second half is one option:
 
@@ -630,7 +669,7 @@ Where it is installed:
 |---|---|
 | Linux | the built-in tinc-up, `ip route replace <prefix> [via <gw>] dev $INTERFACE` (`autoif.c`) — only when there is no `scripts.tinc-up`, which takes over completely |
 | Windows | the Wintun backend, `CreateIpForwardEntry2` on the adapter's LUID (`windows/wintun_device.c`) |
-| Android | the tun builder takes the prefix; a tun fd has no next hop, so the gateway is ignored |
+| Android | the tun builder takes the prefix; a tun fd has no next hop, so the gateway is ignored. Announced subnets are added on their own (next section) |
 
 On both Linux and Windows the route is attached to the tunnel interface, so it
 disappears with the interface when tinc stops: a route into a peer's LAN never

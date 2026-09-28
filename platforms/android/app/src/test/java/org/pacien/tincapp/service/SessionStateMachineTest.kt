@@ -21,6 +21,7 @@ package org.pacien.tincapp.service
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.pacien.tincapp.data.CidrAddress
 import org.pacien.tincapp.service.SessionStateMachine.Action
 import org.pacien.tincapp.service.SessionStateMachine.DaemonRun
 import org.pacien.tincapp.service.SessionStateMachine.Event
@@ -178,5 +179,38 @@ class SessionStateMachineTest {
     val (state, actions) = play(State.Idle, Event.ScreenOff, Event.UserPresent, Event.ScreenOn(false))
     assertEquals(State.Idle, state)
     assertTrue(actions.isEmpty())
+  }
+
+  private val exit = listOf(CidrAddress("0.0.0.0", 0))
+
+  @Test
+  fun newAnnouncedRoutesRebuildTheInterfaceAsTheNextRun() {
+    val (state, actions) = play(State.Idle, started(), Event.RoutesChanged(exit))
+    assertEquals(State.Connected("net", DaemonRun(7, 1), true), state)
+    assertEquals(listOf(Action.ReplaceInterface("net", DaemonRun(7, 1), exit)), actions)
+  }
+
+  @Test
+  fun theExitOfTheDaemonTheRebuildStoppedDoesNotEndTheSession() {
+    val (state, actions) = play(State.Idle, started(), Event.RoutesChanged(exit), Event.DaemonExited(run0))
+    assertEquals(State.Connected("net", DaemonRun(7, 1), true), state)
+    assertEquals(listOf(Action.ReplaceInterface("net", DaemonRun(7, 1), exit)), actions)
+  }
+
+  @Test
+  fun aRebuildThatCannotRelaunchEndsTheSession() {
+    val (state, actions) = play(State.Idle, started(), Event.RoutesChanged(exit), Event.ResumeFailed(DaemonRun(7, 1)))
+    assertEquals(State.Idle, state)
+    assertEquals(Action.TearDown(7, TearDownReason.RESUME_FAILED), actions.last())
+  }
+
+  @Test
+  fun routesThatChangeWhileSuspendedOrIdleDoNothing() {
+    val (suspended, a1) = play(State.Idle, started(), Event.ScreenOff, Event.RoutesChanged(exit))
+    assertEquals(State.Suspended("net", run0), suspended)
+    assertEquals(listOf(Action.StopDaemon("net")), a1)
+    val (idle, a2) = play(State.Idle, Event.RoutesChanged(exit))
+    assertEquals(State.Idle, idle)
+    assertTrue(a2.isEmpty())
   }
 }

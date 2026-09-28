@@ -31,6 +31,7 @@ import android.net.LocalServerSocket
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import java8.util.concurrent.CompletableFuture
 import org.pacien.tincapp.BuildConfig
@@ -42,6 +43,9 @@ import org.pacien.tincapp.commands.Tincd
 import org.pacien.tincapp.context.App
 import org.pacien.tincapp.utils.lastLines
 import org.pacien.tincapp.context.AppPaths
+import org.pacien.tincapp.data.AnnouncedRoutes
+import org.pacien.tincapp.data.CidrAddress
+import org.pacien.tincapp.data.PeerStatus
 import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.data.VpnInterfaceConfiguration
 import org.pacien.tincapp.extensions.Java.applyIgnoringException
@@ -58,6 +62,7 @@ import org.slf4j.LoggerFactory
 import java.security.AccessControlException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -73,6 +78,12 @@ import java.util.concurrent.TimeUnit
  *
  * All session work (establish, daemon start/stop, tear-down) runs on one
  * worker thread, in the order it was asked for.
+ *
+ * The routes other nodes announce go into the interface on their own
+ * ([AnnouncedRoutes], no setting): a watcher polls the daemon and, when the set
+ * changes, the interface is established again and tincd relaunched on it. The
+ * last set is kept per network and used at the next connect, so a known exit
+ * carries the traffic from the first packet instead of after the first poll.
  *
  * @author euxane
  */
@@ -167,13 +178,18 @@ class TincVpnService : VpnService() {
     if (interfaceCfg.addresses.isEmpty())
       return fail(netName, getString(R.string.error_no_address))
 
+    var announced = remembered(netName, interfaceCfg)
     val deviceFd = try {
-      Builder().setSession(netName)
-        .applyCfg(interfaceCfg)
-        .also { applyIgnoringException(it::addDisallowedApplication, BuildConfig.APPLICATION_ID) }
-        // inherit metered property from underlying network
-        .also { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) it.setMetered(false) }
-        .establish()
+      try {
+        buildInterface(netName, AnnouncedRoutes.apply(interfaceCfg, announced))
+      } catch (e: IllegalArgumentException) {
+        if (announced.isEmpty()) throw e
+        // a remembered route the builder refuses must not lock the network out
+        log.warn("Remembered routes {} refused ({}); connecting without them.", announced, e.defaultMessage())
+        announced = emptyList()
+        remember(netName, announced)
+        buildInterface(netName, interfaceCfg)
+      }
     } catch (e: IllegalArgumentException) {
       return fail(netName, getString(R.string.error_config_invalid_format, netName, e.defaultMessage()), e)
     } catch (e: Exception) {
@@ -182,11 +198,16 @@ class TincVpnService : VpnService() {
 
     val run = DaemonRun(++sessionCounter, 0)
     saveConnection(netName)
-    TincVpnService.interfaceCfg = interfaceCfg
+    baseCfg = interfaceCfg
+    announcedRoutes = announced
+    refusedRoutes = null
+    TincVpnService.interfaceCfg = AnnouncedRoutes.apply(interfaceCfg, announced)
     TincVpnService.stanza = stanza
     tunFd = deviceFd
     session = run.session
+    if (announced.isNotEmpty()) log.info("Remembered announced routes: {}", announced)
     dispatch(Event.SessionStarted(netName, run, interfaceCfg.disconnectOnScreenOff))
+    startRouteWatcher(netName, run.session)
 
     enterForeground(netName, suspended = false)
     if (interfaceCfg.disconnectOnScreenOff) screenStateReceiver.register(applicationContext)
@@ -219,6 +240,7 @@ class TincVpnService : VpnService() {
    */
   private fun launchDaemon(netName: String, stanza: String, run: DaemonRun): CompletableFuture<Unit> {
     val fd = tunFd ?: return CompletableFuture.failedFuture(IllegalStateException("no tun fd"))
+    daemonLaunchedAt = SystemClock.elapsedRealtime()
     val serverSocket = LocalServerSocket(DEVICE_FD_ABSTRACT_SOCKET)
     Executor.runAsyncTask { serveDeviceFd(serverSocket, fd) }
 
@@ -239,6 +261,7 @@ class TincVpnService : VpnService() {
     when (action) {
       is Action.StopDaemon -> suspendSession(action.netName)
       is Action.StartDaemon -> resumeSession(action.netName, action.run)
+      is Action.ReplaceInterface -> replaceInterface(action.netName, action.run, action.routes)
       is Action.TearDown -> endSession(action.session, action.reason, stopService = true)
     }
   }
@@ -273,6 +296,60 @@ class TincVpnService : VpnService() {
     log.info("Session resumed: tinc daemon relaunched ({}).", run)
   }
 
+  /** The interface as the builder makes it for this session: the app itself stays outside, so tincd's own sockets do. */
+  private fun buildInterface(netName: String, cfg: VpnInterfaceConfiguration): ParcelFileDescriptor? =
+    Builder().setSession(netName)
+      .applyCfg(cfg)
+      .also { applyIgnoringException(it::addDisallowedApplication, BuildConfig.APPLICATION_ID) }
+      // inherit metered property from underlying network
+      .also { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) it.setMetered(false) }
+      .establish()
+
+  /**
+   * The announced routes changed (worker thread): stop tincd, establish the
+   * interface again with them, relaunch tincd as [run] on the new fd. If the
+   * builder refuses, the old interface and routes stay and that set is not
+   * asked for again this session.
+   */
+  private fun replaceInterface(netName: String, run: DaemonRun, routes: List<CidrAddress>) {
+    val base = baseCfg
+    if (session != run.session || tunFd == null || base == null) return
+    val cfg = AnnouncedRoutes.apply(base, routes)
+    connectivityChangeReceiver.unregisterWatcher(this)
+    stopDaemon(netName)
+    val fd = try {
+      buildInterface(netName, cfg)
+    } catch (e: Exception) {
+      log.error("Could not rebuild the interface for routes {}: {}", routes, e.defaultMessage())
+      null
+    }
+    if (fd != null) {
+      val old = tunFd
+      tunFd = fd
+      interfaceCfg = cfg
+      announcedRoutes = routes
+      remember(netName, routes)
+      try {
+        old?.close()
+      } catch (e: Exception) {
+        log.warn("Closing the replaced tun fd: {}", e.defaultMessage())
+      }
+      log.info("Interface rebuilt; routes now {}, DNS {}", cfg.routes, cfg.dnsServers)
+    } else {
+      refusedRoutes = routes
+    }
+    try {
+      launchDaemon(netName, stanza ?: netName, run).get(STOP_TIMEOUT_S, TimeUnit.SECONDS)
+    } catch (e: Exception) {
+      log.error("Could not relaunch the tinc daemon on the rebuilt interface.", e)
+      resumeFailure = getString(R.string.error_resume_format, daemonFailureReason(netName, e))
+      dispatch(Event.ResumeFailed(run))
+      return
+    }
+    if (base.reconnectOnNetworkChange) connectivityChangeReceiver.registerWatcher(this)
+    VpnStatus.set(ConnectionState.Connected(netName))
+  }
+
   private fun stopDaemon(netName: String) {
     val running = daemon ?: return
     if (running.isDone) return
@@ -302,6 +379,7 @@ class TincVpnService : VpnService() {
       return
     }
     log.info("Ending session {} ({}).", session, reason)
+    stopRouteWatcher()
     screenStateReceiver.unregister(applicationContext)
     connectivityChangeReceiver.unregisterWatcher(this)
 
@@ -315,6 +393,9 @@ class TincVpnService : VpnService() {
     tunFd = null
     daemon = null
     interfaceCfg = null
+    baseCfg = null
+    announcedRoutes = emptyList()
+    refusedRoutes = null
     stanza = null
     session = null
     saveConnection(null)
@@ -470,6 +551,14 @@ class TincVpnService : VpnService() {
     private val log by lazy { LoggerFactory.getLogger(TincVpnService::class.java)!! }
 
     private const val SETUP_DELAY = 500L // ms
+    // announced routes: quiet right after a launch (the daemon is still
+    // dialling, its view is empty), then quick polls while a fresh link brings
+    // the graph in, then slow ones; a new set must be seen twice in a row
+    private const val ROUTES_GRACE_MS = 4_000L
+    private const val ROUTES_FAST_POLL_MS = 3_000L
+    private const val ROUTES_FAST_PHASE_MS = 60_000L
+    private const val ROUTES_SLOW_POLL_MS = 15_000L
+    private const val ROUTES_TIMEOUT_S = 5L
     private val ERROR_HINTS = listOf("error", "can't", "cannot", "could not", "unable", "failed", "invalid", "denied", "refus")
     private const val STOP_TIMEOUT_S = 15L
     private const val DEVICE_FD_ABSTRACT_SOCKET = "${BuildConfig.APPLICATION_ID}.daemon.socket"
@@ -478,6 +567,7 @@ class TincVpnService : VpnService() {
 
     private val STORE_NAME = this::class.java.`package`!!.name
     private const val STORE_KEY_NETNAME = "netname"
+    private const val STORE_KEY_ROUTES_PREFIX = "announced-routes:"
 
     private val context by lazy { App.getContext() }
     private val store by lazy { context.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)!! }
@@ -497,6 +587,15 @@ class TincVpnService : VpnService() {
     @Volatile private var daemon: CompletableFuture<Unit>? = null
     @Volatile private var failedDaemonStart = false
     @Volatile private var resumeFailure: String? = null
+    /** The interface as the network configures it; [interfaceCfg] adds the announced routes to it. */
+    @Volatile private var baseCfg: VpnInterfaceConfiguration? = null
+    @Volatile private var announcedRoutes: List<CidrAddress> = emptyList()
+    @Volatile private var refusedRoutes: List<CidrAddress>? = null
+    @Volatile private var daemonLaunchedAt = 0L
+
+    private val routeTimer = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "tinc-routes").apply { isDaemon = true } }
+    @Volatile private var routeTask: ScheduledFuture<*>? = null
+    private var routeCandidate: List<CidrAddress>? = null // timer thread only
 
     private val screenStateReceiver = ScreenStateReceiver { event -> dispatch(event) }
 
@@ -530,6 +629,71 @@ class TincVpnService : VpnService() {
         }
       }
       return done
+    }
+
+    private fun remembered(netName: String, base: VpnInterfaceConfiguration): List<CidrAddress> =
+      AnnouncedRoutes.deserialise(store.getString(STORE_KEY_ROUTES_PREFIX + netName, null))
+        .filter { r -> base.routes.none { AnnouncedRoutes.covers(it, r) } }
+
+    private fun remember(netName: String, routes: List<CidrAddress>) =
+      store.edit()
+        .putString(STORE_KEY_ROUTES_PREFIX + netName, AnnouncedRoutes.serialise(routes))
+        .apply()
+
+    private fun startRouteWatcher(netName: String, forSession: Long) {
+      stopRouteWatcher()
+      scheduleRouteCheck(netName, forSession, ROUTES_FAST_POLL_MS)
+    }
+
+    private fun stopRouteWatcher() {
+      routeTask?.cancel(false)
+      routeTask = null
+    }
+
+    private fun scheduleRouteCheck(netName: String, forSession: Long, delayMs: Long) {
+      routeTask = routeTimer.schedule(Runnable { routeCheck(netName, forSession) }, delayMs, TimeUnit.MILLISECONDS)
+    }
+
+    private fun routeCheck(netName: String, forSession: Long) {
+      if (session != forSession) return
+      try {
+        pollRoutes(netName)
+      } catch (e: Exception) {
+        log.debug("Announced routes not read: {}", (e.cause ?: e).defaultMessage())
+      }
+      if (session != forSession) return
+      val sinceLaunch = SystemClock.elapsedRealtime() - daemonLaunchedAt
+      scheduleRouteCheck(netName, forSession, if (sinceLaunch < ROUTES_FAST_PHASE_MS) ROUTES_FAST_POLL_MS else ROUTES_SLOW_POLL_MS)
+    }
+
+    /** Timer thread: ask for a rebuild once a new set of announced routes has been seen twice in a row. */
+    private fun pollRoutes(netName: String) {
+      val base = baseCfg
+      if (state !is State.Connected || !isDaemonRunning() || base == null ||
+        SystemClock.elapsedRealtime() - daemonLaunchedAt < ROUTES_GRACE_MS) {
+        routeCandidate = null
+        return
+      }
+      val peers = Tinc.dumpNodes(netName, reachable = true).get(ROUTES_TIMEOUT_S, TimeUnit.SECONDS).mapNotNull { PeerStatus.parseNode(it) }
+      val self = peers.firstOrNull { it.self }?.name
+      val reachable = peers.filter { it.reachable }.map { it.name }.toSet()
+      if (self == null || reachable.none { it != self }) {
+        routeCandidate = null // linked to nobody yet: no view of the network, keep what we have
+        return
+      }
+      val subnets = AnnouncedRoutes.parse(Tinc.dumpSubnets(netName).get(ROUTES_TIMEOUT_S, TimeUnit.SECONDS))
+      val routes = AnnouncedRoutes.select(subnets, self, reachable, base)
+      if (routes == announcedRoutes || routes == refusedRoutes) {
+        routeCandidate = null
+        return
+      }
+      if (routes != routeCandidate) {
+        routeCandidate = routes
+        return
+      }
+      routeCandidate = null
+      log.info("Announced routes changed: {} -> {}", announcedRoutes, routes)
+      dispatch(Event.RoutesChanged(routes))
     }
 
     private fun saveConnection(netName: String?) =

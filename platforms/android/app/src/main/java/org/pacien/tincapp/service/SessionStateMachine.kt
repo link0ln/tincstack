@@ -18,6 +18,8 @@
 
 package org.pacien.tincapp.service
 
+import org.pacien.tincapp.data.CidrAddress
+
 /**
  * The life of one VPN session, including the `DisconnectOnScreenOff` pause.
  *
@@ -40,6 +42,12 @@ package org.pacien.tincapp.service
  * they belong to, and one from any other run is ignored: the exit of the daemon a suspend stopped
  * cannot tear down the session after a quick unlock already relaunched it, and
  * a late exit from a previous session cannot touch the next one.
+ *
+ * The routes the other nodes announce are only known once tincd runs, and a
+ * tun's routes are fixed at `establish()`: when they change
+ * ([Event.RoutesChanged]) the interface is rebuilt and tincd relaunched on the
+ * new fd as the next run, so the exit of the one it replaces is ignored like
+ * any other stale run.
  */
 object SessionStateMachine {
   data class DaemonRun(val session: Long, val launch: Int) {
@@ -78,6 +86,9 @@ object SessionStateMachine {
 
     /** Relaunching tincd as [run] failed. */
     data class ResumeFailed(val run: DaemonRun) : Event()
+
+    /** The announced routes settled on [routes] (only the announced ones, not the configured). */
+    data class RoutesChanged(val routes: List<CidrAddress>) : Event()
   }
 
   sealed class Action {
@@ -86,6 +97,9 @@ object SessionStateMachine {
 
     /** Relaunch tincd as [run] on the kept tun fd. */
     data class StartDaemon(val netName: String, val run: DaemonRun) : Action()
+
+    /** Stop tincd, establish the interface again with [routes] announced, relaunch tincd as [run] on the new fd. */
+    data class ReplaceInterface(val netName: String, val run: DaemonRun, val routes: List<CidrAddress>) : Action()
 
     /**
      * End [session] (null: whatever is left): stop tincd if running, close the
@@ -125,6 +139,15 @@ object SessionStateMachine {
       if (state is State.Connected && state.run == event.run)
         Transition(State.Idle, listOf(Action.TearDown(state.run.session, TearDownReason.RESUME_FAILED)))
       else Transition(state)
+
+    // suspended: the kept tun keeps its routes, the next run looks again
+    is Event.RoutesChanged -> when (state) {
+      is State.Connected -> state.run.next().let { run ->
+        Transition(state.copy(run = run), listOf(Action.ReplaceInterface(state.netName, run, event.routes)))
+      }
+
+      else -> Transition(state)
+    }
   }
 
   private fun sessionOf(state: State): Long? = when (state) {
