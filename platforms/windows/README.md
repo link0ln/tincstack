@@ -78,7 +78,22 @@ See `tinc.example.yaml` for an annotated example.
 
 * **Peers & Traffic** — live peer table (direct-UDP / relay / down, via-node,
   RTT, PMTU, rx/tx, subnets) + per-network throughput graph. Sampling runs on
-  a worker thread; the window never blocks on `tinc.exe`.
+  a worker thread; the window never blocks on `tinc.exe`. The **Route here**
+  column has one toggle per subnet a peer announces:
+  * a network (`192.168.1.0/24`) — writes `InterfaceRoute` and installs the
+    route live; the daemon restores it on every start (`backend/routes.py`);
+  * a default route — **all traffic (0.0.0.0/0)** makes that peer this
+    machine's exit for all IPv4 traffic (`backend/fulltunnel.py`). Stored as
+    the network-level `full_tunnel: <node>` (tincmgr's key, not a daemon
+    option). While the network runs, the manager pins every peer endpoint
+    tincd talks to (ConnectTo addresses, node and edge addresses) to the
+    physical default gateway, then adds `0.0.0.0/1` + `128.0.0.0/1` on the
+    tunnel adapter, and keeps both current every 3 s (moved endpoints, a new
+    gateway, a restarted adapter). While the exit is unreachable or stops
+    announcing 0.0.0.0/0 the split routes come off, so the machine keeps its
+    own connection. Stop / Exit removes the split routes first, then the pins.
+    IPv4 only (an announced `::/0` is shown disabled); DNS servers are not
+    changed. What happens goes to `<net>-tincmgr.log` and the toggle's tooltip.
 * **Network** — tinc.conf options (with a catalog of known options), nodes/hosts
   add/edit/delete/import/export, private keys generate/import, autostart.
 * **Transports** — `Transports` (accept list, default all) and
@@ -136,7 +151,9 @@ backend/
   paths.py               core binary + config discovery (frozen / resources / env / PATH)
   yaml_config.py         the single YAML: model, atomic merge-save, diff/patch
   transports.py          transport option schema, validation, change set
-  runtime.py             spawn/stop tincd, rotating log sink, keygen
+  runtime.py             spawn/stop tincd, rotating log sink, keygen, full-tunnel upkeep
+  routes.py              InterfaceRoute toggles: config entry + live netsh route
+  fulltunnel.py          full tunnel: endpoint pins + split routes, kept current
   tinc_control.py        `tinc dump` parsers, invite/join (mockable runner)
   management.py          elevation, Scheduled-Task autostart, firewall rule
   netmtu.py              Wintun MTU clamp via IP Helper API

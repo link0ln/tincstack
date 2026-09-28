@@ -22,6 +22,12 @@ workdir: tincmgr-data          # optional; where runtime side-files go. Default:
 networks:
   <netname>:                   # == `tinc -n <netname>`; multiple networks allowed
     autostart: true            # bring this network up on daemon/GUI launch
+    full_tunnel: euvds         # Windows manager only: send all IPv4 traffic out
+                               # through this node (it must announce 0.0.0.0/0).
+                               # Not a daemon option; tincmgr pins peer endpoints
+                               # to the physical gateway and adds 0.0.0.0/1 +
+                               # 128.0.0.0/1 on the adapter while the network runs
+                               # (platforms/windows/backend/fulltunnel.py)
 
     # ── options → tinc.conf (scalar = one line, list = many) ─────────────────
     options:
@@ -638,16 +644,12 @@ the **Route here** column, one per subnet. Ticking it writes the
 file, and installs the route on the live adapter with `netsh ... store=active`
 so it takes effect without restarting the network. Unticking removes both.
 
-Two things it will not do:
-
-- **A peer's own address gets no toggle.** It is a `/32`; it is already
-  reachable, and a route to it would be meaningless.
-- **`0.0.0.0/0` gets no toggle.** A full tunnel also sends the tunnel's own
-  packets through the tunnel unless the peer's endpoint is pinned to the
-  physical gateway first, and an endpoint that moves — a NAT rebind, an address
-  cache entry, a relayed peer with no direct endpoint at all — then takes the
-  machine off the network entirely. That is a feature with its own failure
-  modes, not a checkbox.
+A peer's own address gets no toggle: it is a `/32`, already reachable, and a
+route to it would be meaningless. `0.0.0.0/0` gets its own toggle, *all traffic*
+(since 2026-09-28): it is not an `InterfaceRoute` but the network-level
+`full_tunnel: <node>`, applied by tincmgr, which pins every tincd endpoint to
+the physical gateway before it adds `0.0.0.0/1` + `128.0.0.0/1`
+(`platforms/windows/README.md`).
 
 And one thing it will warn about: if the subnet overlaps a network this machine
 is already attached to (`192.168.1.0/24` announced by a peer, on a laptop that

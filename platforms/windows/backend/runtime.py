@@ -27,7 +27,10 @@ import threading
 import time
 from typing import IO
 
+import fulltunnel
 import paths
+import routes
+from tinc_control import TincControl
 from yaml_config import AppConfig
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -142,7 +145,8 @@ class LogSink(threading.Thread):
 
 class Runtime:
     def __init__(self, app: AppConfig, log_max_bytes: int = LOG_MAX_BYTES,
-                 log_backups: int = LOG_BACKUPS) -> None:
+                 log_backups: int = LOG_BACKUPS, ft_system: "fulltunnel.System | None" = None,
+                 ft_interval: float = fulltunnel.INTERVAL) -> None:
         self.app = app
         self.yaml = os.path.abspath(app.path)
         self.base = os.path.dirname(self.yaml)
@@ -151,6 +155,13 @@ class Runtime:
         self._procs: dict[str, subprocess.Popen] = {}
         self._sinks: dict[str, LogSink] = {}
         self._fw_done = False
+        # full tunnel (fulltunnel.py): one maintainer thread per network whose
+        # `full_tunnel` names an exit node, while that network runs. The system
+        # layer is injectable for tests; None = the real one on Windows.
+        self._ft: dict[str, fulltunnel.Maintainer] = {}
+        self._ft_lock = threading.Lock()
+        self._ft_system = ft_system
+        self._ft_interval = ft_interval
         self._ensure_bins()
 
     def _ensure_bins(self) -> None:
@@ -233,6 +244,9 @@ class Runtime:
         if not os.path.isfile(self.tincd):
             return False, f"tincd not found: {self.tincd}"
         if self.is_running(net_name):
+            # a daemon this process did not start (the manager restarted): it
+            # still gets its full tunnel maintained
+            self.full_tunnel_sync(net_name)
             return True, "already running"
         # No key check here: the core materialises Name/keys/pool on first start
         # (M1 zero-config) — an empty network stanza is a valid starting point.
@@ -263,9 +277,12 @@ class Runtime:
         if sys.platform == "win32" and nc.device_type == "wintun":
             threading.Thread(target=self._apply_wintun_mtu, args=(net_name,),
                              name=f"mtu-{net_name}", daemon=True).start()
+        # the maintainer waits for the daemon and its adapter by itself
+        self.full_tunnel_sync(net_name)
         for _ in range(20):
             time.sleep(0.25)
             if proc.poll() is not None:
+                self._full_tunnel_off(net_name)
                 return False, f"tincd exited rc={proc.returncode} (see {self.log_path(net_name)})"
             if self.is_running(net_name):
                 return True, "started"
@@ -311,6 +328,8 @@ class Runtime:
             self._log_line(net_name, f"[tincmgr] wintun MTU clamp to {mtu} FAILED: {msg}")
 
     def stop(self, net_name: str, timeout: float = 8.0) -> tuple[bool, str]:
+        # the split routes and pins go first, while the adapter still exists
+        self._full_tunnel_off(net_name)
         # graceful: tincd removes its Wintun adapter on a clean stop
         self._tinc(net_name, "stop", timeout=timeout)
         proc = self._procs.get(net_name)
@@ -337,6 +356,68 @@ class Runtime:
     def restart(self, net_name: str) -> tuple[bool, str]:
         self.stop(net_name)
         return self.start(net_name)
+
+    # -- full tunnel: all IPv4 traffic through the exit node (fulltunnel.py) --
+    def _ft_sys(self) -> "fulltunnel.System | None":
+        return self._ft_system if self._ft_system is not None else fulltunnel.system()
+
+    def _daemon_alive(self, net_name: str) -> bool:
+        proc = self._procs.get(net_name)
+        return (proc is not None and proc.poll() is None) or self.is_running(net_name)
+
+    def _full_tunnel_off(self, net_name: str) -> None:
+        with self._ft_lock:
+            m = self._ft.pop(net_name, None)
+        if m is not None:
+            m.stop()
+
+    def full_tunnel_sync(self, net_name: str) -> str:
+        """Make the maintainer match the config: running while `full_tunnel`
+        names an exit node and the daemon runs, stopped (split routes and pins
+        removed) otherwise. Safe to call from any thread, and cheap when
+        nothing changes. Returns a line for the status bar."""
+        nc = self.app.net(net_name)
+        want = nc.full_tunnel if nc else ""
+        with self._ft_lock:
+            cur = self._ft.get(net_name)
+        if cur is not None and cur.exit_node != want:
+            self._full_tunnel_off(net_name)
+            cur = None
+        if not want:
+            return "full tunnel off"
+        if cur is not None:
+            return f"full tunnel via {want}: {cur.ft.state}"
+        system = self._ft_sys()
+        if system is None:
+            return f"full tunnel via {want} saved; routes are only applied on Windows"
+        if not self._daemon_alive(net_name):
+            return f"full tunnel via {want} saved; applied when '{net_name}' starts"
+        ft = fulltunnel.FullTunnel(net=net_name, exit_node=want,
+                                   aliases=routes.adapter_aliases(nc.options, net_name),
+                                   system=system)
+        tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
+
+        def config() -> tuple[dict, dict, str]:
+            cfg = self.app.net(net_name)
+            if cfg is None:
+                return {}, {}, ""
+            return dict(cfg.options), dict(cfg.hosts), cfg.node_name
+
+        m = fulltunnel.Maintainer(ft, lambda: tc.snapshot(net_name), config,
+                                  lambda line: self._log_line(net_name, f"[tincmgr] {line}"),
+                                  interval=self._ft_interval)
+        with self._ft_lock:
+            if net_name in self._ft:          # another thread won the race
+                return f"full tunnel via {want}: {self._ft[net_name].ft.state}"
+            self._ft[net_name] = m
+        m.start()
+        return f"full tunnel via {want}: starting"
+
+    def full_tunnel_state(self, net_name: str) -> str:
+        """What the maintainer is doing right now, '' when it is not running."""
+        with self._ft_lock:
+            m = self._ft.get(net_name)
+        return m.ft.state if m else ""
 
     def start_autostart(self) -> list[tuple[str, bool, str]]:
         results = []

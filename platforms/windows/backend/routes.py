@@ -27,12 +27,12 @@ import subprocess
 
 OPTION = "InterfaceRoute"
 
-# The default route is deliberately not offered as a one-click toggle. Sending
-# everything through the tunnel also sends the tunnel's own packets through it
-# unless the peer's endpoint is pinned to the physical gateway first, and an
-# endpoint that moves (NAT rebind, address cache, a relayed peer with no direct
-# endpoint at all) then takes the whole machine off the network. That is a
-# feature with its own failure modes, not a checkbox.
+# The default route is not an InterfaceRoute. Sending everything through the
+# tunnel also sends the tunnel's own packets through it unless every peer
+# endpoint is pinned to the physical gateway first and kept pinned while
+# endpoints and gateways move -- a job that runs for as long as the network
+# does, which fulltunnel.py does. The daemon would install an InterfaceRoute
+# 0.0.0.0/0 at start, before anything is pinned, and loop on its first dial.
 FULL_TUNNEL = ("0.0.0.0/0", "::/0")
 
 
@@ -45,9 +45,17 @@ def parse_subnet(text: str):
         return None
 
 
+def is_full_tunnel(subnet: str) -> bool:
+    """True for a default route (0.0.0.0/0 or ::/0): the full-tunnel toggle,
+    handled by fulltunnel.py rather than as an InterfaceRoute."""
+    net = parse_subnet(subnet)
+    return net is not None and str(net) in FULL_TUNNEL
+
+
 def routable(subnet: str) -> bool:
-    """True if a route to `subnet` is worth offering: a real network announced
-    by a peer, not that peer's own address and not the default route."""
+    """True if `subnet` gets an InterfaceRoute toggle: a real network announced
+    by a peer, not that peer's own address and not the default route (which
+    gets the full-tunnel toggle instead, see is_full_tunnel)."""
     net = parse_subnet(subnet)
     if net is None or str(net) in FULL_TUNNEL:
         return False
@@ -60,9 +68,9 @@ def why_not_routable(subnet: str) -> str:
     if net is None:
         return f"{subnet} is not a subnet this can route"
     if str(net) in FULL_TUNNEL:
-        return ("A full tunnel is not a one-click toggle: everything, including this "
-                "tunnel's own packets, would go through it unless the peer's endpoint "
-                "is pinned to the physical gateway first.")
+        return ("The default route is the full tunnel toggle, not an InterfaceRoute: "
+                "peer endpoints are pinned to the physical gateway first, then "
+                "0.0.0.0/1 and 128.0.0.0/1 go on the tunnel adapter (fulltunnel.py).")
     if net.prefixlen >= net.max_prefixlen:
         return f"{subnet} is that node's own address, already reachable through the tunnel"
     return ""

@@ -13,7 +13,7 @@ import routes
     ("fd00::/64", True),
     ("10.200.240.7", False),        # the peer's own address (tinc prints /32 bare)
     ("10.200.240.7/32", False),
-    ("0.0.0.0/0", False),           # a full tunnel is not a checkbox
+    ("0.0.0.0/0", False),           # the full-tunnel toggle, not an InterfaceRoute
     ("::/0", False),
     ("not a subnet", False),
     ("", False),

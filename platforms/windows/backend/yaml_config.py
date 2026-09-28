@@ -64,6 +64,7 @@ class NetworkCfg:
     keys: dict = field(default_factory=dict)     # 'ed25519_priv' / 'rsa_priv' / 'tls_*' -> PEM
     scripts: dict = field(default_factory=dict)  # 'tinc-up'/... -> script text
     wintun_mtu: int = 0                           # forced IPv4 MTU on the Wintun adapter (0 = 1400)
+    full_tunnel: str = ""                         # exit node for all IPv4 traffic ('' = off), fulltunnel.py
     extra: dict = field(default_factory=dict)    # unknown per-network keys, carried verbatim
 
     @property
@@ -94,7 +95,7 @@ class AppConfig:
 
 # ---- helpers -----------------------------------------------------------------
 
-_NET_KEYS = ("autostart", "options", "hosts", "keys", "scripts", "wintun_mtu")
+_NET_KEYS = ("autostart", "options", "hosts", "keys", "scripts", "wintun_mtu", "full_tunnel")
 
 
 def _scalar(v: Any) -> str:
@@ -291,6 +292,7 @@ def from_document(doc: dict, path: str = "") -> AppConfig:
             keys=copy.deepcopy(dict(nd.get("keys") or {})),
             scripts=copy.deepcopy(dict(nd.get("scripts") or {})),
             wintun_mtu=int(nd.get("wintun_mtu") or 0),
+            full_tunnel=str(nd.get("full_tunnel") or "").strip(),
             extra={k: copy.deepcopy(v) for k, v in nd.items() if k not in _NET_KEYS},
         )
     app.baseline = copy.deepcopy(doc)
@@ -306,6 +308,8 @@ def to_dict(app: AppConfig) -> dict:
         entry: dict = {"autostart": nc.autostart, "options": nc.options}
         if nc.wintun_mtu:
             entry["wintun_mtu"] = nc.wintun_mtu
+        if nc.full_tunnel:
+            entry["full_tunnel"] = nc.full_tunnel
         if nc.keys:
             entry["keys"] = nc.keys
         if nc.scripts:
@@ -428,6 +432,7 @@ def refresh_in_place(app: AppConfig, doc: dict) -> None:
             continue
         nc.autostart = fnc.autostart
         nc.wintun_mtu = fnc.wintun_mtu
+        nc.full_tunnel = fnc.full_tunnel
         for attr in ("options", "hosts", "keys", "scripts", "extra"):
             d = getattr(nc, attr)
             d.clear()

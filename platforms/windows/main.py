@@ -121,6 +121,7 @@ def human_bytes(n: int) -> str:
 
 class PeersTab(QtWidgets.QWidget):
     COLS = ["Peer", "Link", "Via", "Dist", "RTT ms", "PMTU", "RX", "TX", "Subnets", "Route here"]
+    FULL_TUNNEL_LABEL = "all traffic ({})"     # the Route here toggle for an announced default route
 
     def __init__(self, tc: TincControl, nets_fn: Callable[[], list[str]], pool: WorkerPool,
                  on_running: Callable[[dict[str, bool]], None], ctx: Any = None) -> None:
@@ -249,17 +250,25 @@ class PeersTab(QtWidgets.QWidget):
         return nc.options if nc else None
 
     def _route_cell(self, row: int, n) -> None:
-        """One toggle per routable subnet this peer announces. Ticked = this
-        machine has a route to it through the tunnel."""
+        """One toggle per subnet this peer announces that this machine can
+        route: an InterfaceRoute toggle for a network (ticked = routed through
+        the tunnel), and the full-tunnel toggle for a default route (ticked =
+        all IPv4 traffic goes out through this peer, fulltunnel.py)."""
         col = len(self.COLS) - 1
         options = self._options()
-        subnets = [] if (n.is_self or options is None) else [s for s in n.subnets if routes.routable(s)]
-        sig = (tuple(subnets), tuple(routes.has(options, s) for s in subnets) if options else ())
+        nc = self.ctx.app.net(self.net) if (self.ctx and self.net) else None
+        mine = n.is_self or options is None
+        subnets = [] if mine else [s for s in n.subnets if routes.routable(s)]
+        defaults = [] if mine else [s for s in n.subnets if routes.is_full_tunnel(s)]
+        exit_on = bool(nc and nc.full_tunnel == n.name)
+        ft_state = self.ctx.rt.full_tunnel_state(self.net) if (exit_on and self.ctx) else ""
+        sig = (tuple(subnets), tuple(routes.has(options, s) for s in subnets) if options else (),
+               tuple(defaults), exit_on, ft_state)
         cached = self._route_cells.get(n.name)
         if cached and cached[0] == sig:
             self.table.setCellWidget(row, col, cached[1])
             return
-        if not subnets:
+        if not subnets and not defaults:
             self._route_cells.pop(n.name, None)
             self.table.removeCellWidget(row, col)
             return
@@ -278,9 +287,54 @@ class PeersTab(QtWidgets.QWidget):
                          f"and Windows drops it when the network stops.")
             b.clicked.connect(lambda checked, s=sub, node=n: self._toggle_route(node, s, checked))
             lay.addWidget(b)
+        for sub in defaults:
+            b = QtWidgets.QToolButton()
+            b.setText(self.FULL_TUNNEL_LABEL.format(sub))
+            b.setCheckable(True)
+            if routes.parse_subnet(sub).version == 6:
+                b.setEnabled(False)
+                b.setToolTip(f"{n.name} announces an IPv6 default route. This client "
+                             f"sends only IPv4 through a full tunnel so far.")
+            else:
+                b.setChecked(exit_on)
+                b.setToolTip(
+                    f"Send ALL of this machine's IPv4 traffic out through {n.name}.\n"
+                    f"The addresses of the peers tincd talks to are pinned to the "
+                    f"physical gateway first, then 0.0.0.0/1 and 128.0.0.0/1 go on the "
+                    f"tunnel adapter; kept up to date while the network runs.\n"
+                    f"While {n.name} is unreachable the routes are taken off, so the "
+                    f"machine keeps its own connection. DNS and IPv6 are not changed."
+                    + (f"\n\nNow: {ft_state}" if ft_state else ""))
+                b.clicked.connect(lambda checked, node=n: self._toggle_full_tunnel(node, checked))
+            lay.addWidget(b)
         lay.addStretch()
         self._route_cells[n.name] = (sig, w)
         self.table.setCellWidget(row, col, w)
+
+    def _toggle_full_tunnel(self, node, on: bool) -> None:
+        """Make `node` this network's exit for all IPv4 traffic, or stop. One
+        exit per network: choosing another node moves it there. The setting is
+        `full_tunnel` in tinc.yaml; Runtime applies and maintains the routes."""
+        ctx, net = self.ctx, self.net
+        nc = ctx.app.net(net) if (ctx and net) else None
+        if nc is None:
+            return
+        prev = nc.full_tunnel
+        nc.full_tunnel = node.name if on else ""
+        self._route_cells.clear()          # the previous exit's toggle changes too
+        if not ctx.save_config():
+            nc.full_tunnel = prev
+            self._table(self._snaps.get(net))
+            return
+        ctx.status(f"all traffic through {node.name}: applying…" if on else "full tunnel: turning off…")
+
+        def done(msg: str) -> None:
+            ctx.status(msg)
+            self._route_cells.clear()
+            self._table(self._snaps.get(net))
+        ctx.pool.run(ctx.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}", on_done=done,
+                     on_error=lambda m: ctx.status(f"full tunnel: {m}"))
+        self._table(self._snaps.get(net))
 
     def _toggle_route(self, node, subnet: str, on: bool) -> None:
         options = self._options()
@@ -1066,6 +1120,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._running.update(running)
         if changed:
             self.reload_networks()
+        # a running network with a full tunnel configured but no maintainer
+        # (its daemon outlived a previous manager, or was started elsewhere)
+        for net, up in running.items():
+            nc = self.app.net(net)
+            if up and self.admin and nc and nc.full_tunnel and not self.rt.full_tunnel_state(net):
+                self.pool.run(self.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}")
 
     def _select_net(self, name: str) -> bool:
         for i in range(self.net_list.count()):

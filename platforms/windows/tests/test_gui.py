@@ -56,7 +56,7 @@ class FakeTinc:
     """Mocked `tinc` runner: records every call and the thread it ran on."""
 
     def __init__(self, yaml_path: str, running: bool = True, delay: float = 0.0,
-                 peer: bool = False, cert_days: int | None = None):
+                 peer: bool = False, cert_days: int | None = None, v6_default: bool = False):
         self.yaml_path = yaml_path
         self.running = running
         self.delay = delay
@@ -66,6 +66,7 @@ class FakeTinc:
         # `peer`: also report a gateway node that announces a LAN and a default
         # route, which is what the route toggles are about.
         self.peer = peer
+        self.v6_default = v6_default
         self.calls = []
         self.threads = set()
 
@@ -88,7 +89,8 @@ class FakeTinc:
             return 0, ("10.79.0.1 owner demobook\n"
                        "10.79.0.7 owner gw\n"
                        "192.168.1.0/24 owner gw\n"
-                       "0.0.0.0/0 owner gw\n"), ""
+                       "0.0.0.0/0 owner gw\n"
+                       + ("::/0 owner gw\n" if self.v6_default else "")), ""
         if sub[0] == "dump":
             return 0, "", ""
         if sub[0] == "invite":
@@ -427,15 +429,67 @@ def _route_buttons(w, peer_name):
     raise AssertionError(f"no row for {peer_name}")
 
 
+FULL = "all traffic (0.0.0.0/0)"
+
+
 def test_route_toggle_only_for_subnets_worth_routing(window_with_peer):
     w = window_with_peer
     btns = _route_buttons(w, "gw")
-    # the announced LAN gets a toggle; the peer's own address and the default
-    # route do not
-    assert set(btns) == {"192.168.1.0/24"}
+    # the announced LAN gets a route toggle, the announced default route the
+    # full-tunnel toggle; the peer's own address gets none
+    assert set(btns) == {"192.168.1.0/24", FULL}
     assert not btns["192.168.1.0/24"].isChecked()
+    assert not btns[FULL].isChecked() and btns[FULL].isEnabled()
     # ...and this node itself never offers one
     assert _route_buttons(w, "demobook") == {}
+
+
+def test_full_tunnel_toggle_writes_the_setting_and_applies_it(window_with_peer, monkeypatch):
+    w = window_with_peer
+    synced = []
+    monkeypatch.setattr(w.rt, "full_tunnel_sync",
+                        lambda net: synced.append(net) or f"full tunnel via gw: starting")
+    monkeypatch.setattr(w.rt, "full_tunnel_state", lambda net: "active via gw" if synced else "")
+
+    _route_buttons(w, "gw")[FULL].click()
+    # stored as tincmgr's own network key, not as an option the daemon reads
+    net = yc.load(w.app.path).net("demo")
+    assert net.full_tunnel == "gw"
+    assert "InterfaceRoute" not in net.options
+    assert wait_until(lambda: "demo" in synced)
+    assert set(synced) == {"demo"}
+    assert wait_until(lambda: "full tunnel via gw" in w.statusBar().currentMessage())
+    w.peers._table(w.peers._snaps.get("demo"))
+    btn = _route_buttons(w, "gw")[FULL]
+    assert btn.isChecked() and "Now: active via gw" in btn.toolTip()
+
+    before = len(synced)
+    btn.click()
+    assert yc.load(w.app.path).net("demo").full_tunnel == ""
+    assert "full_tunnel" not in open(w.app.path, encoding="utf-8").read()
+    assert wait_until(lambda: len(synced) > before)
+    w.peers._table(w.peers._snaps.get("demo"))
+    assert not _route_buttons(w, "gw")[FULL].isChecked()
+
+
+def test_ipv6_default_route_is_shown_but_not_offered(qapp, tmp_path, monkeypatch):
+    monkeypatch.setenv("TINCSTACK_BIN_DIR", str(tmp_path / "nobin"))
+    cfg = tmp_path / "tinc.yaml"
+    cfg.write_text(BASE_YAML)
+    fake = FakeTinc(str(cfg), peer=True, v6_default=True)
+    w = tincmgr.MainWindow(str(cfg), runner=fake, autostart=False)
+    try:
+        assert wait_until(lambda: "gw" in (w.peers._snaps.get("demo").nodes if
+                                           w.peers._snaps.get("demo") else {}))
+        btns = _route_buttons(w, "gw")
+        v6 = btns["all traffic (::/0)"]
+        assert not v6.isEnabled() and "IPv6" in v6.toolTip()
+        assert btns[FULL].isEnabled()
+    finally:
+        w.timer.stop()
+        w.pool.wait_all()
+        w.deleteLater()
+        QtWidgets.QApplication.processEvents()
 
 
 def test_route_toggle_writes_and_removes_interfaceroute(window_with_peer, monkeypatch):
