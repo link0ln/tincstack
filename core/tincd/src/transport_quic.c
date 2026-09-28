@@ -1284,6 +1284,13 @@ static void quic_settings(ngtcp2_settings *settings, ngtcp2_transport_params *pa
 	ngtcp2_settings_default(settings);
 	settings->initial_ts = quic_now();
 	settings->handshake_timeout = (ngtcp2_duration)pingtimeout * NGTCP2_SECONDS;
+	/* BBR, not ngtcp2's default CUBIC. The tunnel rides DATAGRAM frames,
+	   which are congestion-controlled, under the tunnel's own TCP. On
+	   ruvds2 <-> euvds (1 % loss, 41 ms) a loss-based controller held the
+	   whole tunnel at 1.5 Mbit/s where the raw path does 85; BBR keeps the
+	   path's rate and leaves the loss to the inner TCP (lab: 3.1 -> 173
+	   Mbit/s, PLAN.md). Nothing on the wire names the controller. */
+	settings->cc_algo = NGTCP2_CC_ALGO_BBR;
 
 	/* What an HTTP/3 endpoint announces (testing/fingerprint: curl 8.14 and
 	   Chromium 153 both allow 100 bidirectional and >= 100 unidirectional

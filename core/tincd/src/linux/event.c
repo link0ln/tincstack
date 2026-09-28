@@ -116,7 +116,12 @@ bool event_loop(void) {
 		struct timeval *tv = timeout_execute(&diff);
 
 		struct epoll_event events[MAX_EVENTS_PER_LOOP];
-		long timeout = (tv->tv_sec * 1000) + (tv->tv_usec / 1000);
+		/* Round up. Truncated, a timer less than a millisecond away became
+		   epoll_wait(0) and the loop spun until it was due; the quic carrier
+		   arms ngtcp2's microsecond timers on every packet, so at 1 Mbit/s
+		   that spin was 15 % of a core (windows/event.c adds 1 for the same
+		   reason). */
+		long timeout = (tv->tv_sec * 1000) + ((tv->tv_usec + 999) / 1000);
 
 		if(timeout > INT_MAX) {
 			timeout = INT_MAX;

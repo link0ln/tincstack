@@ -1032,6 +1032,70 @@ the self-test aborts on the old code and on the first half of the fix alone;
 lab and mechanism: `docs/transports.md`, obfs "Key schedule"; runs
 `testing/nat-sim/results/2026-09-26/n2/obfs-close/`.
 
+## 38. A node's own IndirectData is declared on its edges, and AutoConnect honours it (tincstack, 2026-09-28)
+
+`connection.h` `OPTION_DECLARED_INDIRECT` (0x10); `net_setup.c`,
+`protocol_auth.c` (`send_ack`, `ack_h`); `autoconnect.c`
+`declared_indirect()`.
+
+Upstream's `OPTION_INDIRECT` on an edge cannot say who asked for it:
+`TCPOnly` and the https carrier imply it too, and `ack_h()` merges the
+peer's bits into the connection. As a result, a node that must be reached
+only through its relay was still dialled by every AutoConnect client.
+
+A node that sets `IndirectData` now also sends 0x10. The bit is never
+merged from the peer's ACK, so it appears on the declaring node's own edges
+only. AutoConnect skips any node that has such an edge. Nodes from before
+this patch ignore the bit.
+
+Proof: `testing/indirect/run.sh`. It fails on v0.5.0 (the client dials the
+exit) and passes with this patch, including against an older relay
+(`RELAY_IMAGE`).
+
+## 39. Linux event loop: a timer less than 1 ms away does not spin the loop (tincstack, 2026-09-28)
+
+`linux/event.c event_loop()`.
+
+The epoll timeout was `tv_sec * 1000 + tv_usec / 1000`, so a timer 1-999 us
+away became `epoll_wait(0)` and the loop spun until it was due. Upstream's
+timers are whole seconds and rarely hit this. The quic carrier arms
+ngtcp2's microsecond timers on every packet.
+
+Measured at 1 Mbit/s with a 40 ms RTT on an i9: the quic arm cost 15 % of a
+core, against 0.4-0.7 % for plain, obfs, sf and https. `perf` showed only
+syscall entry/exit, `epoll_wait`, `timeout_execute` and `gettimeofday`. The
+live euvds used 11.6 % of its vCPU at 1 Mbit/s. Android builds the same
+file.
+
+The timeout is now rounded up, as `windows/event.c` already does with its
+`+ 1`. After: 1.5 % at 1 Mbit/s; at 5 Mbit/s 3.7 % / 3.5 %, was
+20.8 % / 4.7 %. Harness: `testing/perf/bench.sh` with `DELAY`.
+
+## 40. quic: BBR congestion control for the carrier connection (tincstack, 2026-09-28)
+
+`transport_quic.c` (`settings->cc_algo`).
+
+A node reached through the quic connection itself carries the tunnel in
+DATAGRAM frames. That covers an `IndirectData` neighbour, and any peer
+without a direct path. DATAGRAM frames are congestion-controlled, and
+ngtcp2's default is CUBIC. Under loss, CUBIC holds the tunnel at the Mathis
+limit, and the 64-slot datagram queue tail-drops behind it.
+
+Live, euvds -> ruvds2 (1 % loss, 41 ms):
+- raw TCP: 85 Mbit/s;
+- classic tinc UDP (gnet): 87 Mbit/s;
+- this carrier: 1.5 Mbit/s.
+
+Lab, RTT 40 ms with 1 % loss each way (`bench.sh` with `DELAY`, `LOSS`,
+`INDIRECT`):
+- plain: 228.6 Mbit/s;
+- quic DATAGRAM + CUBIC: 3.1 Mbit/s;
+- quic DATAGRAM + BBR: 173.1 Mbit/s.
+
+No packet names the controller. `quic-wire` and `quic-listener-wire` still
+pass, so the flights are unchanged. Only a bulk flow's shape changes: it is
+Google's servers' controller rather than nginx's or curl's.
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):
