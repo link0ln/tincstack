@@ -62,7 +62,38 @@ RUN meson setup build --prefix=/usr/local --localstatedir=/var \
     && ninja -C build \
     && DESTDIR=/install ninja -C build install
 
-FROM debian:13-slim
+# Unit-test stage (`docker build --target test`, `make unit`). It rebuilds the
+# daemon with the cmocka harness and runs `test_authn`, so a change that brings
+# back the authenticator log-line / name-enumeration oracle (§43) fails the
+# build. It is a leaf stage: the runtime image below never depends on it, so a
+# plain build stays test-free and cmocka never reaches the final image.
+#
+# It sits BEFORE the runtime stage on purpose: `docker build` with no --target
+# builds the LAST stage in the file, so the runtime image must be last or a
+# plain `make build-core` would build this test image instead (485 MB, debug,
+# no tincd on PATH) and every harness that auto-builds the core would break.
+#
+# Only `test_authn` is gated. The wider unit suite has never been green on this
+# fork (PLAN.md 🟡 "the upstream tinc test suite has never run on this fork"),
+# so running it here would fail the build for reasons unrelated to this tree.
+#
+# TINC_AUTHN_REPORT_ONLY keeps the *timing* assertions off a shared CI runner
+# (they need a quiet host and a tuned round count); the deterministic checks --
+# above all "an unknown name writes no log line" -- still gate. The quicdeps
+# and build layers are reused from the `build` stage, so only the debug tinc
+# and the test binary compile here.
+FROM build AS test
+ARG QUIC=enabled
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libcmocka-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN meson setup build-test --localstatedir=/var \
+        -Dbuildtype=debug -Dminiupnpc=disabled -Dtests=enabled -Ddocs=disabled \
+        -Dquic=${QUIC} \
+    && TINC_AUTHN_REPORT_ONLY=1 meson test -C build-test --suite unit --print-errorlogs authn
+
+# Runtime image. Kept LAST so `docker build` with no --target produces it.
+FROM debian:13-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3t64 zlib1g liblzo2-2 liblz4-1 libncursesw6 libreadline8t64 \
         iproute2 iputils-ping iptables ca-certificates \

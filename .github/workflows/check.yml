@@ -5,6 +5,9 @@
 #   build  core/Dockerfile.build (with the QUIC stage) via buildx, layer cache
 #          in the GitHub Actions cache; the image is handed to the lab jobs as
 #          an artifact so nothing is built twice
+#   unit   the Dockerfile's `test` stage: test_authn under cmocka, so the
+#          authenticator log-line / name-enumeration guard (§43) cannot regress
+#          green; reuses the build job's cached quicdeps/build layers
 #   smoke  testing/smoke (two-node docker compose, YAML mode, ping both ways)
 #   nat    the NAT lab: upstream baseline image + lab image, then
 #          validate-nat, the quick matrix and the dpi baseline capture
@@ -79,6 +82,27 @@ jobs:
           name: core-image
           path: core-image.tar.gz
           retention-days: 1
+
+  # The `test` stage recompiles the daemon in debug and runs test_authn; the
+  # build fails if the test fails. `needs: build` lets buildx pull the
+  # quicdeps/build layers the build job wrote to the GHA cache, so only the
+  # debug tinc and the test binary compile here. TINC_AUTHN_REPORT_ONLY keeps
+  # the timing assertions off this shared runner; the deterministic checks
+  # (an unknown name writes no log line) still gate.
+  unit:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: test_authn (§43 guard)
+        uses: docker/build-push-action@v6
+        with:
+          context: core
+          file: core/Dockerfile.build
+          target: test
+          cache-from: type=gha
 
   smoke:
     needs: build
