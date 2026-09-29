@@ -1,6 +1,6 @@
 # PLAN.md — tincstack
 
-**Last Updated:** 2026-09-28, evening (**v0.5.2 (BBR quic carrier, no loop spin) runs on euvds and ruvds2: tunnel euvds -> ruvds2 1.5 -> 66.3 Mbit/s, ruvds2 -> euvds 12.8 -> 77.8; its GitHub Release waits for a re-run of a flaky android job. Before that: the phone's slow internet is two quic-carrier defects: ruvds2 <-> euvds carries the tunnel in QUIC DATAGRAMs (since euvds' IndirectData) under ngtcp2's CUBIC, 1.5 Mbit/s live where the raw path does 85 and classic tinc 87 -- BBR, lab 3.1 -> 173 Mbit/s at 1 % loss; and the Linux/Android event loop spun on sub-millisecond timers, 15 % of a core at 1 Mbit/s for quic -- rounded up, 1.5 %. quic regressions pass.**) 2026-09-28, later (**v0.5.1 released from 5c768a7 and checked after download: APK signed with the release cert, versionCode 501; Windows zip sums match; ghcr core/node:v0.5.1 resolve and the published core passes the indirect lab. Servers not moved to it yet.**) 2026-09-28 (**euvds talks to ruvds2 only: `IndirectData` plus a new `OPTION_DECLARED_INDIRECT` bit that AutoConnect honours, proven by a new lab that fails on v0.5.0; the Android app takes every announced route on its own, so the phone finally uses euvds' 0.0.0.0/0 -- unit-tested and proven on the emulator with the signed release APK, not yet on the phone.**) 2026-09-28 (**the Windows manager's Route here column now offers the one route the owner actually needed: an announced 0.0.0.0/0 gets an *all traffic* toggle that makes that peer the exit for all IPv4 traffic, with every peer endpoint pinned to the physical gateway before 0.0.0.0/1 + 128.0.0.0/1 go on the adapter, kept current every 3 s, fail-open while the exit is down (`backend/fulltunnel.py`). The 09-19 entry claimed the default-route refusal was "stated in the UI"; it was an empty cell. 144 Windows tests pass under Wine's Windows CPython; not proven on real Windows.**) Before that, 2026-09-27, later (**v0.5.0 released from 40c0745 (tag pushed by the owner): release run 36314773996, all five jobs green; assets checked after download -- the Windows zip's SHA256SUMS match all three PE32+ exes, the APK is signed (release cert SHA-256 235f6087...), versionCode 500, all four ABIs carry the N2 core; `ghcr.io/link0ln/tincstack/{node,core}:v0.5.0` pull anonymously. ruvds2 runs `tincstack/node:40c0745` (same tree), the owner's phone joined it and connected (debug build). Not proven: real Windows, the release APK on a device.**) Before that, 2026-09-27 (**stream U merged: the owner's phone could not join ruvds2 -- a pasted invitation with a trailing line break failed in the core's argv parsing before anything reached the inviter, every failed join left a phantom network (the core's `make_names` creates `<net>/<net>/` first), Connect on it hung for ever (a one-shot failure event lost behind the notification-permission dialog), and a stale Russian translation blamed "network.conf". The Android app is now one screen around the tincstack model, Material 3, English only, legacy tincapp UI removed (incl. a DocumentsProvider that served `tinc.yaml` with keys); join is all-or-nothing through a staging dir; proven through the UI on the emulator (`ui-flows-on-emulator.sh` x2, D2 scripts, `android-emulator-test.sh`, 77 unit tests). Not proven: an ARM device, the owner's phone. Stream N2 merged: the direct peer-to-peer path is sealed as obfs frame v3 under masking carriers (0 zero-dst-id datagrams, 0 fixed 51-B probes, entropy 7.95+ bit; SPTPS untouched inside; PMTU 1439 -> 1413), quic no longer hands out its QUIC flow as the node's UDP address (quic matrix 1/6 -> 6/6 direct), a coordinated punch with back-off (masq/cgnat pairs at rtt 40: 0/3 -> 5/5), a rekey keeps a confirmed direct path (11.4 % relayed -> 0), and an obfs black hole its final regression found (6/10 -> 0/5 runs). Merged core is byte-identical to N2's regression image; mixed-version vs the deployed e90715c core PASS with the wire check. Nodes from before this merge still interoperate (sealed with the bootstrap key), upstream tinc peers go via relay. On the merged tree: `make lint` 0 (after a shellcheck fix in `ui-join.sh`), `make secrets` 0, Android core rebuilt with the N2 core and `android-emulator-test.sh` rc 0 (https + quic connect, ClientHellos equal Linux/curl). Not deployed yet: ruvds2 and the owner's APK still run the e90715c core until the phone test passes.**) Before that, 2026-09-26, later (**wave W, part 2: streams Q and N merged. quic: the listener decides a request on its HEADERS -- the dialler's authenticator rides an exporter-bound session cookie -- so a POST gets nginx's 405 at nginx's time (the one-probe POST-405 tell is gone); the HTTP/3 decoy gets every request field and frames its answer as nginx; an idle quic link sends what an idle curl sends (a PING every 15 s; 266 -> 55 packets in 200 s); full datagrams are 1200 B. Price: diallers from before today drop quic once per reconnect towards an upgraded listener. NAT deep dive (`docs/nat.md`): the 09-16 "MASQUERADE is not EIM" was a lab artefact; the relay-only masq pairs fail on packet order (tinc poisons the mapping with early probes), not on mapping; quic hands its QUIC flow out as the node's UDP address and loses direct paths; https via a relay delivered nothing (inherited from upstream TCPOnly; fixed). **The biggest finding is not NAT: the direct peer-to-peer path is cleartext tinc UDP under every carrier** -- owner 2026-09-26: seal it as obfs does (stream N2). Master pushed at 32362a1 before these merges; both merges re-verified: 26 runs green, `quic-listener-wire` failed once on ACK timing and passed 3/3 on re-run (🟢 below).**) Before that, 2026-09-26 (**wave W, part 1: a prioritised backlog handed to parallel agent streams, each verified and merged here. Fixed with proof: 🔴 a quic use-after-free -- stream buffers moved under ngtcp2's retransmission; under loss quic links died (2/2000 pings) and the listener's QPACK decoder stream, which any prober can grow, sent freed heap bytes (ASan) -- `quic_txq.c`, new `quic-loss-test.sh`; 🔴 obfs was recognisable from one datagram (length in clear, constant nonce bytes) -- frame v3 with QUIC-style header protection and random tails, statistics now at random level; the quic listener after the handshake is nginx's (`quic-listener-wire-test.sh` 9/9: tickets, first 1-RTT packet, wrong-ALPN close); the decoy is Debian 13 nginx 1.26.3 byte for byte (78/78, with 304/Range/gzip/Alt-Svc/proxy_pass/tickets); Windows: the logon task runs a onedir install instead of a %TEMP%-unpacking onefile, the config gets a private DACL, json/httpc bounds and a dechunk overflow fixed; operator port-forwards (`HttpsPortPublic`/`QuicPortPublic`), exclusive Windows listeners, a leaf compose that publishes nothing. A measurement stream (F) found further tells now listed below (https record sizes, quic idle bursts and 1160-B datagrams, POST-405 timing -- owner chose an exporter-bound token in HEADERS). h2 on the TLS front was tried and deferred (it would cut current diallers off https). Open in wave W: stream Q (POST token, quiet idle quic, 1200-B datagrams, dialler packets), stream N (NAT deep dive), the full regression.**) Before that, 2026-09-25, night (**the quic listener's transport parameters and HTTP/3 SETTINGS are nginx 1.26.3's: its parameters in nginx's order and values with no `max_datagram_frame_size` and no `version_information` (EE 121 B as nginx's, compared decrypted), SETTINGS QPACK 4096/128 and a decoder stream only -- and since a 4096 table is a promise Chromium takes up, a real QPACK dynamic table (`test_h3.c` 5/5 under ASan/UBSan, Chromium still gets the page). `quic-listener-wire-test.sh`: 6 of 9 (open: tickets, first 1-RTT datagrams, wrong-ALPN close). Found on the way, and the reason this took two builds: without the datagram parameter an old dialler's link died on its first tunnel packet and it re-dialled quic for ever (7 dials in 80 s) -- while `mixed-version-test.sh` said PASS, since it only looked for "transport quic" once. Now a dialler marks its request, a listener answers an unmarked (old) one as a web server so it falls back cleanly, and the test pings through every carrier and counts dials (PASS against five older cores both ways; the first build fails it). Price: nodes from before today lose quic towards upgraded listeners. 37 regression runs: 35 green first time, `quic-listener-wire` fails exactly its 3 open checks, `https-carrier` missed a race-dependent precondition once and passed twice on re-run (recorded under Known Issues, 🟢).**) Before that, 2026-09-25, evening (**the quic listener's handshake is nginx's in the clear: 20-byte connection ids, minimal Length fields, one CRYPTO frame per TLS message, no 0.5-RTT packet -- its handshake datagrams equal nginx 1.26.3's in size, packets, Lengths and frames (decrypted side by side with curl's key log; only EE, i.e. the transport parameters, differs inside). New server mode in `core/ngtcp2/tincstack-wire.patch`. `quic-listener-wire-test.sh`: 4 of 9. Price: PMTU over quic 1119 (was 1131). Our dialler is still curl's against it; old cores still connect both ways. Found: `front-port-test.sh` had become a coin toss with the previous commit -- its random bytes looked like a QUIC short header 1 time in 4 and got a stateless reset, as nginx would send; it passed by luck in that regression. It now sends non-QUIC-shaped junk in one datagram and checks that it did (6/6). 36 regression runs, 35 green first time plus `front-port` after the fix.**) Before that, 2026-09-25, later (**the quic listener answers one-datagram probes and HTTP/3 requests as nginx 1.26.3 does: its QuicPort socket sends Version Negotiation and stateless resets to nginx's measured thresholds (lengths, id limits, fixed bit, no rate limit -- swept side by side), and its HTTP/3 decoy decodes the request's QPACK section (new decoder, Huffman included, `test_h3.c` 4/4) and answers 404, 405 and a body-less HEAD through the TCP decoy's responder. `quic-listener-wire-test.sh`: 2 of 9 now pass, the two this was about; the other 7 (handshake in the clear, transport parameters, SETTINGS, tickets, first 1-RTT packets, wrong-ALPN close, CID length) are untouched. New residual: a POST's 405 comes after its body, nginx's right after HEADERS (🟡, owner's call). 36 regression runs, 34 green first time; `obfs-restart` (its own known first-switch flake) and `app-https` ("could not connect to inviter", a TCP join path this does not touch) failed once and passed on re-run.**) Before that, 2026-09-25 (**the quic listener measured next to nginx for the first time -- Debian 13's own nginx 1.26.3, the one reference that shares our OpenSSL 3.5 and our decoy page -- and it is not nginx's anywhere: it ignores unknown versions and unknown connections where nginx answers Version Negotiation and stateless resets (one UDP packet tells them apart); its HTTP/3 decoy answers 200 with the page to any path and method and sends a body to HEAD, which curl rejects as malformed; its connection ids (8 vs 20 B), Length fields and handshake flight differ in the clear; its transport parameters, SETTINGS (`H3_DATAGRAM`), tickets and first 1-RTT packets differ after a handshake. `quic-listener-wire-test.sh` (new) fails 9 of 9 checks, reproducibly; nothing fixed yet.**) Before that, 2026-09-24, late (**the quic dialler's second flight is curl's too: the datagram with its Finished is Initial (ACK + 1026 B PADDING, Length 1051) + Handshake (80) + a 34-byte 1-RTT ACK, 1200 B, and it has already moved to the connection ID the server issued -- stock ngtcp2 padded the 1-RTT packet (Initial Length 25, readable without keys), kept the original DCID (in the clear) and sometimes put a PING into an ACK-only Initial. `quic-wire-test.sh` requires all of it (the previous core fails), with Initials decrypted by the new stdlib `quic_initial.py` because tshark loses the connection across the DCID move. Windows equals Linux. Not closed: on the Android emulator the Finished goes out without an Initial 6 of 7 runs (by all signs ngtcp2's PTO on a slow client; OpenSSL's behaviour there unmeasured); the first HTTP/3 packets still differ in size; the listener vs nginx is unaudited. 32 regression runs green (`app-quic` on a re-run: its UI automation failed once before any traffic).**) Before that, 2026-09-24, evening (**the quic dialler's Initial is curl's: ngtcp2 1.25 is patched on every platform (`core/ngtcp2/tincstack-wire.patch`) to write OpenSSL's transport parameters -- set, order, values, `active_connection_id_limit 2` -- 4-byte packet numbers, 2-byte Length fields and the ClientHello in order (ngtcp2 had been shuffling it into ~11 CRYPTO fragments, unlisted until now); `quic-wire-test.sh` finds parameters, ClientHello and both Initial packets equal to curl's, the previous core fails it. Datagrams survive: the listener enables them inside the tunnel for an authenticated peer; with a listener from before today, a new dialler drops quic once and uses the next carrier. Price: 1200-byte packets as curl, tinc's MTU on quic 1131 (was 1366). Found and fixed: an oversized datagram jammed the quic carrier for good (would have hit any path whose PMTU settles below ~1450); the Android app lab's inviter was a stale GnuTLS-era image (yesterday's app proof re-run against the current core). Still not curl's: the second flight's Initial padding (visible without decryption), the first HTTP/3 packet sizes, and the listener side vs nginx is unaudited. 33 regression runs green.**) Before that, 2026-09-24 (**Android has both TLS carriers: the NDK build links OpenSSL 3.5.7, zstd and ngtcp2 like Windows; the default build compiles again (CI and release had shipped `nolegacy` since the TLS front); on the Android 14 emulator the app joins and its VpnService tunnel runs over https and over quic, and its ClientHellos equal the Linux ones (`android-emulator-test.sh`). Found and fixed on the way, all platforms: `tinc retry` during a TLS/QUIC handshake demoted the link to plain for the session (the app runs it on every connectivity change); config reads failed where `tmpfile()` has no directory (Android). The app left its keys file 0666 -- fixed. Correction: our QUIC transport parameters are ngtcp2's, not curl's (curl runs OpenSSL's QUIC), so "byte for byte" held for JA4 and size only -- owner's call. 27 regressions green. Not proven: ARM hardware, a mobile network.**) Before that, 2026-09-23, late evening (**Windows has both TLS carriers: `tincd.exe` links a static OpenSSL 3.5.7 (+ zlib, zstd, for Debian's `compress_certificate`) and ngtcp2, and under Wine (`windows-wine-test.sh`, 14/14) it serves and dials https and quic against Linux nodes, its decoy answers curl over TLS and HTTP/3, and its ClientHellos equal the Linux dialler's and curl's byte count and extension list. Found and fixed on the way: the https dial socket stayed blocking on Windows (a hung dial froze the daemon 10 s in the lab); every https dial to an IP sent SNI and Host `localhost`, which no client does; the Windows GUI wrote `HttpsFront*`, keys the core never read. Not proven: real Windows, Wintun. `tincmgr.exe` rebuilt with this core on 2026-09-24. Android still has no TLS carrier (🟠). 24 Linux regressions green.**) Before that, 2026-09-23, evening (**one TLS stack: the core image is Debian 13, and both carriers run on OpenSSL 3.5 -- the quic carrier moved off GnuTLS to `ngtcp2_crypto_ossl`. Our https and QUIC ClientHellos are now curl 8.14's byte for byte (JA4, JA3 and size), the QUIC ServerHello nginx's; old and new nodes still connect both ways (`mixed-version-test.sh`); 23 regression runs green. Only the Docker images: Windows and Android have no TLS carrier yet, and when they get one they must link the same OpenSSL 3.5 (🟠). We look like curl now, not a browser.**) Before that, 2026-09-23, day (**the decoy answers as nginx does: its welcome page and error pages byte for byte, its headers and dates, 404/405/400, keep-alive, close_notify, nginx's 400 to plain bytes on 443, and a silent client closed at 60 s instead of held for ever -- `decoy-conformance-test.sh` 20/20 next to a real nginx, 19/20 fail on the previous core. Found on the way: tinc's accept tarpit and the QUIC per-second budget left the 11th connection of a burst unanswered -- the web fronts now use a 256-client cap instead; the built-in page was Apache's under `Server: nginx`. Still not nginx: no h2, no Alt-Svc.**) Before that, 2026-09-23, morning (**the quic carrier is HTTP/3 now: control and QPACK streams with SETTINGS, the tinc session as a POST whose DATA frames carry the authenticator and meta, RFC 9297 datagrams, and a decoy page for every other HTTP/3 request -- curl, Chromium and nginx all read it as HTTP/3 (`h3-interop-test.sh` 8/8, 6/8 fail on the previous core). The dialler's Initial now carries curl's stream limits and an empty source connection id. Not fixable in GnuTLS: the QUIC JA4 stays unique; the fix is OpenSSL 3.5 for both carriers, which needs the owner's call. Old and new nodes no longer speak quic to each other (they fall back to plain in 5 s).**) Before that, 2026-09-23, early morning (**the https and quic fronts moved off tinc's port: a listening node binds front-only TCP/UDP 443, advertises it in its own host record so invitations carry it, and the quic dial sends from an ephemeral port -- `front-port-test.sh` and a re-measured fingerprint run show TLS and QUIC to 443 only. Found on the way: the UDP front shared 443 with any other `SO_REUSEADDR` server (fixed), and the Linux compose files published only 655, so a compose node would have advertised an unreachable 443 (fixed: `FRONT_PORT`). QUIC h3 conformance and the decoy are next.**) Before that, 2026-09-23, late night (**`CERT_RENEW=1` is the default again. First wire-fingerprint audit (`testing/fingerprint/run.sh`, against nginx, curl and Chromium): neither carrier passes the owner's rule yet -- the fronts sit on tinc's port 655 and the quic client even sends *from* it (🔴); our QUIC ClientHello says h3 but forbids the streams HTTP/3 needs and has a JA4 no reference client shares; our QUIC server never answers an h3 request; our TLS ClientHello is a 403-byte OpenSSL 3.0 one next to 1.6-2 KB from curl and Chromium; the decoy answers garbage with 200. Our TLS server side is the one part that matches nginx.**) Before that, 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
+**Last Updated:** 2026-09-30 (**masking-hardening plan, Phase 1: T1e done, and a build-system defect the §43 CI change had introduced is fixed; nothing committed or deployed. T1e (`testing/perf/junk-cost-test.sh`, proof `testing/perf/results/2026-09-30-junk-cost/README.md`): flood a founder that knows N peers (N well-formed random Ed25519 host records) with unauthenticated 1300-B junk (first byte < 0x40 → the obfs cold-start keyed check) from an unknown address, and measure tincd CPU (utime+stime over the flood minus an idle window) per packet sent. The shipped scan is bounded in N — 6.08 → 7.50 us/pkt at 15000 pps for N=1→64 (1.23x), 4.25 → 4.79 at max rate — so there is no O(N)-per-packet DoS lever; the per-second scan budget (`OBFS_SCAN_PER_SEC`..`OBFS_SCAN_MAX` in obfs.c) holds, and obfs is the worst case (quic's UDP path is a CID-table lookup, not a per-peer scan). Positive control `tincstack/core-junk-on:t1e` (a copy of core/ with the budget neutered; shipped source untouched) proves the meter: 5.08 → 23.25 us/pkt with N at 15000 pps, and 91% CPU vs the shipped 65% at max rate. Lesson recorded in the harness: a max-rate flood saturates the core so the kernel drops junk before tincd sees it — an O(N) lever then shows as CPU→100% with only a modest per-packet rise, so judge per-packet cost at a sub-saturation rate and CPU saturation at max rate (my first run's naive ">3x at max rate" control assertion misread the meter as broken). Not wired into `make check` yet: the CPU budget needs a quiet runner (report-only/nightly, like the T3 timing test), left for the owner. Build-system defect, fixed: the uncommitted §43 change appended the cmocka `test` stage as the LAST stage in `core/Dockerfile.build`; `docker build` with no `--target` builds the last stage, so `make build-core`, the documented `docker build -f core/Dockerfile.build -t tincstack/core:dev core/`, the CI `build` job's `tincd --version`, and every harness that auto-builds the core would have produced (or run) the 485-MB debug *test* image with `tincd` not on PATH instead of the 102-MB runtime — CI would have gone red on the next push. Fixed by moving `test` above the runtime stage and naming the runtime stage `runtime`; a plain build now yields the runtime (`tincd --version` on PATH) and `--target test` still gates. Recorded in PATCHES §43. T1b (decoy CCS-flood / malformed-record conformance) was listed as "clean, ready to execute" but a safety classifier stopped the session that began it before any code was written; it is moved to the owner's-call list in the integration plan's handoff, with T1d(b)/A3/the obfs-port change. Nothing here is committed.**) 2026-09-29, evening (**masking-hardening plan, Phase 1 continued: T3 done, two core defects the Phase 1 tooling surfaced are fixed; nothing committed, released or deployed. T3 (`test/unit/test_authn.c`, new, cmocka): anyone who completes a TLS or QUIC handshake with a https/quic listener could put a `LOG_ERR` line with a node name of their choosing in the journal, once per handshake, and an unknown name cost ~3 us more than a known one (2-4 % of the check -- review M5-9's name-enumeration oracle, reopened; 🟠). Fixed (PATCHES §43): quiet lookups, the same two on both paths; the unknown name within the 1 % budget in 3 of 3 runs on both config stores (residual ~0.3 us in tinc.yaml, cause not found). The test now guards: a `test` stage in `core/Dockerfile.build` (`make unit`, a new `unit` job in `check.yml`) builds the daemon with cmocka and runs `test_authn`; it fails on HEAD's pre-fix `authn.c` (`test_unknown_name_writes_no_log_line`) and passes on this tree; only `test_authn` is gated, timing assertions report-only on the shared runner. DirectSeal (PATCHES §42) was bypassed by any active obfs link, in two ways: sealed datagrams to a peer that cannot read them (88 -> 0), and -- the carrier-switch "flake" of the previous entry, root-caused at `-d5` -- a peer that sealed and then restarted without sealing lost its direct UDP path for at least the 90 s measured (486 of nodea's datagrams "from an unknown source"); `carrier-switch-test.sh`'s new step 5 FAILs the image without that half 3 of 3 and PASSes the fix 5 of 5. `obfs-restart-test.sh` had been unmeetable since a1879cd (the clock-based obfs counter), so every run since read FAIL; re-aimed, PASS for a current and for an older dialler. `testing/compare/ext/run.sh` carried a fixed shared secret; it is now drawn per run. Regressions on the final tree (`tincstack/core:t3b`), each verdict read from its log: carrier-switch 5/5, mixed-version x3, obfs, obfs-confirmed-peer, obfs-mtu, obfs-restart x2, https-carrier, quic-carrier, NAT `--quick` and https/quic restricted, dpi baseline -- all PASS; cert-repin and retry-carrier on `t3-authn` (§43 alone). `make lint` 0; gitleaks over the working tree: its 25 hits are all in git-ignored build and worktree files. Mistakes on the way: the DirectSeal fix was first blamed for the obfs-restart failure (disproved on the image without it); the carrier-switch script was edited while two runs used it (both discarded); a runner of this session logged `date`'s exit code once more (verdict re-read from the log). Then wired the §43 guard into CI: a `test` stage in `core/Dockerfile.build` (`make unit`, a new `unit` job in `check.yml`) builds the daemon with cmocka and runs `test_authn` -- it fails on HEAD's pre-fix `authn.c` (`test_unknown_name_writes_no_log_line`, rc=1) and passes on this tree; only `test_authn` gated, timing assertions report-only. T1e (junk-packet DoS-cost test) and T1b (decoy CCS-flood conformance) are decomposed and ready to execute in `docs/masking-hardening-plan.md` (clean defensive, no evasion). Left strictly to the owner, obfuscation/evasion direction a safety classifier stopped twice: T1d's active-probe half, A3's padding, the obfs default-port change -- and I declined to reword them to slip past the classifier. Nothing committed; suggested commit split in the plan's session-handoff.**) 2026-09-29, later (**masking-hardening plan, Phase 1: T1a and T1c done, a https fix on the way, nothing released or deployed. T1a (`testing/dpi-proof/results/2026-09-29-tls-in-tls/`, nDPI 6.0 built from source as the arbiter, 6 runs, four plain-HTTPS references): stock nDPI scores no current TLS at all -- a post-quantum ServerHello plus tickets trips its server-first gate -- so "nDPI does not flag us" means not scored; with that gate removed, nDPI's own chrome centroid at its own threshold flags the https carrier (the inner browser handshakes, 0.58-1.46) and none of the references (>= 3.25): A3's gate is met, its design (padding inner ClientHello bursts, ~1.5 KB each by the model) is the owner's call. This session's first draft said the opposite ("A3 not needed"); it judged the three centroids together against one control, and was wrong. Stock nDPI names obfs `TINC`/VPN by UDP 655 and flags it with the heuristics on (6/6). quic not judged (no HTTP/3 reference). T1c (`testing/fingerprint/results/2026-09-29-linkability/`): https and quic sessions carry the node name's length in their first records -- a node is linkable across addresses (🟡); obfs is not. Found and fixed: the https dialler sent every tunnelled packet as two TLS records and held the second for a delayed ACK, +40 ms per packet (ping 37.6-39.0 -> 0.17-0.26 ms, PATCHES §41); regressions pass except a carrier-switch setup flake that v0.5.2 shares. Found in this session's own harness: the regression runner logged `date`'s exit code as each test's rc; every verdict above was re-read from the test logs.**) 2026-09-29 (**the compared project (Go, AGPL, v1.11.4) analysed on the owner's request: full write-up in `docs/comparison-analysis.md`, lab in `testing/compare/ext/`, borrow-list added as a PLAN section before M8. Headline from a like-for-like 40 ms/1 % lab: the compared project's REALITY does 154 Mbit/s only because the lab host runs BBR; forced to CUBIC (the Android default) the same carrier drops to 5.0, and its "hardest to block" QUIC is stuck at 3.6 (quic-go CUBIC, PMTUD off) -- so the compared project confirms tincstack's DATAGRAM+BBR (173.1) rather than offering anything to import on the data path. Worth taking: a TLS-in-TLS burst-model test oracle (closes our acknowledged steady-state gap), wire-signature test discipline, an anti-flap endpoint-health model. Not taking: its transports, its measurements methodology, any AGPL code. A self-contained executable plan is written at `docs/masking-hardening-plan.md` (Phase 1 test tooling first, T1a the highest-leverage step; Phase 2 features; Phase 3 School-B forks need an owner yes). Nothing implemented yet -- the owner will `/clear` and run the plan on a fresh session.**) 2026-09-28, evening (**v0.5.2 (BBR quic carrier, no loop spin) runs on euvds and ruvds2: tunnel euvds -> ruvds2 1.5 -> 66.3 Mbit/s, ruvds2 -> euvds 12.8 -> 77.8; its GitHub Release is published and checked (APK versionCode 502, release cert). Before that: the phone's slow internet is two quic-carrier defects: ruvds2 <-> euvds carries the tunnel in QUIC DATAGRAMs (since euvds' IndirectData) under ngtcp2's CUBIC, 1.5 Mbit/s live where the raw path does 85 and classic tinc 87 -- BBR, lab 3.1 -> 173 Mbit/s at 1 % loss; and the Linux/Android event loop spun on sub-millisecond timers, 15 % of a core at 1 Mbit/s for quic -- rounded up, 1.5 %. quic regressions pass.**) 2026-09-28, later (**v0.5.1 released from 5c768a7 and checked after download: APK signed with the release cert, versionCode 501; Windows zip sums match; ghcr core/node:v0.5.1 resolve and the published core passes the indirect lab. Servers not moved to it yet.**) 2026-09-28 (**euvds talks to ruvds2 only: `IndirectData` plus a new `OPTION_DECLARED_INDIRECT` bit that AutoConnect honours, proven by a new lab that fails on v0.5.0; the Android app takes every announced route on its own, so the phone finally uses euvds' 0.0.0.0/0 -- unit-tested and proven on the emulator with the signed release APK, not yet on the phone.**) 2026-09-28 (**the Windows manager's Route here column now offers the one route the owner actually needed: an announced 0.0.0.0/0 gets an *all traffic* toggle that makes that peer the exit for all IPv4 traffic, with every peer endpoint pinned to the physical gateway before 0.0.0.0/1 + 128.0.0.0/1 go on the adapter, kept current every 3 s, fail-open while the exit is down (`backend/fulltunnel.py`). The 09-19 entry claimed the default-route refusal was "stated in the UI"; it was an empty cell. 144 Windows tests pass under Wine's Windows CPython; not proven on real Windows.**) Before that, 2026-09-27, later (**v0.5.0 released from 40c0745 (tag pushed by the owner): release run 36314773996, all five jobs green; assets checked after download -- the Windows zip's SHA256SUMS match all three PE32+ exes, the APK is signed (release cert SHA-256 235f6087...), versionCode 500, all four ABIs carry the N2 core; `ghcr.io/link0ln/tincstack/{node,core}:v0.5.0` pull anonymously. ruvds2 runs `tincstack/node:40c0745` (same tree), the owner's phone joined it and connected (debug build). Not proven: real Windows, the release APK on a device.**) Before that, 2026-09-27 (**stream U merged: the owner's phone could not join ruvds2 -- a pasted invitation with a trailing line break failed in the core's argv parsing before anything reached the inviter, every failed join left a phantom network (the core's `make_names` creates `<net>/<net>/` first), Connect on it hung for ever (a one-shot failure event lost behind the notification-permission dialog), and a stale Russian translation blamed "network.conf". The Android app is now one screen around the tincstack model, Material 3, English only, legacy tincapp UI removed (incl. a DocumentsProvider that served `tinc.yaml` with keys); join is all-or-nothing through a staging dir; proven through the UI on the emulator (`ui-flows-on-emulator.sh` x2, D2 scripts, `android-emulator-test.sh`, 77 unit tests). Not proven: an ARM device, the owner's phone. Stream N2 merged: the direct peer-to-peer path is sealed as obfs frame v3 under masking carriers (0 zero-dst-id datagrams, 0 fixed 51-B probes, entropy 7.95+ bit; SPTPS untouched inside; PMTU 1439 -> 1413), quic no longer hands out its QUIC flow as the node's UDP address (quic matrix 1/6 -> 6/6 direct), a coordinated punch with back-off (masq/cgnat pairs at rtt 40: 0/3 -> 5/5), a rekey keeps a confirmed direct path (11.4 % relayed -> 0), and an obfs black hole its final regression found (6/10 -> 0/5 runs). Merged core is byte-identical to N2's regression image; mixed-version vs the deployed e90715c core PASS with the wire check. Nodes from before this merge still interoperate (sealed with the bootstrap key), upstream tinc peers go via relay. On the merged tree: `make lint` 0 (after a shellcheck fix in `ui-join.sh`), `make secrets` 0, Android core rebuilt with the N2 core and `android-emulator-test.sh` rc 0 (https + quic connect, ClientHellos equal Linux/curl). Not deployed yet: ruvds2 and the owner's APK still run the e90715c core until the phone test passes.**) Before that, 2026-09-26, later (**wave W, part 2: streams Q and N merged. quic: the listener decides a request on its HEADERS -- the dialler's authenticator rides an exporter-bound session cookie -- so a POST gets nginx's 405 at nginx's time (the one-probe POST-405 tell is gone); the HTTP/3 decoy gets every request field and frames its answer as nginx; an idle quic link sends what an idle curl sends (a PING every 15 s; 266 -> 55 packets in 200 s); full datagrams are 1200 B. Price: diallers from before today drop quic once per reconnect towards an upgraded listener. NAT deep dive (`docs/nat.md`): the 09-16 "MASQUERADE is not EIM" was a lab artefact; the relay-only masq pairs fail on packet order (tinc poisons the mapping with early probes), not on mapping; quic hands its QUIC flow out as the node's UDP address and loses direct paths; https via a relay delivered nothing (inherited from upstream TCPOnly; fixed). **The biggest finding is not NAT: the direct peer-to-peer path is cleartext tinc UDP under every carrier** -- owner 2026-09-26: seal it as obfs does (stream N2). Master pushed at 32362a1 before these merges; both merges re-verified: 26 runs green, `quic-listener-wire` failed once on ACK timing and passed 3/3 on re-run (🟢 below).**) Before that, 2026-09-26 (**wave W, part 1: a prioritised backlog handed to parallel agent streams, each verified and merged here. Fixed with proof: 🔴 a quic use-after-free -- stream buffers moved under ngtcp2's retransmission; under loss quic links died (2/2000 pings) and the listener's QPACK decoder stream, which any prober can grow, sent freed heap bytes (ASan) -- `quic_txq.c`, new `quic-loss-test.sh`; 🔴 obfs was recognisable from one datagram (length in clear, constant nonce bytes) -- frame v3 with QUIC-style header protection and random tails, statistics now at random level; the quic listener after the handshake is nginx's (`quic-listener-wire-test.sh` 9/9: tickets, first 1-RTT packet, wrong-ALPN close); the decoy is Debian 13 nginx 1.26.3 byte for byte (78/78, with 304/Range/gzip/Alt-Svc/proxy_pass/tickets); Windows: the logon task runs a onedir install instead of a %TEMP%-unpacking onefile, the config gets a private DACL, json/httpc bounds and a dechunk overflow fixed; operator port-forwards (`HttpsPortPublic`/`QuicPortPublic`), exclusive Windows listeners, a leaf compose that publishes nothing. A measurement stream (F) found further tells now listed below (https record sizes, quic idle bursts and 1160-B datagrams, POST-405 timing -- owner chose an exporter-bound token in HEADERS). h2 on the TLS front was tried and deferred (it would cut current diallers off https). Open in wave W: stream Q (POST token, quiet idle quic, 1200-B datagrams, dialler packets), stream N (NAT deep dive), the full regression.**) Before that, 2026-09-25, night (**the quic listener's transport parameters and HTTP/3 SETTINGS are nginx 1.26.3's: its parameters in nginx's order and values with no `max_datagram_frame_size` and no `version_information` (EE 121 B as nginx's, compared decrypted), SETTINGS QPACK 4096/128 and a decoder stream only -- and since a 4096 table is a promise Chromium takes up, a real QPACK dynamic table (`test_h3.c` 5/5 under ASan/UBSan, Chromium still gets the page). `quic-listener-wire-test.sh`: 6 of 9 (open: tickets, first 1-RTT datagrams, wrong-ALPN close). Found on the way, and the reason this took two builds: without the datagram parameter an old dialler's link died on its first tunnel packet and it re-dialled quic for ever (7 dials in 80 s) -- while `mixed-version-test.sh` said PASS, since it only looked for "transport quic" once. Now a dialler marks its request, a listener answers an unmarked (old) one as a web server so it falls back cleanly, and the test pings through every carrier and counts dials (PASS against five older cores both ways; the first build fails it). Price: nodes from before today lose quic towards upgraded listeners. 37 regression runs: 35 green first time, `quic-listener-wire` fails exactly its 3 open checks, `https-carrier` missed a race-dependent precondition once and passed twice on re-run (recorded under Known Issues, 🟢).**) Before that, 2026-09-25, evening (**the quic listener's handshake is nginx's in the clear: 20-byte connection ids, minimal Length fields, one CRYPTO frame per TLS message, no 0.5-RTT packet -- its handshake datagrams equal nginx 1.26.3's in size, packets, Lengths and frames (decrypted side by side with curl's key log; only EE, i.e. the transport parameters, differs inside). New server mode in `core/ngtcp2/tincstack-wire.patch`. `quic-listener-wire-test.sh`: 4 of 9. Price: PMTU over quic 1119 (was 1131). Our dialler is still curl's against it; old cores still connect both ways. Found: `front-port-test.sh` had become a coin toss with the previous commit -- its random bytes looked like a QUIC short header 1 time in 4 and got a stateless reset, as nginx would send; it passed by luck in that regression. It now sends non-QUIC-shaped junk in one datagram and checks that it did (6/6). 36 regression runs, 35 green first time plus `front-port` after the fix.**) Before that, 2026-09-25, later (**the quic listener answers one-datagram probes and HTTP/3 requests as nginx 1.26.3 does: its QuicPort socket sends Version Negotiation and stateless resets to nginx's measured thresholds (lengths, id limits, fixed bit, no rate limit -- swept side by side), and its HTTP/3 decoy decodes the request's QPACK section (new decoder, Huffman included, `test_h3.c` 4/4) and answers 404, 405 and a body-less HEAD through the TCP decoy's responder. `quic-listener-wire-test.sh`: 2 of 9 now pass, the two this was about; the other 7 (handshake in the clear, transport parameters, SETTINGS, tickets, first 1-RTT packets, wrong-ALPN close, CID length) are untouched. New residual: a POST's 405 comes after its body, nginx's right after HEADERS (🟡, owner's call). 36 regression runs, 34 green first time; `obfs-restart` (its own known first-switch flake) and `app-https` ("could not connect to inviter", a TCP join path this does not touch) failed once and passed on re-run.**) Before that, 2026-09-25 (**the quic listener measured next to nginx for the first time -- Debian 13's own nginx 1.26.3, the one reference that shares our OpenSSL 3.5 and our decoy page -- and it is not nginx's anywhere: it ignores unknown versions and unknown connections where nginx answers Version Negotiation and stateless resets (one UDP packet tells them apart); its HTTP/3 decoy answers 200 with the page to any path and method and sends a body to HEAD, which curl rejects as malformed; its connection ids (8 vs 20 B), Length fields and handshake flight differ in the clear; its transport parameters, SETTINGS (`H3_DATAGRAM`), tickets and first 1-RTT packets differ after a handshake. `quic-listener-wire-test.sh` (new) fails 9 of 9 checks, reproducibly; nothing fixed yet.**) Before that, 2026-09-24, late (**the quic dialler's second flight is curl's too: the datagram with its Finished is Initial (ACK + 1026 B PADDING, Length 1051) + Handshake (80) + a 34-byte 1-RTT ACK, 1200 B, and it has already moved to the connection ID the server issued -- stock ngtcp2 padded the 1-RTT packet (Initial Length 25, readable without keys), kept the original DCID (in the clear) and sometimes put a PING into an ACK-only Initial. `quic-wire-test.sh` requires all of it (the previous core fails), with Initials decrypted by the new stdlib `quic_initial.py` because tshark loses the connection across the DCID move. Windows equals Linux. Not closed: on the Android emulator the Finished goes out without an Initial 6 of 7 runs (by all signs ngtcp2's PTO on a slow client; OpenSSL's behaviour there unmeasured); the first HTTP/3 packets still differ in size; the listener vs nginx is unaudited. 32 regression runs green (`app-quic` on a re-run: its UI automation failed once before any traffic).**) Before that, 2026-09-24, evening (**the quic dialler's Initial is curl's: ngtcp2 1.25 is patched on every platform (`core/ngtcp2/tincstack-wire.patch`) to write OpenSSL's transport parameters -- set, order, values, `active_connection_id_limit 2` -- 4-byte packet numbers, 2-byte Length fields and the ClientHello in order (ngtcp2 had been shuffling it into ~11 CRYPTO fragments, unlisted until now); `quic-wire-test.sh` finds parameters, ClientHello and both Initial packets equal to curl's, the previous core fails it. Datagrams survive: the listener enables them inside the tunnel for an authenticated peer; with a listener from before today, a new dialler drops quic once and uses the next carrier. Price: 1200-byte packets as curl, tinc's MTU on quic 1131 (was 1366). Found and fixed: an oversized datagram jammed the quic carrier for good (would have hit any path whose PMTU settles below ~1450); the Android app lab's inviter was a stale GnuTLS-era image (yesterday's app proof re-run against the current core). Still not curl's: the second flight's Initial padding (visible without decryption), the first HTTP/3 packet sizes, and the listener side vs nginx is unaudited. 33 regression runs green.**) Before that, 2026-09-24 (**Android has both TLS carriers: the NDK build links OpenSSL 3.5.7, zstd and ngtcp2 like Windows; the default build compiles again (CI and release had shipped `nolegacy` since the TLS front); on the Android 14 emulator the app joins and its VpnService tunnel runs over https and over quic, and its ClientHellos equal the Linux ones (`android-emulator-test.sh`). Found and fixed on the way, all platforms: `tinc retry` during a TLS/QUIC handshake demoted the link to plain for the session (the app runs it on every connectivity change); config reads failed where `tmpfile()` has no directory (Android). The app left its keys file 0666 -- fixed. Correction: our QUIC transport parameters are ngtcp2's, not curl's (curl runs OpenSSL's QUIC), so "byte for byte" held for JA4 and size only -- owner's call. 27 regressions green. Not proven: ARM hardware, a mobile network.**) Before that, 2026-09-23, late evening (**Windows has both TLS carriers: `tincd.exe` links a static OpenSSL 3.5.7 (+ zlib, zstd, for Debian's `compress_certificate`) and ngtcp2, and under Wine (`windows-wine-test.sh`, 14/14) it serves and dials https and quic against Linux nodes, its decoy answers curl over TLS and HTTP/3, and its ClientHellos equal the Linux dialler's and curl's byte count and extension list. Found and fixed on the way: the https dial socket stayed blocking on Windows (a hung dial froze the daemon 10 s in the lab); every https dial to an IP sent SNI and Host `localhost`, which no client does; the Windows GUI wrote `HttpsFront*`, keys the core never read. Not proven: real Windows, Wintun. `tincmgr.exe` rebuilt with this core on 2026-09-24. Android still has no TLS carrier (🟠). 24 Linux regressions green.**) Before that, 2026-09-23, evening (**one TLS stack: the core image is Debian 13, and both carriers run on OpenSSL 3.5 -- the quic carrier moved off GnuTLS to `ngtcp2_crypto_ossl`. Our https and QUIC ClientHellos are now curl 8.14's byte for byte (JA4, JA3 and size), the QUIC ServerHello nginx's; old and new nodes still connect both ways (`mixed-version-test.sh`); 23 regression runs green. Only the Docker images: Windows and Android have no TLS carrier yet, and when they get one they must link the same OpenSSL 3.5 (🟠). We look like curl now, not a browser.**) Before that, 2026-09-23, day (**the decoy answers as nginx does: its welcome page and error pages byte for byte, its headers and dates, 404/405/400, keep-alive, close_notify, nginx's 400 to plain bytes on 443, and a silent client closed at 60 s instead of held for ever -- `decoy-conformance-test.sh` 20/20 next to a real nginx, 19/20 fail on the previous core. Found on the way: tinc's accept tarpit and the QUIC per-second budget left the 11th connection of a burst unanswered -- the web fronts now use a 256-client cap instead; the built-in page was Apache's under `Server: nginx`. Still not nginx: no h2, no Alt-Svc.**) Before that, 2026-09-23, morning (**the quic carrier is HTTP/3 now: control and QPACK streams with SETTINGS, the tinc session as a POST whose DATA frames carry the authenticator and meta, RFC 9297 datagrams, and a decoy page for every other HTTP/3 request -- curl, Chromium and nginx all read it as HTTP/3 (`h3-interop-test.sh` 8/8, 6/8 fail on the previous core). The dialler's Initial now carries curl's stream limits and an empty source connection id. Not fixable in GnuTLS: the QUIC JA4 stays unique; the fix is OpenSSL 3.5 for both carriers, which needs the owner's call. Old and new nodes no longer speak quic to each other (they fall back to plain in 5 s).**) Before that, 2026-09-23, early morning (**the https and quic fronts moved off tinc's port: a listening node binds front-only TCP/UDP 443, advertises it in its own host record so invitations carry it, and the quic dial sends from an ephemeral port -- `front-port-test.sh` and a re-measured fingerprint run show TLS and QUIC to 443 only. Found on the way: the UDP front shared 443 with any other `SO_REUSEADDR` server (fixed), and the Linux compose files published only 655, so a compose node would have advertised an unreachable 443 (fixed: `FRONT_PORT`). QUIC h3 conformance and the decoy are next.**) Before that, 2026-09-23, late night (**`CERT_RENEW=1` is the default again. First wire-fingerprint audit (`testing/fingerprint/run.sh`, against nginx, curl and Chromium): neither carrier passes the owner's rule yet -- the fronts sit on tinc's port 655 and the quic client even sends *from* it (🔴); our QUIC ClientHello says h3 but forbids the streams HTTP/3 needs and has a JA4 no reference client shares; our QUIC server never answers an h3 request; our TLS ClientHello is a 403-byte OpenSSL 3.0 one next to 1.6-2 KB from curl and Chromium; the decoy answers garbage with 200. Our TLS server side is the one part that matches nginx.**) Before that, 2026-09-23, night (**the CA check on a moved pin is gone: the authenticator's exporter binding plus SPTPS already make any other certificate harmless, so a changed certificate is followed like a first contact and re-pinned after SPTPS on every platform -- proven with a peer that trusts no CA (24/24; the CA-era image locks it out). New standing requirement from the owner: every carrier must look like the protocol it declares, failure paths included -- recorded with what is not yet audited (TLS ClientHello, QUIC Initial, decoy).**) Before that, 2026-09-23, later (**the elevated Windows manager no longer runs or obeys user-writable files: core, config and the autostart target live under Program Files, binaries compared by SHA-256; unit-tested under Linux and Wine, exe selftest under Wine, not run on real Windows. Still open there: the onefile exe unpacks into the user's %TEMP% (🟠).**) Earlier the same day 2026-09-23 (**the renewal lock-out is fixed for Linux peers that dial by name: a changed certificate is followed only if a public CA issued it for the SNI we dialled, and re-pinned only after SPTPS; QUIC no longer pins before SPTPS; `CERT_RENEW` defaults to 0; the renew timer checks a minute after start. Proven by the new `cert-repin-test.sh` (22/22, pre-fix image fails it). Windows/Android peers and peers dialling by IP still lose https/quic on renewal -- open.**) Before that, 2026-09-22, later (**a second code review found that renewing the certificate -- automatic since this morning -- locks every peer out of https/quic until someone hands them the new pin (🔴, `CERT_RENEW` should stay off until that is fixed); that QUIC still pins before anything is proven; that the elevated Windows manager runs binaries and config any unelevated process can replace, and can keep running an old `tincd.exe` after an upgrade (proven: two different builds of identical size); an ASan-proven overflow in `httpc`; and that the upstream tinc test suite, never run on this fork, fails 12 of 49 -- mostly because classic-mode host exports lost `Port`. All listed under Known Issues, none fixed.**) Earlier the same day -- (**a code review of everything that is ours turned
 up two defects that break a node weeks after it is installed, and both are
 fixed: nothing renewed the ACME certificate (it simply expired, leaving the
 https front *more* conspicuous than the self-signed one it replaced), and a
@@ -1413,6 +1413,14 @@ mattered (euvds announces 0.0.0.0/0 as the `tincstack` network's exit since
   as WireGuard does.
 - [ ] 🟡 **IPv6 is not tunnelled.** The network is IPv4 only; a machine with
   IPv6 keeps using it outside the tunnel for dual-stack destinations.
+- [ ] 🟡 **With two exits the toggle names one and tincd uses another.**
+  The toggle installs 0.0.0.0/1 + 128.0.0.0/1 on the adapter and reports
+  "active via <chosen node>". Which owner the traffic actually reaches is
+  tincd's choice (`lookup_subnet_ipv4`), not the toggle's: first by weight,
+  then by owner name, and a node announcing a more specific prefix takes
+  that range from both. The toggle's exit is pinned only when it is the one
+  tincd would pick anyway. Read from code 2026-09-28; no network has two
+  exits yet.
 - [ ] 🟢 **Android has no toggle.** The app routes `InterfaceRoute` values,
   and its own package is excluded from the VPN (`TincVpnService.kt:173`), so
   `0.0.0.0/0` there would not loop; there is no UI for it. *Superseded
@@ -1541,6 +1549,21 @@ announced route".
 - [ ] 🟠 **On the owner's phone:** install the APK over v0.5.0, connect, check
   in the app log `Announced routes changed: [] -> [0.0.0.0/0]` then
   `Interface rebuilt`, and that a what-is-my-IP page shows 88.218.122.166.
+- [ ] 🟡 **Two nodes announcing 0.0.0.0/0: the phone has no say.**
+  Read from code, 2026-09-28; no lab run.
+  - The app dedupes to one 0.0.0.0/0 (`select`, `.distinct()`) and routes
+    everything into the tun.
+  - tincd picks the owner: the lowest `#weight` (default 10) wins, then the
+    first owner name in strcmp order. A node that announces anything more
+    specific (0.0.0.0/1 + 128.0.0.0/1) takes that range whatever the
+    weights.
+  - If the chosen exit becomes unreachable, the graph change flushes the
+    subnet cache and the next reachable owner carries the traffic. The route
+    set is unchanged, so the interface is not rebuilt. The public IP changes
+    and open connections break.
+  - No balancing and no per-app choice.
+  - Any node allowed to announce 0.0.0.0/0 can take the phone's traffic;
+    StrictSubnets on the relays is the lever (config-schema).
 - [ ] 🟡 **Local LAN is inside the tunnel with a full tunnel** (Chromecast,
   printers): Android 13+ has `excludeRoute`; not used.
 - [x] **Full tunnel + "Pause while the screen is locked" = no internet
@@ -1654,13 +1677,17 @@ the problem below. For euvds, `tinc info` says "indirectly via ruvds2".
     ruvds2 -> euvds **77.8** (was 12.8). The raw path does 85 / 105.
   - At that rate ruvds2's tincd takes 56-64 % of its single vCPU, with the
     host 15-19 % idle. That is the next ceiling.
-- [ ] 🟠 **The v0.5.2 GitHub Release is not published.** The `android apk`
-  job failed in `sdkmanager --install` with only "Loading package
-  information...". The same step passed in the `android` workflow for the
-  same tag, and in v0.5.1 three hours earlier, so this is a transient
-  download failure. `publish the release` was skipped, so there is no zip,
-  no APK and no notes. Fix: "Re-run failed jobs" on run 36429148476 (needs a
-  GitHub login; there is no token here).
+- [x] 🟠 **The v0.5.2 GitHub Release is published** after the owner re-ran
+  the failed jobs on run 36429148476 (attempt 2, all five jobs green).
+  - The first attempt's `android apk` job had failed in
+    `sdkmanager --install`, a transient SDK download failure.
+  - Assets were checked after download:
+    - the APK is signed v1/v2/v3 with the release cert (`235f6087...`),
+      `versionCode 502`, `versionName 0.5.2`, four ABIs, sha256
+      `687c6d5b0463e5b2...`;
+    - the Windows zip (sha256 `9ac28c18c8e9ba34...`) passes its SHA256SUMS
+      for all three exes;
+    - the source tarball carries both fixes.
 - [ ] 🟠 **The phone and the windows node are still on older builds.** The
   phone's uploads leave its own tincd as DATAGRAMs (still CUBIC), and it
   still spins. This waits for the release APK. Windows does not spin (its
@@ -1683,6 +1710,115 @@ the problem below. For euvds, `tinc info` says "indirectly via ruvds2".
   timeout. This covers every node behind a quic-sized PMTU, not only the
   phone (see MTU above). Lifting it means carrier datagrams over 1200 bytes,
   against the curl-shaped 1200: the owner's call.
+
+### the compared project analysis: what to borrow (2026-09-29, owner request)
+
+Owner asked to clone `the compared project` (Go, AGPL-3.0, v1.11.4), analyse it deeply, and
+implement the best methods/protocols in tincstack. Full write-up with diagrams
+and comparison tables: `docs/comparison-analysis.md`. Masking/camouflage methods
+catalogued with a per-method take/skip/fork verdict: `docs/masking-methods.md`.
+**The executable plan a fresh session runs top-down is
+`docs/masking-hardening-plan.md`** — self-contained, ordered, with acceptance
+criteria; the boxes below mirror it. Clone read-only at
+`/opt/gitrepo/vpn-experiments/ext`; lab at `testing/compare/ext/`.
+**Licence: AGPL — reimplement ideas, never copy code. Highest-leverage first
+step: T1a (TLS-in-TLS oracle).**
+
+Verdict from reading the tree + a like-for-like lab + seven parallel reviews:
+the compared project is mostly a cautionary tale. Its data path is TCP-over-TCP or
+TUN-over-a-single-QUIC-stream under CUBIC, and its throughput is hostage to the
+client kernel's default CC. Measured, same 40 ms / 1 % lab as `testing/perf`:
+
+| the compared project arm | Mbit/s | tincstack, same lab | Mbit/s |
+|---|---|---|---|
+| REALITY, outer TCP = BBR | 154 | plain (direct UDP) | 228.6 |
+| REALITY, outer TCP = CUBIC (Android default) | **5.0** | quic DATAGRAM + BBR | 173.1 |
+| quic/quic_salamander (quic-go CUBIC, PMTUD off) | **3.6** | quic DATAGRAM + CUBIC (old bug) | 3.1 |
+
+So the compared project confirms the v0.5.2 decision (DATAGRAM + BBR) rather than offering
+anything to import on the data path. Do **not** take its transports. It also
+carries real holes (unauthenticated proxy dispatch, a one-packet remote panic,
+secrets in logs, a fake kill-switch) — none are a template for a
+per-node-Ed25519 mesh.
+
+What is worth taking is a short list of engineering/testing patterns:
+
+- [x] 🟡 **T1 — TLS-in-TLS burst-model oracle (highest leverage).** Reimplement
+  nDPI 5.1's `check_set()` Mahalanobis burst model (tls12/tls13/chrome
+  centroids) as an offline analyser fed by `tshark`, with a real `ndpiReader`
+  in a throwaway container as the arbiter. Closes tincstack's *acknowledged*
+  gap: byte-equality proves the handshake equals curl/nginx but says nothing
+  about the steady-state traffic where TLS-in-TLS lives. Acceptance: margin
+  ≥ 0.9 (a live Chrome sat at 3.038 vs a 3.0 threshold), not merely "not
+  caught". Applies to the https carrier now; a DATAGRAM variant later. Effort M.
+  Reimplement from nDPI (LGPL) + the USENIX'24 paper, not from the compared project.
+  *Done 2026-09-29 (T1a): `testing/dpi-proof/tls-in-tls-audit.sh` (own lab,
+  not `carrier-traffic-audit.sh`: it needs inner browsing, controls and a
+  reference population), `tls_in_tls.py`, `ndpi/Dockerfile` (nDPI **6.0**;
+  "5.1" does not exist), `tls_forward.py`. Proof:
+  `testing/dpi-proof/results/2026-09-29-tls-in-tls/README.md`, 6 runs (3 on
+  v0.5.2, 3 on this tree): arbiter self-check PASS, positive control
+  `proxy0` 14/18 flagged in 6/6, analyser = arbiter on every TLS flow. Verdict:
+  stock nDPI scores no current TLS (post-quantum ServerHello + tickets trip
+  its server-first gate) -- not scored, not clean; with the gate removed,
+  the chrome centroid alone at nDPI's threshold flags the https carrier
+  (0.58-1.46) and none of four plain-HTTPS references (>= 3.25) -> A3's gate
+  is met (Known Issues). Stock nDPI flags obfs. quic not judged (no HTTP/3
+  reference). Found on the way: the https dialler's +40 ms per packet,
+  fixed (Known Issues).*
+- [ ] 🟡 **T1 — wire-signature test discipline** for `testing/fingerprint`:
+  (a) a positive control on every "marker absent" test (the matcher must fire
+  on an old build first, else "gone" == "matcher broken"); (b) cross-session
+  linkability across ≥6 sessions (same record sizes, same gaps, "length tracks
+  payload"); (c) active-probe/replay as first-class (replay first
+  record/datagram from a new address at +5 s and +40 s; same-size garbage; a
+  real h3/HTTPS client — reaction must byte-match the reference nginx; for
+  obfs, replay and garbage must both look like a closed port). This is the
+  owner's "failure paths included" turned into CI. Effort S–M.
+  *(b) done 2026-09-29 (T1c): `testing/fingerprint/linkability-audit.sh` +
+  `linkability.py`, 6 sessions per node and carrier, two nodes, curl h1/h3
+  reference; proof `testing/fingerprint/results/2026-09-29-linkability/README.md`.
+  https and quic link a node's sessions by its name length (Known Issues);
+  obfs and the reference do not. (a) and (c) are T1d, open -- this box
+  stays open until they are.*
+  *(a) partly done 2026-09-29 (T1d): positive controls in https-carrier,
+  quic-carrier, mixed-version (direct pairs), decoy-conformance and the
+  dpi-proof baseline, each run and firing on its marker -- details and
+  what is left in `docs/masking-hardening-plan.md` T1d. (c) not started.*
+- [x] 🟢 **T1 — junk-packet cost test in CI:** cost of one unauthenticated
+  datagram vs peer count, with a budget guard (a Salamander-style listener
+  is O(N) per junk datagram). Effort S.
+  *Done 2026-09-30 (T1e): `testing/perf/junk-cost-test.sh`, proof
+  `testing/perf/results/2026-09-30-junk-cost/README.md`. The shipped obfs
+  cold-start scan is bounded in the number of known peers — 6.08 → 7.50 us/pkt
+  for N=1→64 at 15000 pps (1.23x), so no O(N)-per-packet DoS lever; the
+  per-second scan budget (OBFS_SCAN_PER_SEC..OBFS_SCAN_MAX) holds. An O(N)
+  positive-control build (copy of core/ with the budget neutered; shipped
+  source untouched) proves the meter: 5.08 → 23.25 us/pkt with N, and 91% CPU
+  vs shipped 65% at max rate. Not yet wired into `make check` — the CPU budget
+  needs a quiet runner (report-only/nightly, like the T3 timing test);
+  left for the owner to place. In `make lint`.*
+- [ ] 🟡 **T2 — endpoint/address health model with anti-flap.** Take the
+  `Report` vs `ReportProbe` asymmetry (a latency-only probe must NOT clear the
+  failure streak — "port answers" ≠ "carrier works"), cooldown with exponential
+  backoff + jitter, a dwell before failback, "all parked → un-park least-bad".
+  tinc has only per-connection backoff (`MaxTimeout` 900 s). Must respect the
+  euvds-only rule: it ranks *how* to reach a peer, never *whether* to bypass the
+  mandated relay. Effort M.
+- [ ] 🟢 **T2 — adaptive donor-mirroring as the failure path:** an
+  unauthenticated/broken client is transparently proxied to a real site
+  (https → the nginx decoy we ship, quic → a real h3), gated by a
+  source-reputation cache. Our decoy is static today. The mirror target must
+  not become a second way to reach euvds. Effort M.
+- [ ] 🟢 **T3 — cheap hygiene:** constant-cost auth timing test around the
+  SPTPS authenticator; an "accepted-but-ignored config key" warning for the
+  yaml config; IPv6 leak-block as one atomic nft transaction (future Linux
+  client). Effort S each.
+
+Not taking (see doc §6): the data path, RTT-masking-by-sleep, Salamander
+random-UDP, "SNI fragmentation" with a cleartext tag, the ICMP tunnel, port
+hopping, unauthenticated dispatch, global shared secrets, the measurements
+methodology, any AGPL code.
 
 ## Milestone M8 — Android delivery (point 1b) 🟠
 
@@ -2683,6 +2819,222 @@ hardening), K, L, G3, S, T, N, O. No stream running.
 
 Defects identified during the source audit, to fix as their milestone is reached
 (kept here so they are not lost):
+
+- 🟠 **Tells and defects found by the masking-hardening Phase 1 tooling
+  (2026-09-29).** T1a: `testing/dpi-proof/results/2026-09-29-tls-in-tls/README.md`
+  (6 runs, nDPI 6.0 as arbiter, four plain-HTTPS references); T1c:
+  `testing/fingerprint/results/2026-09-29-linkability/README.md` (36 sessions);
+  T1d (positive controls in the wire tests) and T3 (`test/unit/test_authn.c`).
+  Plan: `docs/masking-hardening-plan.md`.
+  - [x] 🟠 **An unauthenticated prober could write a `LOG_ERR` line of its
+    choosing into the journal, and the carrier authenticator took ~3 us
+    longer for an unknown node name.** `authn_verify` read the claimed
+    node's host record through `read_ecdsa_public_key()`, which reads
+    verbosely: for an absent record it logged `Cannot open config file
+    .../hosts/<name>: No such file or directory` at the default level --
+    one line per TLS/QUIC handshake, with a name the prober picks
+    (`[A-Za-z0-9_]`, `check_id`) -- and only the unknown name paid for that
+    line and for a failed lookup. Repro: `test_authn` (T3) on HEAD's
+    `authn.c`: `test_unknown_name_writes_no_log_line` fails; unknown name
+    +3179 ns (files) / +2211 ns (tinc.yaml) against a known name whose
+    signature fails, A/A -118 / -100 ns, one log line +1293 / +2354 ns.
+    Blast radius: every node with a https or quic listener -- log flooding
+    by anyone who completes a TLS handshake, and a node-name enumeration
+    oracle (review M5-9's, reopened) of 2-4 % of the check. *Fixed in this
+    tree (not released, not deployed; PATCHES §43): both lookups are
+    quiet, and both paths make the same two (an unknown name then reads our
+    own record, a known one looks up `<myself>.authn`, which no node can
+    have). Proof: the same test, 3 runs: unknown name -285..+84 ns (files),
+    -535..-159 ns (yaml), budget 1 % of the baseline (~0.9 / ~1.25 us),
+    log-line control +1.6..+2.8 us clears it; residual ~0.3 us in yaml,
+    cause not found. The guard now runs: `core/Dockerfile.build` has a `test`
+    stage (`make unit`, a new `unit` job in `check.yml`) that builds the
+    daemon with cmocka and runs `test_authn`, so a build fails if the
+    log-line/name-enumeration checks regress. Positive control: on HEAD's
+    pre-fix `authn.c` the stage fails on `test_unknown_name_writes_no_log_line`
+    (rc=1); on this tree it passes (7 subtests). Only `test_authn` is gated --
+    the wider unit suite is still the 🟡 "upstream tinc test suite has never
+    run on this fork" below -- and the timing assertions run report-only
+    (`TINC_AUTHN_REPORT_ONLY=1`), since a shared runner is too noisy for a
+    microsecond budget; the deterministic checks gate.*
+  - [x] 🟡 **DirectSeal was bypassed by any active obfs link.**
+    `send_sptps_data` used the peer's obfs link whenever one was active and
+    asked DirectSeal only afterwards; an obfs link is not only the obfs
+    carrier's -- the cold path activates one on the peer's first sealed
+    datagram, and it outlives the reason it was activated for. Two defects:
+    - BLOCK/HOLD: a sealing node answered the probes of a peer that cannot
+      read sealed datagrams (a leaf with `Transports: plain, sf`) with
+      sealed datagrams, right after logging "Not sending UDP to X
+      directly". Repro: `mixed-version-test.sh` `DIRECT=yes` with OLD
+      v0.5.2, pair "older leaf b without obfs": 88 datagrams a -> b where
+      the verdict says none. Blast radius: nodes that seal, with such a
+      peer -- wasted datagrams in every punch round and a wire that
+      contradicts the node's own log; no cleartext.
+    - PLAIN: a peer that sealed, agreed a direct-seal session key with us
+      and restarted without sealing got our datagrams under the key it no
+      longer had; it seals nothing, so nothing renegotiates, and its direct
+      UDP path stayed dead while the meta connection carried everything.
+      Repro: `carrier-switch-test.sh` (step 5, new) on
+      `tincstack/core:t1d-dseal` (HOLD/BLOCK fixed, PLAIN not): FAIL 3 of 3
+      -- twice at its first plain restart, which followed step 3's obfs
+      session 6 s after nodea logged the key, once at its final check; at
+      `DEBUG=5` b logged 486 of nodea's datagrams as "from an unknown
+      source" in the 90 s after its restart. This was the carrier-switch
+      "flake" below. Blast radius: a node that goes from a sealing carrier
+      to plain (or to a build without obfs) and restarts, towards every
+      peer that held a key with it: tunnel traffic over the TCP meta
+      connection instead of direct UDP, for at least the 90 s measured (how
+      long in all: not measured).
+    *Fixed in this tree (not released, not deployed; PATCHES §42): the
+    verdict comes first for every obfs link but the obfs carrier's own meta
+    link. Proof: BLOCK/HOLD 88 -> 0 datagrams, still relayed and pinging;
+    sealing pairs unchanged (39-45 datagrams, 0 with tinc's zero dst id).
+    PLAIN: `carrier-switch-test.sh` on `tincstack/core:t3b` PASS 5 of 5,
+    step 5's precondition (nodea logs the key) met in each; two more runs
+    were void -- the script was edited while they ran. Regressions on
+    `tincstack/core:t1d-dseal` (BLOCK/HOLD half): mixed-version
+    (`DIRECT=yes` vs v0.5.2 and e90715c, `DIRECT=no` vs v0.5.2), obfs,
+    obfs-confirmed-peer, obfs-mtu, NAT `--quick`, NAT https and quic
+    restricted/restricted, obfs-restart (after the item below) -- PASS.
+    On `tincstack/core:t3b` (both halves, the final tree): carrier-switch
+    as above, mixed-version (the same three), obfs, obfs-confirmed-peer,
+    obfs-mtu, obfs-restart (current and e90715c dialler), https-carrier,
+    quic-carrier, NAT `--quick`, NAT https and quic restricted/restricted,
+    `dpi-proof/run.sh baseline` -- PASS, each verdict read from its log.*
+  - [ ] 🟢 **A leaf that cannot read sealed datagrams keeps punching towards
+    a sealing peer.** In the pair above b still runs a coordinated punch
+    round about every 43 s and sends sealed probes to a, which a can answer
+    only through the relay; the pair can never go direct. Repro: as above,
+    b's log (`Coordinated hole punch with leafa`). Blast radius: a few
+    datagrams a minute per such pair, all v0.5.x or older leaves configured
+    without obfs. Fix direction: b should not punch towards a peer whose
+    replies it cannot read (its own DirectSeal verdict for that peer).
+  - [x] 🟢 **`obfs-restart-test.sh` could not pass on any build since
+    a1879cd, and nothing covered the obfs epoch restart.** Its last check
+    required the acceptor to restart its replay window at least once; since
+    a1879cd (2026-09-26) a node's bootstrap counter starts from the clock,
+    so a restarted current dialler starts above its previous run and there
+    is nothing to restart (6 of 6 recovered, 0 restarts, on
+    `t1a-https2` and `t1d-dseal`, 2 runs each). Blast radius: every
+    regression run since then read FAIL, and the path that still lets an
+    older dialler (random start) back in went untested. *Fixed: the script
+    takes `DIALLER_IMAGE`; a current dialler must need no restart (PASS,
+    0), an older one must get back in through it
+    (`DIALLER_IMAGE=tincstack/node:e90715c`: PASS, 6 of 6, 3 restarts).*
+  - [x] 🟠 **The https dialler added ~40 ms to every tunnelled packet.** Each
+    packet went out as two TLS records (the `SPTPS_PACKET` line, then the
+    packet: 43/44 + 178/1550 B) from two `SSL_write`s, and the dialling
+    socket had no `TCP_NODELAY`, so the second record waited for the delayed
+    ACK of the first. Repro: `tls-in-tls-audit.sh` on v0.5.2, 20 pings
+    through https: 37.6-39.0 ms average where obfs and quic do 0.17-1.18 ms
+    in the same lab (3/3 runs). Blast radius: every https-carrier dialler --
+    the owner's phone reaches ruvds2 over https. *Fixed in this tree (not
+    released, not deployed; PATCHES §41, `core/tincd/src/https.c`): the
+    carrier's send op no longer writes per packet; the loop flushes the
+    whole buffer in one `SSL_write` pass, or at once when a quarter of
+    `maxoutbufsize` is queued (a relay's `recvmmsg` burst must not reach
+    `random_early_drop` at half); `TCP_NODELAY` on the dialler. Proof:
+    ping 37.6-39.0 -> 0.17-0.26 ms, 4 MiB 0.19-0.26 -> 0.08-0.12 s,
+    TCP payload packets of the https flow 12165-13666 -> 6435-6528 (3 runs
+    each, T1a README); a relay forwarding a UDP burst onto https
+    (`testing/perf/relay-burst-test.sh`, README "A relay forwarding UDP
+    bursts"): writing only from the loop lost 0.1-0.7 % of a 40 Mbit/s
+    stream below a 50 Mbit/s bottleneck, the quarter-buffer flush 0 %.
+    Regressions on `tincstack/core:t1a-https2`, verdicts read from each log:
+    https-carrier, mixed-version (v0.5.2 <-> this, https, `DIRECT=no`),
+    tls-front, retry-carrier, decoy-conformance (`QUICK=1`), NAT matrix
+    https restricted/restricted PASS; carrier-switch FAIL once on its
+    `plain -> quic` setup step, then 3/3 PASS, v0.5.2 1/3 FAIL on the same
+    step (item below). `make lint` 0; gitleaks over the new files: no
+    leaks.*
+  - [ ] 🟠 **The https carrier is caught by nDPI's own chrome centroid once
+    nDPI's server-first gate is removed.** Stock nDPI 6.0 scores no current
+    TLS at all (a post-quantum ServerHello plus tickets trips the gate), so
+    nothing is flagged today; but a censor who drops that gate -- which
+    anyone who wants the heuristic to work on 2026 TLS must -- and keeps
+    only the chrome centroid at nDPI's threshold 3.0 flags our https
+    carrier (closest 4-gram 0.58-1.46, within 255 packets 6/6 runs) and
+    none of the four plain-HTTPS references (keep-alive h1 with browser and
+    curl headers, h2, a Chromium h2 page: >= 3.25). What it sees is the
+    inner browser handshake (1856/4216/515/792 B bursts). Repro:
+    `flock /tmp/tincstack-lab.lock testing/dpi-proof/tls-in-tls-audit.sh`.
+    Blast radius: every https-carrier user who opens a TLS site through the
+    tunnel, i.e. all of them; not a stock detection today. The 09-29 draft
+    of the T1a README said the opposite ("A3 not needed"); it judged the
+    three centroids together and was wrong. Fix = A3 of the integration
+    plan (gate met): by the model, ~1.5 KB of padding on the client burst of
+    each inner handshake moves the worst 4-grams to chrome 3.9-4.1 (margin
+    >= 0.9 on every centroid); the dialler sees inner ClientHellos in clear
+    and TLS 1.3 record padding is invisible to the peer. Design and budget
+    are the owner's call. Caveat: four lab references are not the
+    Internet's HTTPS -- the chrome centroid's real false-positive rate is
+    unknown.
+  - [ ] 🟠 **obfs is named by stock nDPI.** Without any heuristic ndpiReader
+    labels the flow `TINC`, category `VPN` ("Match by port": UDP 655, tinc's
+    IANA port); with the TLS heuristics on it is flagged "Obfuscated TLS"
+    within 255 packets in 6/6 runs (not TLS to nDPI, so the gate that spares
+    TLS flows does not apply; inner-traffic bursts land in the tls12 or
+    chrome centroid, the 0-146 B random tails do not move them). Repro: as
+    above, `obfs.ndpi{25,255}.report.txt`. Blast radius: every obfs link on
+    the default Port and, by construction (not captured), every DirectSeal
+    direct path, which rides the obfs frame on the node's Port. This is the
+    09-26 🟡 "obfs on UDP 655 next to a TCP 655 that answers as nginx" at
+    its real priority. Fix direction (owner's call): a non-tinc default
+    port for obfs; the heuristic hit needs bigger or burst-aware padding.
+  - [ ] 🟠 **https bulk records are one constant size, not nginx's 16 KiB.**
+    After the fix above a 4 MiB download through https is 1451 of 1458
+    records of exactly 3137 B (two tunnelled packets per record); before
+    it, 2901 pairs of 44 + 1550 B. nginx writes 16 KiB records. Repro:
+    `tshark -e tls.record.length` over the T1a https capture, bulk phase.
+    Blast radius: any observer of a long https-carrier transfer. The "two
+    records" half of the 09-26 🟠 item is fixed; this half stays open.
+  - [ ] 🟡 **https and quic link a node's sessions by the length of its
+    name.** In every session the first records carry the node name: over
+    https record #2 is tinc's `ID` line in TLS (29 B for `leaf`, 48 B for
+    a 23-character name) and #1 the `GET /ws` whose cookie carries the
+    authenticator (332 vs 357 B); quic carries the same in its first
+    datagrams (per node in >= 2/3 of sessions: 262 vs 301, 183 vs 202 B).
+    obfs and the curl h1/h3 reference have no per-node constant. Repro:
+    `flock /tmp/tincstack-lab.lock testing/fingerprint/linkability-audit.sh`.
+    Blast radius: privacy, not detection -- an observer of one server
+    groups sessions by that number and follows a node across addresses;
+    with a handful of nodes the length names the node. Fix direction (owner's
+    call): a fixed-length name field in the authenticator (new version,
+    old accepted) and padding of the `ID` line and first meta records at
+    the carrier (TLS 1.3 record padding, QUIC PADDING).
+  - [x] 🟢 **`carrier-switch-test.sh` fails its `plain -> quic` setup step
+    now and then.** After the `plain -> https` case b is restarted on
+    plain and the test waits for a confirmed UDP path to nodea before it
+    switches; sometimes it does not come within the wait (`MISS: plain ->
+    quic: nodea's UDP path was not confirmed`), and the case is not run.
+    Measured 2026-09-29: 1 of 4 runs on this tree, 1 of 3 on v0.5.2 -- not
+    caused by the https change. Blast radius: a regression run reports
+    FAIL for a case it never tested; a real defect in that case would hide
+    behind the flake. Possibly the acceptor-side state described under
+    "An already-running network could never be switched to obfs" (the slow
+    `udp_confirmed` after a peer restart); not investigated. *Not a flake,
+    and not that guess: the PLAIN half of the DirectSeal item above. Found
+    by re-running at `-d5` with the logs kept: the case failed exactly when
+    nodea had logged a direct-seal session key for b in the seconds the
+    https case runs before b's plain restart (PATCHES §42). The test's new
+    step 5 waits for that key, so the defect no longer hides behind timing:
+    pre-fix 3 of 3 FAIL, `t3b` 5 of 5 PASS (numbers in that item).*
+  - [x] 🟢 **`mixed-version-test.sh`'s direct-pair section reported false
+    FAILs when `OLD_IMAGE` is newer than stream N2.** Its "older leaf"
+    pairs expected a pre-N2 DirectSeal (bootstrap key only, no sealed-datagram
+    support without obfs); with `OLD_IMAGE=.../core:v0.5.2` three of five
+    pairs failed on those expectations (2026-09-29), with `core:e90715c` all
+    five passed. Blast radius: a regression run with a recent OLD read as
+    broken. *Fixed (T1d): the section detects an N2-or-later OLD from its
+    own log line and aims the pairs at what that build does; a positive
+    control pair (two leaves that do not seal) must show tinc's wire (44 of
+    44 datagrams with the zero dst id) before any "0 found" counts. PASS
+    against v0.5.2 and e90715c (5 pairs each, wire checked in all). Looking
+    into the v0.5.2 failures found a real defect -- the DirectSeal item
+    above.*
+  - Note: nDPI 6.0's heuristic as shipped is inert on current TLS (above);
+    "nDPI does not flag the https carrier" must be read as "not scored",
+    never as "clean".
 
 - 🟠 **NAT traversal, measured end to end (stream N, 2026-09-26).** Full trace
   and numbers: `docs/nat.md`; lab and runs: `testing/nat-sim/` (new profiles
@@ -3700,8 +4052,11 @@ Defects identified during the source audit, to fix as their milestone is reached
       bytes 0-5 constant per flow, 🟠 obfs sizes = inner + constant (all three
       fixed by frame v3, item below); 🟡 obfs idle heartbeat (~2 s, 1472-B probes;
       open, `net_packet.c`); 🟡 obfs on UDP 655 next to a TCP 655 that answers as
-      nginx (open); 🟠 https: every tunnel packet is two TLS records (44 + 1550 B)
-      where nginx writes 16 KiB records (open); 🟡 https idle 4 x 43-B records
+      nginx (open; 2026-09-29: stock nDPI names the flow TINC by that port,
+      raised to 🟠 in the 09-29 block at the top of Known Issues); 🟠 https:
+      every tunnel packet is two TLS records (44 + 1550 B) where nginx writes
+      16 KiB records (**two records fixed 2026-09-29**, PATCHES §41; the
+      record size is still not nginx's, 09-29 block); 🟡 https idle 4 x 43-B records
       every 60 s where nginx closes at 75 s (open); 🟠 quic idle bursts every
       ~2.5 s (**fixed by stream Q**: 55 packets in 200 s idle, a PING every 15 s as
       curl); 🟠 quic full datagrams 1160 B, never 1200 (**fixed by stream Q**:
@@ -4019,7 +4374,13 @@ Defects identified during the source audit, to fix as their milestone is reached
     invitee (untriaged; likely our pin/subnet lines). `device_raw_socket.py`
     untriaged. Consequence: classic-mode `tinc export`/`import` -- the
     upstream way to connect two nodes -- is broken for any node with a
-    non-default port, and nothing in CI can notice.
+    non-default port, and nothing in CI can notice. *Narrowed 2026-09-29,
+    not closed:* one unit test now runs in CI -- the `unit` job builds the
+    `test` stage and runs `test_authn` (§43 guard) -- but the rest of the
+    suite is still `-Dtests=disabled`, so the failures above remain
+    unguarded. Extending the `unit` job to the whole suite has to wait until
+    the classic-mode `Port` export is fixed, or it fails the build on
+    pre-existing defects.
   - 🟡 **A client clock more than 90 s off makes `https`/`quic` fail
     silently.** The authenticator carries a timestamp checked against
     `AUTHN_TS_SKEW = 90`; on failure the server serves the decoy (by design)
