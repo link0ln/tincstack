@@ -1100,6 +1100,24 @@ static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void 
 	}
 }
 
+/* DirectSeal refused a direct datagram to `relay' (HOLD: we do not know yet
+   whether it reads sealed datagrams; BLOCK: it cannot). A probe is simply not
+   sent (we are not probing that path); a record goes inside the meta
+   connection instead. */
+static bool send_sptps_data_held(node_t *relay, dseal_verdict_t dv, node_t *to, node_t *from, int type, const void *data, size_t len) {
+	if(dv == DSEAL_SEND_HOLD) {
+		send_req_dseal(relay);
+	}
+
+	dseal_log_hold(relay, dv);
+
+	if(type == PKT_PROBE) {
+		return true;
+	}
+
+	return send_sptps_data_meta(to, from, type, data, len);
+}
+
 bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_t len) {
 	size_t origlen = len - SPTPS_DATAGRAM_OVERHEAD;
 	node_t *relay = (to->via != myself && (type == PKT_PROBE || origlen <= to->via->minmtu)) ? to->via : to->nexthop;
@@ -1172,13 +1190,39 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 		return true;
 	}
 
+	/* DirectSeal (obfs.h) decides for every obfs link but the obfs carrier's
+	   own. An active obfs link to `relay' is not only the carrier's: the cold
+	   path activates one as soon as the peer's first sealed datagram arrives,
+	   and it outlives the reason it was activated for. Sending on it
+	   regardless of the verdict did two things (2026-09-29):
+	   - HOLD/BLOCK: a peer that seals towards us (because we seal) reads
+	     sealed datagrams only if its own Transports accept obfs, so a node
+	     that had just logged "Not sending UDP to X directly" answered X's
+	     probes with sealed datagrams X drops, in every coordinated punch round
+	     (mixed-version-test.sh, a leaf with `Transports: plain, sf');
+	   - PLAIN: a peer that sealed, got a direct-seal session key and then
+	     restarted without sealing got our datagrams under a session key it no
+	     longer has; nothing it sends is sealed, so nothing renegotiates, and
+	     the direct path stayed dead (carrier-switch-test.sh's `plain -> quic'
+	     setup step, 1 run in 3).
+	   The obfs carrier's own meta link is exempt: its peer reads obfs by
+	   definition, and while the link comes up its capability may not be known
+	   yet. A SEAL verdict seals below, through obfs_seal_send. */
+	bool obfs_carrier = relay->connection && relay->connection->transport && relay->connection->transport->id == TRANSPORT_OBFS;
+	dseal_verdict_t dv = dseal_verdict(relay);
+
+	if(!obfs_carrier && (dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK)) {
+		return send_sptps_data_held(relay, dv, to, from, type, data, len);
+	}
+
 	/* obfs carrier: if the next hop is an obfs link, seal this SPTPS datagram
 	   before it goes on the wire. The relay strips the seal on receive and this
 	   re-applies it per hop, so a relayed record is never double-wrapped. When
 	   the hop is not an obfs link the datagram is sent unchanged below. */
 	size_t obfs_excess = 0;
+	obfs_send_t wrapped = obfs_carrier ? obfs_wrap_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay, &obfs_excess) : OBFS_SEND_PLAIN;
 
-	switch(obfs_wrap_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay, &obfs_excess)) {
+	switch(wrapped) {
 	case OBFS_SEND_OK:
 		return true;
 
@@ -1201,8 +1245,6 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	   direct datagrams -- probes, replies and data alike -- with the peer's
 	   obfs link, and sends none at all to a peer that could not read them.
 	   Between two nodes that do not seal, this is upstream tinc's wire. */
-	dseal_verdict_t dv = dseal_verdict(relay);
-
 	if(dv == DSEAL_SEND_SEAL) {
 		if(obfs_seal_send(sock, sa, buf, (size_t)(buf_ptr - buf), relay, &obfs_excess) == OBFS_SEND_TOOBIG) {
 			reduce_mtu(relay, (int)origlen - (int)(obfs_excess ? obfs_excess : 1));
@@ -1212,19 +1254,8 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	}
 
 	if(dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK) {
-		if(dv == DSEAL_SEND_HOLD) {
-			send_req_dseal(relay);
-		}
-
-		dseal_log_hold(relay, dv);
-
-		/* A probe is simply not sent (we are not probing that path); a
-		   record goes inside the meta connection instead. */
-		if(type == PKT_PROBE) {
-			return true;
-		}
-
-		return send_sptps_data_meta(to, from, type, data, len);
+		/* only the obfs carrier's own link gets here, when it is not up */
+		return send_sptps_data_held(relay, dv, to, from, type, data, len);
 	}
 
 	if(sendto(listen_socket[sock].udp.fd, buf, buf_ptr - buf, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {

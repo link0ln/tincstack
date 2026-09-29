@@ -1096,6 +1096,207 @@ No packet names the controller. `quic-wire` and `quic-listener-wire` still
 pass, so the flights are unchanged. Only a bulk flow's shape changes: it is
 Google's servers' controller rather than nginx's or curl's.
 
+## 41. https: no more two TLS records per tunnelled packet, TCP_NODELAY on the dialler (tincstack, 2026-09-29)
+
+`https.c` (`https_send`, new `https_flush`, `https_dial`).
+
+The carrier's send op wrote on every append to the outbuf. A tunnelled
+packet is two appends -- the `SPTPS_PACKET` request line (a 48-B record on
+the wire) and the packet -- so it went out as two TLS records, and the
+dialling socket had no `TCP_NODELAY` (accepted sockets do, `configure_tcp`):
+the second record waited for the delayed ACK of the first. Found by the T1a
+lab (`testing/dpi-proof/tls-in-tls-audit.sh`): 20 pings over https averaged
+37.6-39.0 ms (3 runs) where obfs and quic took 0.17-1.18 ms in the same lab;
+the pcap shows the 48-B record, 41.9 ms, then the packet.
+
+Now `https_send` leaves small writes to the event loop (one `SSL_write` per
+pass, as plain tinc's meta connections and nginx do) and writes at once when
+`maxoutbufsize / 4` is pending, so a burst a relay forwards in one pass (a
+`recvmmsg()` batch) never reaches `random_early_drop()`'s threshold;
+`https_dial` sets `TCP_NODELAY`.
+
+- Ping over https: 37.6-39.0 ms -> 0.17-0.26 ms; 4 MiB download
+  0.19-0.26 s -> 0.08-0.12 s (T1a lab, LAN, 3 runs each,
+  `testing/dpi-proof/results/2026-09-29-tls-in-tls/`).
+- Records: 44 + 1550 B alternating -> one record per write pass (a 128-B
+  ping is one 204-B record); bulk records 3137 B (two packets per pass,
+  1451 of 1458), where nginx writes 16 KiB -- still not nginx's (PLAN.md
+  Known Issues).
+- Relay onto https (`testing/perf/relay-burst-test.sh`, RTT 40 ms, 50 Mbit/s
+  bottleneck, 40 Mbit/s UDP offered): loss 0.06 % (before) -> 0.00 %; a
+  loop-only variant lost 0.13-0.69 %, which is why the early write exists.
+
+No handshake or failure-path byte changes; only post-handshake record sizes
+and timing do.
+
+Regressions on `tincstack/core:t1a-https2` (2026-09-29, verdicts read from
+each log): https-carrier, mixed-version (v0.5.2 <-> this, both ways, https,
+`DIRECT=no`), tls-front, retry-carrier, decoy-conformance (`QUICK=1`), NAT
+matrix https restricted/restricted -- PASS; carrier-switch FAIL once on a
+setup step (`plain -> quic`: the UDP path to nodea not confirmed after a
+restart, before any https code runs), then 3/3 PASS, while v0.5.2 failed the
+same step 1 of 3 -- a pre-existing flake (PLAN.md Known Issues).
+
+## 42. DirectSeal decides for every obfs link but the obfs carrier's own (tincstack, 2026-09-29)
+
+`net_packet.c` (`send_sptps_data`, new `send_sptps_data_held`).
+
+`send_sptps_data` sent on the peer's obfs link whenever one was active and
+asked DirectSeal only afterwards. An obfs link is not only the obfs
+carrier's: the cold path activates one as soon as the peer's first sealed
+datagram arrives, and it outlives the reason it was activated for. Two
+defects came of it:
+
+- **BLOCK/HOLD.** A peer that seals towards us because we seal reads sealed
+  datagrams only if its own `Transports` accept obfs. So a node that had
+  just logged "Not sending UDP to X directly" answered X's probes with
+  sealed datagrams X drops, in every coordinated punch round. Found while
+  re-aiming `mixed-version-test.sh` (T1d): a leaf a on this tree, a v0.5.2
+  leaf b with `Transports: plain, sf`, relayed through the founder -- 88
+  sealed datagrams a -> b in the capture where the verdict says none.
+- **PLAIN.** A peer that sealed (DirectSeal under https), agreed a
+  direct-seal session key with us, and restarted WITHOUT sealing got our
+  datagrams under a session key it no longer had: nothing it sends is
+  sealed, so nothing renegotiates, and its direct UDP path stayed dead
+  while the meta connection carried everything. This was
+  `carrier-switch-test.sh`'s "flake" (PLAN.md, 1 run in 4 on the §41 tree,
+  1 in 3 on v0.5.2): its `plain -> quic` setup restart follows the https
+  case, and failed exactly when a had logged "Direct-seal session key
+  established with nodeb" in the few seconds that case runs (run 3 of 6 at
+  `-d5`: key at 14:48:53, b restarted on plain at 14:48:55, then b logged
+  503 datagrams from nodea's address as "from an unknown source" over the
+  90 s wait; the two passing runs had no key yet).
+
+Now the verdict decides for every obfs link but the obfs carrier's own:
+HOLD or BLOCK sends nothing directly (a probe is dropped, a record goes
+inside the meta connection, as the HOLD/BLOCK branch always did), SEAL seals
+through `obfs_seal_send` as before, PLAIN sends upstream's wire. The obfs
+carrier's own meta link is exempt -- its peer reads obfs by definition, and
+its capability may not be known while that link comes up.
+`carrier-switch-test.sh` step 5 now waits for the session key before the
+plain restart, so the second defect no longer hides behind step 2's timing.
+
+- The pair above: a -> b 88 datagrams -> 0, still relayed and pinging
+  (`mixed-version-test.sh`, `DIRECT=yes`, OLD v0.5.2 and OLD e90715c).
+- Unchanged where the verdict is SEAL or PLAIN: sealing pairs 39-45
+  datagrams, 0 with tinc's zero destination id; the positive control (two
+  leaves that do not seal) 44 of 44 with it.
+- The peer that restarts without sealing (`carrier-switch-test.sh`, final
+  script): on `t1d-dseal`, which has the BLOCK/HOLD half only, step 5 FAILs
+  3 of 3 -- twice already at its first plain restart, which followed step
+  3's obfs session 6 s after nodea logged a key, once at its final check,
+  where b at `-d5` logged 486 of nodea's datagrams as "from an unknown
+  source" in the 90 s after its restart. On this tree (`t3b`) 5 of 5 PASS,
+  nodea's key logged before the restart in each.
+
+Not fixed (PLAN.md Known Issues, 🟢): b keeps running punch rounds towards a
+(~every 43 s) whose sealed probes a can answer only through the relay; the
+pair can never go direct, since b reads no sealed datagram.
+
+Regressions on `tincstack/core:t1d-dseal` (2026-09-29, each test's own exit
+status): mixed-version `DIRECT=yes` against v0.5.2 and e90715c, and
+`DIRECT=no` against v0.5.2; obfs, obfs-confirmed-peer, obfs-mtu; NAT matrix
+`--quick` (core), https and quic restricted/restricted -- all PASS.
+obfs-restart failed its last check on this image AND on the same tree
+without this change (`t1a-https2`, 2 runs each: 6 of 6 restarts recovered,
+0 replay-window restarts): since a1879cd a node's bootstrap counter starts
+from the clock, so between two current builds there is no window to
+restart, and the check had been unmeetable since then. The script now asks
+a current dialler to need none (PASS, 0) and an older one
+(`DIALLER_IMAGE=tincstack/node:e90715c`, random 48-bit start) to get back
+in through the epoch restart (PASS, 6 of 6, 3 restarts).
+
+Regressions on `tincstack/core:t3b` (both halves, with §41 and §43; the
+final tree of 2026-09-29, each verdict read from its log):
+carrier-switch 5 of 5 (above), mixed-version `DIRECT=yes` against v0.5.2
+and e90715c and `DIRECT=no` against v0.5.2, obfs, obfs-confirmed-peer,
+obfs-mtu, obfs-restart with a current dialler (6 of 6, 0 epoch restarts)
+and with e90715c (6 of 6, 3), https-carrier, quic-carrier, NAT matrix
+`--quick` (6 pairs), https and quic restricted/restricted, `dpi-proof/run.sh
+baseline` -- all PASS.
+
+## 43. The carrier authenticator: an unknown name no longer writes a log line or costs more (tincstack, 2026-09-29)
+
+`authn.c` (`authn_verify`), new `test/unit/test_authn.c`.
+
+Review M5-9 made a rejection cost the same whether or not the claimed node
+exists, by reading our own host record and verifying against our own key
+for an unknown name. Two things were left, both found by the T3 timing
+test (masking-hardening plan):
+
+- `read_ecdsa_public_key()` reads a record verbosely, so an absent one put
+  `Cannot open config file .../hosts/<name>: No such file or directory` in
+  the journal at `LOG_ERR`, at the default debug level, with a name the
+  prober chose (`check_id` limits it to `[A-Za-z0-9_]`) -- one line per TLS
+  handshake, and ~1.3-2.4 us that only the unknown name paid.
+- The unknown name also paid one failed lookup (~1.1-1.6 us for a file
+  under Docker's overlayfs, ~0.3-0.6 us in a tinc.yaml).
+
+Now both lookups are quiet, and both paths make the same two: an unknown
+name is followed by a read of our own record, a known one by a lookup of
+`<myself>.authn`, a record no node can have (`check_id` refuses the '.').
+
+Measured (`test_authn`, 2000 interleaved shuffled rounds; each case its own
+pool of 100 authenticators; statistic: mean over the pool of each one's
+fastest verification; deltas against "known name, signature fails"; Docker
+on the lab host, 2 CPUs):
+
+| case | files, before | files, after | tinc.yaml, before | tinc.yaml, after |
+|---|---|---|---|---|
+| A/A (the baseline again, other signatures) | -118 ns | -23..+127 ns | -100 ns | -1..+190 ns |
+| unknown name | **+3179 ns** | -285..+84 ns | **+2211 ns** | -535..-159 ns |
+| stale timestamp, valid signature | -197 ns | -53..+125 ns | -34 ns | +18..+151 ns |
+| replayed nonce, valid signature | 0 ns | +37..+147 ns | +107 ns | +85..+361 ns |
+| control: + one log line | +1293 ns | +1608..+1777 ns | +2354 ns | +2517..+2801 ns |
+| control: + one absent-record lookup | +1554 ns | +1136..+1335 ns | +626 ns | +342..+557 ns |
+
+("before" = 1 run, "after" = 3.) The baseline is ~90 us (files) / ~125 us (yaml). The
+test fails when any prober-reachable case differs from the baseline by more
+than 1 % of it (or four times the A/A difference on a noisier host), and
+also when the log-line control does not clear that budget -- a test that
+cannot see one log line could not have found this. The "before" column is
+the same test on HEAD's `authn.c`: it fails `test_unknown_name_writes_no_log_line`
+and exceeds the budget. Residual: in tinc.yaml an unknown name is ~0.3 us
+(0.25 %) cheaper, stable over 3 runs, cause not found; inside a TLS
+handshake over a network it is far below what a prober can resolve. A
+replayed nonce costs up to ~0.3 us more (the replay cache is scanned only
+after a valid signature, so only the key's holder can reach it).
+
+Not changed: with a `tinc log` client attached (`logcontrol`) the debug lines
+that name the cause of a rejection are formatted and sent; a record that
+exists but has no Ed25519 key costs more than an absent one (one more
+open). Build: `-Dtests=enabled`, cmocka inside a throwaway container.
+
+CI gate: `core/Dockerfile.build` gained a `test` stage that builds the daemon
+with cmocka and runs `test_authn` (`make unit`, a `unit` job in
+`.github/workflows/check.yml`); the build fails if the test fails, so this
+change cannot be undone green. It is a leaf stage -- the runtime image never
+depends on it, and cmocka never reaches the final image. Only `test_authn` is
+gated (the wider unit suite has never been green on this fork, PLAN.md 🟡), and
+`TINC_AUTHN_REPORT_ONLY=1` keeps the timing assertions off a shared CI runner;
+the deterministic checks -- above all "an unknown name writes no log line" --
+gate. Positive control: on HEAD's pre-fix `authn.c` the stage fails on
+`test_unknown_name_writes_no_log_line` (rc=1); on this tree it passes (7
+subtests).
+
+Correction (2026-09-30): the `test` stage was first appended as the LAST stage
+in `core/Dockerfile.build`. `docker build` with no `--target` builds the last
+stage, so `make build-core` and the documented `docker build -f
+core/Dockerfile.build -t tincstack/core:dev core/` (AGENTS.md, README, and the
+harnesses that auto-build the core) then produced the *test* image -- 485 MB,
+debug build, `tincd` not on PATH -- instead of the 102 MB runtime, which broke
+the runtime image and `make check`. The claim in the stage's own comment that
+"a plain build stays test-free" was therefore false as written. Fixed by moving
+the `test` stage above the runtime stage and naming the runtime stage `runtime`
+so it is last again; `--target test` still selects the gate. Verified: a plain
+`docker build` now yields the 102 MB image with `tincd --version` on PATH, and
+`--target test` still fails on the pre-fix `authn.c`.
+
+Regressions on `tincstack/core:t3-authn` (this change on the §41/§42-first-half
+tree, 2026-09-29, each verdict read from its log): https-carrier,
+quic-carrier, mixed-version `DIRECT=no` against v0.5.2, cert-repin,
+retry-carrier -- PASS; again on `t3b` with the rest of §42 (see there).
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):

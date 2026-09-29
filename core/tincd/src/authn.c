@@ -182,19 +182,33 @@ bool authn_verify(const uint8_t *payload, size_t plen, const uint8_t *server_fp,
 	   unknown name still parses a host record (our own) and still runs a
 	   full Ed25519 verification (against our own public key, whose result is
 	   discarded), and the freshness check is folded in at the end instead of
-	   returning early. */
-	splay_tree_t *tree = NULL;
-	ecdsa_t *pubkey = read_ecdsa_public_key(&tree, name);
+	   returning early.
+
+	   Both paths make the same two lookups, one that finds a record and one
+	   that does not: an unknown name is followed by a read of our own record,
+	   a known one by a lookup of a record no node can have (check_id refuses
+	   the '.'). A failed lookup costs up to ~1.5 us, and was the unknown
+	   name's alone (test/unit/test_authn.c measures this). The lookups are
+	   quiet: read_ecdsa_public_key() reads a record verbosely, and an absent
+	   one then put a LOG_ERR line with the prober's chosen name in the
+	   journal -- a log flood at the rate of TLS handshakes. */
+	char absent[MAX_STRING_SIZE];
+	snprintf(absent, sizeof(absent), "%s.authn", myself->name);
+
+	splay_tree_t *tree = create_configuration();
+	ecdsa_t *pubkey = read_host_config(tree, name, false) ? read_ecdsa_public_key(&tree, name) : NULL;
 	bool known = pubkey != NULL;
+	exit_configuration(tree);
 
-	if(!known) {
-		if(tree) {
-			exit_configuration(tree);
-			tree = NULL;
-		}
+	tree = create_configuration();
 
+	if(known) {
+		read_host_config(tree, absent, false);
+	} else if(read_host_config(tree, myself->name, false)) {
 		pubkey = read_ecdsa_public_key(&tree, myself->name);
 	}
+
+	exit_configuration(tree);
 
 	uint8_t msg[AUTHN_MSG_LEN];
 	auth_message(msg, server_fp, exporter, nonce, ts);
@@ -203,10 +217,6 @@ bool authn_verify(const uint8_t *payload, size_t plen, const uint8_t *server_fp,
 
 	if(pubkey) {
 		ecdsa_free(pubkey);
-	}
-
-	if(tree) {
-		exit_configuration(tree);
 	}
 
 	/* Freshness. */

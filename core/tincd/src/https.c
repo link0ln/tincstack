@@ -106,7 +106,7 @@ typedef struct https_session_t {
 
 static void https_io(void *data, int flags);
 
-/* A session whose SSL_write failed is not torn down from inside https_send():
+/* A session whose SSL_write failed is not torn down from inside https_flush():
    send_meta() runs from terminate_connection()'s own DEL_EDGE broadcast (the
    dying connection is still in the list), so terminating there recursed
    until the stack overflowed -- found by stream L: a peer that closed its
@@ -631,12 +631,41 @@ static void become_established(https_session_t *s) {
 
 /* ---- established: meta stream over TLS ------------------------------------ */
 
+static void https_flush(connection_t *c);
+
+/* The carrier's send op, called on every append to c->outbuf. Small writes
+   are left for the event loop: what tinc queues during one pass goes out in
+   one SSL_write when the socket is writable (https_flush), as plain tinc's
+   meta connections do and as nginx fills its records. Writing on every
+   append made each tunnelled packet two TLS records -- the SPTPS_PACKET
+   request line and the packet -- and a dialler (no TCP_NODELAY then) held the
+   second behind the delayed ACK of the first: +40 ms per packet from the
+   dialling side (testing/dpi-proof/tls-in-tls-audit.sh, 2026-09-29).
+
+   A burst queued in one pass -- a relay forwarding a recvmmsg() batch of up
+   to 64 UDP packets onto this link -- is written as it grows instead:
+   random_early_drop() starts discarding at maxoutbufsize / 2 pending bytes,
+   and a queue the kernel would have taken at once must not reach it
+   (testing/perf/relay-burst-test.sh: writing from the loop only lost
+   0.1-0.7 % of a 40 Mbit/s stream below a 50 Mbit/s bottleneck; this, 0). */
 bool https_send(connection_t *c) {
 	https_session_t *s = c->transport_data;
 
 	if(!s || s->state != HS_ESTABLISHED) {
 		return false;
 	}
+
+	if(c->outbuf.len - c->outbuf.offset >= (size_t)maxoutbufsize / 4) {
+		https_flush(c);
+	} else if(c->outbuf.len > c->outbuf.offset) {
+		set_io(s, IO_READ | IO_WRITE);
+	}
+
+	return true;
+}
+
+static void https_flush(connection_t *c) {
+	https_session_t *s = c->transport_data;
 
 	while(c->outbuf.len > c->outbuf.offset) {
 		int n = SSL_write(s->ssl, c->outbuf.data + c->outbuf.offset, (int)(c->outbuf.len - c->outbuf.offset));
@@ -650,7 +679,7 @@ bool https_send(connection_t *c) {
 
 		if(err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ) {
 			set_io(s, IO_READ | IO_WRITE);
-			return true;
+			return;
 		}
 
 		/* Never terminate from inside a send (see https_reap). */
@@ -658,11 +687,10 @@ bool https_send(connection_t *c) {
 		s->state = HS_DYING;
 		set_io(s, 0);
 		https_schedule_reap();
-		return false;
+		return;
 	}
 
 	set_io(s, IO_READ);
-	return true;
 }
 
 static void established_read(https_session_t *s) {
@@ -1002,7 +1030,7 @@ static void https_io(void *data, int flags) {
 
 	case HS_ESTABLISHED:
 		if(flags & IO_WRITE) {
-			https_send(c);
+			https_flush(c);
 		}
 
 		if(flags & IO_READ) {
@@ -1123,6 +1151,14 @@ bool https_dial(connection_t *c) {
 	if(fd < 0) {
 		return false;
 	}
+
+#ifdef TCP_NODELAY
+	{
+		/* As curl and nginx (and our accepted sockets, configure_tcp) do. */
+		int one = 1;
+		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (void *)&one, sizeof(one));
+	}
+#endif
 
 #ifdef FD_CLOEXEC
 	fcntl(fd, F_SETFD, FD_CLOEXEC);
