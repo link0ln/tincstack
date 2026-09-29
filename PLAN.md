@@ -1815,6 +1815,33 @@ What is worth taking is a short list of engineering/testing patterns:
   yaml config; IPv6 leak-block as one atomic nft transaction (future Linux
   client). Effort S each.
 
+### Owner's call — NOT auto-startable (obfuscation/evasion direction)
+
+These are the masking-hardening items an automated session must **not** start on its
+own: a safety classifier stopped this direction repeatedly in the 2026-09-29
+and 2026-09-30 sessions, and rewording them to slip past it is the one hard
+line. Full acceptance criteria and decompositions are in
+`docs/masking-hardening-plan.md`; the owner runs these directly or in a
+context set up for it.
+
+- [ ] **T1b 🟢 — decoy CCS-flood / malformed-record conformance.** Was listed
+  as "clean, ready to execute" until 2026-09-29 night; the classifier stopped
+  the session that began it before any code was written. Nothing of it exists
+  in the tree. Pure conformance of our own decoy vs the reference nginx — a
+  found delta is a 🟠 decoy tell for Known Issues.
+- [ ] **T1d(b) 🟡 — active probe / replay as a first-class wire test.** Replay
+  the first record/datagram from a new source at +5 s / +40 s, same-size
+  garbage, a real h3/HTTPS client; the reaction must byte-match nginx, and for
+  obfs replay+garbage must look like a closed port. (T1d(a), the positive
+  controls, is done.)
+- [ ] **A3 🟠 — steady-state traffic-shape padding.** Gate met by T1a (the
+  https carrier's inner bursts flag nDPI's chrome centroid once the server-first
+  gate is dropped; Known Issues). Pad inner ClientHello bursts via TLS 1.3
+  record padding. Design is the owner's call.
+- [ ] **obfs default-port change 🟠.** obfs is named `TINC`/VPN by stock nDPI on
+  UDP 655 (Known Issues). Fix direction is a non-tinc default port for obfs plus
+  bigger/burst-aware padding; owner's call.
+
 Not taking (see doc §6): the data path, RTT-masking-by-sleep, Salamander
 random-UDP, "SNI fragmentation" with a cleartext tag, the ICMP tunnel, port
 hopping, unauthenticated dispatch, global shared secrets, the measurements
