@@ -1,0 +1,8 @@
+== /r/obfs.pcap
+  udp 10.49.69.11:34887 > 10.49.69.10:655  (6462 payload packets)
+    ndpi25   below-bar  min margin 0.091 (tls12) on 190/157/129/218 pkts [1, 1, 1, 2]; stopped after 26 packets [obfs-dial]
+    ndpi255  CAUGHT     margin -0.811 (tls12) on 201/1427/62/404 pkts [2, 2, 1, 1] [obfs-early]
+    fix25    below-bar  min margin 0.091 (tls12) on 190/157/129/218 pkts [1, 1, 1, 2]; stopped after 26 packets [obfs-dial]
+    fix255   CAUGHT     margin -0.811 (tls12) on 201/1427/62/404 pkts [2, 2, 1, 1] [obfs-early]
+    flow     min margin -2.586 (chrome) 1790/4416/686/909 pkts [2, 5, 4, 2] in obfs-late; 1948 scored, 61 caught (31.3/1000: obfs-bulk 2, obfs-early 37, obfs-late 22), 148 below 0.9, 55 unscored
+    tuned    min margin -2.479 (tls12) 175/4232/116/397 pkts [1, 3, 1, 1] in obfs-early; 1708 scored, 40 caught (23.4/1000: obfs-bulk 1, obfs-early 17, obfs-late 22), 73 below 0.9, 58 unscored (overhead 59, ignore <= 111)

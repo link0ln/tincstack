@@ -1,0 +1,109 @@
+== /r/direct.pcap
+  tls 10.49.69.11:37748 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:37762 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:37764 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49044 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49060 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49072 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49082 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49088 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49096 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49112 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49114 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49120 > 10.49.69.10:8443  (8 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49134 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49136 > 10.49.69.10:8443  (8 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49146 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49154 > 10.49.69.10:8443  (8 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49166 > 10.49.69.10:8443  (14 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:49174 > 10.49.69.10:8443  (8 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)

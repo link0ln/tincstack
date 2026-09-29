@@ -1,0 +1,8 @@
+== /r/https.pcap
+  tls 10.49.69.11:44142 > 10.49.69.10:443  (12165 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    below-bar  min margin 0.655 (tls12) on 131/132/69/135 pkts [2, 2, 1, 2]; stopped after 26 packets [https-dial]
+    fix255   CAUGHT     margin -0.078 (tls12) on 234/4179/23/24 pkts [1, 11, 1, 1] [https-early]
+    flow     min margin -2.332 (tls13) 646/4163/23/24 pkts [1, 11, 1, 1] in https-late; 1976 scored, 52 caught (26.3/1000: https-bulk 16, https-early 19, https-late 17), 362 below 0.9, 37 unscored
+    tuned    min margin -2.061 (chrome) 1859/3657/957/871 pkts [2, 3, 1, 1] in https-early; 335 scored, 52 caught (155.2/1000: https-bulk 5, https-early 22, https-late 25), 112 below 0.9, 8 unscored (overhead 55, ignore <= 107)

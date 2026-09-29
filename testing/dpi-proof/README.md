@@ -57,3 +57,22 @@ exits 1 (self-test of the harness: an unchanged wire image must fail).
 3. `run.sh compare results/run/<id>/plain.fingerprint.json results/run/<id>/<tier>.fingerprint.json`.
 4. Extend `fingerprint.py` when a tier introduces a *new* pattern worth
    guarding (e.g. a fixed TLS SNI, a constant QUIC connection-id length).
+
+## Steady state: the TLS-in-TLS burst model (T1a)
+
+The fingerprints above are about the handshake and the frame. What the
+traffic *after* the handshake looks like is judged by
+`tls-in-tls-audit.sh`: nDPI 6.0 built from source (`ndpi/Dockerfile`) as the
+arbiter, `tls_in_tls.py` (the model reimplemented from nDPI's source and the
+paper: nDPI-faithful, gate-removed, whole-flow and overhead-tuned scorings,
+per-centroid separability against a plain-HTTPS reference population) and
+`tls_forward.py` (a per-connection TLS tunnel for the controls).
+
+```
+flock /tmp/tincstack-lab.lock ./tls-in-tls-audit.sh [outdir]   # env: CORE_IMAGE, KEEP_PCAP=1
+```
+
+Results and verdict: `results/2026-09-29-tls-in-tls/README.md` — stock
+nDPI scores no current TLS; with its server-first gate removed, the chrome
+centroid alone flags the https carrier and none of the four plain-HTTPS
+references; stock nDPI flags obfs.

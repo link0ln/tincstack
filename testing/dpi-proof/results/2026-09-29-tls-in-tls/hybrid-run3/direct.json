@@ -1,0 +1,758 @@
+[
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:32886 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:32886",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688563.623326,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:32898 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:32898",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688563.974334,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39898 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39898",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688564.332702,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39908 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39908",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688564.68408,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39920 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39920",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688565.03609,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39930 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39930",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688565.389388,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39932 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39932",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688565.740809,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39936 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39936",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688566.102074,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39942 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39942",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688566.459219,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39946 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39946",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688566.81444,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39954 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39954",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688567.374191,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39970 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39970",
+  "server": "10.49.69.10:8443",
+  "packets": 8,
+  "start": 1790688567.377639,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39982 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39982",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688568.13647,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:39986 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:39986",
+  "server": "10.49.69.10:8443",
+  "packets": 8,
+  "start": 1790688568.150365,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:40002 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:40002",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688568.956638,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:40018 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:40018",
+  "server": "10.49.69.10:8443",
+  "packets": 8,
+  "start": 1790688568.96032,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:40034 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:40034",
+  "server": "10.49.69.10:8443",
+  "packets": 14,
+  "start": 1790688569.750571,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/direct.pcap",
+  "id": "tls 10.49.69.11:40046 > 10.49.69.10:8443",
+  "kind": "tls",
+  "client": "10.49.69.11:40046",
+  "server": "10.49.69.10:8443",
+  "packets": 8,
+  "start": 1790688569.75682,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ }
+]

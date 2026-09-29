@@ -1,0 +1,57 @@
+== /r/h2page.pcap
+  tls 10.49.69.11:51746 > 10.49.69.10:8444  (959 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    clean      min margin 1.553 (chrome) on 169/3439/32/951 pkts [2, 4, 1, 1]; stopped after 26 packets [h2page]
+    fix255   CAUGHT     margin -0.418 (tls12) on 99/6430/33/382 pkts [3, 5, 1, 1] [h2page]
+    flow     min margin -0.418 (tls12) 99/6430/33/382 pkts [3, 5, 1, 1] in h2page; 14 scored, 1 caught (71.4/1000: h2page 1), 1 below 0.9, 5 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 55, ignore <= 107)
+  tls 10.49.69.11:51752 > 10.49.69.10:8444  (9 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+    tuned    no 4-gram scored (0 unscored) (overhead 55, ignore <= 107)
+  tls 10.49.69.11:51756 > 10.49.69.10:8444  (956 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -0.129 (tls12) on 66/2848/32/409 pkts [2, 2, 1, 1] [h2page]
+    fix255   CAUGHT     margin -0.129 (tls12) on 66/2848/32/409 pkts [2, 2, 1, 1] [h2page]
+    flow     min margin -0.129 (tls12) 66/2848/32/409 pkts [2, 2, 1, 1] in h2page; 15 scored, 2 caught (133.3/1000: h2page 2), 2 below 0.9, 2 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 55, ignore <= 107)
+  tls 10.49.69.11:51764 > 10.49.69.10:8444  (9 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+    tuned    no 4-gram scored (0 unscored) (overhead 55, ignore <= 107)
+  tls 10.49.69.11:51776 > 10.49.69.10:8444  (954 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    below-bar  min margin 0.376 (tls12) on 64/4208/195/414 pkts [2, 4, 6, 1]; stopped after 26 packets [h2page]
+    fix255   CAUGHT     margin -0.033 (tls12) on 66/2278/66/158 pkts [2, 2, 2, 1] [h2page]
+    flow     min margin -0.033 (tls12) 66/2278/66/158 pkts [2, 2, 2, 1] in h2page; 12 scored, 1 caught (83.3/1000: h2page 1), 2 below 0.9, 4 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 55, ignore <= 107)
+  tls 10.49.69.11:51784 > 10.49.69.10:8444  (9 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+    tuned    no 4-gram scored (0 unscored) (overhead 55, ignore <= 107)
+  tls 10.49.69.11:51786 > 10.49.69.10:8444  (951 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -0.227 (tls12) on 64/4208/162/414 pkts [2, 4, 5, 1] [h2page]
+    fix255   CAUGHT     margin -0.227 (tls12) on 64/4208/162/414 pkts [2, 4, 5, 1] [h2page]
+    flow     min margin -0.227 (tls12) 64/4208/162/414 pkts [2, 4, 5, 1] in h2page; 16 scored, 1 caught (62.5/1000: h2page 1), 2 below 0.9, 4 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 55, ignore <= 107)
+  tls 10.49.69.11:51788 > 10.49.69.10:8444  (9 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+    tuned    no 4-gram scored (0 unscored) (overhead 55, ignore <= 107)

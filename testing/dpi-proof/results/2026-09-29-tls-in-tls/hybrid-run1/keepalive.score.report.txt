@@ -1,0 +1,8 @@
+== /r/keepalive.pcap
+  tls 10.49.69.11:46208 > 10.49.69.10:8443  (905 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.623 (tls13) on 604/3024/604/1067 pkts [1, 3, 1, 1] [keepalive]
+    fix255   CAUGHT     margin -1.623 (tls13) on 604/3024/604/1067 pkts [1, 3, 1, 1] [keepalive]
+    flow     min margin -2.722 (tls13) 605/4562/605/1452 pkts [1, 4, 1, 2] in keepalive; 72 scored, 19 caught (263.9/1000: keepalive 19), 32 below 0.9, 0 unscored
+    tuned    min margin -2.407 (tls13) 548/4334/548/1367 pkts [1, 4, 1, 1] in keepalive; 72 scored, 19 caught (263.9/1000: keepalive 19), 32 below 0.9, 0 unscored (overhead 81, ignore <= 133)

@@ -124,3 +124,105 @@ scale with traffic (event loop, timers, pings, UDP discovery) dominates: upstrea
 spends 23.7 % of a core there but only 35.2 % at four times the rate. Quote the
 ladder for capacity questions and the fixed-rate bench for cost-per-packet ones;
 neither substitutes for the other.
+
+## A relay forwarding UDP bursts onto an https link, 2026-09-29
+
+    flock /tmp/tincstack-lab.lock testing/perf/relay-burst-test.sh [outdir]
+    CORES="old=<image> new=<image>" DELAY=20ms LIMIT=50mbit RATE=40M SECONDS_RUN=20 ...
+
+Three containers: sender --(UDP, SPTPS)--> relay --(https carrier)--> receiver,
+no path between sender and receiver. The relay reads UDP with `recvmmsg()`
+(up to 64 packets a call) and forwards them onto the receiver's TCP link in the
+same event-loop pass, where `random_early_drop()` discards once more than
+`maxoutbufsize / 2` bytes are pending. It is the phone's shape: https to
+ruvds2, the exit behind it on quic. Three cores, interleaved, 3 repeats each:
+`v052` (writes every append at once: two TLS records per packet, and the
+dialler's second record waits for a delayed ACK), `defer` (writes only from
+the event loop: one record per pass), `hybrid` (as `defer`, but writes as soon
+as `maxoutbufsize / 4` is pending -- what `https.c` does now).
+
+`results/2026-09-29-relay-burst-lan.csv` -- no bottleneck, 10 s per load:
+
+| core | TCP Mbit/s (median, runs) | TCP retransmits (median) | UDP 300M loss % (median) |
+|---|---|---|---|
+| v052 | 334 (336 / 334 / 245) | 12365 | 0.97 |
+| defer | 677 (677 / 711 / 334) | 40680 | 0.04 |
+| hybrid | 426 (617 / 408 / 426) | 1159 | 0.11 |
+
+`results/2026-09-29-relay-burst-wan.csv` -- relay <-> receiver 20 ms each way,
+50 Mbit/s relay -> receiver (netem), UDP offered 40 Mbit/s (below the
+bottleneck), 20 s per load:
+
+| core | TCP Mbit/s (median) | TCP retransmits (median, runs) | UDP 40M loss % (runs) |
+|---|---|---|---|
+| v052 | 39.5 | 15 (15 / 15 / 15) | 0.06 / 0.06 / 0.06 |
+| defer | 41.2 | 94 (94 / 24 / 101) | 0.69 / 0.13 / 0.44 |
+| hybrid | 41.1 | 15 (15 / 15 / 15) | 0.00 / 0.00 / 0.00 |
+
+Reading: writing only from the event loop lets a burst pile up past the
+early-drop threshold before the first byte leaves, so `defer` loses packets
+the link had room for (UDP loss below the bottleneck rate, 6x the TCP
+retransmits) -- on a LAN it still "wins" because it makes the fewest,
+largest writes. `hybrid` keeps the coalescing (one record per write pass,
+never two per packet) without that loss; on the LAN it is slower than
+`defer` (more, smaller writes -- inferred, CPU was not sampled in this test)
+and still faster than `v052`; on the shaped link it is the best or equal best
+on every column. Images:
+`tincstack/core:t1a-https` (defer) and `:t1a-https2` (hybrid) were built from
+this tree's `https.c` at the two stages; `v052` is `ghcr.io/link0ln/tincstack/core:v0.5.2`.
+
+## Junk-packet DoS cost, 2026-09-30 (T1e)
+
+    flock /tmp/tincstack-lab.lock testing/perf/junk-cost-test.sh [outdir]
+
+Env: `CORE_IMAGE`, `CONTROL` (1 = also build+run the O(N) positive control),
+`NLIST` (peer counts, default `1 4 16 64`), `RATELIST` (default `15000 auto`:
+one sub-saturation numeric rate and one max-rate run; `auto` alone works too),
+`DURATION` (8 s), `REPEATS` (3).
+
+What it answers: can an attacker who floods a node's UDP port with
+unauthenticated junk make the daemon spend CPU in proportion to how hard they
+flood, or to how many peers the node knows? For the obfs / DirectSeal carrier
+an unknown-source datagram reaches the cold-start classifier
+(`obfs_udp_try`), which decides with a keyed check whether it belongs to any
+known peer. A naive version would key-check every one of the N peers on every
+junk datagram — O(N) per packet, a DoS lever (a Salamander-style listener
+has exactly this shape). tincstack caps that scan at a per-second budget
+(`OBFS_SCAN_PER_SEC`..`OBFS_SCAN_MAX`) with a round-robin cursor, so the keyed
+work is bounded per wall-second no matter the flood rate.
+
+How it is set up:
+
+* **Victim.** One `tincd` with obfs in the accept mask (so the cold-start scan
+  is live) and **N host records** carrying well-formed random Ed25519 public
+  keys — `ecdsa_set_base64_public_key` checks length only and
+  `obfs_derive_base` hashes the base64 text, so a random-but-well-formed key
+  exercises the full per-peer derivation the scan runs. The peers are never
+  live: the junk comes from an unknown address, the exact cold-start path.
+* **Attacker.** A python-stdlib UDP sender (throwaway container) sends 1300-byte
+  datagrams whose first byte is `< 0x40` (so the classifier routes them to the
+  obfs keyed check, not SF and not a QUIC long/short header) for `DURATION`
+  seconds, and prints the count it sent.
+* **Metric.** `utime+stime` from `/proc/<pid>/stat` over the flood window minus
+  an equal idle window, in CPU-microseconds, divided by packets sent →
+  **CPU µs per junk packet**, median over repeats. As in `bench.sh`, CPU is
+  integrated from `/proc`, never sampled with `docker stats`.
+* **Positive control.** A deliberately O(N)-per-packet build is compiled from a
+  *copy* of `core/` with the per-second budget neutered (every junk datagram
+  scans the whole node tree). It must show CPU rising with N; the shipped build
+  must not. The shipped source is never modified.
+
+Two rates, because a max-rate flood **saturates one core**: the kernel then
+drops junk before `tincd` sees it, so an O(N) handler shows up as CPU pegged
+near 100 % with only a modest per-packet rise, not a clean N× per-packet
+blow-up. A **sub-saturation** numeric rate (default 15000 pps, ~7 % CPU, no
+drops) shows the O(N) per-packet cost unmasked; the **`auto`** run shows the DoS
+lever as CPU saturation.
+
+Assertions: at every rate the shipped build's µs/packet at the largest N is
+within 3× of the smallest N (bounded, not O(N)). The meter is proven by the
+control build — at the sub-saturation rate its µs/packet more than doubles from
+smallest to largest N, and/or at `auto` it pegs the core (≥ 90 %, ≥ 15 points
+above the shipped build at the same rate) where the shipped build does not. If
+the control never shows a rise, the run fails: an unproven meter makes the
+shipped PASS untrustworthy.

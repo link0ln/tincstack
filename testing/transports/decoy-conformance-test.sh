@@ -163,7 +163,11 @@ tls12() { # <name> <bytes...>: the same over TLS 1.2 (its ticket travels in the 
 		-keylogfile "$O/keys" 2>/dev/null > "$O/$1" || true
 }
 tcp() { # <name> <bytes>: send over plain TCP to the TLS port
-	timeout 8 bash -c "exec 3<>/dev/tcp/$H/443; printf '%b' '$2' >&3; cat <&3" > "$O/$1" 2>/dev/null || true
+	# <name>.conn says what happened to the connection: "connected" once it is
+	# up, "closed" once the server closed it (a timeout kill leaves no such
+	# line, a refused connect leaves the file empty) -- so "no answer" can be
+	# told from "no listener" (T1d)
+	timeout 8 bash -c "exec 3<>/dev/tcp/$H/443 || exit 1; echo connected > '$O/$1.conn'; printf '%b' '$2' >&3; cat <&3; echo closed >> '$O/$1.conn'" > "$O/$1" 2>/dev/null || true
 }
 h3() { # <name> <path> [curl options...]: one HTTP/3 request, the answer as curl prints it
 	local n=$1 p=$2
@@ -331,8 +335,14 @@ else
 	diff <(fwd "$RUN/out/upstream-h.txt") <(fwd "$RUN/out/upstream-p.txt") | head -10 >&2 || true
 fi
 
-if [[ ! -s $RUN/out/f/highbyte && ! -s $RUN/out/n/highbyte ]]; then
-	ok "a non-ASCII first byte: closed without an answer by both"
+# Its positive control: an empty answer from a dead listener would pass the
+# check above, so both must have accepted the connection and then closed it.
+conn() { tr '\n' ' ' < "$1" 2>/dev/null | sed 's/ $//'; }
+if [[ ! -s $RUN/out/f/highbyte && ! -s $RUN/out/n/highbyte &&
+	$(conn "$RUN/out/f/highbyte.conn") == "connected closed" && $(conn "$RUN/out/n/highbyte.conn") == "connected closed" ]]; then
+	ok "a non-ASCII first byte: accepted, then closed without an answer by both"
+elif [[ ! -s $RUN/out/f/highbyte && ! -s $RUN/out/n/highbyte ]]; then
+	bad "a non-ASCII first byte: no answer, but the connection went ours '$(conn "$RUN/out/f/highbyte.conn")', nginx '$(conn "$RUN/out/n/highbyte.conn")' (expected 'connected closed')"
 else
 	bad "a non-ASCII first byte: ours $(wc -c <"$RUN/out/f/highbyte") bytes, nginx $(wc -c <"$RUN/out/n/highbyte")"
 fi

@@ -1,0 +1,567 @@
+[
+ {
+  "file": "/r/h2page.pcap",
+  "id": "tls 10.49.69.11:47752 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:47752",
+  "server": "10.49.69.10:8444",
+  "packets": 956,
+  "start": 1790681791.640782,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.032 (tls12) on 98/3256/65/414 pkts [3, 3, 2, 1]",
+   -1.0320000610594064,
+   {
+    "tls12": 2.468,
+    "chrome": 4.544
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.032 (tls12) on 98/3256/65/414 pkts [3, 3, 2, 1]",
+   -1.0320000610594064,
+   {
+    "tls12": 2.468,
+    "chrome": 4.544
+   }
+  ],
+  "flow": {
+   "scored": 14,
+   "unscored": 2,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.032,
+    "model": "tls12",
+    "t": 1790681791.755073,
+    "bytes": [
+     98,
+     3256,
+     65,
+     414
+    ],
+    "pkts": [
+     3,
+     3,
+     2,
+     1
+    ],
+    "dist": {
+     "tls12": 2.468,
+     "chrome": 4.766
+    }
+   },
+   "caught_t": [
+    1790681791.755073
+   ],
+   "mind": {
+    "tls12": 2.468,
+    "chrome": 4.544
+   }
+  },
+  "tuned": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {},
+   "overhead": 55,
+   "ignore_upto": 107
+  }
+ },
+ {
+  "file": "/r/h2page.pcap",
+  "id": "tls 10.49.69.11:47764 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:47764",
+  "server": "10.49.69.10:8444",
+  "packets": 9,
+  "start": 1790681791.647266,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  },
+  "tuned": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {},
+   "overhead": 55,
+   "ignore_upto": 107
+  }
+ },
+ {
+  "file": "/r/h2page.pcap",
+  "id": "tls 10.49.69.11:47776 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:47776",
+  "server": "10.49.69.10:8444",
+  "packets": 916,
+  "start": 1790681792.509327,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "clean",
+   "min margin 1.637 (chrome) on 169/3437/64/4206 pkts [2, 4, 2, 4]; stopped after 26 packets",
+   1.636895195751011,
+   {
+    "tls12": 10.871,
+    "chrome": 4.637
+   }
+  ],
+  "fix255": [
+   "clean",
+   "min margin 1.637 (chrome) on 169/3437/64/4206 pkts [2, 4, 2, 4]; stopped after 256 packets",
+   1.636895195751011,
+   {
+    "tls12": 5.355,
+    "chrome": 4.637
+   }
+  ],
+  "flow": {
+   "scored": 6,
+   "unscored": 3,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": {
+    "margin": 1.637,
+    "model": "chrome",
+    "t": 1790681792.657184,
+    "bytes": [
+     169,
+     3437,
+     64,
+     4206
+    ],
+    "pkts": [
+     2,
+     4,
+     2,
+     4
+    ],
+    "dist": {
+     "tls12": 29.349,
+     "chrome": 4.637
+    }
+   },
+   "caught_t": [],
+   "mind": {
+    "tls12": 5.355,
+    "chrome": 4.637
+   }
+  },
+  "tuned": {
+   "scored": 1,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": {
+    "margin": 49.384,
+    "model": "chrome",
+    "t": 1790681792.646996,
+    "bytes": [
+     414,
+     364,
+     106,
+     165411
+    ],
+    "pkts": [
+     1,
+     1,
+     1,
+     129
+    ],
+    "dist": {
+     "tls12": 1249.161,
+     "chrome": 52.384
+    }
+   },
+   "caught_t": [],
+   "mind": {
+    "tls12": 1249.161,
+    "chrome": 52.384
+   },
+   "overhead": 55,
+   "ignore_upto": 107
+  }
+ },
+ {
+  "file": "/r/h2page.pcap",
+  "id": "tls 10.49.69.11:47780 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:47780",
+  "server": "10.49.69.10:8444",
+  "packets": 9,
+  "start": 1790681792.513256,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  },
+  "tuned": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {},
+   "overhead": 55,
+   "ignore_upto": 107
+  }
+ },
+ {
+  "file": "/r/h2page.pcap",
+  "id": "tls 10.49.69.11:47792 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:47792",
+  "server": "10.49.69.10:8444",
+  "packets": 959,
+  "start": 1790681793.455466,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "below-bar",
+   "min margin 0.205 (tls12) on 32/3256/32/414 pkts [1, 3, 1, 1]; stopped after 26 packets",
+   0.20450699991858334,
+   {
+    "tls12": 3.705,
+    "chrome": 4.934
+   }
+  ],
+  "fix255": [
+   "below-bar",
+   "min margin 0.205 (tls12) on 32/3256/32/414 pkts [1, 3, 1, 1]; stopped after 256 packets",
+   0.20450699991858334,
+   {
+    "tls12": 3.705,
+    "chrome": 4.934
+   }
+  ],
+  "flow": {
+   "scored": 11,
+   "unscored": 2,
+   "caught": 0,
+   "below_safe": 1,
+   "worst": {
+    "margin": 0.205,
+    "model": "tls12",
+    "t": 1790681793.596014,
+    "bytes": [
+     32,
+     3256,
+     32,
+     414
+    ],
+    "pkts": [
+     1,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 3.705,
+     "chrome": 4.934
+    }
+   },
+   "caught_t": [],
+   "mind": {
+    "tls12": 3.705,
+    "chrome": 4.934
+   }
+  },
+  "tuned": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {},
+   "overhead": 55,
+   "ignore_upto": 107
+  }
+ },
+ {
+  "file": "/r/h2page.pcap",
+  "id": "tls 10.49.69.11:47806 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:47806",
+  "server": "10.49.69.10:8444",
+  "packets": 9,
+  "start": 1790681793.463133,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  },
+  "tuned": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {},
+   "overhead": 55,
+   "ignore_upto": 107
+  }
+ },
+ {
+  "file": "/r/h2page.pcap",
+  "id": "tls 10.49.69.11:43812 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:43812",
+  "server": "10.49.69.10:8444",
+  "packets": 949,
+  "start": 1790681794.460559,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "below-bar",
+   "min margin 0.376 (tls12) on 64/4206/195/414 pkts [2, 4, 6, 1]; stopped after 26 packets",
+   0.375989919199474,
+   {
+    "tls12": 3.876,
+    "chrome": 4.637
+   }
+  ],
+  "fix255": [
+   "below-bar",
+   "min margin 0.376 (tls12) on 64/4206/195/414 pkts [2, 4, 6, 1]; stopped after 256 packets",
+   0.375989919199474,
+   {
+    "tls12": 3.876,
+    "chrome": 4.637
+   }
+  ],
+  "flow": {
+   "scored": 10,
+   "unscored": 6,
+   "caught": 0,
+   "below_safe": 1,
+   "worst": {
+    "margin": 0.376,
+    "model": "tls12",
+    "t": 1790681794.585507,
+    "bytes": [
+     64,
+     4206,
+     195,
+     414
+    ],
+    "pkts": [
+     2,
+     4,
+     6,
+     1
+    ],
+    "dist": {
+     "tls12": 3.876,
+     "chrome": 4.705
+    }
+   },
+   "caught_t": [],
+   "mind": {
+    "tls12": 3.876,
+    "chrome": 4.637
+   }
+  },
+  "tuned": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {},
+   "overhead": 55,
+   "ignore_upto": 107
+  }
+ },
+ {
+  "file": "/r/h2page.pcap",
+  "id": "tls 10.49.69.11:43822 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:43822",
+  "server": "10.49.69.10:8444",
+  "packets": 9,
+  "start": 1790681794.468676,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  },
+  "tuned": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {},
+   "overhead": 55,
+   "ignore_upto": 107
+  }
+ }
+]

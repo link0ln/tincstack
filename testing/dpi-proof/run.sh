@@ -51,7 +51,10 @@ baseline() {
     python3 - "$out/plain.fingerprint.json" <<'PY'
 import json,sys
 r=json.load(open(sys.argv[1]))
-need={"tcp_id_line","udp_null_dstid","udp_seqno_counter"}
+# every fingerprint the detectors know: one that never fires on plain tinc
+# could drop out of a tier's "absent" list without anyone noticing (T1d)
+need={"tcp_id_line","tcp_sptps_handshake","udp_null_dstid","udp_constant_srcid",
+      "udp_seqno_counter","udp_probe_size"}
 have=set(r["summary"]["fingerprints_present"])
 missing=need-have
 print("baseline fingerprints present:", ", ".join(sorted(have)))

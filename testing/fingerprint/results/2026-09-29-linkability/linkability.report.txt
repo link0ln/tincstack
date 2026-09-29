@@ -1,0 +1,71 @@
+== cross-session linkability: 2026-09-29T13:24:07Z ==
+core tincstack/core:t1a-https2 sha256:e22cf89ddfe4de3f4208d6d3e921db9b7a6e224828a4a758ab5405e65f71f5e9
+sessions per node and carrier: 6; idle 65s; first 24 units compared
+
+[https] 12 sessions, nodes leaf, leafwithaverylongname01
+  SameSizes  first 16 units node->server, 19 server->node: 25 protocol-constant, 2 per-node constant, 8 varying -> LINKABLE: a node's sessions share sizes no other node has
+             node->server unit  1: leaf 332 B, leafwithaverylongname01 357 B
+             node->server unit  2: leaf 29 B, leafwithaverylongname01 48 B
+             mostly constant per node (>= 2/3 of its sessions), 3 position(s):
+             node->server unit  4: leaf 223 B, leafwithaverylongname01 261 B
+             server->node unit  9: leaf 271 B, leafwithaverylongname01 290 B
+             server->node unit 15: leaf 1305 B, leafwithaverylongname01 1384 B
+  SameGaps   idle: median gap by node {'leaf': [5.76, 7.17, 8.26, 10.94, 12.54, 17.92], 'leafwithaverylongname01': [7.07, 7.1, 8.19, 11.52, 12.54, 17.92]}; units per session [11, 9, 8, 9, 8, 8, 8, 8, 8, 8, 7, 7]
+  LengthTracksPayload  node->server: spread 76..77 B; server->node: spread 76..156 B
+[obfs] 12 sessions, nodes leaf, leafwithaverylongname01
+  SameSizes  first 24 units node->server, 24 server->node: 0 protocol-constant, 0 per-node constant, 48 varying -> no per-node constant
+  SameGaps   idle: median gap by node {'leaf': [1.05, 1.25, 1.46, 2.15, 3.43, 3.46], 'leafwithaverylongname01': [0.99, 1.96, 2.14, 2.19, 3.04, 3.51]}; units per session [80, 76, 80, 80, 78, 77, 78, 78, 86, 77, 77, 77]
+  LengthTracksPayload  node->server: spread 0..146 B; server->node: spread 0..144 B
+[quic] 12 sessions, nodes leaf, leafwithaverylongname01
+  SameSizes  first 24 units node->server, 24 server->node: 13 protocol-constant, 0 per-node constant, 35 varying -> no per-node constant
+             mostly constant per node (>= 2/3 of its sessions), 2 position(s):
+             node->server unit  9: leaf 262 B, leafwithaverylongname01 301 B
+             node->server unit 13: leaf 183 B, leafwithaverylongname01 202 B
+  SameGaps   idle: median gap by node {'leaf': [5.96, 6.75, 8.19, 8.23, 8.45, 14.69], 'leafwithaverylongname01': [7.42, 7.76, 8.09, 11.18, 11.47, 13.92]}; units per session [42, 65, 51, 63, 69, 65, 74, 81, 68, 63, 60, 69]
+  LengthTracksPayload  node->server: exact: every inner length readable (overhead 83 B); server->node: exact: every inner length readable (overhead 60 B)
+[ref-h1] 12 sessions, nodes user-u, user-v
+  SameSizes  first 3 units node->server, 7 server->node: 9 protocol-constant, 0 per-node constant, 1 varying -> no per-node constant
+  SameGaps   idle: median gap by node {}; units per session [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  LengthTracksPayload  node->server: no ping matched; server->node: no ping matched
+[ref-h3] 12 sessions, nodes user-u, user-v
+  SameSizes  first 9 units node->server, 6 server->node: 7 protocol-constant, 0 per-node constant, 8 varying -> no per-node constant
+  SameGaps   idle: median gap by node {}; units per session [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  LengthTracksPayload  node->server: no ping matched; server->node: no ping matched
+
+--- links as dialled ---
+https-a-1 leaf link=https
+https-b-1 leafwithaverylongname01 link=https
+quic-a-1 leaf link=quic
+quic-b-1 leafwithaverylongname01 link=quic
+obfs-a-1 leaf link=obfs
+obfs-b-1 leafwithaverylongname01 link=obfs
+https-a-2 leaf link=https
+https-b-2 leafwithaverylongname01 link=https
+quic-a-2 leaf link=quic
+quic-b-2 leafwithaverylongname01 link=quic
+obfs-a-2 leaf link=obfs
+obfs-b-2 leafwithaverylongname01 link=obfs
+https-a-3 leaf link=https
+https-b-3 leafwithaverylongname01 link=https
+quic-a-3 leaf link=quic
+quic-b-3 leafwithaverylongname01 link=quic
+obfs-a-3 leaf link=obfs
+obfs-b-3 leafwithaverylongname01 link=obfs
+https-a-4 leaf link=https
+https-b-4 leafwithaverylongname01 link=https
+quic-a-4 leaf link=quic
+quic-b-4 leafwithaverylongname01 link=quic
+obfs-a-4 leaf link=obfs
+obfs-b-4 leafwithaverylongname01 link=obfs
+https-a-5 leaf link=https
+https-b-5 leafwithaverylongname01 link=https
+quic-a-5 leaf link=quic
+quic-b-5 leafwithaverylongname01 link=quic
+obfs-a-5 leaf link=obfs
+obfs-b-5 leafwithaverylongname01 link=obfs
+https-a-6 leaf link=https
+https-b-6 leafwithaverylongname01 link=https
+quic-a-6 leaf link=quic
+quic-b-6 leafwithaverylongname01 link=quic
+obfs-a-6 leaf link=obfs
+obfs-b-6 leafwithaverylongname01 link=obfs

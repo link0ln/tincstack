@@ -80,3 +80,4 @@ testing/dpi-proof/results/**/*.txt
 !testing/nat-sim/results/*/pair-masq-masq/core/gw-gwb.txt
 testing/fingerprint/run/
 testing/fingerprint/run-*/
+testing/dpi-proof/run-*/

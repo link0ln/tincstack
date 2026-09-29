@@ -202,7 +202,10 @@ dleaf() {
 	docker exec -d "$PFX-$s" sh -c "tincd -n lab -c $Y -D -d3 >>/tmp/tincd.log 2>&1"
 }
 
-# <label> <b image> <expect: direct|relay> <a's log line> [b settings...]
+# <label> <b image> <expect: direct|direct-clear|relay|relay-noudp> <a's log line> [b settings...]
+#   direct-clear: the positive control of the wire check -- a pair that does
+#   not seal (upstream tinc's wire by design), where the same counters must
+#   find the zero dst id and the 51-byte probes. DLEAF_A replaces a's settings.
 dpair() {
 	local label=$1 bi=$2 expect=$3 why=$4 reach="" bip ok=0 n z6 s51 cap=0
 	shift 4
@@ -216,7 +219,8 @@ dpair() {
 	if docker image inspect "$WIRE_IMAGE" >/dev/null 2>&1; then
 		cap=1
 	fi
-	dleaf a leafa "$NEW" "$SUBNET.11" PreferredTransports obfs
+	# shellcheck disable=SC2086  # DLEAF_A is a list of setting/value words
+	dleaf a leafa "$NEW" "$SUBNET.11" ${DLEAF_A:-PreferredTransports obfs}
 	if [[ $cap -eq 1 ]]; then
 		docker run -d --name "$PFX-w" --network "container:$PFX-a" --cap-add NET_ADMIN --cap-add NET_RAW \
 			--entrypoint sh "$WIRE_IMAGE" -c "tcpdump -i any -U -n -w /tmp/a2b.pcap udp and src host $SUBNET.11 and dst host $SUBNET.12 2>/dev/null" >/dev/null
@@ -231,7 +235,7 @@ dpair() {
 	docker exec -d "$PFX-a" ping -i 0.5 "$bip"
 	for _ in $(seq 45); do
 		reach=$(t a info leafb 2>/dev/null | grep -i "^Reachability" | head -1)
-		[[ $expect == direct && $reach == *"directly with UDP"* ]] && break
+		[[ $expect == direct* && $reach == *"directly with UDP"* ]] && break
 		sleep 1
 	done
 	[[ $expect == relay* ]] && sleep 5
@@ -239,7 +243,7 @@ dpair() {
 	bip=$(docker exec "$PFX-b" ip -4 -br addr show lab 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
 	docker exec "$PFX-a" ping -c5 -i0.5 -W2 "$bip" >/dev/null 2>&1 && ok=1
 	local verdict=PASS msg=""
-	if [[ $expect == direct && $reach != *"directly with UDP"* ]]; then
+	if [[ $expect == direct* && $reach != *"directly with UDP"* ]]; then
 		verdict=FAIL msg="expected direct, got '$reach'"
 	elif [[ $expect == relay* && $reach == *"directly with UDP"* ]]; then
 		verdict=FAIL msg="expected the relay, got '$reach'"
@@ -256,14 +260,24 @@ dpair() {
 		rm -f "/tmp/$PFX-a2b.pcap"
 		read -r n z6 s51 <<<"${n:-? ? ?}"
 		msg="$msg${msg:+; }wire a->b: $n datagrams, $z6 with the zero dst id, $s51 of 51 bytes"
-		if [[ $n == "?" ]] || [[ $z6 != 0 ]] || [[ $((s51 * 20)) -gt $n ]]; then
+		if [[ $n == "?" ]]; then
+			verdict=FAIL
+		elif [[ $expect == direct-clear ]]; then
+			if [[ $z6 -gt 0 && $s51 -gt 0 ]]; then
+				msg="$msg; the counters find tinc's wire where it is expected"
+			else
+				verdict=FAIL msg="$msg; positive control: the counters missed tinc's own wire, their 0 elsewhere is not evidence"
+			fi
+		elif [[ $z6 != 0 ]] || [[ $((s51 * 20)) -gt $n ]]; then
 			verdict=FAIL
 		elif [[ $expect == relay-noudp && $n != 0 ]]; then
 			verdict=FAIL
 		fi
+		WIRE_CHECKED=$((WIRE_CHECKED + 1))
 	else
 		msg="$msg${msg:+; }wire not checked ($WIRE_IMAGE absent)"
 	fi
+	DIRECT_PAIRS=$((DIRECT_PAIRS + 1))
 	log "$verdict direct pair, $label: '$reach', ping=$ok; $msg"
 	if [[ $verdict == FAIL ]]; then
 		t a dump nodes 2>/dev/null | grep -E "^leaf|^founder" >&2 || true
@@ -273,11 +287,22 @@ dpair() {
 	cleanup
 }
 
+DIRECT_PAIRS=0
+WIRE_CHECKED=0
 direct_section() {
-	local oldv3=no
+	local oldv3=no oldseal=no
+	DLEAF_A="PreferredTransports plain DirectSeal no" dpair "positive control: two leaves that do not seal" "$NEW" \
+		direct-clear "" PreferredTransports plain DirectSeal no
 	docker run --rm "$OLD" sh -c 'grep -q "speaks obfs frame v2" "$(command -v tincd)"' 2>/dev/null && oldv3=yes
+	# An OLD_IMAGE from stream N2 on seals its own direct path, keys it with
+	# DSEAL_KEX and answers coordinated hole punches itself: the "older" pairs
+	# below then test N2-to-current interop, with N2's expectations (with the
+	# pre-N2 ones they failed on log lines only an older build writes).
+	docker run --rm "$OLD" sh -c 'grep -q "DirectSeal: direct UDP" "$(command -v tincd)"' 2>/dev/null && oldseal=yes
 	dpair "current leaf b" "$NEW" direct ""
-	if [[ $oldv3 == yes ]]; then
+	if [[ $oldseal == yes ]]; then
+		dpair "older leaf b (N2 or later)" "$OLD" direct ""
+	elif [[ $oldv3 == yes ]]; then
 		dpair "older leaf b (reads frame v3)" "$OLD" direct "sealed with the pair's bootstrap key only"
 	else
 		dpair "older leaf b (frame v2 only)" "$OLD" relay "has not answered sealed direct datagrams"
@@ -286,7 +311,11 @@ direct_section() {
 	# Two current leaves behind an older relay: it forwards the coordinated
 	# hole-punch request (REQ_KEY 98) instead of answering it, and the far
 	# leaf answers and starts itself (docs/nat.md §9.3).
-	DFOUNDER=$OLD dpair "current leaves, older relay" "$NEW" direct "the peer says go\\|the peer asked through an older relay"
+	if [[ $oldseal == yes ]]; then
+		DFOUNDER=$OLD dpair "current leaves, relay N2 or later" "$NEW" direct "the relay says go"
+	else
+		DFOUNDER=$OLD dpair "current leaves, older relay" "$NEW" direct "the peer says go\\|the peer asked through an older relay"
+	fi
 }
 
 # An OLD_IMAGE from before 2026-09-24 knows nothing of datagrams a dialler does not announce.
@@ -319,7 +348,10 @@ for tr in $CARRIERS; do
 	pair "$NEW" "$NEW" "$tr"
 done
 
-[[ ${DIRECT:-yes} == yes ]] && direct_section
+if [[ ${DIRECT:-yes} == yes ]]; then
+	direct_section
+	log "direct pairs: $DIRECT_PAIRS, wire checked in $WIRE_CHECKED$( [[ $WIRE_CHECKED -eq 0 ]] && echo " -- no wire claim is made ($WIRE_IMAGE absent)")"
+fi
 
 if [[ $FAILED -eq 0 ]]; then
 	log "mixed versions: all pairs connect"

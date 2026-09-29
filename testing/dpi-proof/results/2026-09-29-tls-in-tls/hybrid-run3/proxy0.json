@@ -1,0 +1,1360 @@
+[
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:51702 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:51702",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688601.210268,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688601.211406,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688601.211406
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:51708 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:51708",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688601.616636,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688601.617429,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688601.617429
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:51710 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:51710",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688602.022712,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688602.023601,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688602.023601
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:51716 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:51716",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688602.428519,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688602.429351,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688602.429351
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:51732 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:51732",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688602.827662,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688602.828531,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688602.828531
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:51746 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:51746",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688603.228905,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688603.229771,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688603.229771
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:51760 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:51760",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688603.619469,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688603.620316,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688603.620316
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:51770 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:51770",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688604.01967,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688604.020512,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688604.020512
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58850 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58850",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688604.426037,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1]",
+   -1.5685719588048446,
+   {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.569,
+    "model": "chrome",
+    "t": 1790688604.426904,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     285
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.544,
+     "tls13": 4.964,
+     "chrome": 1.431
+    }
+   },
+   "caught_t": [
+    1790688604.426904
+   ],
+   "mind": {
+    "tls12": 22.544,
+    "tls13": 4.964,
+    "chrome": 1.431
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58864 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58864",
+  "server": "10.49.69.10:9444",
+  "packets": 17,
+  "start": 1790688604.822545,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.584 (chrome) on 1525/3665/78/572 pkts [2, 3, 1, 1]",
+   -1.5835632996708668,
+   {
+    "tls12": 22.581,
+    "tls13": 4.963,
+    "chrome": 1.416
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.584 (chrome) on 1525/3665/78/572 pkts [2, 3, 1, 1]",
+   -1.5835632996708668,
+   {
+    "tls12": 22.581,
+    "tls13": 4.963,
+    "chrome": 1.416
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.584 (chrome) on 1525/3665/78/572 pkts [2, 3, 1, 1]",
+   -1.5835632996708668,
+   {
+    "tls12": 22.581,
+    "tls13": 4.963,
+    "chrome": 1.416
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.584 (chrome) on 1525/3665/78/572 pkts [2, 3, 1, 1]",
+   -1.5835632996708668,
+   {
+    "tls12": 22.581,
+    "tls13": 4.963,
+    "chrome": 1.416
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.584,
+    "model": "chrome",
+    "t": 1790688604.82365,
+    "bytes": [
+     1525,
+     3665,
+     78,
+     572
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 22.581,
+     "tls13": 4.963,
+     "chrome": 1.416
+    }
+   },
+   "caught_t": [
+    1790688604.82365
+   ],
+   "mind": {
+    "tls12": 22.581,
+    "tls13": 4.963,
+    "chrome": 1.416
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58866 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58866",
+  "server": "10.49.69.10:9444",
+  "packets": 16,
+  "start": 1790688605.434027,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8306042096040716,
+   {
+    "tls12": 29.657,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8306042096040716,
+   {
+    "tls12": 29.657,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8306042096040716,
+   {
+    "tls12": 29.657,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8306042096040716,
+   {
+    "tls12": 29.657,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  ],
+  "flow": {
+   "scored": 1,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.831,
+    "model": "chrome",
+    "t": 1790688605.434782,
+    "bytes": [
+     1937,
+     3649,
+     62,
+     538
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     2
+    ],
+    "dist": {
+     "tls12": 29.657,
+     "tls13": 7.224,
+     "chrome": 1.169
+    }
+   },
+   "caught_t": [
+    1790688605.434782
+   ],
+   "mind": {
+    "tls12": 29.657,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58880 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58880",
+  "server": "10.49.69.10:9444",
+  "packets": 12,
+  "start": 1790688605.43829,
+  "ndpi25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58884 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58884",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688606.20167,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.849 (chrome) on 1873/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8494371024552074,
+   {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.151
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.849 (chrome) on 1873/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8494371024552074,
+   {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.151
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.849 (chrome) on 1873/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8494371024552074,
+   {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.151
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.849 (chrome) on 1873/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8494371024552074,
+   {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.151
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.849,
+    "model": "chrome",
+    "t": 1790688606.202676,
+    "bytes": [
+     1873,
+     3649,
+     62,
+     538
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     2
+    ],
+    "dist": {
+     "tls12": 28.566,
+     "tls13": 6.872,
+     "chrome": 1.151
+    }
+   },
+   "caught_t": [
+    1790688606.202676
+   ],
+   "mind": {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.151
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58888 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58888",
+  "server": "10.49.69.10:9444",
+  "packets": 12,
+  "start": 1790688606.214617,
+  "ndpi25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58900 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58900",
+  "server": "10.49.69.10:9444",
+  "packets": 17,
+  "start": 1790688607.08023,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.850 (chrome) on 1873/3649/62/540 pkts [2, 3, 1, 1]",
+   -1.8495395376951416,
+   {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.15
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.850 (chrome) on 1873/3649/62/540 pkts [2, 3, 1, 1]",
+   -1.8495395376951416,
+   {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.15
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.850 (chrome) on 1873/3649/62/540 pkts [2, 3, 1, 1]",
+   -1.8495395376951416,
+   {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.15
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.850 (chrome) on 1873/3649/62/540 pkts [2, 3, 1, 1]",
+   -1.8495395376951416,
+   {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.15
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.85,
+    "model": "chrome",
+    "t": 1790688607.081318,
+    "bytes": [
+     1873,
+     3649,
+     62,
+     540
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 28.566,
+     "tls13": 6.872,
+     "chrome": 1.15
+    }
+   },
+   "caught_t": [
+    1790688607.081318
+   ],
+   "mind": {
+    "tls12": 28.566,
+    "tls13": 6.872,
+    "chrome": 1.15
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58908 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58908",
+  "server": "10.49.69.10:9444",
+  "packets": 12,
+  "start": 1790688607.083804,
+  "ndpi25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58912 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58912",
+  "server": "10.49.69.10:9444",
+  "packets": 18,
+  "start": 1790688607.848116,
+  "ndpi25": [
+   "CAUGHT",
+   "margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8306042096040716,
+   {
+    "tls12": 29.502,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  ],
+  "ndpi255": [
+   "CAUGHT",
+   "margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8306042096040716,
+   {
+    "tls12": 29.502,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  ],
+  "fix25": [
+   "CAUGHT",
+   "margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8306042096040716,
+   {
+    "tls12": 29.502,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  ],
+  "fix255": [
+   "CAUGHT",
+   "margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2]",
+   -1.8306042096040716,
+   {
+    "tls12": 29.502,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  ],
+  "flow": {
+   "scored": 2,
+   "unscored": 0,
+   "caught": 1,
+   "below_safe": 1,
+   "worst": {
+    "margin": -1.831,
+    "model": "chrome",
+    "t": 1790688607.849094,
+    "bytes": [
+     1937,
+     3649,
+     62,
+     538
+    ],
+    "pkts": [
+     2,
+     3,
+     1,
+     2
+    ],
+    "dist": {
+     "tls12": 29.657,
+     "tls13": 7.224,
+     "chrome": 1.169
+    }
+   },
+   "caught_t": [
+    1790688607.849094
+   ],
+   "mind": {
+    "tls12": 29.502,
+    "tls13": 7.224,
+    "chrome": 1.169
+   }
+  }
+ },
+ {
+  "file": "/r/proxy0.pcap",
+  "id": "tls 10.49.69.11:58928 > 10.49.69.10:9444",
+  "kind": "tls",
+  "client": "10.49.69.11:58928",
+  "server": "10.49.69.10:9444",
+  "packets": 12,
+  "start": 1790688607.852845,
+  "ndpi25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix25": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "fix255": [
+   "not scored",
+   "no 4-gram completed; flow ended",
+   null,
+   {}
+  ],
+  "flow": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {}
+  }
+ }
+]

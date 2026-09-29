@@ -1,0 +1,604 @@
+{
+ "direct": {
+  "flows": 18,
+  "arbiter25": 0,
+  "arbiter255": 0,
+  "agree": true,
+  "ndpi25": {
+   "excluded": 18,
+   "min_margin": null
+  },
+  "ndpi255": {
+   "excluded": 18,
+   "min_margin": null
+  },
+  "fix25": {
+   "not scored": 18,
+   "min_margin": null
+  },
+  "fix255": {
+   "not scored": 18,
+   "min_margin": null
+  },
+  "flow": {
+   "scored": 0,
+   "caught": 0,
+   "per_mille": null,
+   "worst": null
+  },
+  "separation": {
+   "fix25": {
+    "verdict": "nothing scored",
+    "ours": {},
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "fix255": {
+    "verdict": "nothing scored",
+    "ours": {},
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "flow": {
+    "verdict": "nothing scored",
+    "ours": {},
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 0.278,
+     "chrome": 3.245
+    }
+   }
+  }
+ },
+ "keepalive": {
+  "flows": 1,
+  "arbiter25": 0,
+  "arbiter255": 0,
+  "agree": true,
+  "ndpi25": {
+   "excluded": 1,
+   "min_margin": null
+  },
+  "ndpi255": {
+   "excluded": 1,
+   "min_margin": null
+  },
+  "fix25": {
+   "CAUGHT": 1,
+   "min_margin": -1.623095768376068
+  },
+  "fix255": {
+   "CAUGHT": 1,
+   "min_margin": -1.623095768376068
+  },
+  "flow": {
+   "scored": 78,
+   "caught": 23,
+   "per_mille": 294.87,
+   "worst": -2.722
+  },
+  "tuned": {
+   "scored": 78,
+   "caught": 23,
+   "per_mille": 294.87,
+   "worst": -2.407
+  }
+ },
+ "kasmall": {
+  "flows": 1,
+  "arbiter25": 0,
+  "arbiter255": 0,
+  "agree": true,
+  "ndpi25": {
+   "excluded": 1,
+   "min_margin": null
+  },
+  "ndpi255": {
+   "excluded": 1,
+   "min_margin": null
+  },
+  "fix25": {
+   "CAUGHT": 1,
+   "min_margin": -0.5747271576185748
+  },
+  "fix255": {
+   "CAUGHT": 1,
+   "min_margin": -0.5747271576185748
+  },
+  "flow": {
+   "scored": 78,
+   "caught": 4,
+   "per_mille": 51.28,
+   "worst": -0.575
+  },
+  "tuned": {
+   "scored": 0,
+   "caught": 0,
+   "per_mille": null,
+   "worst": null
+  }
+ },
+ "kah2": {
+  "flows": 1,
+  "arbiter25": 0,
+  "arbiter255": 0,
+  "agree": true,
+  "ndpi25": {
+   "excluded": 1,
+   "min_margin": null
+  },
+  "ndpi255": {
+   "excluded": 1,
+   "min_margin": null
+  },
+  "fix25": {
+   "below-bar": 1,
+   "min_margin": 0.5423388307327794
+  },
+  "fix255": {
+   "below-bar": 1,
+   "min_margin": 0.5423388307327794
+  },
+  "flow": {
+   "scored": 91,
+   "caught": 0,
+   "per_mille": 0.0,
+   "worst": 0.542
+  },
+  "tuned": {
+   "scored": 0,
+   "caught": 0,
+   "per_mille": null,
+   "worst": null
+  }
+ },
+ "h2page": {
+  "flows": 8,
+  "arbiter25": 0,
+  "arbiter255": 0,
+  "agree": true,
+  "ndpi25": {
+   "excluded": 8,
+   "min_margin": null
+  },
+  "ndpi255": {
+   "excluded": 8,
+   "min_margin": null
+  },
+  "fix25": {
+   "CAUGHT": 2,
+   "not scored": 4,
+   "below-bar": 1,
+   "clean": 1,
+   "min_margin": -0.8318879185168275
+  },
+  "fix255": {
+   "CAUGHT": 2,
+   "not scored": 4,
+   "below-bar": 1,
+   "clean": 1,
+   "min_margin": -0.8318879185168275
+  },
+  "flow": {
+   "scored": 46,
+   "caught": 2,
+   "per_mille": 43.48,
+   "worst": -0.832
+  },
+  "tuned": {
+   "scored": 0,
+   "caught": 0,
+   "per_mille": null,
+   "worst": null
+  }
+ },
+ "proxy": {
+  "flows": 18,
+  "arbiter25": 0,
+  "arbiter255": 0,
+  "agree": true,
+  "ndpi25": {
+   "excluded": 18,
+   "min_margin": null
+  },
+  "ndpi255": {
+   "excluded": 18,
+   "min_margin": null
+  },
+  "fix25": {
+   "CAUGHT": 11,
+   "below-bar": 7,
+   "min_margin": -2.135637672223284
+  },
+  "fix255": {
+   "CAUGHT": 11,
+   "below-bar": 7,
+   "min_margin": -2.135637672223284
+  },
+  "flow": {
+   "scored": 35,
+   "caught": 11,
+   "per_mille": 314.29,
+   "worst": -2.136
+  },
+  "separation": {
+   "fix25": {
+    "verdict": "separable by chrome (gap 2.57)",
+    "ours": {
+     "tls12": 5.122,
+     "tls13": 4.923,
+     "chrome": 0.864
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "fix255": {
+    "verdict": "separable by chrome (gap 2.57)",
+    "ours": {
+     "tls12": 5.122,
+     "tls13": 4.923,
+     "chrome": 0.864
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "flow": {
+    "verdict": "separable by chrome (gap 2.38)",
+    "ours": {
+     "tls12": 5.122,
+     "tls13": 4.923,
+     "chrome": 0.864
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 0.278,
+     "chrome": 3.245
+    }
+   }
+  }
+ },
+ "proxy0": {
+  "flows": 18,
+  "arbiter25": 14,
+  "arbiter255": 14,
+  "agree": true,
+  "ndpi25": {
+   "CAUGHT": 14,
+   "not scored": 4,
+   "min_margin": -1.8495395376951416
+  },
+  "ndpi255": {
+   "CAUGHT": 14,
+   "not scored": 4,
+   "min_margin": -1.8495395376951416
+  },
+  "fix25": {
+   "CAUGHT": 14,
+   "not scored": 4,
+   "min_margin": -1.8495395376951416
+  },
+  "fix255": {
+   "CAUGHT": 14,
+   "not scored": 4,
+   "min_margin": -1.8495395376951416
+  },
+  "flow": {
+   "scored": 27,
+   "caught": 14,
+   "per_mille": 518.52,
+   "worst": -1.85
+  },
+  "separation": {
+   "fix25": {
+    "verdict": "separable by chrome (gap 2.29)",
+    "ours": {
+     "tls12": 22.544,
+     "tls13": 4.963,
+     "chrome": 1.15
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "fix255": {
+    "verdict": "separable by chrome (gap 2.29)",
+    "ours": {
+     "tls12": 22.544,
+     "tls13": 4.963,
+     "chrome": 1.15
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "flow": {
+    "verdict": "separable by chrome (gap 2.10)",
+    "ours": {
+     "tls12": 22.544,
+     "tls13": 4.963,
+     "chrome": 1.15
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 0.278,
+     "chrome": 3.245
+    }
+   }
+  }
+ },
+ "https": {
+  "flows": 1,
+  "arbiter25": 0,
+  "arbiter255": 0,
+  "agree": true,
+  "ndpi25": {
+   "excluded": 1,
+   "min_margin": null
+  },
+  "ndpi255": {
+   "excluded": 1,
+   "min_margin": null
+  },
+  "fix25": {
+   "CAUGHT": 1,
+   "min_margin": -2.419626358211123
+  },
+  "fix255": {
+   "CAUGHT": 1,
+   "min_margin": -2.419626358211123
+  },
+  "flow": {
+   "scored": 1263,
+   "caught": 45,
+   "per_mille": 35.63,
+   "worst": -2.42
+  },
+  "tuned": {
+   "scored": 496,
+   "caught": 49,
+   "per_mille": 98.79,
+   "worst": -2.106
+  },
+  "separation": {
+   "fix25": {
+    "verdict": "separable by chrome (gap 2.86)",
+    "ours": {
+     "tls12": 3.83,
+     "chrome": 0.58,
+     "tls13": 6.746
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "fix255": {
+    "verdict": "separable by chrome (gap 2.86)",
+    "ours": {
+     "tls12": 3.83,
+     "chrome": 0.58,
+     "tls13": 6.746
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "flow": {
+    "verdict": "separable by chrome (gap 2.67)",
+    "ours": {
+     "tls12": 3.824,
+     "chrome": 0.58,
+     "tls13": 1.509
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 0.278,
+     "chrome": 3.245
+    }
+   },
+   "tuned": {
+    "verdict": "separable by tls12 (gap 11.28)",
+    "ours": {
+     "tls12": 1.743,
+     "chrome": 0.894,
+     "tls13": 1.037
+    },
+    "reference": {
+     "tls12": 13.025,
+     "tls13": 0.593,
+     "chrome": 3.412
+    }
+   }
+  }
+ },
+ "obfs": {
+  "flows": 1,
+  "arbiter25": 0,
+  "arbiter255": 1,
+  "agree": true,
+  "ndpi25": {
+   "below-bar": 1,
+   "min_margin": 0.16559437455923742
+  },
+  "ndpi255": {
+   "CAUGHT": 1,
+   "min_margin": -0.8538240814268931
+  },
+  "fix25": {
+   "below-bar": 1,
+   "min_margin": 0.16559437455923742
+  },
+  "fix255": {
+   "CAUGHT": 1,
+   "min_margin": -0.8538240814268931
+  },
+  "flow": {
+   "scored": 1912,
+   "caught": 58,
+   "per_mille": 30.33,
+   "worst": -2.57
+  },
+  "tuned": {
+   "scored": 1680,
+   "caught": 41,
+   "per_mille": 24.4,
+   "worst": -2.335
+  },
+  "separation": {
+   "fix25": {
+    "verdict": "not separable",
+    "ours": {
+     "tls12": 3.666,
+     "chrome": 5.407
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "fix255": {
+    "verdict": "separable by tls12 (gap 0.02)",
+    "ours": {
+     "tls12": 2.646,
+     "chrome": 3.669,
+     "tls13": 6.677
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "flow": {
+    "verdict": "separable by chrome (gap 2.81)",
+    "ours": {
+     "tls12": 1.888,
+     "chrome": 0.43,
+     "tls13": 1.575
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 0.278,
+     "chrome": 3.245
+    }
+   }
+  }
+ },
+ "quic": {
+  "flows": 1,
+  "arbiter25": 0,
+  "arbiter255": 0,
+  "agree": true,
+  "ndpi25": {
+   "n/a": 1,
+   "min_margin": null
+  },
+  "ndpi255": {
+   "n/a": 1,
+   "min_margin": null
+  },
+  "fix25": {
+   "n/a": 1,
+   "min_margin": null
+  },
+  "fix255": {
+   "n/a": 1,
+   "min_margin": null
+  },
+  "flow": {
+   "scored": 4077,
+   "caught": 172,
+   "per_mille": 42.19,
+   "worst": -1.309
+  },
+  "tuned": {
+   "scored": 105,
+   "caught": 26,
+   "per_mille": 247.62,
+   "worst": -2.162
+  },
+  "separation": {
+   "fix25": {
+    "verdict": "nothing scored",
+    "ours": {},
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "fix255": {
+    "verdict": "nothing scored",
+    "ours": {},
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 1.104,
+     "chrome": 3.436
+    }
+   },
+   "flow": {
+    "verdict": "separable by tls12 (gap 0.48)",
+    "ours": {
+     "tls12": 2.191,
+     "tls13": 3.019,
+     "chrome": 2.825
+    },
+    "reference": {
+     "tls12": 2.668,
+     "tls13": 0.278,
+     "chrome": 3.245
+    }
+   }
+  }
+ },
+ "reference": {
+  "names": [
+   "keepalive",
+   "kasmall",
+   "kah2",
+   "h2page"
+  ],
+  "mind": {
+   "fix25": {
+    "tls12": 2.668,
+    "tls13": 1.104,
+    "chrome": 3.436
+   },
+   "fix255": {
+    "tls12": 2.668,
+    "tls13": 1.104,
+    "chrome": 3.436
+   },
+   "flow": {
+    "tls12": 2.668,
+    "tls13": 0.278,
+    "chrome": 3.245
+   },
+   "tuned": {
+    "tls12": 13.025,
+    "tls13": 0.593,
+    "chrome": 3.412
+   }
+  }
+ }
+}

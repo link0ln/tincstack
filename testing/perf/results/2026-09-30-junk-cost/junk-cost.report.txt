@@ -1,0 +1,11 @@
+CPU microseconds per junk packet (median over repeats), and flood-window CPU %%:
+
+build       rate       N=1         N=4         N=16        N=64        
+controlON   15000      5.08us/8%   8.33us/12%  10.92us/16% 23.25us/35% 
+controlON   auto       4.39us/56%  4.49us/62%  6.97us/59%  9.49us/91%  
+shipped     15000      6.08us/9%   6.75us/10%  7.67us/12%  7.50us/11%  
+shipped     auto       4.25us/55%  5.38us/53%  5.71us/52%  4.79us/65%  
+
+victim tincstack/core:t1e; junk 1300 B to udp/655, first byte < 0x40 (-> obfs keyed check)
+N peers = well-formed random Ed25519 host records; duration 8s x 3; CLK_TCK=100
+rates: 15000 auto (auto = one max-rate run); builds: shipped=tincstack/core:t1e controlON=tincstack/core-junk-on:t1e

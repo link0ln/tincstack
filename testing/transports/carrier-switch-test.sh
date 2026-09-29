@@ -37,16 +37,26 @@
 #   3. switching back to `plain' at runtime works too;
 #   4. `disconnect' says why it closed a link ("Disconnecting ... on operator
 #      request"), so an operator is never left with an unexplained close;
-#   5. the restart path still works (it is what every case starts from).
+#   5. the restart path still works (it is what every case starts from);
+#   6. a peer that sealed its direct path (DirectSeal, under https) and holds a
+#      direct-seal session key with nodea gets its direct UDP path back after
+#      it restarts WITHOUT sealing. nodea used to keep wrapping its datagrams
+#      under the session key the restarted peer no longer had; nothing the
+#      peer sent was sealed, so nothing renegotiated, and the path stayed dead
+#      (2026-09-29). Step 2 hit it by chance -- its `plain -> quic' setup
+#      restart follows the https case -- whenever the key had been agreed in
+#      the few seconds that case runs: 1 run in 3. Step 5 waits for the key
+#      (and says so when it never comes), so the defect cannot hide.
 #
 # Exit 0 = every step held. Everything it creates is removed on exit.
-# Usage: [LAB=prefix] [SUBNET=10.46.9] [WAIT=90] \
+# Usage: [LAB=prefix] [SUBNET=10.46.9] [WAIT=90] [DEBUG=2] [LOGDIR=dir] \
 #            testing/transports/carrier-switch-test.sh [core image]
 #   The image is the first argument, else tincstack/core:$TINCSTACK_TAG (the
 #   same selector every other proof here takes). LAB (default wscs) prefixes
 #   the containers, the docker network and the /tmp data directories, and a
 #   non-default LAB also gets its own /24 (see lab-env.sh), so two runs can
-#   share a host.
+#   share a host. DEBUG is both daemons' -d level; with LOGDIR set, both
+#   daemons' logs are saved there on exit (a flaky case is diagnosed from them).
 set -e
 
 IMG=${1:-tincstack/core:${TINCSTACK_TAG:-dev}}
@@ -68,6 +78,11 @@ step() { printf '\n== %s\n' "$*"; }
 
 # shellcheck disable=SC2329  # invoked from the EXIT trap below
 cleanup() {
+	if [ -n "${LOGDIR:-}" ]; then
+		mkdir -p "$LOGDIR"
+		docker logs "$LAB-a" > "$LOGDIR/a.log" 2>&1 || true
+		docker logs "$LAB-b" > "$LOGDIR/b.log" 2>&1 || true
+	fi
 	docker rm -f "$LAB-a" "$LAB-b" >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 	rm -rf "$BASE-a" "$BASE-b"
@@ -102,7 +117,7 @@ logs() { docker logs "$LAB-$1" 2>&1; }
 start() { # letter ip
 	docker run -d --name "$LAB-$1" --network "$NET" --ip "$2" --cap-add NET_ADMIN \
 		--device /dev/net/tun -v "$BASE-$1":/etc/tincstack "$IMG" \
-		tincd -c /etc/tincstack/tinc.yaml -n "$NETNAME" -D -d2 >/dev/null
+		tincd -c /etc/tincstack/tinc.yaml -n "$NETNAME" -D -d"${DEBUG:-2}" >/dev/null
 }
 
 wait_ready() { # letter
@@ -294,6 +309,57 @@ step "4. every close says why"
 logs b | grep -c 'Disconnecting nodea .* on operator request' >/dev/null \
 	|| miss "\`disconnect' closed a link without saying so"
 note "disconnect logged its reason $(logs b | grep -c 'on operator request' || true) time(s)"
+
+step "5. a peer that sealed restarts without sealing"
+# The key is agreed over the direct UDP path. A link on https carries no
+# direct UDP at all (its options say TCPONLY: packets ride the meta
+# connection), so the key comes from the window in which b already seals but
+# still runs its plain link: after `reload' with https preferred and before
+# `disconnect'. That is how step 2 met this, by chance. Here the window is
+# held open: plain with a confirmed UDP path, `reload' with https preferred
+# and no `disconnect', wait for nodea's key, then restart b on plain.
+sealed_keys() { logs a | grep -c 'Direct-seal session key established with nodeb' || true; }
+sealed_restart() {
+	prefer b plain
+	cli b reload >/dev/null
+	docker restart "$LAB-b" >/dev/null
+	if ! wait_ready b || ! wait_carrier b nodea plain || ! wait_udp b nodea "$a_vpn"; then
+		miss "sealed restart: b did not come up on plain with a confirmed UDP path"
+		return 0
+	fi
+
+	keys0=$(sealed_keys)
+	prefer b https
+	cli b reload >/dev/null
+
+	# The precondition: nodea agrees a direct-seal session key with b.
+	deadline=$(( $(date +%s) + WAIT ))
+	while [ "$(sealed_keys)" -le "$keys0" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+		docker exec "$LAB-b" ping -c2 -W2 "$a_vpn" >/dev/null 2>&1 || true
+		sleep 1
+	done
+	if [ "$(sealed_keys)" -le "$keys0" ]; then
+		miss "sealed restart: nodea agreed no direct-seal session key with b within ${WAIT}s, so this step tested nothing"
+		return 0
+	fi
+	note "b seals its plain link's direct path, nodea holds a direct-seal session key for it"
+
+	prefer b plain
+	cli b reload >/dev/null
+	docker restart "$LAB-b" >/dev/null
+	if ! wait_ready b || ! wait_carrier b nodea plain; then
+		miss "sealed restart: b did not come back on plain"
+	elif ! wait_udp b nodea "$a_vpn"; then
+		miss "sealed restart: b restarted without sealing and its direct UDP path never came back (at DEBUG=5 b logs nodea's datagrams as from an 'unknown source')"
+	else
+		note "restarted on plain, udp confirmed"
+	fi
+}
+if have https; then
+	sealed_restart
+else
+	note "https: not in this build's accept list, step skipped"
+fi
 
 echo
 if [ "$fail" -ne 0 ]; then

@@ -1,0 +1,57 @@
+== /r/h2page.pcap
+  tls 10.49.69.11:47072 > 10.49.69.10:8444  (965 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -0.649 (tls12) on 64/4207/130/414 pkts [2, 4, 4, 1] [h2page]
+    fix255   CAUGHT     margin -0.649 (tls12) on 64/4207/130/414 pkts [2, 4, 4, 1] [h2page]
+    flow     min margin -0.649 (tls12) 64/4207/130/414 pkts [2, 4, 4, 1] in h2page; 8 scored, 1 caught (125.0/1000: h2page 1), 1 below 0.9, 4 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)
+  tls 10.49.69.11:47078 > 10.49.69.10:8444  (9 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)
+  tls 10.49.69.11:39892 > 10.49.69.10:8444  (947 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    below-bar  min margin 0.376 (tls12) on 64/4207/195/414 pkts [2, 4, 6, 1]; stopped after 26 packets [h2page]
+    fix255   below-bar  min margin 0.376 (tls12) on 64/4207/195/414 pkts [2, 4, 6, 1]; stopped after 256 packets [h2page]
+    flow     min margin 0.376 (tls12) 64/4207/195/414 pkts [2, 4, 6, 1] in h2page; 11 scored, 0 caught (0.0/1000), 1 below 0.9, 5 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)
+  tls 10.49.69.11:39894 > 10.49.69.10:8444  (9 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)
+  tls 10.49.69.11:39908 > 10.49.69.10:8444  (951 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    clean      min margin 1.637 (chrome) on 169/3437/64/4207 pkts [2, 4, 2, 4]; stopped after 26 packets [h2page]
+    fix255   clean      min margin 1.637 (chrome) on 169/3437/64/4207 pkts [2, 4, 2, 4]; stopped after 256 packets [h2page]
+    flow     min margin 1.637 (chrome) 169/3437/64/4207 pkts [2, 4, 2, 4] in h2page; 7 scored, 0 caught (0.0/1000), 0 below 0.9, 6 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)
+  tls 10.49.69.11:39912 > 10.49.69.10:8444  (9 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)
+  tls 10.49.69.11:39926 > 10.49.69.10:8444  (950 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -0.832 (tls12) on 64/4207/98/414 pkts [2, 4, 3, 1] [h2page]
+    fix255   CAUGHT     margin -0.832 (tls12) on 64/4207/98/414 pkts [2, 4, 3, 1] [h2page]
+    flow     min margin -0.832 (tls12) 64/4207/98/414 pkts [2, 4, 3, 1] in h2page; 20 scored, 1 caught (50.0/1000: h2page 1), 1 below 0.9, 4 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)
+  tls 10.49.69.11:39928 > 10.49.69.10:8444  (9 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)

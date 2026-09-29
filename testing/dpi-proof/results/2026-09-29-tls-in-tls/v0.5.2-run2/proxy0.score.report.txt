@@ -1,0 +1,109 @@
+== /r/proxy0.pcap
+  tls 10.49.69.11:49736 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35716 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35726 > 10.49.69.10:9444  (17 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35736 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35738 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35744 > 10.49.69.10:9444  (17 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35750 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35760 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35774 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35776 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.569 (chrome) on 1525/3665/78/285 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.569 (chrome) 1525/3665/78/285 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35786 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.813 (chrome) on 1969/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    ndpi255  CAUGHT     margin -1.813 (chrome) on 1969/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    fix25    CAUGHT     margin -1.813 (chrome) on 1969/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    fix255   CAUGHT     margin -1.813 (chrome) on 1969/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    flow     min margin -1.813 (chrome) 1969/3649/62/538 pkts [2, 3, 1, 2] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35794 > 10.49.69.10:9444  (12 payload packets)
+    ndpi25   not scored no 4-gram completed; flow ended
+    ndpi255  not scored no 4-gram completed; flow ended
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:35810 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    ndpi255  CAUGHT     margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    fix25    CAUGHT     margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    fix255   CAUGHT     margin -1.831 (chrome) on 1937/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    flow     min margin -1.831 (chrome) 1937/3649/62/538 pkts [2, 3, 1, 2] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35826 > 10.49.69.10:9444  (12 payload packets)
+    ndpi25   not scored no 4-gram completed; flow ended
+    ndpi255  not scored no 4-gram completed; flow ended
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:35838 > 10.49.69.10:9444  (17 payload packets)
+    ndpi25   CAUGHT     margin -1.813 (chrome) on 1969/3649/62/540 pkts [2, 3, 1, 1] [proxy0]
+    ndpi255  CAUGHT     margin -1.813 (chrome) on 1969/3649/62/540 pkts [2, 3, 1, 1] [proxy0]
+    fix25    CAUGHT     margin -1.813 (chrome) on 1969/3649/62/540 pkts [2, 3, 1, 1] [proxy0]
+    fix255   CAUGHT     margin -1.813 (chrome) on 1969/3649/62/540 pkts [2, 3, 1, 1] [proxy0]
+    flow     min margin -1.813 (chrome) 1969/3649/62/540 pkts [2, 3, 1, 1] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35840 > 10.49.69.10:9444  (12 payload packets)
+    ndpi25   not scored no 4-gram completed; flow ended
+    ndpi255  not scored no 4-gram completed; flow ended
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:35854 > 10.49.69.10:9444  (18 payload packets)
+    ndpi25   CAUGHT     margin -1.843 (chrome) on 1905/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    ndpi255  CAUGHT     margin -1.843 (chrome) on 1905/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    fix25    CAUGHT     margin -1.843 (chrome) on 1905/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    fix255   CAUGHT     margin -1.843 (chrome) on 1905/3649/62/538 pkts [2, 3, 1, 2] [proxy0]
+    flow     min margin -1.843 (chrome) 1905/3649/62/538 pkts [2, 3, 1, 2] in proxy0; 2 scored, 1 caught (500.0/1000: proxy0 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:35858 > 10.49.69.10:9444  (12 payload packets)
+    ndpi25   not scored no 4-gram completed; flow ended
+    ndpi255  not scored no 4-gram completed; flow ended
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)

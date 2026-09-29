@@ -1,0 +1,1717 @@
+{
+ "https": {
+  "sessions": 12,
+  "nodes": [
+   "leaf",
+   "leafwithaverylongname01"
+  ],
+  "same_sizes": {
+   "protocol_constant": [
+    [
+     0,
+     0
+    ],
+    [
+     0,
+     3
+    ],
+    [
+     0,
+     5
+    ],
+    [
+     0,
+     6
+    ],
+    [
+     0,
+     7
+    ],
+    [
+     0,
+     8
+    ],
+    [
+     0,
+     9
+    ],
+    [
+     0,
+     10
+    ],
+    [
+     0,
+     11
+    ],
+    [
+     0,
+     12
+    ],
+    [
+     0,
+     13
+    ],
+    [
+     0,
+     15
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     1,
+     3
+    ],
+    [
+     1,
+     4
+    ],
+    [
+     1,
+     5
+    ],
+    [
+     1,
+     6
+    ],
+    [
+     1,
+     7
+    ],
+    [
+     1,
+     8
+    ],
+    [
+     1,
+     10
+    ],
+    [
+     1,
+     11
+    ],
+    [
+     1,
+     12
+    ],
+    [
+     1,
+     13
+    ],
+    [
+     1,
+     14
+    ]
+   ],
+   "per_node_constant": [
+    [
+     0,
+     1,
+     {
+      "leaf": 332,
+      "leafwithaverylongname01": 357
+     }
+    ],
+    [
+     0,
+     2,
+     {
+      "leaf": 29,
+      "leafwithaverylongname01": 48
+     }
+    ]
+   ],
+   "per_node_mostly": [
+    [
+     0,
+     4,
+     {
+      "leaf": 223,
+      "leafwithaverylongname01": 261
+     }
+    ],
+    [
+     1,
+     9,
+     {
+      "leaf": 271,
+      "leafwithaverylongname01": 290
+     }
+    ],
+    [
+     1,
+     15,
+     {
+      "leaf": 1305,
+      "leafwithaverylongname01": 1384
+     }
+    ]
+   ],
+   "varying": [
+    [
+     0,
+     4
+    ],
+    [
+     0,
+     14
+    ],
+    [
+     1,
+     2
+    ],
+    [
+     1,
+     9
+    ],
+    [
+     1,
+     15
+    ],
+    [
+     1,
+     16
+    ],
+    [
+     1,
+     17
+    ],
+    [
+     1,
+     18
+    ]
+   ],
+   "compared": [
+    16,
+    19
+   ],
+   "linkable": true
+  },
+  "same_gaps": {
+   "sessions": [
+    {
+     "node": "leaf",
+     "units": 11,
+     "gaps": [
+      1.7,
+      6.7,
+      10.2,
+      6.7,
+      28.2,
+      2.7,
+      0.7,
+      4.9
+     ],
+     "median_gap": 5.76
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 9,
+     "gaps": [
+      8.2,
+      16.4,
+      29.7,
+      1.7,
+      2.3
+     ],
+     "median_gap": 8.19
+    },
+    {
+     "node": "leaf",
+     "units": 8,
+     "gaps": [
+      8.3,
+      16.4,
+      31.0,
+      0.6,
+      3.2
+     ],
+     "median_gap": 8.26
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 9,
+     "gaps": [
+      7.5,
+      14.8,
+      22.0,
+      6.7,
+      5.1,
+      0.7
+     ],
+     "median_gap": 7.07
+    },
+    {
+     "node": "leaf",
+     "units": 8,
+     "gaps": [
+      7.6,
+      14.3,
+      27.1,
+      6.7
+     ],
+     "median_gap": 10.94
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 8,
+     "gaps": [
+      7.7,
+      15.4,
+      31.2,
+      2.1
+     ],
+     "median_gap": 11.52
+    },
+    {
+     "node": "leaf",
+     "units": 8,
+     "gaps": [
+      8.7,
+      16.4,
+      30.1,
+      4.9
+     ],
+     "median_gap": 12.54
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 8,
+     "gaps": [
+      7.1,
+      14.3,
+      28.2,
+      6.9,
+      0.5
+     ],
+     "median_gap": 7.1
+    },
+    {
+     "node": "leaf",
+     "units": 8,
+     "gaps": [
+      7.2,
+      14.3,
+      29.2,
+      5.1,
+      0.8
+     ],
+     "median_gap": 7.17
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 8,
+     "gaps": [
+      8.2,
+      16.9,
+      30.3,
+      6.9
+     ],
+     "median_gap": 12.54
+    },
+    {
+     "node": "leaf",
+     "units": 7,
+     "gaps": [
+      9.2,
+      17.9,
+      27.6
+     ],
+     "median_gap": 17.92
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 7,
+     "gaps": [
+      9.2,
+      17.9,
+      27.9
+     ],
+     "median_gap": 17.92
+    }
+   ],
+   "median_gap_by_node": {
+    "leaf": [
+     5.76,
+     7.17,
+     8.26,
+     10.94,
+     12.54,
+     17.92
+    ],
+    "leafwithaverylongname01": [
+     7.07,
+     7.1,
+     8.19,
+     11.52,
+     12.54,
+     17.92
+    ]
+   }
+  },
+  "length_tracks": {
+   "node->server": {
+    "values": [
+     76,
+     77
+    ],
+    "distinct": 2,
+    "verdict": "spread 76..77 B"
+   },
+   "server->node": {
+    "values": [
+     76,
+     77,
+     156
+    ],
+    "distinct": 3,
+    "verdict": "spread 76..156 B"
+   }
+  }
+ },
+ "obfs": {
+  "sessions": 12,
+  "nodes": [
+   "leaf",
+   "leafwithaverylongname01"
+  ],
+  "same_sizes": {
+   "protocol_constant": [],
+   "per_node_constant": [],
+   "per_node_mostly": [],
+   "varying": [
+    [
+     0,
+     0
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     0,
+     2
+    ],
+    [
+     0,
+     3
+    ],
+    [
+     0,
+     4
+    ],
+    [
+     0,
+     5
+    ],
+    [
+     0,
+     6
+    ],
+    [
+     0,
+     7
+    ],
+    [
+     0,
+     8
+    ],
+    [
+     0,
+     9
+    ],
+    [
+     0,
+     10
+    ],
+    [
+     0,
+     11
+    ],
+    [
+     0,
+     12
+    ],
+    [
+     0,
+     13
+    ],
+    [
+     0,
+     14
+    ],
+    [
+     0,
+     15
+    ],
+    [
+     0,
+     16
+    ],
+    [
+     0,
+     17
+    ],
+    [
+     0,
+     18
+    ],
+    [
+     0,
+     19
+    ],
+    [
+     0,
+     20
+    ],
+    [
+     0,
+     21
+    ],
+    [
+     0,
+     22
+    ],
+    [
+     0,
+     23
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     1,
+     2
+    ],
+    [
+     1,
+     3
+    ],
+    [
+     1,
+     4
+    ],
+    [
+     1,
+     5
+    ],
+    [
+     1,
+     6
+    ],
+    [
+     1,
+     7
+    ],
+    [
+     1,
+     8
+    ],
+    [
+     1,
+     9
+    ],
+    [
+     1,
+     10
+    ],
+    [
+     1,
+     11
+    ],
+    [
+     1,
+     12
+    ],
+    [
+     1,
+     13
+    ],
+    [
+     1,
+     14
+    ],
+    [
+     1,
+     15
+    ],
+    [
+     1,
+     16
+    ],
+    [
+     1,
+     17
+    ],
+    [
+     1,
+     18
+    ],
+    [
+     1,
+     19
+    ],
+    [
+     1,
+     20
+    ],
+    [
+     1,
+     21
+    ],
+    [
+     1,
+     22
+    ],
+    [
+     1,
+     23
+    ]
+   ],
+   "compared": [
+    24,
+    24
+   ],
+   "linkable": false
+  },
+  "same_gaps": {
+   "sessions": [
+    {
+     "node": "leaf",
+     "units": 80,
+     "gaps": [
+      1.0,
+      7.2,
+      2.3,
+      9.5,
+      1.0,
+      3.4,
+      5.2,
+      2.0,
+      7.4,
+      3.0,
+      6.3,
+      4.2,
+      1.1,
+      0.8,
+      4.3
+     ],
+     "median_gap": 3.43
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 76,
+     "gaps": [
+      0.9,
+      1.1,
+      6.7,
+      2.8,
+      9.5,
+      0.9,
+      4.3,
+      4.1,
+      2.0,
+      7.3,
+      3.0,
+      6.2,
+      4.2,
+      2.1,
+      4.2,
+      1.1
+     ],
+     "median_gap": 3.51
+    },
+    {
+     "node": "leaf",
+     "units": 80,
+     "gaps": [
+      0.6,
+      0.6,
+      6.2,
+      3.0,
+      0.5,
+      9.0,
+      0.6,
+      0.7,
+      2.2,
+      5.6,
+      0.8,
+      1.3,
+      0.9,
+      6.5,
+      1.0,
+      2.2,
+      1.0,
+      5.5,
+      1.0,
+      3.4,
+      0.9,
+      1.0,
+      1.1,
+      3.2,
+      0.8
+     ],
+     "median_gap": 1.05
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 80,
+     "gaps": [
+      0.7,
+      0.7,
+      6.4,
+      2.5,
+      0.6,
+      9.0,
+      0.6,
+      0.5,
+      2.2,
+      6.0,
+      2.0,
+      7.2,
+      3.0,
+      6.3,
+      4.3,
+      1.0,
+      1.1,
+      3.8,
+      1.1
+     ],
+     "median_gap": 2.19
+    },
+    {
+     "node": "leaf",
+     "units": 78,
+     "gaps": [
+      0.9,
+      0.9,
+      5.7,
+      3.1,
+      0.9,
+      8.5,
+      1.0,
+      1.0,
+      0.8,
+      6.7,
+      1.1,
+      1.0,
+      1.1,
+      6.3,
+      1.2,
+      1.9,
+      1.3,
+      5.0,
+      1.2,
+      1.7,
+      1.2,
+      1.3,
+      0.9,
+      1.3,
+      4.1,
+      1.1
+     ],
+     "median_gap": 1.25
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 77,
+     "gaps": [
+      1.0,
+      7.3,
+      2.1,
+      9.3,
+      0.8,
+      4.9,
+      3.2,
+      1.7,
+      7.1,
+      2.9,
+      6.2,
+      4.0,
+      1.1,
+      0.9,
+      4.5,
+      0.9
+     ],
+     "median_gap": 3.04
+    },
+    {
+     "node": "leaf",
+     "units": 78,
+     "gaps": [
+      1.3,
+      1.0,
+      5.1,
+      4.5,
+      9.5,
+      0.9,
+      8.5,
+      2.0,
+      7.3,
+      2.9,
+      4.8,
+      1.4,
+      4.0,
+      1.0,
+      0.7,
+      4.2
+     ],
+     "median_gap": 3.46
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 78,
+     "gaps": [
+      1.0,
+      0.9,
+      5.8,
+      2.8,
+      0.7,
+      9.1,
+      0.6,
+      0.5,
+      0.6,
+      2.2,
+      5.8,
+      0.6,
+      1.5,
+      0.6,
+      6.9,
+      0.7,
+      2.4,
+      0.8,
+      5.5,
+      0.8,
+      3.4,
+      0.7,
+      1.0,
+      4.9
+     ],
+     "median_gap": 0.99
+    },
+    {
+     "node": "leaf",
+     "units": 86,
+     "gaps": [
+      0.8,
+      7.3,
+      2.2,
+      9.6,
+      1.0,
+      4.0,
+      4.5,
+      2.1,
+      7.2,
+      2.7,
+      0.5,
+      5.8,
+      0.8,
+      3.5,
+      0.8,
+      1.1,
+      1.8,
+      2.5,
+      0.6,
+      1.0
+     ],
+     "median_gap": 2.15
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 77,
+     "gaps": [
+      0.6,
+      1.0,
+      7.6,
+      2.0,
+      9.4,
+      0.8,
+      5.5,
+      2.7,
+      1.6,
+      6.9,
+      0.5,
+      2.6,
+      0.6,
+      5.9,
+      3.7,
+      0.6,
+      1.1,
+      0.5,
+      4.3
+     ],
+     "median_gap": 1.96
+    },
+    {
+     "node": "leaf",
+     "units": 77,
+     "gaps": [
+      0.7,
+      0.7,
+      6.9,
+      2.0,
+      0.8,
+      8.8,
+      0.8,
+      0.9,
+      3.9,
+      3.8,
+      0.8,
+      1.5,
+      0.6,
+      6.9,
+      0.6,
+      2.7,
+      6.0,
+      3.8,
+      0.6,
+      1.5,
+      4.1,
+      1.0
+     ],
+     "median_gap": 1.46
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 77,
+     "gaps": [
+      0.7,
+      7.8,
+      1.2,
+      0.7,
+      8.4,
+      1.0,
+      1.1,
+      5.2,
+      2.3,
+      1.1,
+      2.1,
+      6.3,
+      0.9,
+      3.2,
+      5.3,
+      0.9,
+      4.2,
+      0.7,
+      4.9
+     ],
+     "median_gap": 2.14
+    }
+   ],
+   "median_gap_by_node": {
+    "leaf": [
+     1.05,
+     1.25,
+     1.46,
+     2.15,
+     3.43,
+     3.46
+    ],
+    "leafwithaverylongname01": [
+     0.99,
+     1.96,
+     2.14,
+     2.19,
+     3.04,
+     3.51
+    ]
+   }
+  },
+  "length_tracks": {
+   "node->server": {
+    "values": [
+     0,
+     15,
+     18,
+     24,
+     37,
+     40,
+     42,
+     44,
+     53,
+     66,
+     67,
+     68
+    ],
+    "distinct": 46,
+    "verdict": "spread 0..146 B"
+   },
+   "server->node": {
+    "values": [
+     0,
+     2,
+     6,
+     9,
+     11,
+     14,
+     16,
+     20,
+     21,
+     30,
+     33,
+     61
+    ],
+    "distinct": 44,
+    "verdict": "spread 0..144 B"
+   }
+  }
+ },
+ "quic": {
+  "sessions": 12,
+  "nodes": [
+   "leaf",
+   "leafwithaverylongname01"
+  ],
+  "same_sizes": {
+   "protocol_constant": [
+    [
+     0,
+     0
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     0,
+     2
+    ],
+    [
+     0,
+     3
+    ],
+    [
+     0,
+     4
+    ],
+    [
+     0,
+     5
+    ],
+    [
+     0,
+     6
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     1,
+     2
+    ],
+    [
+     1,
+     3
+    ],
+    [
+     1,
+     4
+    ],
+    [
+     1,
+     6
+    ]
+   ],
+   "per_node_constant": [],
+   "per_node_mostly": [
+    [
+     0,
+     9,
+     {
+      "leaf": 262,
+      "leafwithaverylongname01": 301
+     }
+    ],
+    [
+     0,
+     13,
+     {
+      "leaf": 183,
+      "leafwithaverylongname01": 202
+     }
+    ]
+   ],
+   "varying": [
+    [
+     0,
+     7
+    ],
+    [
+     0,
+     8
+    ],
+    [
+     0,
+     9
+    ],
+    [
+     0,
+     10
+    ],
+    [
+     0,
+     11
+    ],
+    [
+     0,
+     12
+    ],
+    [
+     0,
+     13
+    ],
+    [
+     0,
+     14
+    ],
+    [
+     0,
+     15
+    ],
+    [
+     0,
+     16
+    ],
+    [
+     0,
+     17
+    ],
+    [
+     0,
+     18
+    ],
+    [
+     0,
+     19
+    ],
+    [
+     0,
+     20
+    ],
+    [
+     0,
+     21
+    ],
+    [
+     0,
+     22
+    ],
+    [
+     0,
+     23
+    ],
+    [
+     1,
+     5
+    ],
+    [
+     1,
+     7
+    ],
+    [
+     1,
+     8
+    ],
+    [
+     1,
+     9
+    ],
+    [
+     1,
+     10
+    ],
+    [
+     1,
+     11
+    ],
+    [
+     1,
+     12
+    ],
+    [
+     1,
+     13
+    ],
+    [
+     1,
+     14
+    ],
+    [
+     1,
+     15
+    ],
+    [
+     1,
+     16
+    ],
+    [
+     1,
+     17
+    ],
+    [
+     1,
+     18
+    ],
+    [
+     1,
+     19
+    ],
+    [
+     1,
+     20
+    ],
+    [
+     1,
+     21
+    ],
+    [
+     1,
+     22
+    ],
+    [
+     1,
+     23
+    ]
+   ],
+   "compared": [
+    24,
+    24
+   ],
+   "linkable": false
+  },
+  "same_gaps": {
+   "sessions": [
+    {
+     "node": "leaf",
+     "units": 42,
+     "gaps": [
+      7.6,
+      14.9,
+      15.0,
+      14.7,
+      4.8
+     ],
+     "median_gap": 14.69
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 65,
+     "gaps": [
+      8.7,
+      15.0,
+      3.9,
+      15.0,
+      3.9,
+      7.8,
+      1.3
+     ],
+     "median_gap": 7.76
+    },
+    {
+     "node": "leaf",
+     "units": 51,
+     "gaps": [
+      8.4,
+      15.0,
+      1.9,
+      15.0,
+      15.0,
+      0.6,
+      5.5
+     ],
+     "median_gap": 8.45
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 63,
+     "gaps": [
+      7.9,
+      15.0,
+      15.0,
+      15.0,
+      0.7,
+      1.1
+     ],
+     "median_gap": 11.47
+    },
+    {
+     "node": "leaf",
+     "units": 69,
+     "gaps": [
+      0.7,
+      7.0,
+      15.0,
+      1.4,
+      15.0,
+      15.0,
+      1.4,
+      4.9
+     ],
+     "median_gap": 5.96
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 65,
+     "gaps": [
+      8.7,
+      15.0,
+      2.4,
+      15.0,
+      13.9
+     ],
+     "median_gap": 13.92
+    },
+    {
+     "node": "leaf",
+     "units": 74,
+     "gaps": [
+      8.2,
+      15.0,
+      1.9,
+      15.0,
+      14.5,
+      0.6,
+      5.7
+     ],
+     "median_gap": 8.23
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 81,
+     "gaps": [
+      0.5,
+      8.1,
+      15.0,
+      1.9,
+      15.0,
+      14.6,
+      3.0
+     ],
+     "median_gap": 8.09
+    },
+    {
+     "node": "leaf",
+     "units": 68,
+     "gaps": [
+      1.2,
+      6.8,
+      15.0,
+      15.0,
+      15.0,
+      2.2,
+      0.8
+     ],
+     "median_gap": 6.75
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 63,
+     "gaps": [
+      0.6,
+      7.4,
+      15.0,
+      15.0,
+      14.7,
+      2.0,
+      1.6
+     ],
+     "median_gap": 7.42
+    },
+    {
+     "node": "leaf",
+     "units": 60,
+     "gaps": [
+      8.2,
+      15.0,
+      1.9,
+      15.0,
+      14.4,
+      1.7,
+      4.8
+     ],
+     "median_gap": 8.19
+    },
+    {
+     "node": "leafwithaverylongname01",
+     "units": 69,
+     "gaps": [
+      7.4,
+      15.0,
+      0.9,
+      15.0,
+      15.0,
+      1.2
+     ],
+     "median_gap": 11.18
+    }
+   ],
+   "median_gap_by_node": {
+    "leaf": [
+     5.96,
+     6.75,
+     8.19,
+     8.23,
+     8.45,
+     14.69
+    ],
+    "leafwithaverylongname01": [
+     7.42,
+     7.76,
+     8.09,
+     11.18,
+     11.47,
+     13.92
+    ]
+   }
+  },
+  "length_tracks": {
+   "node->server": {
+    "values": [
+     83
+    ],
+    "distinct": 1,
+    "verdict": "exact: every inner length readable (overhead 83 B)"
+   },
+   "server->node": {
+    "values": [
+     60
+    ],
+    "distinct": 1,
+    "verdict": "exact: every inner length readable (overhead 60 B)"
+   }
+  }
+ },
+ "ref-h1": {
+  "sessions": 12,
+  "nodes": [
+   "user-u",
+   "user-v"
+  ],
+  "same_sizes": {
+   "protocol_constant": [
+    [
+     0,
+     0
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     0,
+     2
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     1,
+     3
+    ],
+    [
+     1,
+     4
+    ],
+    [
+     1,
+     5
+    ],
+    [
+     1,
+     6
+    ]
+   ],
+   "per_node_constant": [],
+   "per_node_mostly": [],
+   "varying": [
+    [
+     1,
+     2
+    ]
+   ],
+   "compared": [
+    3,
+    7
+   ],
+   "linkable": false
+  },
+  "same_gaps": {
+   "sessions": [
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    }
+   ],
+   "median_gap_by_node": {}
+  },
+  "length_tracks": {
+   "node->server": {
+    "values": [],
+    "distinct": 0,
+    "verdict": "no ping matched"
+   },
+   "server->node": {
+    "values": [],
+    "distinct": 0,
+    "verdict": "no ping matched"
+   }
+  }
+ },
+ "ref-h3": {
+  "sessions": 12,
+  "nodes": [
+   "user-u",
+   "user-v"
+  ],
+  "same_sizes": {
+   "protocol_constant": [
+    [
+     0,
+     0
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     0,
+     2
+    ],
+    [
+     0,
+     3
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     1,
+     2
+    ]
+   ],
+   "per_node_constant": [],
+   "per_node_mostly": [],
+   "varying": [
+    [
+     0,
+     4
+    ],
+    [
+     0,
+     5
+    ],
+    [
+     0,
+     6
+    ],
+    [
+     0,
+     7
+    ],
+    [
+     0,
+     8
+    ],
+    [
+     1,
+     3
+    ],
+    [
+     1,
+     4
+    ],
+    [
+     1,
+     5
+    ]
+   ],
+   "compared": [
+    9,
+    6
+   ],
+   "linkable": false
+  },
+  "same_gaps": {
+   "sessions": [
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-u",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    },
+    {
+     "node": "user-v",
+     "units": 0,
+     "gaps": [],
+     "median_gap": null
+    }
+   ],
+   "median_gap_by_node": {}
+  },
+  "length_tracks": {
+   "node->server": {
+    "values": [],
+    "distinct": 0,
+    "verdict": "no ping matched"
+   },
+   "server->node": {
+    "values": [],
+    "distinct": 0,
+    "verdict": "no ping matched"
+   }
+  }
+ }
+}

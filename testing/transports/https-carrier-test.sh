@@ -58,6 +58,13 @@ docker network create --subnet "$NETBASE.0/24" "$NET" >/dev/null
 fail=0
 note() { echo "  $1"; }
 miss() { echo "  MISS: $1"; fail=1; }
+HTTPS_PORT=443
+# The wire checks' matchers, each shared by a check and its positive control.
+# A cleartext tinc meta channel begins with an "0 <name>" ID line; inside TLS it
+# must never appear in the clear. Look for our node names in the ASCII dump.
+id_lines() { grep -cE "^0 node|[^a-zA-Z]0 node(a|b)" || true; }
+# TCP segments with payload to or from <port>, in tcpdump's one-line headers.
+data_segments() { grep -E "\.$1( >|:) .*length [1-9]" | grep -c "Flags" || true; }
 
 # B is the rendezvous (public Port 655). A dials B, preferring https. A's
 # reconnect backoff is capped at 10 s (MaxTimeout) so the L-2 cases below,
@@ -146,9 +153,13 @@ setvpn() { # name vpnip
 echo "===== https carrier: bring up the tunnel ====="
 start b "$B_IP" "$BASE-b"
 sleep 2
-# capture on B's tinc port for the whole bring-up + ping
+# capture on B's tinc port and its https front for the whole bring-up + ping:
+# the carrier dials the peer's advertised HttpsPort (443 by default) or, with
+# none in the host record as here, its Port, where the front hands TLS to the
+# https carrier. Both are captured, and the checks require the flow to be in
+# the capture (T1d, 2026-09-29).
 docker run -d --name "$PFX-cap" --net "container:$PFX-b" --cap-add NET_RAW "$TOOLS" \
-	tcpdump -n -l -A -i eth0 'port 655' >/dev/null 2>&1
+	tcpdump -n -l -A -i eth0 "port 655 or port $HTTPS_PORT" >/dev/null 2>&1
 start a "$A_IP" "$BASE-a"
 sleep 6
 setvpn b "$B_VPN"
@@ -454,12 +465,20 @@ cap=$(docker logs "$PFX-cap" 2>&1)
 docker rm -f "$PFX-cap" >/dev/null 2>&1
 
 udp=$(echo "$cap" | grep -c "UDP" || true)
-# A cleartext tinc meta channel begins with an "0 <name>" ID line; inside TLS it
-# must never appear in the clear. Look for our node names in the ASCII dump.
-idleak=$(echo "$cap" | grep -cE "^0 node|[^a-zA-Z]0 node(a|b)" || true)
+idleak=$(echo "$cap" | id_lines)
 nameleak=$(echo "$cap" | grep -c "Ed25519PublicKey" || true)
+seg_front=$(echo "$cap" | data_segments "$HTTPS_PORT")
+seg_tinc=$(echo "$cap" | data_segments 655)
 
-note "UDP datagrams on the port: $udp"
+# Positive control of the capture: the checks below are about the carrier's
+# flow, so the capture must hold it, or "nothing leaked" means "nothing seen".
+note "TCP data segments: https front $HTTPS_PORT: $seg_front, tinc port 655: $seg_tinc"
+if [ $(( seg_front + seg_tinc )) -gt 0 ]; then
+	note "the carrier's TLS flow is in the capture"
+else
+	miss "no TCP data in the capture: the leak checks below would be vacuous"
+fi
+note "UDP datagrams on the ports: $udp"
 if [ "$udp" = 0 ]; then
 	note "no UDP on the port (single TLS flow, TCP-only-equivalent)"
 else
@@ -493,6 +512,12 @@ rule_fired() { docker logs "$PFX-a" 2>&1 | grep -q "which we rank below https"; 
 both_https() { [ "$(carrier_of_a)" = "transport https" ] && [ "$(carrier_of_b)" = "transport https" ]; }
 
 docker kill -s KILL "$PFX-b" >/dev/null
+# Positive control of the ID-line matcher: B's plain re-dial below sends its ID
+# line in the clear to A's tinc port; the matcher that found none inside TLS
+# above must find it here, or its silence above proved nothing.
+docker run -d --name "$PFX-cap" --net "container:$PFX-a" --cap-add NET_RAW "$TOOLS" \
+	tcpdump -n -l -A -i eth0 'port 655' >/dev/null 2>&1
+sleep 1
 sed -i "s/^      AddressPool:/      AutoConnect: yes\n      AddressPool:/" "$BASE-b/tinc.yaml"
 sed -i "s/^      nodea: |\$/      nodea: |\n        Address = $A_IP\n        Port = 655/" "$BASE-b/tinc.yaml"
 grep -q 'AutoConnect: yes' "$BASE-b/tinc.yaml" || miss "L-2 residual: could not give B AutoConnect"
@@ -503,6 +528,13 @@ if wait_for 60 rule_fired; then
 	note "A: $(docker logs "$PFX-a" 2>&1 | grep 'which we rank below https' | tail -1 | sed 's/.*INFO *//')"
 else
 	miss "L-2 residual: B's plain link never reached A first, the rule was not exercised: $(docker logs "$PFX-a" 2>&1 | grep -E 'Carrier|rank below|Already connected' | tail -4 | tr '\n' '|')"
+fi
+pc=$(docker logs "$PFX-cap" 2>&1 | id_lines)
+docker rm -f "$PFX-cap" >/dev/null 2>&1
+if [ "$pc" -gt 0 ]; then
+	note "positive control: the ID-line matcher finds B's plain ID line ($pc line(s))"
+else
+	miss "positive control: the ID-line matcher missed B's cleartext plain dial -- its 'no ID line' above is not evidence"
 fi
 
 if wait_for 60 both_https; then

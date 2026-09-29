@@ -284,7 +284,7 @@ sleep 2
 
 case "${MODE:-udp}" in
 	udp) IPERF_LOAD="-u -l ${DGRAM:-1300}" ;;
-	tcp) IPERF_LOAD="" ;;
+	tcp) IPERF_LOAD="${IPERF_CC:+-C $IPERF_CC}" ;;
 	*) echo "unknown MODE ${MODE:-}" >&2; exit 2 ;;
 esac
 

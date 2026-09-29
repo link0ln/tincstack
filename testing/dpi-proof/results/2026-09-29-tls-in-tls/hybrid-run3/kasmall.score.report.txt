@@ -1,0 +1,8 @@
+== /r/kasmall.pcap
+  tls 10.49.69.11:54208 > 10.49.69.10:8443  (958 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -0.575 (tls12) on 81/3373/81/531 pkts [1, 3, 1, 1] [kasmall]
+    fix255   CAUGHT     margin -0.575 (tls12) on 81/3373/81/531 pkts [1, 3, 1, 1] [kasmall]
+    flow     min margin -0.575 (tls12) 81/3373/81/531 pkts [1, 3, 1, 1] in kasmall; 78 scored, 4 caught (51.3/1000: kasmall 4), 7 below 0.9, 0 unscored
+    tuned    no 4-gram scored (0 unscored) (overhead 81, ignore <= 133)

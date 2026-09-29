@@ -1,0 +1,109 @@
+== /r/proxy.pcap
+  tls 10.49.69.11:39618 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:39628 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:39634 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:39650 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:39652 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:39668 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47810 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47814 > 10.49.69.10:9443  (22 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47822 > 10.49.69.10:9443  (22 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47824 > 10.49.69.10:9443  (22 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    fix255   CAUGHT     margin -1.680 (chrome) on 1525/3896/78/285 pkts [2, 4, 1, 1] [proxy]
+    flow     min margin -1.680 (chrome) 1525/3896/78/285 pkts [2, 4, 1, 1] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47828 > 10.49.69.10:9443  (22 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -2.144 (chrome) on 1873/4135/62/538 pkts [2, 4, 1, 2] [proxy]
+    fix255   CAUGHT     margin -2.144 (chrome) on 1873/4135/62/538 pkts [2, 4, 1, 2] [proxy]
+    flow     min margin -2.144 (chrome) 1873/4135/62/538 pkts [2, 4, 1, 2] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47844 > 10.49.69.10:9443  (17 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    below-bar  min margin 0.759 (chrome) on 1424/231/513/3649 pkts [1, 1, 1, 3]; flow ended [proxy]
+    fix255   below-bar  min margin 0.759 (chrome) on 1424/231/513/3649 pkts [1, 1, 1, 3]; flow ended [proxy]
+    flow     min margin 0.759 (chrome) 1424/231/513/3649 pkts [1, 1, 1, 3] in proxy; 1 scored, 0 caught (0.0/1000), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47856 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.988 (chrome) on 1905/3880/62/538 pkts [2, 4, 1, 2] [proxy]
+    fix255   CAUGHT     margin -1.988 (chrome) on 1905/3880/62/538 pkts [2, 4, 1, 2] [proxy]
+    flow     min margin -1.988 (chrome) 1905/3880/62/538 pkts [2, 4, 1, 2] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47864 > 10.49.69.10:9443  (17 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:47876 > 10.49.69.10:9443  (23 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.974 (chrome) on 1937/3880/62/538 pkts [2, 4, 1, 2] [proxy]
+    fix255   CAUGHT     margin -1.974 (chrome) on 1937/3880/62/538 pkts [2, 4, 1, 2] [proxy]
+    flow     min margin -1.974 (chrome) 1937/3880/62/538 pkts [2, 4, 1, 2] in proxy; 2 scored, 1 caught (500.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47880 > 10.49.69.10:9443  (17 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)
+  tls 10.49.69.11:47896 > 10.49.69.10:9443  (21 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    CAUGHT     margin -1.988 (chrome) on 1905/3880/62/538 pkts [2, 4, 1, 2] [proxy]
+    fix255   CAUGHT     margin -1.988 (chrome) on 1905/3880/62/538 pkts [2, 4, 1, 2] [proxy]
+    flow     min margin -1.988 (chrome) 1905/3880/62/538 pkts [2, 4, 1, 2] in proxy; 1 scored, 1 caught (1000.0/1000: proxy 1), 1 below 0.9, 0 unscored
+  tls 10.49.69.11:47912 > 10.49.69.10:9443  (17 payload packets)
+    ndpi25   excluded   server sent first after the handshake
+    ndpi255  excluded   server sent first after the handshake
+    fix25    not scored no 4-gram completed; flow ended
+    fix255   not scored no 4-gram completed; flow ended
+    flow     no 4-gram scored (0 unscored)

@@ -1,0 +1,16 @@
+controlON 15000 1 5.0833 7.6
+controlON 15000 4 8.3333 12.5
+controlON 15000 16 10.9167 16.4
+controlON 15000 64 23.2500 34.9
+controlON auto 1 4.3872 56.4
+controlON auto 4 4.4928 62.0
+controlON auto 16 6.9749 59.2
+controlON auto 64 9.4920 91.1
+shipped 15000 1 6.0833 9.1
+shipped 15000 4 6.7500 10.1
+shipped 15000 16 7.6667 11.5
+shipped 15000 64 7.5000 11.2
+shipped auto 1 4.2528 55.2
+shipped auto 4 5.3812 52.8
+shipped auto 16 5.7106 51.6
+shipped auto 64 4.7854 65.0

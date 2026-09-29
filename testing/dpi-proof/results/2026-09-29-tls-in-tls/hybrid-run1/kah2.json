@@ -1,0 +1,84 @@
+[
+ {
+  "file": "/r/kah2.pcap",
+  "id": "tls 10.49.69.11:40448 > 10.49.69.10:8444",
+  "kind": "tls",
+  "client": "10.49.69.11:40448",
+  "server": "10.49.69.10:8444",
+  "packets": 963,
+  "start": 1790682463.473448,
+  "ndpi25": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "ndpi255": [
+   "excluded",
+   "server sent first after the handshake",
+   null,
+   {}
+  ],
+  "fix25": [
+   "below-bar",
+   "min margin 0.542 (tls12) on 19/3257/19/414 pkts [1, 3, 1, 1]; stopped after 26 packets",
+   0.5421540668991707,
+   {
+    "tls12": 4.042,
+    "chrome": 4.968
+   }
+  ],
+  "fix255": [
+   "below-bar",
+   "min margin 0.542 (tls12) on 19/3257/19/414 pkts [1, 3, 1, 1]; stopped at a 2-B packet (below the 24-B overhead)",
+   0.5421540668991707,
+   {
+    "tls12": 4.042,
+    "chrome": 4.96
+   }
+  ],
+  "flow": {
+   "scored": 93,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 4,
+   "worst": {
+    "margin": 0.542,
+    "model": "tls12",
+    "t": 1790682463.476857,
+    "bytes": [
+     19,
+     3257,
+     19,
+     414
+    ],
+    "pkts": [
+     1,
+     3,
+     1,
+     1
+    ],
+    "dist": {
+     "tls12": 4.042,
+     "chrome": 4.968
+    }
+   },
+   "caught_t": [],
+   "mind": {
+    "tls12": 4.042,
+    "chrome": 4.814
+   }
+  },
+  "tuned": {
+   "scored": 0,
+   "unscored": 0,
+   "caught": 0,
+   "below_safe": 0,
+   "worst": null,
+   "caught_t": [],
+   "mind": {},
+   "overhead": 81,
+   "ignore_upto": 133
+  }
+ }
+]

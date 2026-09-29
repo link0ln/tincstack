@@ -1,0 +1,202 @@
+== TLS-in-TLS burst model: 2026-09-29T13:29:11Z ==
+core ghcr.io/link0ln/tincstack/core:v0.5.2 sha256:6b5b8d895f93d05b3706371961af81ab0a2c71d619ac38bd0d2024b4da73113d
+arbiter tincstack/ndpi:6.0 nDPI 1a5293396337f9a72dfee1fa070b2c4b0a0a3aaf (tag 6.0), --cfg=tls,dpi.heuristics,0x07, max_packets_extra_dissection 25,255 (above 25 also packets_limit_per_flow and -U/-T)
+inner site: nginx 1.26.3, chain leaf+intermediate 2051 B DER
+arbiter self-check: PASS
+
+[direct] 18 flow(s) tcp/8443; nDPI calls them  25: 91/TLS x18   255: 91/TLS x18
+  arbiter, nDPI 6.0        25: 0/18 flagged   255: 0/18 flagged
+  analyser as nDPI         25: excluded 18   255: excluded 18   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: not scored 18   255: not scored 18
+  whole flow               0 4-grams scored, 0 caught (-/1000)
+[keepalive] 1 flow(s) tcp/8443; nDPI calls them  25: 91/TLS x1   255: 91/TLS x1
+  arbiter, nDPI 6.0        25: 0/1 flagged   255: 0/1 flagged
+  analyser as nDPI         25: excluded 1   255: excluded 1   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: CAUGHT 1 (min -1.623)   255: CAUGHT 1 (min -1.623)
+  whole flow               72 4-grams scored, 19 caught (263.9/1000), worst -2.722 tls13 605/4562/605/1452
+  whole flow, tuned        72 4-grams scored, 19 caught (263.9/1000), worst -2.564 tls13 574/4438/574/1393 (overhead 55)
+[kasmall] 1 flow(s) tcp/8443; nDPI calls them  25: 91/TLS x1   255: 91/TLS x1
+  arbiter, nDPI 6.0        25: 0/1 flagged   255: 0/1 flagged
+  analyser as nDPI         25: excluded 1   255: excluded 1   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: CAUGHT 1 (min -0.575)   255: CAUGHT 1 (min -0.575)
+  whole flow               78 4-grams scored, 4 caught (51.3/1000), worst -0.575 tls12 81/3373/81/531
+  whole flow, tuned        0 4-grams scored, 0 caught (-/1000) (overhead 55)
+[kah2] 1 flow(s) tcp/8444; nDPI calls them  25: 91/TLS x1   255: 91/TLS x1
+  arbiter, nDPI 6.0        25: 0/1 flagged   255: 0/1 flagged
+  analyser as nDPI         25: excluded 1   255: excluded 1   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: below-bar 1 (min 0.542)   255: below-bar 1 (min 0.542)
+  whole flow               90 4-grams scored, 0 caught (0.0/1000), worst 0.542 tls12 19/3257/19/414
+  whole flow, tuned        0 4-grams scored, 0 caught (-/1000) (overhead 55)
+[h2page] 8 flow(s) tcp/8444; nDPI calls them  25: 91/TLS x8   255: 91/TLS x8
+  arbiter, nDPI 6.0        25: 0/8 flagged   255: 0/8 flagged
+  analyser as nDPI         25: excluded 8   255: excluded 8   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: CAUGHT 2, below-bar 1, clean 1, not scored 4 (min -0.227)   255: CAUGHT 4, not scored 4 (min -0.418)
+  whole flow               57 4-grams scored, 5 caught (87.7/1000), worst -0.418 tls12 99/6430/33/382
+  whole flow, tuned        0 4-grams scored, 0 caught (-/1000) (overhead 55)
+[proxy] 18 flow(s) tcp/9443; nDPI calls them  25: 91/TLS x18   255: 91/TLS x18
+  arbiter, nDPI 6.0        25: 0/18 flagged   255: 0/18 flagged
+  analyser as nDPI         25: excluded 18   255: excluded 18   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: CAUGHT 14, below-bar 1, not scored 3 (min -2.144)   255: CAUGHT 14, below-bar 1, not scored 3 (min -2.144)
+  whole flow               28 4-grams scored, 14 caught (500.0/1000), worst -2.144 chrome 1873/4135/62/538
+[proxy0] 18 flow(s) tcp/9444; nDPI calls them  25: 91/TLS x18   255: 91/TLS x18
+  arbiter, nDPI 6.0        25: 14/18 flagged   255: 14/18 flagged
+  analyser as nDPI         25: CAUGHT 14, not scored 4 (min -1.849)   255: CAUGHT 14, not scored 4 (min -1.849)   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: CAUGHT 14, not scored 4 (min -1.849)   255: CAUGHT 14, not scored 4 (min -1.849)
+  whole flow               28 4-grams scored, 14 caught (500.0/1000), worst -1.849 chrome 1873/3649/62/538
+[https] 1 flow(s) tcp/443; nDPI calls them  25: 91/TLS x1   255: 91/TLS x1
+  arbiter, nDPI 6.0        25: 0/1 flagged   255: 0/1 flagged
+  analyser as nDPI         25: excluded 1   255: excluded 1   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: below-bar 1 (min 0.513)   255: CAUGHT 1 (min -1.537)
+  whole flow               3391 4-grams scored, 37 caught (10.9/1000), worst -2.332 tls13 646/4163/23/24
+  whole flow, tuned        483 4-grams scored, 53 caught (109.7/1000), worst -2.061 chrome 1859/3657/955/871 (overhead 55)
+[obfs] 1 flow(s) udp/655; nDPI calls them  25: 209/TINC x1   255: 91/TLS x1
+  arbiter, nDPI 6.0        25: 0/1 flagged   255: 1/1 flagged
+  analyser as nDPI         25: below-bar 1 (min 0.000)   255: CAUGHT 1 (min -0.052)   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: below-bar 1 (min 0.000)   255: CAUGHT 1 (min -0.052)
+  whole flow               1905 4-grams scored, 60 caught (31.5/1000), worst -2.511 chrome 1947/4370/687/873
+  whole flow, tuned        1590 4-grams scored, 39 caught (24.5/1000), worst -2.435 tls12 215/4216/94/444 (overhead 62)
+[quic] 1 flow(s) udp/443; nDPI calls them  25: 188/QUIC x1   255: 188/QUIC x1
+  arbiter, nDPI 6.0        25: 0/1 flagged   255: 0/1 flagged
+  analyser as nDPI         25: n/a 1   255: n/a 1   [agrees with the arbiter on TLS flows: yes]
+  analyser, nDPI fixed     25: n/a 1   255: n/a 1
+  whole flow               4392 4-grams scored, 38 caught (8.7/1000), worst -1.969 tls13 788/4026/189/24
+  whole flow, tuned        109 4-grams scored, 26 caught (238.5/1000), worst -2.085 tls13 710/3689/639/411 (overhead 78)
+
+--- the plain-HTTPS reference: per-centroid minimum distance (thresholds tls12 3.5, tls13 3.0, chrome 3.0) ---
+  keepalive  fix25   tls12 14.83, tls13 1.10, chrome 3.44
+  keepalive  fix255  tls12 14.83, tls13 1.10, chrome 3.44
+  keepalive  flow    tls12 14.82, tls13 0.28, chrome 3.25
+  keepalive  tuned   tls12 13.85, tls13 0.44, chrome 3.33
+  kasmall    fix25   tls12 2.92, chrome 4.78
+  kasmall    fix255  tls12 2.92, chrome 4.78
+  kasmall    flow    tls12 2.92, chrome 4.64
+  kasmall    tuned   nothing scored
+  kah2       fix25   tls12 4.04, chrome 4.95
+  kah2       fix255  tls12 4.04, chrome 4.83
+  kah2       flow    tls12 4.04, chrome 4.81
+  kah2       tuned   nothing scored
+  h2page     fix25   tls12 3.27, chrome 4.53
+  h2page     fix255  tls12 3.08, chrome 4.53
+  h2page     flow    tls12 3.08, chrome 4.53
+  h2page     tuned   nothing scored
+
+--- which of nDPI's own centroids, at nDPI's own thresholds, flag the reference ---
+  fix25   tls12 FLAGS it (2.92 < 3.5), tls13 FLAGS it (1.10 < 3.0), chrome does not (3.44 >= 3.0)
+  fix255  tls12 FLAGS it (2.92 < 3.5), tls13 FLAGS it (1.10 < 3.0), chrome does not (3.44 >= 3.0)
+  flow    tls12 FLAGS it (2.92 < 3.5), tls13 FLAGS it (0.28 < 3.0), chrome does not (3.25 >= 3.0)
+  tuned   tls12 does not (13.85 >= 3.5), tls13 FLAGS it (0.44 < 3.0), chrome does not (3.33 >= 3.0)
+
+--- separability from the reference (keepalive + kasmall + kah2 + h2page): per-centroid minimum distance, ours/reference ---
+  direct     fix25   nothing scored                   -
+  direct     fix255  nothing scored                   -
+  direct     flow    nothing scored                   -
+  proxy      fix25   separable by chrome (gap 2.58)   tls12 22.55/2.92, tls13 4.94/1.10, chrome 0.86/3.44
+  proxy      fix255  separable by chrome (gap 2.58)   tls12 22.55/2.92, tls13 4.94/1.10, chrome 0.86/3.44
+  proxy      flow    separable by chrome (gap 2.39)   tls12 22.55/2.92, tls13 4.94/0.28, chrome 0.86/3.25
+  proxy0     fix25   separable by chrome (gap 2.29)   tls12 22.54/2.92, tls13 4.96/1.10, chrome 1.15/3.44
+  proxy0     fix255  separable by chrome (gap 2.29)   tls12 22.54/2.92, tls13 4.96/1.10, chrome 1.15/3.44
+  proxy0     flow    separable by chrome (gap 2.09)   tls12 22.54/2.92, tls13 4.96/0.28, chrome 1.15/3.25
+  https      fix25   not separable                    tls12 4.01/2.92, chrome 5.43/3.44
+  https      fix255  separable by chrome (gap 1.97)   tls12 3.64/2.92, tls13 2.16/1.10, chrome 1.46/3.44
+  https      flow    separable by chrome (gap 1.82)   tls12 3.27/2.92, tls13 0.67/0.28, chrome 1.42/3.25
+  https      tuned   separable by tls12 (gap 12.10)   tls12 1.75/13.85, tls13 0.99/0.44, chrome 0.94/3.33
+  obfs       fix25   not separable                    tls12 3.50/2.92, chrome 5.25/3.44
+  obfs       fix255  separable by tls12 (gap 0.15)    tls12 2.77/2.92, tls13 7.42/1.10, chrome 3.67/3.44
+  obfs       flow    separable by chrome (gap 2.76)   tls12 2.29/2.92, tls13 1.63/0.28, chrome 0.49/3.25
+  obfs       tuned   n/a                              reference not tuned at this overhead
+  quic       fix25   nothing scored                   -
+  quic       fix255  nothing scored                   -
+  quic       flow    separable by tls12 (gap 0.51)    tls12 2.42/2.92, tls13 1.03/0.28, chrome 2.83/3.25
+  quic       tuned   n/a                              reference not tuned at this overhead
+
+--- browse (successful page loads) ---
+direct 14/14
+keepalive 80/80
+kasmall 80/80
+kah2 80/80
+h2page 4/4
+proxy 14/14
+proxy0 14/14
+https-early 14/14
+https bulk 200 4194304 B 0.210127 s
+https-late 14/14
+obfs-early 14/14
+obfs bulk 200 4194304 B 0.069794 s
+obfs-late 14/14
+quic-early 14/14
+quic bulk 200 4194304 B 0.124414 s
+quic-late 14/14
+--- overhead calibration (ping -s100, inner IP 128 B) ---
+calibrate: constant overhead (the mode); floor 183 B, mode 183 B (x39) of 40 packets >= 128 B (the ping's inner IP length)
+https overhead 55 B per packet
+calibrate: spread, the floor (a lower bound); floor 190 B, mode 207 B (x2) of 40 packets >= 128 B (the ping's inner IP length)
+obfs overhead 62 B per packet
+calibrate: constant overhead (the mode); floor 183 B, mode 206 B (x20) of 40 packets >= 128 B (the ping's inner IP length)
+quic overhead 78 B per packet
+https ping rtt min/avg/max/mdev = 0.200/37.620/41.836/10.173 ms
+obfs ping rtt min/avg/max/mdev = 0.110/0.275/2.997/0.624 ms
+quic ping rtt min/avg/max/mdev = 0.113/0.167/0.214/0.018 ms
+--- https link ---
+founder at 10.49.69.10 port 655 options 700000b socket 10 status 100 transport https
+Status:       visited reachable indirect sptps
+--- obfs link ---
+founder at 10.49.69.10 port 655 options 700000c socket -1 status 100 transport obfs
+Status:       validkey visited reachable sptps udp_confirmed
+PMTU:         1413
+--- quic link ---
+founder at 10.49.69.10 port 655 options 700000c socket -1 status 100 transport quic
+Status:       validkey visited reachable sptps udp_confirmed
+PMTU:         1119
+--- arbiter ---
+arbiter self-check trojan-tcp-tls: 1 flow(s) flagged
+arbiter self-check vmess-tcp-tls: 1 flow(s) flagged
+arbiter self-check shadowsocks-tcp: 1 flow(s) flagged
+--- direct: flows ndpiReader flags (max_packets 25) ---
+--- direct: flows ndpiReader flags (max_packets 255) ---
+--- keepalive: flows ndpiReader flags (max_packets 25) ---
+--- keepalive: flows ndpiReader flags (max_packets 255) ---
+--- kasmall: flows ndpiReader flags (max_packets 25) ---
+--- kasmall: flows ndpiReader flags (max_packets 255) ---
+--- kah2: flows ndpiReader flags (max_packets 25) ---
+--- kah2: flows ndpiReader flags (max_packets 255) ---
+--- h2page: flows ndpiReader flags (max_packets 25) ---
+--- h2page: flows ndpiReader flags (max_packets 255) ---
+--- proxy: flows ndpiReader flags (max_packets 25) ---
+--- proxy: flows ndpiReader flags (max_packets 255) ---
+--- proxy0: flows ndpiReader flags (max_packets 25) ---
+	1	TCP 10.49.69.11:42070 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 21] [cat: Web/5] [Breed: Safe] [18 pkts/5170 bytes <->
+	2	TCP 10.49.69.11:42042 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 21] [cat: Web/5] [Breed: Safe] [18 pkts/5138 bytes <->
+	3	TCP 10.49.69.11:42062 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 21] [cat: Web/5] [Breed: Safe] [18 pkts/5106 bytes <->
+	4	TCP 10.49.69.11:42018 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 21] [cat: Web/5] [Breed: Safe] [18 pkts/5074 bytes <->
+	5	TCP 10.49.69.11:42010 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	6	TCP 10.49.69.11:56176 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	7	TCP 10.49.69.11:41954 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	8	TCP 10.49.69.11:41960 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	9	TCP 10.49.69.11:41986 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	10	TCP 10.49.69.11:41990 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <-
+	11	TCP 10.49.69.11:41996 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <-
+	12	TCP 10.49.69.11:41982 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <-
+	13	TCP 10.49.69.11:41968 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3505 bytes <-
+	14	TCP 10.49.69.11:56178 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3505 bytes <-
+--- proxy0: flows ndpiReader flags (max_packets 255) ---
+	1	TCP 10.49.69.11:42070 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 21] [cat: Web/5] [Breed: Safe] [18 pkts/5170 bytes <->
+	2	TCP 10.49.69.11:42042 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 21] [cat: Web/5] [Breed: Safe] [18 pkts/5138 bytes <->
+	3	TCP 10.49.69.11:42062 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 21] [cat: Web/5] [Breed: Safe] [18 pkts/5106 bytes <->
+	4	TCP 10.49.69.11:42018 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 21] [cat: Web/5] [Breed: Safe] [18 pkts/5074 bytes <->
+	5	TCP 10.49.69.11:42010 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	6	TCP 10.49.69.11:56176 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	7	TCP 10.49.69.11:41954 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	8	TCP 10.49.69.11:41960 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	9	TCP 10.49.69.11:41986 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <->
+	10	TCP 10.49.69.11:41990 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <-
+	11	TCP 10.49.69.11:41996 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <-
+	12	TCP 10.49.69.11:41982 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3493 bytes <-
+	13	TCP 10.49.69.11:41968 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3505 bytes <-
+	14	TCP 10.49.69.11:56178 <-> 10.49.69.10:9444 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 18] [cat: Web/5] [Breed: Safe] [16 pkts/3505 bytes <-
+--- https: flows ndpiReader flags (max_packets 25) ---
+--- https: flows ndpiReader flags (max_packets 255) ---
+--- obfs: flows ndpiReader flags (max_packets 25) ---
+--- obfs: flows ndpiReader flags (max_packets 255) ---
+	1	UDP 10.49.69.11:34517 <-> 10.49.69.10:655 [proto: 91/TLS] [Stack: TLS] [IP: 0/Unknown] [Encrypted] [Confidence: DPI (aggressive)] [FPC: 0/Unknown, Confidence: Unknown] [DPI packets: 39] [cat: Web/5] [Breed: Safe] [2460 pkts/519444 bytes 
+--- quic: flows ndpiReader flags (max_packets 25) ---
+--- quic: flows ndpiReader flags (max_packets 255) ---

@@ -147,6 +147,47 @@ waitping() { # name target tries
 }
 stopall() { [ -n "$KEEP" ] && { echo "KEEP set: leaving containers up"; exit 0; }; docker rm -f "$PFX-a" "$PFX-b" "$PFX-r" "$PFX-gw" "$PFX-cap" >/dev/null 2>&1 || true; }
 
+# wire_stats <tcpdump -x dump> quic|plain: the capture's UDP datagrams by first
+# byte. quic: QUIC only (long headers first, then short, no TCP connection,
+# no SPTPS-shaped datagram -- fixed bit clear). plain: the positive control,
+# the same matcher must find SPTPS-shaped datagrams in a plain tinc capture.
+wire_stats() {
+	python3 - "$1" "$2" <<'PYEOF'
+import re, sys
+lines = open(sys.argv[1], errors='replace').read().split('\n')
+pkts, cur, hdr = [], [], None
+for l in lines:
+    if l and not l.startswith('\t') and not l.startswith(' '):
+        if hdr is not None: pkts.append((hdr, cur))
+        cur, hdr = [], l
+    else:
+        m = re.match(r'\s*0x[0-9a-f]{4}:\s+((?:[0-9a-f]{4} ?)+)', l)
+        if m: cur.extend(m.group(1).split())
+if hdr is not None: pkts.append((hdr, cur))
+tcp = [h for h, _ in pkts if 'Flags [' in h]
+synack = sum(1 for h in tcp if 'Flags [S.]' in h)
+tcpdata = sum(1 for h in tcp if 'length 0' not in h)
+udp = [c for h, c in pkts if 'UDP' in h]
+first = []
+for c in udp:
+    hexs = ''.join(c)
+    if len(hexs) < 58: continue
+    first.append(int(hexs[56:58], 16))   # byte 28: after IPv4(20)+UDP(8)
+longh = sum(1 for b in first if b & 0xc0 == 0xc0)
+shorth = sum(1 for b in first if b & 0xc0 == 0x40)
+nofixed = sum(1 for b in first if not (b & 0x40))
+seq = ''.join('L' if b & 0xc0 == 0xc0 else 'S' if b & 0xc0 == 0x40 else '?' for b in first)
+print("  capture: %d UDP datagrams; TCP on port 655: %d segments, %d SYN-ACK, %d with payload (tinc's autoconnect SYN before the peer is up is RST'd)" % (len(first), len(tcp), synack, tcpdata))
+print("  QUIC long headers: %d, short headers: %d, fixed bit clear (SPTPS-shaped): %d" % (longh, shorth, nofixed))
+print("  header sequence (L=long S=short): %s%s" % (seq[:60], '...' if len(seq) > 60 else ''))
+if sys.argv[2] == 'quic':
+    ok = synack == 0 and tcpdata == 0 and nofixed == 0 and longh >= 2 and shorth >= 40 and seq.startswith('L')
+else:   # positive control: the SPTPS matcher must fire on a plain tinc capture
+    ok = nofixed >= 5
+sys.exit(0 if ok else 1)
+PYEOF
+}
+
 sec_a() {
 # ============================================================================
 echo "===== (a) quic-negotiated link: A prefers quic, B default ====="
@@ -212,37 +253,7 @@ docker stop "$PFX-cap" >/dev/null 2>&1
 docker logs "$PFX-cap" > "$BASE-cap.txt" 2>&1
 docker rm -f "$PFX-cap" >/dev/null 2>&1
 
-if python3 - "$BASE-cap.txt" <<'PYEOF'
-import re, sys
-lines = open(sys.argv[1], errors='replace').read().split('\n')
-pkts, cur, hdr = [], [], None
-for l in lines:
-    if l and not l.startswith('\t') and not l.startswith(' '):
-        if hdr is not None: pkts.append((hdr, cur))
-        cur, hdr = [], l
-    else:
-        m = re.match(r'\s*0x[0-9a-f]{4}:\s+((?:[0-9a-f]{4} ?)+)', l)
-        if m: cur.extend(m.group(1).split())
-if hdr is not None: pkts.append((hdr, cur))
-tcp = [h for h, _ in pkts if 'Flags [' in h]
-synack = sum(1 for h in tcp if 'Flags [S.]' in h)
-tcpdata = sum(1 for h in tcp if 'length 0' not in h)
-udp = [c for h, c in pkts if 'UDP' in h]
-first = []
-for c in udp:
-    hexs = ''.join(c)
-    if len(hexs) < 58: continue
-    first.append(int(hexs[56:58], 16))   # byte 28: after IPv4(20)+UDP(8)
-longh = sum(1 for b in first if b & 0xc0 == 0xc0)
-shorth = sum(1 for b in first if b & 0xc0 == 0x40)
-nofixed = sum(1 for b in first if not (b & 0x40))
-seq = ''.join('L' if b & 0xc0 == 0xc0 else 'S' if b & 0xc0 == 0x40 else '?' for b in first)
-print("  capture: %d UDP datagrams; TCP on port 655: %d segments, %d SYN-ACK, %d with payload (tinc's autoconnect SYN before the peer is up is RST'd)" % (len(first), len(tcp), synack, tcpdata))
-print("  QUIC long headers: %d, short headers: %d, fixed bit clear (SPTPS-shaped): %d" % (longh, shorth, nofixed))
-print("  header sequence (L=long S=short): %s%s" % (seq[:60], '...' if len(seq) > 60 else ''))
-ok = synack == 0 and tcpdata == 0 and nofixed == 0 and longh >= 2 and shorth >= 40 and seq.startswith('L')
-sys.exit(0 if ok else 1)
-PYEOF
+if wire_stats "$BASE-cap.txt" quic
 then note "wire: QUIC only (Initial long headers first, then short), no TCP connection established, no SPTPS-shaped datagram"; else miss "wire capture is not QUIC-only"; fi
 stopall
 }
@@ -379,6 +390,8 @@ for case in accept build blocked; do
 	start b "$B_IP" "$BASE-b" "$bimg"
 	sleep 2
 	[ "$case" = blocked ] && docker exec "$PFX-b" iptables -A INPUT -p udp --dport 655 -j DROP
+	[ "$case" = accept ] && docker run -d --name "$PFX-cap" --net "container:$PFX-b" --cap-add NET_RAW "$TOOLS" \
+		tcpdump -n -l -x -i eth0 'port 655' >/dev/null 2>&1
 	start a "$A_IP" "$BASE-a"
 	if [ "$case" = blocked ]; then sleep 10; else sleep 5; fi
 	setvpn b "$B_VPN"
@@ -403,6 +416,19 @@ for case in accept build blocked; do
 			miss "$case: no fallback line in A's log"
 		fi
 		;;
+	accept)
+		docker stop "$PFX-cap" >/dev/null 2>&1
+		docker logs "$PFX-cap" > "$BASE-cap.txt" 2>&1
+		docker rm -f "$PFX-cap" >/dev/null 2>&1
+		if wire_stats "$BASE-cap.txt" plain; then
+			note "positive control: the SPTPS-shaped matcher of (a) fires on this plain tinc link"
+		else
+			miss "positive control: the SPTPS-shaped matcher of (a) missed a plain tinc link -- its 0 in (a) is not evidence"
+		fi
+		;;
+	esac
+	case $case in
+	blocked) ;;
 	*)
 		if docker logs "$PFX-a" 2>&1 | grep -q "Carrier candidates for nodeb: plain"; then
 			note "A log: Carrier candidates for nodeb: plain (quic not in B's accept list)"

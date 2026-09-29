@@ -1,0 +1,7 @@
+
+JA Host Stats: 
+		 IP Address                  	 # JA4C     
+	1	 10.49.69.11              	 1      
+
+
+	1	TCP 10.49.69.11:39780 <-> 10.49.69.10:443 [proto: 91/TLS][Stack: TLS][IP: 0/Unknown][Encrypted][Confidence: DPI][FPC: 0/Unknown, Confidence: Unknown][DPI packets: 9][cat: Web/5][Breed: Safe][6897 pkts/911123 bytes <-> 10284 pkts/5730758 bytes][Goodput ratio: 50/88][18.20 sec][(Advertised) ALPNs: h2;http/1.1][TLS Supported Versions: TLSv1.3;TLSv1.2][bytes ratio: -0.726 (Download)][IAT c2s/s2c min/avg/max/stddev: 0/0 3/2 585/585 28/23][Pkt Len c2s/s2c min/avg/max/stddev: 54/66 132/557 1514/1514 153/627][Risk: ** Missing SNI TLS Extn **** ALPN/SNI Mismatch **][Risk Score: 100][Risk Info: h2;SNI should always be present][nDPI Cli Fingerprint: 533ca659e38e37e5f9d67df7c1e9c8e2][nDPI Srv Fingerprint: 81dba73ae426][TCP Fingerprint: 2_64_64240_2e3cee914fc1/Linux][TLSv1.3][JA4: t13i3012h2_1d37bd780c83_8537cf56674e][JA3S: 15af977ce25de452b96affa2addb1036][Firefox][Cipher: TLS_AES_256_GCM_SHA384][Plen Bins: 0,42,4,26,5,0,0,0,4,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0]

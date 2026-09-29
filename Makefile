@@ -30,6 +30,7 @@ export WSF_RUN := $(RUN)
 DATE ?= $(shell date +%Y-%m-%d)
 export CORE_IMAGE := tincstack/core:$(TAG)
 export BASELINE_IMAGE := tincstack/baseline:$(TAG)
+CORE_TEST_IMAGE := tincstack/core-test:$(TAG)
 SHELLCHECK_IMAGE ?= koalaman/shellcheck:stable
 GITLEAKS_IMAGE ?= zricethezav/gitleaks:latest
 # Every shell script here is linted at shellcheck's default (full) severity.
@@ -38,6 +39,7 @@ GITLEAKS_IMAGE ?= zricethezav/gitleaks:latest
 # list and one severity again.
 SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-sim/natlab.sh \
                  testing/nat-sim/natprofile.sh testing/dpi-proof/run.sh testing/dpi-proof/capture.sh \
+                 testing/dpi-proof/tls-in-tls-audit.sh \
                  testing/smoke/run.sh testing/acme/run.sh \
                  platforms/linux/docker/entrypoint.sh \
                  platforms/linux/docker/two-nodes.sh \
@@ -49,6 +51,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \
                  testing/transports/cert-repin-test.sh testing/transports/front-port-test.sh testing/transports/h3-interop-test.sh testing/transports/decoy-conformance-test.sh testing/transports/mixed-version-test.sh testing/transports/windows-wine-test.sh testing/transports/android-emulator-test.sh testing/transports/retry-carrier-test.sh testing/transports/quic-wire-test.sh testing/transports/quic-listener-wire-test.sh testing/transports/quic-loss-test.sh testing/fingerprint/run.sh \
                  testing/fingerprint/post405-timing.sh testing/fingerprint/obfs-audit.sh testing/fingerprint/carrier-traffic-audit.sh testing/fingerprint/slow-client-flight.sh \
+                 testing/fingerprint/linkability-audit.sh \
                  testing/transports/obfs-test.sh testing/transports/obfs-mtu-test.sh \
                  testing/transports/matrix-test.sh \
                  testing/transports/classify-test.sh \
@@ -58,7 +61,8 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/transports/obfs-restart-test.sh \
                  testing/transports/obfs-confirmed-peer-test.sh \
                  testing/transports/same-nat-meta-test.sh \
-                 testing/perf/bench.sh testing/perf/bench-inner.sh \
+                 testing/perf/bench.sh testing/perf/bench-inner.sh testing/perf/relay-burst-test.sh \
+                 testing/perf/junk-cost-test.sh \
                  testing/config/ping-interval-test.sh \
                  testing/config/interface-route-test.sh \
                  testing/config/zeroconf-pool-test.sh \
@@ -70,11 +74,19 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  platforms/android/docker/join-on-emulator.sh \
                  platforms/android/docker/ui-join.sh
 
-.PHONY: check build-core build-baseline build-lab smoke nat-quick nat-full laptop \
+.PHONY: check unit build-core build-baseline build-lab smoke nat-quick nat-full laptop \
         validate-nat dpi-baseline lint secrets clean promote
 
-check: build-core build-baseline smoke validate-nat nat-quick dpi-baseline
+check: unit build-core build-baseline smoke validate-nat nat-quick dpi-baseline
 	@echo "make check: OK (run id $(RUN); lab results under testing/*/results/run/$(RUN)/)"
+
+# The unit gate: builds the `test` stage of core/Dockerfile.build, which runs
+# test_authn with the cmocka harness. The build fails if the test fails, so a
+# change that reintroduces the authenticator log-line / name-enumeration oracle
+# (§43) cannot merge green. Only test_authn is gated (see the Dockerfile note);
+# the timing assertions run report-only, the deterministic checks gate.
+unit:
+	docker build -f core/Dockerfile.build --target test -t $(CORE_TEST_IMAGE) core/
 
 promote:
 	testing/nat-sim/lab.sh promote testing/nat-sim/results/run/$(RUN) testing/nat-sim/results/$(DATE)

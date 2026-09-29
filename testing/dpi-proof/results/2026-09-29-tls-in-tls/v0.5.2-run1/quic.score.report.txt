@@ -1,0 +1,8 @@
+== /r/quic.pcap
+  quic 10.49.69.11:53370 > 10.49.69.10:443  (10964 payload packets)
+    ndpi25   n/a        nDPI classifies QUIC; the heuristic is not run on it
+    ndpi255  n/a        nDPI classifies QUIC; the heuristic is not run on it
+    fix25    n/a        nDPI classifies QUIC; the heuristic is not run on it
+    fix255   n/a        nDPI classifies QUIC; the heuristic is not run on it
+    flow     min margin -1.998 (tls13) 789/4031/401/24 pkts [1, 5, 5, 1] in quic-early; 1967 scored, 48 caught (24.4/1000: quic-bulk 30, quic-dial 1, quic-early 9, quic-late 8), 171 below 0.9, 301 unscored
+    tuned    min margin -2.444 (tls13) 711/4294/641/411 pkts [1, 6, 1, 1] in quic-early; 382 scored, 18 caught (47.1/1000: quic-dial 1, quic-early 11, quic-late 6), 43 below 0.9, 55 unscored (overhead 78, ignore <= 130)

@@ -40,9 +40,22 @@
 #
 # Unlike its neighbours this harness drives the NODE image (it needs the
 # entrypoint's invite/join flow), so the argument is a node image, not a core.
+#
+# SINCE a1879cd (2026-09-26) a node's bootstrap counter starts from the clock,
+# so a restarted CURRENT dialler starts above everything its previous run sent
+# and the acceptor never has a window to restart: between two current builds
+# the check is that it did not need to. The epoch restart is still what lets
+# an OLDER dialler (random 48-bit start) back in, and only such a dialler
+# exercises it:
+#
+#   DIALLER_IMAGE=tincstack/node:e90715c sh testing/transports/obfs-restart-test.sh [node-image]
+#
+# Until 2026-09-29 this script required an epoch restart from any dialler, so
+# it failed on every build since a1879cd and nothing covered the restart path.
 set -u
 
 IMG=${1:-tincstack/node:${TINCSTACK_TAG:-dev}}
+DIALLER_IMAGE=${DIALLER_IMAGE:-$IMG}
 MODE=${2:-}
 LAB=${LAB:-obre}
 N=${N:-6}
@@ -62,7 +75,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "lab: LAB=$LAB IMG=$IMG SUBNET=$SUBNET restarts=$N"
+echo "lab: LAB=$LAB IMG=$IMG DIALLER_IMAGE=$DIALLER_IMAGE SUBNET=$SUBNET restarts=$N"
 cleanup
 docker network create --subnet "$SUBNET" "$LAB-net" >/dev/null
 
@@ -85,7 +98,7 @@ esac
 
 docker run -d --name "$LAB-b" --network "$LAB-net" --ip "$B_IP" \
 	--cap-add NET_ADMIN --device /dev/net/tun \
-	-e NODE_NAME=nodeb -e PORT=656 -e INVITE="$INV" -e LOG_LEVEL=5 "$IMG" >/dev/null
+	-e NODE_NAME=nodeb -e PORT=656 -e INVITE="$INV" -e LOG_LEVEL=5 "$DIALLER_IMAGE" >/dev/null
 
 i=0
 while [ $i -lt 30 ]; do
@@ -171,7 +184,11 @@ if [ "$MODE" = "--expect-defect" ]; then
 fi
 
 [ "$ok" -eq "$N" ] || miss "only $ok of $N restarts got obfs back"
-[ "$(epochs)" -ge 1 ] || miss "the acceptor never restarted its replay window, so this run did not exercise the fix"
+if [ "$DIALLER_IMAGE" = "$IMG" ]; then
+	[ "$(epochs)" -eq 0 ] || miss "the acceptor restarted its replay window $(epochs) time(s) for a current dialler, whose counter should start above its previous run"
+else
+	[ "$(epochs)" -ge 1 ] || miss "the acceptor never restarted its replay window for the older dialler, so this run did not exercise the fix"
+fi
 
 echo
 
