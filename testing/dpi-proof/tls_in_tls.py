@@ -16,7 +16,7 @@ than 3 packets is not scored.
 
 This is a reimplementation from the nDPI source and the paper; the centroids
 and inverse covariance matrices below are nDPI's model parameters (nDPI is
-LGPL-3.0; only its numbers are used here). No code is taken from the compared project.
+LGPL-3.0; only its numbers are used here).
 
 Margin of a 4-gram = the smallest (distance - threshold) over the centroids
 that apply (the TLS 1.3 one only when burst 1 >= 517 B, as in nDPI). Below 0

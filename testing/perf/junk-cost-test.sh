@@ -6,10 +6,10 @@
 # with a keyed check, whether such a datagram belongs to any peer it knows --
 # so the worry is an O(N)-per-packet handler: one keyed derivation per known
 # peer per junk datagram would let a flood cost the daemon N x rate CPU and
-# starve everything else (a DoS lever, a Salamander-style listener is O(N)
-# per junk datagram). tincstack caps that scan at a per-second budget
-# (OBFS_SCAN_PER_SEC..OBFS_SCAN_MAX in obfs.c) with a round-robin cursor, so the
-# keyed work is bounded per wall-second regardless of how hard the flood comes.
+# starve everything else (a DoS lever). tincstack caps that scan at a
+# per-second budget (OBFS_SCAN_PER_SEC..OBFS_SCAN_MAX in obfs.c) with a
+# round-robin cursor, so the keyed work is bounded per wall-second regardless
+# of how hard the flood comes.
 #
 # This test measures the daemon's CPU while it is flooded with unauthenticated
 # junk, as a function of two dimensions, and asserts the bound holds:

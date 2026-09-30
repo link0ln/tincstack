@@ -1,6 +1,6 @@
 # T1a — the TLS-in-TLS burst model against our carriers (2026-09-29)
 
-Plan item T1a of `docs/masking-hardening-plan.md`: before shaping anything,
+Plan item T1a (PLAN.md, masking hardening): before shaping anything,
 measure whether the traffic *after* our byte-perfect handshakes is caught by
 the one published steady-state detector, nDPI's encapsulated-TLS-handshake
 heuristic (Xue et al., USENIX Security 2024).
@@ -16,7 +16,7 @@ Tools (all in containers, nothing on the host):
   `1a5293396337f9a72dfee1fa070b2c4b0a0a3aaf`, with nDPI's own proxy captures
   in `/samples` for the arbiter's self-check.
 - `testing/dpi-proof/tls_in_tls.py` — the model reimplemented from nDPI's
-  source and the paper (stdlib; no the compared project code), scoring every flow with a
+  source and the paper (stdlib only), scoring every flow with a
   margin (distance minus threshold of the nearest centroid; < 0 = caught):
   as nDPI runs it (`ndpi<N>`), as nDPI would with its server-first exclusion
   removed (`fix<N>`), over the whole connection (`flow`), and over the whole

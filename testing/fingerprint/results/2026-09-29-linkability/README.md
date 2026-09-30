@@ -1,6 +1,6 @@
 # T1c — cross-session linkability of the carriers (2026-09-29)
 
-Plan item T1c of `docs/masking-hardening-plan.md`: can an observer who
+Plan item T1c (PLAN.md, masking hardening): can an observer who
 cannot block the protocol still tell that two sessions, seen from different
 addresses, belong to the same node?
 

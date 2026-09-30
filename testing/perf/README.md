@@ -186,10 +186,9 @@ flood, or to how many peers the node knows? For the obfs / DirectSeal carrier
 an unknown-source datagram reaches the cold-start classifier
 (`obfs_udp_try`), which decides with a keyed check whether it belongs to any
 known peer. A naive version would key-check every one of the N peers on every
-junk datagram — O(N) per packet, a DoS lever (a Salamander-style listener
-has exactly this shape). tincstack caps that scan at a per-second budget
-(`OBFS_SCAN_PER_SEC`..`OBFS_SCAN_MAX`) with a round-robin cursor, so the keyed
-work is bounded per wall-second no matter the flood rate.
+junk datagram — O(N) per packet, a DoS lever. tincstack caps that scan at a
+per-second budget (`OBFS_SCAN_PER_SEC`..`OBFS_SCAN_MAX`) with a round-robin
+cursor, so the keyed work is bounded per wall-second no matter the flood rate.
 
 How it is set up:
 
