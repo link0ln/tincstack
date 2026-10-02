@@ -355,6 +355,14 @@ else
 	bad "30 simultaneous connections from one address: ours answered $fb, nginx $nb"
 fi
 
+# ---- failure-path conformance: CCS flood and malformed records (T1b) ----------------------------
+log "testing failure-path conformance: CCS flood and malformed records (T1b)..."
+if docker run --rm --network "$NET" -v "$HERE:/h:ro" "$PY" python3 /h/decoy_conformance_probes.py "$F_IP" "$N_IP"; then
+	ok "failure-path conformance: CCS flood and malformed records match nginx (T1b)"
+else
+	bad "failure-path conformance: CCS flood / malformed record delta vs nginx (T1b)"
+fi
+
 # ---- timing: a silent client, an idle kept-alive connection ---------------------------------------
 if [[ -z ${QUICK:-} ]]; then
 	for s in f n; do

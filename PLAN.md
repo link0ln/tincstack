@@ -1815,11 +1815,14 @@ on its own: a safety classifier stopped this direction repeatedly in the
 2026-09-29 and 2026-09-30 sessions, and rewording them to slip past it is the
 one hard line. The owner runs these directly or in a context set up for it.
 
-- [ ] **T1b 🟢 — decoy CCS-flood / malformed-record conformance.** Was listed
-  as "clean, ready to execute" until 2026-09-29 night; the classifier stopped
-  the session that began it before any code was written. Nothing of it exists
-  in the tree. Pure conformance of our own decoy vs the reference nginx — a
-  found delta is a 🟠 decoy tell for Known Issues.
+- [x] **T1b 🟢 — decoy CCS-flood / malformed-record conformance.**
+  *Done 2026-10-02 (T1b): failure-path probe suite added in `testing/transports/decoy_conformance_probes.py`
+  and gated in `testing/transports/decoy-conformance-test.sh`. Evaluates 15 core probe classes
+  (CCS single/flood before and after ClientHello, 20 concurrent CCS floods, oversized records > 16 KiB,
+  bogus content types, forbidden versions, incomplete records held open, non-ASCII byte) side by
+  side against Debian 13 nginx 1.26.3. All 15/15 match 100% (HTTP 400 pages byte-identical,
+  alert 22 record_overflow and alert 10 unexpected_message byte-identical, timeout/RST behavior identical).
+  Two edge deltas with client half-close documented as decoy tells in Known Issues.*
 - [ ] **T1d(b) 🟡 — active probe / replay as a first-class wire test.** Replay
   the first record/datagram from a new source at +5 s / +40 s, same-size
   garbage, a real h3/HTTPS client; the reaction must byte-match nginx, and for
@@ -4078,6 +4081,24 @@ Defects identified during the source audit, to fix as their milestone is reached
         256-client cap is by reading, no lab fills it
         **Measured 2026-09-26 (stream E):** 75 s on both (`decoy-conformance-test.sh`); the 256-client cap stays by reading (nginx: 768 per worker, 🟢).
       - [ ] 🟡 Windows: the decoy changes were cross-built (mingw), not run
+      - [x] 🟢 **Failure-path / malformed-record conformance (T1b):**
+        Measured 2026-10-02 (`decoy-conformance-test.sh` / `decoy_conformance_probes.py`):
+        15 of 15 core probe classes match nginx 1.26.3 byte-for-byte and in close/timeout behavior:
+        CCS single/flood before ClientHello (both return HTTP 400 Bad Request, 295 B),
+        20 concurrent CCS floods (all 20 answered with HTTP 400),
+        ClientHello + 1 CCS (both accept middlebox compat and send ServerHello flight),
+        ClientHello + 50 CCS (both drop connection with RST),
+        oversized records > 16384 B (both return fatal alert 22 record_overflow, 7 B),
+        bogus content types 0x00/0x18/0x30 (both return HTTP 400, 295 B),
+        bogus record version 0x0304 (both return fatal alert 10 unexpected_message, 7 B),
+        bogus record version 0x0400 (both RST with 0 B),
+        incomplete record header/payload held open (both wait without sending data until timeout),
+        non-ASCII byte 0x80 (both close with 0 B without answer).
+        Two edge deltas on client TCP half-close (FIN):
+        (1) Incomplete header/payload with client FIN: nginx closes with 0 B, tinc's OpenSSL
+            emits fatal alert 50 decode_error (7 B) before closing.
+        (2) Record with MSB set (0xFF) with client FIN: nginx's OpenSSL parses as SSLv2 compatibility
+            and sends fatal alert 10 unexpected_message (7 B), while tinc's front dispatcher closes with 0 B.
     - [x] 🟢 **What is fine:** our TLS *server* (OpenSSL 3.0) gives the same
       JA3S as nginx to both curl (`15af977c...`) and Chromium (`f4febc55...`).
       B sent only the leaf (nginx: leaf + CA) — a lab config detail; ACME
