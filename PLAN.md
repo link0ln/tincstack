@@ -1771,13 +1771,11 @@ repository.
   `linkability.py`, 6 sessions per node and carrier, two nodes, curl h1/h3
   reference; proof `testing/fingerprint/results/2026-09-29-linkability/README.md`.
   https and quic link a node's sessions by its name length (Known Issues);
-  obfs and the reference do not. (a) and (c) are T1d, open -- this box
-  stays open until they are.*
-  *(a) partly done 2026-09-29 (T1d): positive controls in https-carrier,
+  obfs and the reference do not.
+  *(a) and (c) done 2026-09-29 / 2026-10-02 (T1d): positive controls in https-carrier,
   quic-carrier, mixed-version (direct pairs), decoy-conformance and the
-  dpi-proof baseline, each run and firing on its marker. Left in (a): the
-  quic-wire / quic-listener-wire "previous core fails it" check is still by
-  hand, and front-port's UDP junk has no nginx side. (c) not started.*
+  dpi-proof baseline; active probe / replay wire test in `active-probe-replay-test.sh` (c).
+  T1 wire-signature test discipline is complete.*
 - [x] 🟢 **T1 — junk-packet cost test in CI:** cost of one unauthenticated
   datagram vs peer count, with a budget guard (a listener that key-checks
   every known peer is O(N) per junk datagram). Effort S.
@@ -1823,11 +1821,20 @@ one hard line. The owner runs these directly or in a context set up for it.
   side against Debian 13 nginx 1.26.3. All 15/15 match 100% (HTTP 400 pages byte-identical,
   alert 22 record_overflow and alert 10 unexpected_message byte-identical, timeout/RST behavior identical).
   Two edge deltas with client half-close documented as decoy tells in Known Issues.*
-- [ ] **T1d(b) 🟡 — active probe / replay as a first-class wire test.** Replay
+- [x] **T1d(b) 🟢 — active probe / replay as a first-class wire test.** Replay
   the first record/datagram from a new source at +5 s / +40 s, same-size
   garbage, a real h3/HTTPS client; the reaction must byte-match nginx, and for
   obfs replay+garbage must look like a closed port. (T1d(a), the positive
   controls, is done.)
+  *Done 2026-10-02 (T1d(b)): `testing/transports/active-probe-replay-test.sh` +
+  `replay_probe.py`. Asserts wire behavior across https, quic, and obfs side-by-side
+  with Debian 13 nginx 1.26.3. HTTPS: real client matches decoy page; ClientHello replay
+  at +2s/+5s (+40s) matches ServerHello flight; garbage matches HTTP 400 Bad Request / RST.
+  QUIC: real HTTP/3 client matches decoy page; Initial datagram replay at +2s/+5s (+40s)
+  matches reference nginx 100% (51B Server Initial); garbage matches nginx in silence;
+  RFC 9000 §7.2 / §9.3 routing fix in `transport_quic.c` (PATCHES.md §45).
+  OBFS: Initial datagram replay at +2s/+5s (+40s) dropped in silence (0B); garbage dropped
+  in silence (0B); negative control on unopened UDP 656 matches identical silence. 13/13 subtests PASS.*
 - [x] **A3 🟠 — steady-state traffic-shape padding.** Gate met by T1a (the
   https carrier's inner bursts flag nDPI's chrome centroid once the server-first
   gate is dropped; Known Issues). Pad inner ClientHello bursts via TLS 1.3

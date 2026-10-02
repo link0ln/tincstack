@@ -1317,6 +1317,22 @@ retry-carrier -- PASS; again on `t3b` with the rest of §42 (see there).
   - Post-fix: `fix255 below-bar min margin +0.332 (tls12); stopped after 256 packets`. Chrome centroid was 0 flows flagged (distance 4.283 vs reference 3.436). Verdict in `summary.json`: `"not separable"`.
 - Zero regressions on `https-carrier-test.sh` (100% PASS) and `make lint`.
 
+## 45. Masking hardening: QUIC Initial routing by network address across distinct sessions (T1d) (tincstack, 2026-10-02)
+
+`transport_quic.c`.
+
+**Problem.** In QUIC, a client independently chooses its Initial Destination Connection ID (DCID). Under RFC 9000 §7.2, "because the client selects this connection ID, it is possible for multiple clients to independently select the same destination connection ID. Servers MUST be able to distinguish between connections with the same initial Destination Connection ID, for instance by using the Source Connection ID or the client's network address." Furthermore, RFC 9000 §9.3 strictly forbids connection migration before handshake confirmation.
+In `transport_quic.c`, `quic_accept()` registered the client's Initial DCID globally into the session's CID table. When an active probe or replayed Initial datagram arrived from a different remote address (`IP2:port2`), `quic_udp_try()` routed it to the existing unconfirmed session based solely on the DCID. Inside `session_read()`, `ngtcp2_conn_read_pkt()` dropped duplicate packet number 0 in silence. Meanwhile, reference nginx 1.26.3 always treats an Initial datagram from an unconfirmed 4-tuple as an independent connection attempt and serves its 51-byte Server Initial flight. This created a probing oracle: a censor replaying an observed Initial datagram from a scanner IP observed total silence from tinc vs a 51-byte decoy Server Initial from reference nginx.
+
+**Fix.** In `quic_udp_try()`, if an incoming Initial packet (`buf[0] & 0x80` and `(buf[0] & 0x30) == 0`) matches an existing session's DCID but arrives from a different network address (`sockaddrcmp(&addr, &s->peer) != 0`), the existing session does not claim it (`s = NULL`). The packet falls through to `quic_accept()`, which instantiates a new session and responds with the standard 51-byte decoy Server Initial flight, exactly matching Debian 13 nginx 1.26.3 byte-for-byte.
+
+**Proof & Verification.**
+- `testing/transports/active-probe-replay-test.sh` (T1d(b)):
+  - HTTPS (TCP 443): Real client gets identical decoy page; replaying ClientHello at +2s and +5s (+40s) matches nginx ServerHello flight (1870B vs 1870B); same-size garbage matches nginx HTTP 400 Bad Request / RST.
+  - QUIC (UDP 443): Real HTTP/3 client gets identical decoy page; Initial datagram replay at +2s and +5s (+40s) matches reference nginx 100% (51-byte Long Header Initial); same-size garbage matches nginx (silence).
+  - OBFS (UDP 655): Replaying obfs datagrams at +2s and +5s (+40s) returns 0 bytes (silence); same-size garbage returns 0 bytes (silence); unopened UDP port negative control returns identical silence.
+  - Complete wire test: 13/13 subtests PASS.
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):

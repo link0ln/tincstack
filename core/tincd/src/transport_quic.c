@@ -1870,6 +1870,15 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 
 	quic_session_t *s = session_by_cid(vc.dcid, vc.dcidlen);
 
+	if(s && (buf[0] & 0x80) && (buf[0] & 0x30) == 0 && sockaddrcmp(&addr, &s->peer) != 0) {
+		/* An Initial packet with this DCID arrived from a different remote
+		   address. A client cannot migrate before handshake confirmation
+		   (RFC 9000 §9.3), and multiple clients may select the same initial
+		   DCID (RFC 9000 §7.2: servers must distinguish by network address).
+		   Do not route it to s; treat it as an independent connection attempt. */
+		s = NULL;
+	}
+
 	if(!s) {
 		/* Unknown CID. Only a well-formed v1 Initial (>= 1200 bytes, parsed by
 		   ngtcp2_accept) opens a new session; anything else is not claimed, so
