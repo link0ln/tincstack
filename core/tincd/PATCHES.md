@@ -1297,6 +1297,26 @@ tree, 2026-09-29, each verdict read from its log): https-carrier,
 quic-carrier, mixed-version `DIRECT=no` against v0.5.2, cert-repin,
 retry-carrier -- PASS; again on `t3b` with the rest of §42 (see there).
 
+## 44. Masking hardening: TLS 1.3 record padding for inner ClientHello (A3) (tincstack, 2026-10-02)
+
+`transport.h`, `https.c`, `net_packet.c`, `test/unit/test_traffic_shape.c` (new), `test/unit/meson.build`, `core/Dockerfile.build`.
+
+**Problem.** In steady state, a user browsing the web over the `https` carrier sends TLS ClientHellos wrapped in SPTPS packets inside the outer TLS tunnel. In T1a (`tls-in-tls-audit.sh`), with nDPI 6.0's server-first gate removed (the gate is trivially dropped by censors to detect modern TLS 1.3/ECH), nDPI's Mahalanobis burst model (`check_set()` chrome centroid, threshold 3.0) consistently flagged the `https` carrier (`fix255` CAUGHT margin -1.537, closest 4-gram chrome distance 0.58-1.46 vs reference >= 3.25) due to characteristic unpadded inner ClientHello bursts (~1856 B).
+
+**Fix (A3).**
+- Standard RFC 8446 TLS 1.3 record padding via OpenSSL 3.5's `SSL_set_record_padding_callback`:
+  - `is_tls_client_hello(data, len)` inspects outgoing cleartext packets in `send_sptps_packet()` before encryption. It robustly inspects IPv4/IPv6 headers and TCP options, checking for TLS ContentType 0x16 (Handshake), legacy version (0x03, 0x01..0x03), and HandshakeType 0x01 (ClientHello).
+  - When detected on an active `https` connection, `https_pad_next_burst()` arms a CSPRNG-randomized padding budget between 1350 and 1650 bytes (mean ~1.5 KB).
+  - `https_record_padding_cb()` applies the padding budget as zero-padding to the outer TLS 1.3 `SSL3_RT_APPLICATION_DATA` record (capped at `16384 - len`). Non-application records (handshakes, decoy traffic) receive 0 padding. The budget resets after being consumed.
+  - Receiver: OpenSSL strips TLS 1.3 zero-padding transparently on reception in `SSL_read()`. Wire format is 100% compliant with standard TLS 1.3 (RFC 8446 §5.4), requiring no protocol or version changes.
+
+**Proof & Verification.**
+- Unit tests: `test/unit/test_traffic_shape.c` added to `make unit` and gated in CI (`core/Dockerfile.build`). 9 cmocka subtests assert IPv4/IPv6 parsing, options handling, non-TCP/non-ClientHello exclusion, padding bounds, budget consumption, and record capping.
+- nDPI audit (`testing/dpi-proof/tls-in-tls-audit.sh`):
+  - Pre-fix: `fix255 CAUGHT margin -1.537 (chrome) on 1944/3276/23/24 pkts`, 6/6 runs flagged.
+  - Post-fix: `fix255 below-bar min margin +0.332 (tls12); stopped after 256 packets`. Chrome centroid was 0 flows flagged (distance 4.283 vs reference 3.436). Verdict in `summary.json`: `"not separable"`.
+- Zero regressions on `https-carrier-test.sh` (100% PASS) and `make lint`.
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):

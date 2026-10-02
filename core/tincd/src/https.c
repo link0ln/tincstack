@@ -100,6 +100,8 @@ typedef struct https_session_t {
 	bool established_after_write; /* server: become established once wbuf drains */
 	bool decoy_keep_alive;  /* server: the decoy said keep-alive; read the next request */
 	decoy_fetch_t *fetch;   /* server: outstanding upstream decoy fetch (M5-1) */
+
+	size_t pad_budget;      /* pending TLS 1.3 record padding for inner ClientHello bursts (A3) */
 } https_session_t;
 
 /* ---- forward decls ------------------------------------------------------- */
@@ -631,6 +633,112 @@ static void become_established(https_session_t *s) {
 
 /* ---- established: meta stream over TLS ------------------------------------ */
 
+/* Checks if an IP packet (IPv4 or IPv6) is a TCP segment carrying a TLS ClientHello.
+   Used by net_packet.c to trigger record padding (plan item A3). */
+bool is_tls_client_hello(const uint8_t *data, size_t len) {
+	if(!data || len < 20) {
+		return false;
+	}
+
+	uint8_t version = data[0] >> 4;
+	size_t ip_hdr_len = 0;
+	size_t total_ip_len = 0;
+
+	if(version == 4) {
+		ip_hdr_len = (data[0] & 0x0f) * 4;
+		if(ip_hdr_len < 20 || len < ip_hdr_len + 20) {
+			return false;
+		}
+		if(data[9] != 6) { /* IPPROTO_TCP */
+			return false;
+		}
+		total_ip_len = ((size_t)data[2] << 8) | (size_t)data[3];
+		if(total_ip_len > len) {
+			total_ip_len = len;
+		}
+	} else if(version == 6) {
+		ip_hdr_len = 40;
+		if(len < ip_hdr_len + 20) {
+			return false;
+		}
+		if(data[6] != 6) { /* Next Header: IPPROTO_TCP */
+			return false;
+		}
+		size_t payload_len = ((size_t)data[4] << 8) | (size_t)data[5];
+		total_ip_len = ip_hdr_len + payload_len;
+		if(total_ip_len > len) {
+			total_ip_len = len;
+		}
+	} else {
+		return false;
+	}
+
+	const uint8_t *tcp = data + ip_hdr_len;
+	size_t tcp_hdr_len = (((size_t)tcp[12] >> 4) & 0x0f) * 4;
+	if(tcp_hdr_len < 20 || ip_hdr_len + tcp_hdr_len + 6 > total_ip_len) {
+		return false;
+	}
+
+	const uint8_t *tls = tcp + tcp_hdr_len;
+	size_t tls_len = total_ip_len - (ip_hdr_len + tcp_hdr_len);
+
+	if(tls_len < 6) {
+		return false;
+	}
+
+	/* TLS Record Header:
+	   0: ContentType (0x16 == Handshake)
+	   1: Version major (0x03)
+	   2: Version minor (0x01..0x03)
+	   3-4: Record length
+	   5: HandshakeType (0x01 == ClientHello) */
+	return (tls[0] == 0x16 && tls[1] == 0x03 && (tls[2] >= 0x01 && tls[2] <= 0x03) && tls[5] == 0x01);
+}
+
+/* TLS 1.3 record padding callback (RFC 8446 §5.4, plan item A3):
+   When an inner ClientHello burst is queued, add randomized ~1.5 KB padding
+   to the outer TLS record to displace the burst size from nDPI's chrome centroid. */
+size_t https_record_padding_cb(SSL *ssl, int type, size_t len, void *arg) {
+	(void) ssl;
+	https_session_t *s = arg;
+
+	if(!s || type != SSL3_RT_APPLICATION_DATA || s->pad_budget == 0) {
+		return 0;
+	}
+
+	size_t pad = s->pad_budget;
+	s->pad_budget = 0;
+
+	if(len + pad > 16384) {
+		pad = (len < 16384) ? (16384 - len) : 0;
+	}
+
+	return pad;
+}
+
+void https_pad_next_burst(connection_t *c, size_t min_pad, size_t max_pad) {
+	if(!c || !c->transport || c->transport->id != TRANSPORT_HTTPS || !c->transport_data) {
+		return;
+	}
+
+	https_session_t *s = c->transport_data;
+	if(s->state != HS_ESTABLISHED) {
+		return;
+	}
+
+	if(max_pad <= min_pad) {
+		s->pad_budget = min_pad;
+		return;
+	}
+
+	uint16_t r = 0;
+	if(RAND_bytes((unsigned char *)&r, sizeof(r)) == 1) {
+		s->pad_budget = min_pad + (r % (max_pad - min_pad + 1));
+	} else {
+		s->pad_budget = (min_pad + max_pad) / 2;
+	}
+}
+
 static void https_flush(connection_t *c);
 
 /* The carrier's send op, called on every append to c->outbuf. Small writes
@@ -960,6 +1068,9 @@ static void https_io(void *data, int flags) {
 			return;
 		}
 
+		SSL_set_record_padding_callback(s->ssl, https_record_padding_cb);
+		SSL_set_record_padding_callback_arg(s->ssl, s);
+
 		SSL_set_fd(s->ssl, c->socket);
 
 		if(s->sni) {
@@ -1224,6 +1335,9 @@ bool https_accept(connection_t *c, const uint8_t *peek, size_t len) {
 		fail(s);
 		return false;
 	}
+
+	SSL_set_record_padding_callback(s->ssl, https_record_padding_cb);
+	SSL_set_record_padding_callback_arg(s->ssl, s);
 
 	SSL_set_fd(s->ssl, c->socket);
 	SSL_set_accept_state(s->ssl);

@@ -77,6 +77,9 @@ tests = {
   'authn': {
     'code': 'test_authn.c',
   },
+  'traffic_shape': {
+    'code': 'test_traffic_shape.c',
+  },
 }
 
 # httpc.c is compiled only with OpenSSL (it is the ACME client's transport).

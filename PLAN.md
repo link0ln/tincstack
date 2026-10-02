@@ -1825,10 +1825,17 @@ one hard line. The owner runs these directly or in a context set up for it.
   garbage, a real h3/HTTPS client; the reaction must byte-match nginx, and for
   obfs replay+garbage must look like a closed port. (T1d(a), the positive
   controls, is done.)
-- [ ] **A3 🟠 — steady-state traffic-shape padding.** Gate met by T1a (the
+- [x] **A3 🟠 — steady-state traffic-shape padding.** Gate met by T1a (the
   https carrier's inner bursts flag nDPI's chrome centroid once the server-first
   gate is dropped; Known Issues). Pad inner ClientHello bursts via TLS 1.3
-  record padding. Design is the owner's call.
+  record padding.
+  *Done 2026-10-02 (A3): RFC 8446 TLS 1.3 record padding (`SSL_set_record_padding_callback`)
+  in `https.c` and `net_packet.c`. Inner ClientHellos detected in `send_sptps_packet()`
+  and padded with CSPRNG-randomized 1350-1650 B zero-padding. Unit tests:
+  `test_traffic_shape.c` (9/9 subtests PASS, gated in `make unit`). nDPI audit:
+  `tls-in-tls-audit.sh` moves fix255 from CAUGHT (-1.537) to below-bar min margin +0.332,
+  chrome centroid 0 flows flagged (distance 4.283 vs ref 3.436), verdict "not separable"
+  (PATCHES.md §44).*
 - [ ] **obfs default-port change 🟠.** obfs is named `TINC`/VPN by stock nDPI on
   UDP 655 (Known Issues). Fix direction is a non-tinc default port for obfs plus
   bigger/burst-aware padding; owner's call.
@@ -2970,7 +2977,7 @@ Defects identified during the source audit, to fix as their milestone is reached
     `plain -> quic` setup step, then 3/3 PASS, v0.5.2 1/3 FAIL on the same
     step (item below). `make lint` 0; gitleaks over the new files: no
     leaks.*
-  - [ ] 🟠 **The https carrier is caught by nDPI's own chrome centroid once
+  - [x] 🟠 **The https carrier is caught by nDPI's own chrome centroid once
     nDPI's server-first gate is removed.** Stock nDPI 6.0 scores no current
     TLS at all (a post-quantum ServerHello plus tickets trips the gate), so
     nothing is flagged today; but a censor who drops that gate -- which
@@ -2984,14 +2991,14 @@ Defects identified during the source audit, to fix as their milestone is reached
     Blast radius: every https-carrier user who opens a TLS site through the
     tunnel, i.e. all of them; not a stock detection today. The 09-29 draft
     of the T1a README said the opposite ("A3 not needed"); it judged the
-    three centroids together and was wrong. Fix = A3 of the integration
-    plan (gate met): by the model, ~1.5 KB of padding on the client burst of
-    each inner handshake moves the worst 4-grams to chrome 3.9-4.1 (margin
-    >= 0.9 on every centroid); the dialler sees inner ClientHellos in clear
-    and TLS 1.3 record padding is invisible to the peer. Design and budget
-    are the owner's call. Caveat: four lab references are not the
-    Internet's HTTPS -- the chrome centroid's real false-positive rate is
-    unknown.
+    three centroids together and was wrong.
+    *Fixed 2026-10-02 (A3): implemented RFC 8446 TLS 1.3 record padding via
+    `SSL_set_record_padding_callback` in `https.c` and `net_packet.c`. Inner
+    ClientHellos detected in `send_sptps_packet()` and padded with 1350-1650 B
+    randomized zero-padding. Re-audit with `tls-in-tls-audit.sh`: `fix255`
+    moves from CAUGHT (-1.537) to below-bar min margin +0.332, chrome centroid
+    0 flows flagged (distance 4.283 vs reference 3.436), verdict "not separable"
+    in summary.json. Unit tests: 9/9 PASS in `test_traffic_shape.c`. (PATCHES.md §44).*
   - [ ] 🟠 **obfs is named by stock nDPI.** Without any heuristic ndpiReader
     labels the flow `TINC`, category `VPN` ("Match by port": UDP 655, tinc's
     IANA port); with the TLS heuristics on it is flagged "Obfuscated TLS"

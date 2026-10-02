@@ -274,6 +274,21 @@ bool https_accept(struct connection_t *c, const uint8_t *peek, size_t len);
 bool https_send(struct connection_t *c);
 void https_close(struct connection_t *c);
 
+/* TLS 1.3 record padding for inner ClientHello bursts (A3) */
+#ifdef HAVE_OPENSSL
+struct ssl_st;
+void https_pad_next_burst(struct connection_t *c, size_t min_pad, size_t max_pad);
+bool is_tls_client_hello(const uint8_t *data, size_t len);
+size_t https_record_padding_cb(struct ssl_st *ssl, int type, size_t len, void *arg);
+#else
+static inline void https_pad_next_burst(struct connection_t *c, size_t min_pad, size_t max_pad) {
+	(void)c; (void)min_pad; (void)max_pad;
+}
+static inline bool is_tls_client_hello(const uint8_t *data, size_t len) {
+	(void)data; (void)len; return false;
+}
+#endif
+
 /* single-flow carrier (transport_sf.c) */
 bool sf_dial(struct connection_t *c);
 bool sf_send(struct connection_t *c);

@@ -814,6 +814,13 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 		}
 	}
 
+	if(origpkt->len > offset && is_tls_client_hello((const uint8_t *)DATA(origpkt) + offset, origpkt->len - offset)) {
+		node_t *hop = (n->connection) ? n : (n->nexthop ? n->nexthop : n);
+		if(hop && hop->connection) {
+			https_pad_next_burst(hop->connection, 1350, 1650);
+		}
+	}
+
 	/* If we have a direct metaconnection to n, and we can't use UDP, then
 	   don't bother with SPTPS and just use a "plaintext" PACKET message.
 	   We don't really care about end-to-end security since we're not
