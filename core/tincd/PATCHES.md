@@ -1333,6 +1333,18 @@ In `transport_quic.c`, `quic_accept()` registered the client's Initial DCID glob
   - OBFS (UDP 655): Replaying obfs datagrams at +2s and +5s (+40s) returns 0 bytes (silence); same-size garbage returns 0 bytes (silence); unopened UDP port negative control returns identical silence.
   - Complete wire test: 13/13 subtests PASS.
 
+## 46. ObfsPort carrier front port & burst-aware padding (T1a / nDPI bypass) (tincstack, 2026-10-04)
+
+`transport.c`, `transport.h`, `obfs.c`, `obfs.h`, `net_packet.c`, `tincctl.c`, `entrypoint.sh`, `docker-compose.yml`, `compose.release.yml`.
+
+**Problem.**
+1. **Port classification (nDPI `TINC/VPN by port`):** Upstream tinc and tincstack previously ran `obfs` on the stock tinc UDP port (655 by default). Commercial middleboxes and nDPI identify tinc flows on UDP 655 via port heuristic tables even when payloads are cryptographically random or obfuscated.
+2. **Inner TLS ClientHello heuristics (nDPI `Obfuscated TLS`):** When tunnels carry user HTTPS/TLS traffic, the client's inner ClientHello generates a characteristic datagram size (~212B for TLS 1.2, ~640B for TLS 1.3, ~1850B for Chrome extension flights). DPI engines inspect the outer datagram lengths; uniform random padding across `[0, room]` still frequently yielded sizes near the nDPI centroid buckets.
+
+**Fix.**
+1. **`ObfsPort` & `ObfsPortPublic`:** Modeled after `HttpsPort`/`QuicPort`, `ObfsPort` allows the obfuscated carrier to bind a dedicated non-655 UDP listener (e.g. 8444). `transport_front_port()` returns 0 when unset, defaulting to the node's main UDP port for backward compatibility. Nodes advertising `ObfsPort` in their host configurations are dialed by peers on their designated obfuscated port. `obfs_pick_socket()` ensures that `sf_send_raw()`, `obfs_link_send()`, and `obfs_send_junk()` transmit from the dedicated `ObfsPort` socket. In `obfs_inject()`, incoming packets on the dedicated socket are mapped to a matching `listen_socket` pointer to preserve valid pointer arithmetic (`ls - listen_socket`).
+2. **Burst-aware padding:** In `net_packet.c:send_sptps_packet()`, whenever an inner packet matches `is_tls_client_hello()`, `obfs_pad_next_burst()` marks the peer link for burst padding. During `obfs_encode()`, instead of uniform random padding, the frame is padded up to the path budget minus a small randomized variance (0..64 bytes), resulting in wire frames of ~1356–1420 bytes. This completely displaces the outer frame from nDPI's TLS centroids while staying strictly within the PMTU.
+
 ## Building
 
 Linux (musl/Alpine, as used on the relay containers):
@@ -1362,7 +1374,9 @@ Windows (mingw-w64 cross-build, for the laptop):
 | `AcmeContact` / `AcmeDirectory` / `AcmeRenewDays` / `AcmePropagation` / `AcmePollTimeout` | see docs/config-schema.md | same | ACME tuning; all optional |
 | `CERT_RENEW` / `CERT_RENEW_INTERVAL` | `1` / `43200` | Linux node image (env, not YAML) | run `tinc cert renew` on a timer so the front's certificate does not expire; `0` turns it off. Peers follow a renewed certificate on their own (§13) |
 | `HttpsPort` / `QuicPort` | `443` on a listening node | any node offering `https`/`quic` | front-only TCP/UDP listeners, advertised in the node's own host record (§14); `0` = off |
+| `ObfsPort` | `0` (use main `Port`) | any node offering `obfs` | front-only UDP listener for the obfuscated carrier, advertised in the host record; non-655 avoids nDPI `TINC/VPN by port` |
 | `FRONT_PORT` | unset (`443`) | Linux node image (env) | sets both and is the port compose publishes |
+| `OBFS_PORT` / `OBFS_PORT_PUBLIC` | unset (`0`) | Linux node image (env) | sets `ObfsPort` and public port in compose |
 | `InterfaceRoute` | unset | any node that must reach a subnet a peer announces | `"<prefix> [via] [gateway]"`, one per route; installed on the tunnel interface by the built-in tinc-up (Linux) or the Wintun backend (Windows) |
 | `DirectSeal` | `auto` | any node | seal direct peer-to-peer datagrams in obfs frame v3; `auto` = when `PreferredTransports` lists obfs/https/quic or `AllowPlainMeta = no`; `no` keeps upstream's wire (still seals towards a peer that seals) |
 

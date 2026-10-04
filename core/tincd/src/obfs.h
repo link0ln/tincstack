@@ -155,6 +155,12 @@ void obfs_exit(void);
 bool obfs_dial(connection_t *c);
 void obfs_close(connection_t *c);
 
+/* Pick the dedicated ObfsPort UDP socket fd for `sa', or -1 if none */
+int obfs_pick_socket(const sockaddr_t *sa);
+
+/* Burst-aware padding for inner ClientHellos (displace bursts from nDPI centroids) */
+void obfs_pad_next_burst(node_t *n);
+
 /* ---- per-link key material ----------------------------------------------- */
 
 /* Get (creating if needed) the obfs link for a node. Returns NULL when the

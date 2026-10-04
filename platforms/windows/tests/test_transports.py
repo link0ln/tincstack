@@ -8,6 +8,7 @@ def test_defaults_match_schema():
     assert eff["PreferredTransports"] == ["plain"]
     assert eff["HttpsPort"] == 443 and "HttpsFront" not in eff
     assert eff["QuicPort"] == 443 and eff["ObfsJunkPacketCount"] == 0
+    assert eff["ObfsPort"] == 0
 
 
 def test_validate_ok_for_absent_and_sane():
@@ -61,5 +62,5 @@ def test_apply_changes_removes_on_none():
 
 def test_front_ports_zero_is_off_not_an_error():
     # The core reads 0 as "no front" (transport_front_port); the editor must let it through.
-    assert tr.validate({"HttpsPort": 0, "QuicPort": 0}) == []
+    assert tr.validate({"HttpsPort": 0, "QuicPort": 0, "ObfsPort": 0}) == []
     assert tr.changes({}, {"HttpsPort": 0}) == {"HttpsPort": 0}

@@ -379,14 +379,76 @@ bool transport_read_config(void) {
    re-armed from this one timer; see transport_front_dispatch(). */
 static timeout_t front_poll_timer;
 
+/* Checks if an IP packet (IPv4 or IPv6) is a TCP segment carrying a TLS ClientHello.
+   Used by net_packet.c to trigger record padding (plan item A3) and obfs burst padding. */
+bool is_tls_client_hello(const uint8_t *data, size_t len) {
+	if(!data || len < 20) {
+		return false;
+	}
+
+	uint8_t version = data[0] >> 4;
+	size_t ip_hdr_len = 0;
+	size_t total_ip_len = 0;
+
+	if(version == 4) {
+		ip_hdr_len = (data[0] & 0x0f) * 4;
+		if(ip_hdr_len < 20 || len < ip_hdr_len + 20) {
+			return false;
+		}
+		if(data[9] != 6) { /* IPPROTO_TCP */
+			return false;
+		}
+		total_ip_len = ((size_t)data[2] << 8) | (size_t)data[3];
+		if(total_ip_len > len) {
+			total_ip_len = len;
+		}
+	} else if(version == 6) {
+		ip_hdr_len = 40;
+		if(len < ip_hdr_len + 20) {
+			return false;
+		}
+		if(data[6] != 6) { /* Next Header: IPPROTO_TCP */
+			return false;
+		}
+		size_t payload_len = ((size_t)data[4] << 8) | (size_t)data[5];
+		total_ip_len = ip_hdr_len + payload_len;
+		if(total_ip_len > len) {
+			total_ip_len = len;
+		}
+	} else {
+		return false;
+	}
+
+	const uint8_t *tcp = data + ip_hdr_len;
+	size_t tcp_hdr_len = (((size_t)tcp[12] >> 4) & 0x0f) * 4;
+	if(tcp_hdr_len < 20 || ip_hdr_len + tcp_hdr_len + 6 > total_ip_len) {
+		return false;
+	}
+
+	const uint8_t *tls = tcp + tcp_hdr_len;
+	size_t tls_len = total_ip_len - (ip_hdr_len + tcp_hdr_len);
+
+	if(tls_len < 6) {
+		return false;
+	}
+
+	/* TLS Record Header:
+	   0: ContentType (0x16 == Handshake)
+	   1: Version major (0x03)
+	   2: Version minor (0x01..0x03)
+	   3-4: Record length
+	   5: HandshakeType (0x01 == ClientHello) */
+	return (tls[0] == 0x16 && tls[1] == 0x03 && (tls[2] >= 0x01 && tls[2] <= 0x03) && tls[5] == 0x01);
+}
+
 /* ---- front ports ------------------------------------------------------- */
 
 #define FRONT_PORT_DEFAULT 443
 
 /* tinc merges this node's own host record into config_tree, and that record
-   is where transport_advertise_port() writes HttpsPort/QuicPort for peers.
+   is where transport_advertise_port() writes HttpsPort/QuicPort/ObfsPort for peers.
    Read back as an option, our own advertisement would look like the
-   operator's choice -- and a chosen QuicPort is also the port we dial every
+   operator's choice -- and a chosen port is also the port we dial every
    peer on. So only a line that did not come from a host record counts. */
 static config_t *lookup_option_not_host(const char *option) {
 	for(config_t *cfg = lookup_config(&config_tree, option); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
@@ -404,6 +466,12 @@ int transport_front_port(const char *option, bool *configured) {
 
 	if(*configured) {
 		return port > 0 && port < 65536 ? port : 0;
+	}
+
+	/* ObfsPort has no default front port when unset in config;
+	   it stays on tinc's UDP port (0 = off/tinc port). */
+	if(!strcmp(option, "ObfsPort")) {
+		return 0;
 	}
 
 	/* Only a node others dial needs a front at all. Port 0 (every node that
@@ -494,6 +562,10 @@ bool transport_init(void) {
 	if(!(transport_init_done & TRANSPORT_BIT(TRANSPORT_QUIC))) {
 		transport_advertise_port("QuicPort", 0);
 		decoy_set_h3_port(0);
+	}
+
+	if(!(transport_init_done & TRANSPORT_BIT(TRANSPORT_OBFS))) {
+		transport_advertise_port("ObfsPort", 0);
 	}
 
 	/* From here on transport_read_config() (i.e. every reload) initialises a

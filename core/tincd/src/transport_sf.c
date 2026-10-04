@@ -177,7 +177,13 @@ static sf_send_t sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t 
 		outlen = slen;
 	}
 
-	if(sendto(listen_socket[sock].udp.fd, (void *)out, outlen, 0, &peer->sa, SALEN(peer->sa)) < 0 && !sockwouldblock(sockerrno)) {
+	int send_fd = obfs ? obfs_pick_socket(peer) : -1;
+
+	if(send_fd < 0) {
+		send_fd = listen_socket[sock].udp.fd;
+	}
+
+	if(sendto(send_fd, (void *)out, outlen, 0, &peer->sa, SALEN(peer->sa)) < 0 && !sockwouldblock(sockerrno)) {
 		if(sockmsgsize(sockerrno)) {
 			/* Larger than the path MTU, and tinc sets DF: retransmitting the
 			   same bytes can only fail the same way. Say so with the size, at a

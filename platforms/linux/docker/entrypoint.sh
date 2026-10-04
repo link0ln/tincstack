@@ -29,6 +29,10 @@
 #                   node then advertises this one and still listens on
 #                   FRONT_PORT. Like FRONT_PORT, unsetting it later does not
 #                   remove the option (`tincstack-cli del HttpsPortPublic`).
+#   OBFS_PORT       UDP port for the obfuscated carrier (default: tinc UDP port);
+#                   stored as options.ObfsPort and advertised in the host record.
+#   OBFS_PORT_PUBLIC  public port peers reach OBFS_PORT on through a port forward;
+#                   stored as options.ObfsPortPublic.
 #   INVITE         invitation string: `tinc join` on the first start only
 #                   (CONNECT_TO is accepted as an alias)
 #   LOG_LEVEL       tincd -d level (default 1)
@@ -130,6 +134,16 @@ if [[ -n $FRONT_PORT_PUBLIC ]]; then
     cli set HttpsPortPublic "$FRONT_PORT_PUBLIC"
     cli set QuicPortPublic "$FRONT_PORT_PUBLIC"
     log "options.HttpsPortPublic = options.QuicPortPublic = $FRONT_PORT_PUBLIC"
+fi
+
+if [[ -n ${OBFS_PORT:-} ]]; then
+    cli set ObfsPort "$OBFS_PORT"
+    log "options.ObfsPort = $OBFS_PORT"
+fi
+
+if [[ -n ${OBFS_PORT_PUBLIC:-} ]]; then
+    cli set ObfsPortPublic "$OBFS_PORT_PUBLIC"
+    log "options.ObfsPortPublic = $OBFS_PORT_PUBLIC"
 fi
 
 address=

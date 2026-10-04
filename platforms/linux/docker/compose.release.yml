@@ -32,6 +32,8 @@ services:
       PORT: ${PORT:-}
       FRONT_PORT: ${FRONT_PORT:-}
       FRONT_PORT_PUBLIC: ${FRONT_PORT_PUBLIC:-}
+      OBFS_PORT: ${OBFS_PORT:-}
+      OBFS_PORT_PUBLIC: ${OBFS_PORT_PUBLIC:-}
       INVITE: ${INVITE:-}
       LOG_LEVEL: ${LOG_LEVEL:-1}
     ports:

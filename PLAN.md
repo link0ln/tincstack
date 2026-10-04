@@ -1846,9 +1846,16 @@ one hard line. The owner runs these directly or in a context set up for it.
   `tls-in-tls-audit.sh` moves fix255 from CAUGHT (-1.537) to below-bar min margin +0.332,
   chrome centroid 0 flows flagged (distance 4.283 vs ref 3.436), verdict "not separable"
   (PATCHES.md §44).*
-- [ ] **obfs default-port change 🟠.** obfs is named `TINC`/VPN by stock nDPI on
+- [x] **obfs default-port change 🟠.** obfs is named `TINC`/VPN by stock nDPI on
   UDP 655 (Known Issues). Fix direction is a non-tinc default port for obfs plus
   bigger/burst-aware padding; owner's call.
+  *Implemented 2026-10-04 (PATCHES.md §46): Added `ObfsPort` option (modeled after
+  `HttpsPort`/`QuicPort`) to bind dedicated non-655 UDP listener for the obfuscated
+  carrier; advertised in host configs and dialed automatically by peers. Implemented
+  burst-aware padding in `net_packet.c` + `obfs.c` for inner TLS ClientHellos, sizing
+  frames to PMTU budget minus 0..64 variance (~1356–1420 B) to evade nDPI centroid
+  heuristics (tls12 212 B, tls13 640 B, chrome 1850 B). Unit tests in `test_traffic_shape.c`
+  (10/10 PASS); `make unit` and `make lint` clean.*
 
 - [ ] **Phase 3 forks — owner decision required.** F1 🔴 (record/Initial
   fragmentation and packet-mangling methods): only after a vantage-point

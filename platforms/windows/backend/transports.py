@@ -49,6 +49,8 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
     OptionSpec("PreferredTransports", "carriers", ["plain"],
                "Dial preference, in order; first one in the peer's accept list wins (default: plain)",
                "negotiation"),
+    OptionSpec("ObfsPort", "front_port", 0,
+               "UDP port for the obfuscated carrier; 0 = tinc UDP port (default)", "obfs"),
     OptionSpec("ObfsJunkPacketCount", "int", 0,
                "Junk datagrams sent around the handshake (0 = off)", "obfs", 0, 64),
     OptionSpec("ObfsJunkPacketMinSize", "int", 40, "Smallest junk datagram, bytes", "obfs", 1, 1400),

@@ -1776,10 +1776,12 @@ const var_t variables[] = {
 	/* quic carrier (M5, G3) */
 	{"HttpsPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"QuicPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
+	{"ObfsPort", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	/* The front ports peers reach from outside when they differ from the
 	   bound ones (a port forward). Per node: not VAR_SAFE, not propagated. */
 	{"HttpsPortPublic", VAR_SERVER},
 	{"QuicPortPublic", VAR_SERVER},
+	{"ObfsPortPublic", VAR_SERVER},
 	{"QuicSni", VAR_SERVER | VAR_SAFE},
 	{"QuicAlpn", VAR_SERVER | VAR_SAFE},
 	{"TunnelServer", VAR_SERVER | VAR_SAFE},
@@ -2579,11 +2581,13 @@ static const struct {
 	{"transportjunk", "ObfsTransportHeaderJunkSize"}, {"s2", "ObfsTransportHeaderJunkSize"},
 	{"initmagic", "ObfsInitMagicHeader"}, {"h1", "ObfsInitMagicHeader"},
 	{"transportmagic", "ObfsTransportMagicHeader"}, {"h2", "ObfsTransportMagicHeader"},
+	{"port", "ObfsPort"},
 	{NULL, NULL},
 };
 
 /* The full set of obfs keys, in the order `status' prints them. */
 static const char *const obfs_keys[] = {
+	"ObfsPort",
 	"ObfsJunkPacketCount", "ObfsJunkPacketMinSize", "ObfsJunkPacketMaxSize",
 	"ObfsInitHeaderJunkSize", "ObfsTransportHeaderJunkSize",
 	"ObfsInitMagicHeader", "ObfsTransportMagicHeader", NULL,

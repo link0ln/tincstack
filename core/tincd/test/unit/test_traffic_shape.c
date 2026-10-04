@@ -3,6 +3,7 @@
 #include "../../src/net.h"
 #define TINC_TRANSPORT_DAEMON
 #include "../../src/transport.h"
+#include "../../src/obfs.h"
 
 #ifdef HAVE_OPENSSL
 #include <openssl/ssl.h>
@@ -223,6 +224,25 @@ static void test_https_pad_next_burst(void **state) {
 #endif
 }
 
+static void test_obfs_pad_next_burst(void **state) {
+	(void)state;
+	/* NULL node safe */
+	obfs_pad_next_burst(NULL);
+
+	/* Node with no link safe */
+	node_t dummy;
+	memset(&dummy, 0, sizeof(dummy));
+	obfs_pad_next_burst(&dummy);
+
+	/* obfs_pick_socket returns -1 with no listener or NULL */
+	assert_int_equal(-1, obfs_pick_socket(NULL));
+
+	sockaddr_t sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa.sa_family = AF_INET;
+	assert_int_equal(-1, obfs_pick_socket(&sa));
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_is_tls_client_hello_null_and_short),
@@ -234,6 +254,7 @@ int main(void) {
 		cmocka_unit_test(test_is_tls_client_hello_ipv6_valid),
 		cmocka_unit_test(test_https_record_padding_cb),
 		cmocka_unit_test(test_https_pad_next_burst),
+		cmocka_unit_test(test_obfs_pad_next_burst),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

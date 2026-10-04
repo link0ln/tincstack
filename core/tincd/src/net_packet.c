@@ -819,6 +819,10 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 		if(hop && hop->connection) {
 			https_pad_next_burst(hop->connection, 1350, 1650);
 		}
+		obfs_pad_next_burst(hop ? hop : n);
+		if(n != hop) {
+			obfs_pad_next_burst(n);
+		}
 	}
 
 	/* If we have a direct metaconnection to n, and we can't use UDP, then

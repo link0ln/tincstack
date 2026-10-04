@@ -175,6 +175,9 @@ struct obfs_link_t {
 	/* Last time the bootstrap replay window was restarted for a new key epoch
 	   (see obfs_epoch_restart), and the rate limit on doing so. */
 	time_t last_epoch;
+
+	/* Burst-aware padding for inner ClientHellos */
+	bool pad_burst;
 };
 
 static list_t obfs_links = {
@@ -184,6 +187,34 @@ static list_t obfs_links = {
 
 static timeout_t obfs_rekey_timer;
 static timeout_t obfs_selfheal_timer;
+
+static listen_socket_t obfs_listen[MAXSOCKETS];
+static int obfs_listens;
+static int obfs_port_option; /* operator's ObfsPort (dial fallback), else 0 */
+
+int obfs_pick_socket(const sockaddr_t *sa) {
+	if(obfs_listens > 0 && sa) {
+		for(int i = 0; i < obfs_listens; i++) {
+			if(obfs_listen[i].sa.sa.sa_family == sa->sa.sa_family) {
+				return obfs_listen[i].udp.fd;
+			}
+		}
+	}
+
+	return -1;
+}
+
+void obfs_pad_next_burst(node_t *n) {
+	if(!n) {
+		return;
+	}
+
+	obfs_link_t *l = obfs_link_for_node(n);
+
+	if(l) {
+		l->pad_burst = true;
+	}
+}
 
 /* Direct seal (end of file). */
 static bool dseal_obfs_connected(const node_t *n);
@@ -895,7 +926,21 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 		}
 	}
 
-	size_t tail = cap ? (((size_t)mask[OBFS_HDR_LEN] << 8) | mask[OBFS_HDR_LEN + 1]) % (cap + 1) : 0;
+	size_t tail = 0;
+
+	if(l->pad_burst && !init && room > 0) {
+		l->pad_burst = false;
+		/* Displace inner ClientHello burst out of nDPI centroids (tls12, tls13, chrome)
+		   by padding the frame close to path budget with randomized variance. */
+		size_t margin = 64;
+		if(margin > room) {
+			margin = room;
+		}
+		size_t variance = margin ? (((size_t)mask[OBFS_HDR_LEN] << 8) | mask[OBFS_HDR_LEN + 1]) % (margin + 1) : 0;
+		tail = room - variance;
+	} else if(cap) {
+		tail = (((size_t)mask[OBFS_HDR_LEN] << 8) | mask[OBFS_HDR_LEN + 1]) % (cap + 1);
+	}
 
 	if(tail) {
 		/* The keystream continues into the next block: tail bytes are as
@@ -1119,7 +1164,13 @@ static obfs_send_t obfs_link_send(obfs_link_t *l, size_t sock, const sockaddr_t 
 		return OBFS_SEND_OK; /* it is an obfs link; dropping the datagram beats leaking it in the clear */
 	}
 
-	if(sendto(listen_socket[sock].udp.fd, (void *)frame, flen, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
+	int send_fd = obfs_pick_socket(sa);
+
+	if(send_fd < 0) {
+		send_fd = listen_socket[sock].udp.fd;
+	}
+
+	if(sendto(send_fd, (void *)frame, flen, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
 		if(sockmsgsize(sockerrno)) {
 			/* The kernel refused a datagram our own budget said would fit: the
 			   path shrank under the cached value, or it would not tell us the
@@ -1184,6 +1235,11 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 	}
 
 	uint8_t junk[OBFS_MAX_JUNK];
+	int send_fd = obfs_pick_socket(addr);
+
+	if(send_fd < 0) {
+		send_fd = listen_socket[sock].udp.fd;
+	}
 
 	for(int i = 0; i < obfs_junk_count; i++) {
 		uint32_t r;
@@ -1191,7 +1247,7 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 		int size = lo + (int)(r % (uint32_t)(hi - lo + 1));
 		randomize(junk, (size_t)size);
 
-		if(sendto(listen_socket[sock].udp.fd, (void *)junk, (size_t)size, 0, &addr->sa, SALEN(addr->sa)) < 0 && !sockwouldblock(sockerrno)) {
+		if(sendto(send_fd, (void *)junk, (size_t)size, 0, &addr->sa, SALEN(addr->sa)) < 0 && !sockwouldblock(sockerrno)) {
 			/* Never silent: the old code broke out of the loop without a word,
 			   so a junk burst that the path refused looked exactly like a burst
 			   that was sent. */
@@ -1210,6 +1266,17 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 /* ---- inbound: keyed classification + replay check + re-injection --------- */
 
 static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerlen, const sockaddr_t *addr, obfs_link_t *l) {
+	listen_socket_t *main_ls = ls;
+
+	if(ls < listen_socket || ls >= listen_socket + listen_sockets) {
+		for(int i = 0; i < listen_sockets; i++) {
+			if(listen_socket[i].sa.sa.sa_family == addr->sa.sa_family) {
+				main_ls = &listen_socket[i];
+				break;
+			}
+		}
+	}
+
 	/* A single-flow meta frame carries the SF magic; anything else is an
 	   SPTPS data datagram. Re-inject it into the normal receive path; the SF
 	   path is told which link this came in on so its replies are sealed with
@@ -1223,11 +1290,11 @@ static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerl
 			return true;
 		}
 
-		sf_udp_receive_obfs(ls, inner, innerlen, addr, l);
+		sf_udp_receive_obfs(main_ls, inner, innerlen, addr, l);
 		return true;
 	}
 
-	handle_incoming_vpn_packet_decap(ls, inner, innerlen, addr);
+	handle_incoming_vpn_packet_decap(main_ls, inner, innerlen, addr);
 	return true;
 }
 
@@ -1502,6 +1569,28 @@ bool obfs_dial(connection_t *c) {
 	if(!l) {
 		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Cannot dial %s via obfs: no Ed25519 key to derive a link key from", c->name);
 		return false; /* fall back to the next carrier */
+	}
+
+	/* Destination port: the peer's host-record ObfsPort (a node advertises
+	   the one it listens on), else our own ObfsPort if the operator set it
+	   (dial fallback), else the peer's tinc port as dialled. */
+	int port = obfs_port_option;
+	splay_tree_t *tree = create_configuration();
+
+	if(read_host_config(tree, c->name, false)) {
+		get_config_int(lookup_config(tree, "ObfsPort"), &port);
+	}
+
+	exit_configuration(tree);
+
+	if(port > 0 && port < 65536) {
+		if(c->address.sa.sa_family == AF_INET) {
+			c->address.in.sin_port = htons((uint16_t)port);
+		} else if(c->address.sa.sa_family == AF_INET6) {
+			c->address.in6.sin6_port = htons((uint16_t)port);
+		}
+		free(c->hostname);
+		c->hostname = sockaddr2hostname(&c->address);
 	}
 
 	int sock = -1;
@@ -1790,12 +1879,90 @@ bool obfs_read_config(void) {
 	return true;
 }
 
+static void obfs_listen_read(void *data, int flags) {
+	(void)flags;
+	listen_socket_t *ls = data;
+	uint8_t buf[MAXSIZE];
+	sockaddr_t addr;
+	socklen_t addrlen = sizeof(addr);
+	ssize_t len = recvfrom(ls->udp.fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
+
+	if(len <= 0) {
+		if(len < 0 && !sockwouldblock(sockerrno)) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "obfs: receive on the ObfsPort socket failed: %s", sockstrerror(sockerrno));
+		}
+
+		return;
+	}
+
+	obfs_udp_try(ls, buf, (size_t)len, &addr);
+}
+
+static void obfs_listen_setup(void) {
+	bool configured = false;
+	int port = transport_front_port("ObfsPort", &configured);
+	obfs_port_option = configured ? port : 0;
+
+	if(port && port != atoi(myport.udp)) {
+		for(int i = 0; i < listen_sockets && obfs_listens < MAXSOCKETS; i++) {
+			sockaddr_t sa = listen_socket[i].sa;
+
+			if(sa.sa.sa_family == AF_INET) {
+				sa.in.sin_port = htons((uint16_t)port);
+			} else if(sa.sa.sa_family == AF_INET6) {
+				sa.in6.sin6_port = htons((uint16_t)port);
+			} else {
+				continue;
+			}
+
+			bool dup = false;
+
+			for(int j = 0; j < obfs_listens; j++) {
+				if(!sockaddrcmp(&obfs_listen[j].sa, &sa)) {
+					dup = true;
+				}
+			}
+
+			if(dup) {
+				continue;
+			}
+
+			int fd = setup_udp_socket(&sa, false);
+
+			if(fd < 0) {
+				logger(DEBUG_ALWAYS, LOG_WARNING, "obfs: could not listen on UDP port %d%s; peers reach obfs on the tinc port %s, "
+				       "where it is easy to spot. Grant the port (root, CAP_NET_BIND_SERVICE) or set ObfsPort", port,
+				       configured ? "" : " (the default)", myport.udp);
+				continue;
+			}
+
+			listen_socket_t *ls = &obfs_listen[obfs_listens++];
+			ls->sa = sa;
+			ls->tcp.fd = -1;
+			io_add(&ls->udp, obfs_listen_read, ls, fd, IO_READ);
+			char *h = sockaddr2hostname(&sa);
+			logger(DEBUG_ALWAYS, LOG_INFO, "obfs: listening on %s (ObfsPort)", h);
+			free(h);
+		}
+	} else {
+		port = 0;
+	}
+
+	if(!obfs_listens) {
+		port = 0;
+	}
+
+	transport_advertise_port("ObfsPort", port);
+}
+
 bool obfs_init(void) {
 	obfs_links.delete = (list_action_t)obfs_link_free;
 
 	int period = keylifetime > 0 && keylifetime < OBFS_REKEY_TICK ? keylifetime : OBFS_REKEY_TICK;
 	struct timeval tv = { period, 0 };
 	timeout_add(&obfs_rekey_timer, obfs_periodic, NULL, &tv);
+
+	obfs_listen_setup();
 
 	return obfs_read_config();
 }
@@ -1804,6 +1971,13 @@ void obfs_exit(void) {
 	timeout_del(&obfs_rekey_timer);
 	timeout_del(&obfs_selfheal_timer);
 	list_empty_list(&obfs_links);
+
+	for(int i = 0; i < obfs_listens; i++) {
+		io_del(&obfs_listen[i].udp);
+		closesocket(obfs_listen[i].udp.fd);
+	}
+
+	obfs_listens = 0;
 }
 
 /* ---- direct seal (DirectSeal) -------------------------------------------
