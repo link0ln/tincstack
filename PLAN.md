@@ -1742,42 +1742,28 @@ followed; (4) **the last IP a name resolved to is persisted** (per-node, next
 to the address cache) and is *only* overwritten by a live DNS answer — a dead
 resolver never erases the last working address.
 
-- [ ] 🟠 **D1 — resolver thread + poll loop.** New `dnsrefresh.c/h` in tincd:
-  a pthread (Windows: CreateThread) fed a queue of name→expected-IP jobs,
-  getaddrinfo with AF_UNSPEC (numeric-first guard), first-addr priority,
-  result posted back over a self-pipe/socketpair the event loop watches.
-  Standing timer, default 600 s, option `DnsRefreshInterval` (0 = off),
-  reload-aware. Only names that appear in `Address =` statements of host
-  records are watched; plain IPs are skipped. **Proof:** unit test with a
-  mock resolver (cmocka wrap of getaddrinfo); lab with dnsmasq whose A
-  record flips — daemon drops the live edge and re-dials the new IP without
-  a restart. Effort M.
-- [ ] 🟠 **D2 — persistence of the last-good IP.** Per node, beside
-  `cache/<name>`: the last sockaddr each watched name resolved to, with the
-  name; written on every change, read at startup. The dial walk uses it as a
-  candidate (below the live cache entries, above re-reading Address); a DNS
-  failure (NXDOMAIN, timeout) leaves it untouched and logs at INFO. It is
-  replaced only by a successful answer that differs. **Proof:** unit test
-  (persist → read back → compare); lab: stop dnsmasq mid-run, restart node,
-  link comes back from the persisted IP. Effort S.
-- [ ] 🟠 **D3 — session drop on address change.** When the poll finds the
-  live edge's address absent from the fresh answer, terminate that edge's
-  meta connection (the normal terminate_connection path: DEL_EDGE, graph
-  update, re-dial via the reset address cache) and log the old→new pair.
-  UDP flows to the old address are allowed to age out on their own timers.
-  Must not fight the UDPRebindOnWake or AutoConnect machinery. **Proof:**
-  the D1 lab asserts the re-dial lands on the new IP and the old edge is
-  gone from `tinc dump edges`. Effort S.
-- [ ] 🟡 **D4 — docs + config schema.** `DnsRefreshInterval` in
-  docs/config-schema.md (default 600, 0 disables), the chicken-and-egg note
-  (a peer name must resolve outside the tunnel if `DNSServer` points inside
-  it), the interval-beats-TTL note, and the local-resolver privacy note.
-  `tinc set`/tincctl variable table entry. Effort S.
-- [ ] 🟡 **D5 — regression harness.** `testing/transports/dns-refresh-test.sh`
-  (compose: two nodes + dnsmasq, TTL 0 records): flip A → edge re-dials to
-  new IP (assert via tinc dump + ping); remove A → edge stays, last-good IP
-  persisted, dial works after dnsmasq dies and comes back; negative control:
-  `DnsRefreshInterval = 0` → flip does nothing. Effort S.
+- [x] 🟠 **D1 — resolver thread + poll loop.** *Done 2026-10-07: `dnsrefresh.c`
+  (pthread worker, results over a non-blocking socketpair, condvar wait),
+  `DnsRefreshInterval` (default 600, 0 = off, reload-aware), watch list from
+  Address statements (numeric IPs skipped). Unit `test_dnsrefresh` in the
+  `make unit` gate (3/3); lab below proves the live path.*
+- [x] 🟠 **D2 — persistence of the last-good IP.** *Done: `cache/dnsrefresh.state`,
+  written only by a live answer; the dial walk offers it below the live cache
+  entries, above re-reading Address; lab PART 3 restarts nodea with the
+  resolver dead and the link returns on the persisted address.*
+- [x] 🟠 **D3 — session drop on address change.** *Done: only connections WE
+  dialled to the watched name are moved (an accepted connection's address is
+  the peer's choice; enforcing on it flapped every interval -- found in the
+  lab); the old IP is purged from the address cache by IP (`drop_address_ip`)
+  so the re-dial cannot walk back. Lab PART 2: a real migration (old container
+  dies, same identity at a new address) is followed without a restart.*
+- [x] 🟡 **D4 — docs + config schema.** *Done: `docs/config-schema.md` section
+  "DNS names in Address", tincctl variable table.*
+- [x] 🟡 **D5 — regression harness.** *Done: `testing/transports/dns-refresh-test.sh`
+  (dnsmasq + two nodes + a real migration): flip → re-dial to the new IP;
+  resolver dead + restart → persisted address; `DnsRefreshInterval = 0` →
+  flip does nothing. PASS twice (runs 19 and the final verify); invitee-mesh
+  and carrier-switch pass on the same image; shellcheck clean.*
 
 Design notes (owner-settled): the persisted last-good IP is not a trust
 decision — SPTPS/Ed25519 still authenticates the peer and https/quic still
