@@ -21,6 +21,7 @@
 
 #include "address_cache.h"
 #include "conf.h"
+#include "dnsrefresh.h"
 #include "names.h"
 #include "netutl.h"
 #include "xalloc.h"
@@ -147,12 +148,43 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 		cache->tried++;
 	}
 
-	// Otherwise, check if there are any known Address statements
+	// Before re-reading the Address statements (a resolver round trip that
+	// fails outright when the resolver is down), offer the DNS watcher's
+	// persisted last-good endpoint for each watched name: it was a live DNS
+	// answer once, and it is only ever replaced by a newer one. Ranked below
+	// the graph's known addresses, above the fresh resolution.
 	if(!cache->config_tree) {
 		cache->config_tree = create_configuration();
 		read_host_config(cache->config_tree, cache->node->name, false);
-		cache->cfg = lookup_config(cache->config_tree, "Address");
 	}
+
+	if(!cache->lg_tried) {
+		cache->lg_tried = true;
+
+		for(config_t *cfg = lookup_config(cache->config_tree, "Address"); cfg; cfg = lookup_config_next(cache->config_tree, cfg)) {
+			char *address = NULL;
+			get_config_string(cfg, &address);
+
+			if(address && *address) {
+				char *space = strchr(address, ' ');
+
+				if(space) {
+					*space = 0;
+				}
+
+				const sockaddr_t *lg = dnsrefresh_last_good(cache->node->name, address);
+
+				if(lg && find_cached(cache, lg) == NOT_CACHED) {
+					free(address);
+					return lg;
+				}
+			}
+
+			free(address);
+		}
+	}
+
+	cache->cfg = lookup_config(cache->config_tree, "Address");
 
 	while(cache->cfg && !cache->aip) {
 		char *address, *port;
@@ -244,6 +276,7 @@ address_cache_t *open_address_cache(node_t *node) {
 	cache->ai = NULL;
 	cache->aip = NULL;
 	cache->tried = 0;
+	cache->lg_tried = false;
 	cache->data.version = ADDRESS_CACHE_VERSION;
 
 	if(cache->data.used > MAX_CACHED_ADDRESSES) {
@@ -268,6 +301,89 @@ void reset_address_cache(address_cache_t *cache) {
 	cache->ai = NULL;
 	cache->aip = NULL;
 	cache->tried = 0;
+	cache->lg_tried = false;
+}
+
+/* Remove one address from the persisted recent list and rewind the walk, so
+   the next dial does not try it again this cycle. A DNS watcher that saw a
+   peer's address leave its record calls this for the old address before
+   re-dialling: reset alone would re-offer the stale entry first. */
+void drop_address(address_cache_t *cache, const sockaddr_t *sa) {
+	unsigned int pos = find_cached(cache, sa);
+
+	if(pos == NOT_CACHED) {
+		return;
+	}
+
+	memmove(&cache->data.address[pos], &cache->data.address[pos + 1],
+	        (cache->data.used - pos - 1) * sizeof(cache->data.address[0]));
+	cache->data.used--;
+
+	if(cache->tried > pos) {
+		cache->tried--;
+	}
+
+	// Persist the shrunk list.
+	char fname[PATH_MAX];
+	snprintf(fname, sizeof(fname), "%s" SLASH "cache" SLASH "%s", confbase, cache->node->name);
+	FILE *fp = fopen(fname, "wb");
+
+	if(fp) {
+		fwrite(&cache->data, sizeof(cache->data), 1, fp);
+		fclose(fp);
+	}
+}
+
+static bool same_ip(const sockaddr_t *a, const sockaddr_t *b) {
+	if(a->sa.sa_family != b->sa.sa_family) {
+		return false;
+	}
+
+	if(a->sa.sa_family == AF_INET) {
+		return a->in.sin_addr.s_addr == b->in.sin_addr.s_addr;
+	}
+
+	if(a->sa.sa_family == AF_INET6) {
+		return !memcmp(&a->in6.sin6_addr, &b->in6.sin6_addr, sizeof(struct in6_addr));
+	}
+
+	return false;
+}
+
+/* drop_address, but by IP alone: a peer's cached entries carry the ephemeral
+   source ports of accepted connections, and a DNS watcher that saw the IP
+   leave must purge every one of them, not just the service-port spelling. */
+void drop_address_ip(address_cache_t *cache, const sockaddr_t *sa) {
+	bool changed = false;
+
+	for(unsigned int i = 0; i < cache->data.used;) {
+		if(same_ip(&cache->data.address[i], sa)) {
+			memmove(&cache->data.address[i], &cache->data.address[i + 1],
+			        (cache->data.used - i - 1) * sizeof(cache->data.address[0]));
+			cache->data.used--;
+
+			if(cache->tried > i) {
+				cache->tried--;
+			}
+
+			changed = true;
+		} else {
+			i++;
+		}
+	}
+
+	if(!changed) {
+		return;
+	}
+
+	char fname[PATH_MAX];
+	snprintf(fname, sizeof(fname), "%s" SLASH "cache" SLASH "%s", confbase, cache->node->name);
+	FILE *fp = fopen(fname, "wb");
+
+	if(fp) {
+		fwrite(&cache->data, sizeof(cache->data), 1, fp);
+		fclose(fp);
+	}
 }
 
 void close_address_cache(address_cache_t *cache) {

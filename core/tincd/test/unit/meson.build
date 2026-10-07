@@ -77,6 +77,10 @@ tests = {
   'authn': {
     'code': 'test_authn.c',
   },
+  'dnsrefresh': {
+    'code': 'test_dnsrefresh.c',
+    'link': link_tincd,
+  },
   'traffic_shape': {
     'code': 'test_traffic_shape.c',
   },

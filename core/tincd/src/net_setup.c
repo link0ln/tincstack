@@ -37,6 +37,7 @@
 #include "names.h"
 #include "net.h"
 #include "netutl.h"
+#include "dnsrefresh.h"
 #include "process.h"
 #include "protocol.h"
 #include "route.h"
@@ -622,6 +623,16 @@ bool setup_myself_reloadable(void) {
 
 	get_config_bool(lookup_config(&config_tree, "Hostnames"), &hostnames);
 
+	/* DNS names in Address statements: poll interval for the watcher. */
+	if(!get_config_int(lookup_config(&config_tree, "DnsRefreshInterval"), &dnsrefresh_interval)) {
+		dnsrefresh_interval = 600;
+	} else if(dnsrefresh_interval < 0) {
+		logger(DEBUG_ALWAYS, LOG_WARNING,
+		       "DnsRefreshInterval %d is negative, using 0 (disabled) instead: values >= 0 are seconds, 0 turns the watcher off",
+		       dnsrefresh_interval);
+		dnsrefresh_interval = 0;
+	}
+
 	if(!get_config_int(lookup_config(&config_tree, "KeyExpire"), &keylifetime)) {
 		keylifetime = 3600;
 	}
@@ -1143,6 +1154,10 @@ static bool setup_myself(void) {
 
 	load_all_nodes();
 
+	/* DNS names in Address statements: the watcher needs the node tree, so
+	   it starts here, after load_all_nodes(). */
+	dnsrefresh_init();
+
 	/* Open device */
 
 	devops = os_devops;
@@ -1458,6 +1473,8 @@ void close_network_connections(void) {
 	}
 
 	transport_exit();
+
+	dnsrefresh_exit();
 
 	exit_requests();
 	exit_edges();

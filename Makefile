@@ -58,6 +58,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/transports/plain-refuse-test.sh \
                  testing/transports/carrier-switch-test.sh \
                  testing/transports/invitee-mesh-test.sh \
+                 testing/transports/dns-refresh-test.sh \
                  testing/transports/obfs-restart-test.sh \
                  testing/transports/obfs-confirmed-peer-test.sh \
                  testing/transports/same-nat-meta-test.sh \

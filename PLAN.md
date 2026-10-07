@@ -1726,6 +1726,68 @@ the problem below. For euvds, `tinc info` says "indirectly via ruvds2".
   phone (see MTU above). Lifting it means carrier datagrams over 1200 bytes,
   against the curl-shaped 1200: the owner's call.
 
+### DNS names for node addresses: resolve, poll, follow changes (2026-10-07, owner request)
+
+An `Address = <hostname>` should be a first-class citizen: it already resolves
+today (getaddrinfo in the address-cache walk), travels as text in invitations
+and host records, and feeds the https/quic SNI defaults — what is missing is a
+standing watcher that notices the A record moving while a link is up, and a
+last-good IP that survives the resolver being down. The owner's decisions,
+2026-10-07: (1) **a live session is dropped when DNS no longer lists its
+address** — two servers with one identity must not coexist, so the daemon
+re-dials to the address DNS now returns; (2) **a worker thread** resolves, the
+event loop acts (getaddrinfo blocks; the daemon is single-threaded); (3) of
+several A records **the resolver's first** (its priority order) is the one
+followed; (4) **the last IP a name resolved to is persisted** (per-node, next
+to the address cache) and is *only* overwritten by a live DNS answer — a dead
+resolver never erases the last working address.
+
+- [ ] 🟠 **D1 — resolver thread + poll loop.** New `dnsrefresh.c/h` in tincd:
+  a pthread (Windows: CreateThread) fed a queue of name→expected-IP jobs,
+  getaddrinfo with AF_UNSPEC (numeric-first guard), first-addr priority,
+  result posted back over a self-pipe/socketpair the event loop watches.
+  Standing timer, default 600 s, option `DnsRefreshInterval` (0 = off),
+  reload-aware. Only names that appear in `Address =` statements of host
+  records are watched; plain IPs are skipped. **Proof:** unit test with a
+  mock resolver (cmocka wrap of getaddrinfo); lab with dnsmasq whose A
+  record flips — daemon drops the live edge and re-dials the new IP without
+  a restart. Effort M.
+- [ ] 🟠 **D2 — persistence of the last-good IP.** Per node, beside
+  `cache/<name>`: the last sockaddr each watched name resolved to, with the
+  name; written on every change, read at startup. The dial walk uses it as a
+  candidate (below the live cache entries, above re-reading Address); a DNS
+  failure (NXDOMAIN, timeout) leaves it untouched and logs at INFO. It is
+  replaced only by a successful answer that differs. **Proof:** unit test
+  (persist → read back → compare); lab: stop dnsmasq mid-run, restart node,
+  link comes back from the persisted IP. Effort S.
+- [ ] 🟠 **D3 — session drop on address change.** When the poll finds the
+  live edge's address absent from the fresh answer, terminate that edge's
+  meta connection (the normal terminate_connection path: DEL_EDGE, graph
+  update, re-dial via the reset address cache) and log the old→new pair.
+  UDP flows to the old address are allowed to age out on their own timers.
+  Must not fight the UDPRebindOnWake or AutoConnect machinery. **Proof:**
+  the D1 lab asserts the re-dial lands on the new IP and the old edge is
+  gone from `tinc dump edges`. Effort S.
+- [ ] 🟡 **D4 — docs + config schema.** `DnsRefreshInterval` in
+  docs/config-schema.md (default 600, 0 disables), the chicken-and-egg note
+  (a peer name must resolve outside the tunnel if `DNSServer` points inside
+  it), the interval-beats-TTL note, and the local-resolver privacy note.
+  `tinc set`/tincctl variable table entry. Effort S.
+- [ ] 🟡 **D5 — regression harness.** `testing/transports/dns-refresh-test.sh`
+  (compose: two nodes + dnsmasq, TTL 0 records): flip A → edge re-dials to
+  new IP (assert via tinc dump + ping); remove A → edge stays, last-good IP
+  persisted, dial works after dnsmasq dies and comes back; negative control:
+  `DnsRefreshInterval = 0` → flip does nothing. Effort S.
+
+Design notes (owner-settled): the persisted last-good IP is not a trust
+decision — SPTPS/Ed25519 still authenticates the peer and https/quic still
+pin TlsFingerprint, so a poisoned record can only cause a failed dial, not an
+impersonation. Conflict check: none with the euvds-only IndirectData rule
+(ranks how to reach, never whether to bypass the relay), none with the
+masking work (resolver traffic never rides the wire; SNI improves), none with
+AutoConnect (has_address is already name-tolerant). Related open item, not a
+blocker: "DNS stays outside the tunnel" (Windows, Known Issues).
+
 ### Masking hardening: test tooling first (2026-09-29, owner request)
 
 A plan to harden the masking carriers, measurement first. Each box below is

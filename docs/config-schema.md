@@ -61,6 +61,18 @@ networks:
                                # Server-scoped, re-read on `tinc reload' (no
                                # restart), NOT carried by invitations.
 
+      # ── DNS names in Address (see the section below) ─────────────────────
+      DnsRefreshInterval: 600  # seconds between re-resolves of the DNS names
+                               # in peers' Address lines. Default 600, 0 = the
+                               # watcher is off. When a fresh answer no longer
+                               # lists the address a live connection is on,
+                               # that connection is dropped and re-dialled to
+                               # what DNS now returns; the last address a name
+                               # resolved to is persisted (cache/dnsrefresh.state)
+                               # and survives the resolver being down.
+                               # Server-scoped, re-read on `tinc reload', NOT
+                               # carried by invitations.
+
       # ── address pool (point 8) ────────────────────────────────────────────
       AddressPool: 10.210.0.0/24   # network the inviter assigns invitee IPs from
                                    # default when starting a NEW network: 10.<rnd>.0.0/24
@@ -317,6 +329,51 @@ logging is not:
 | `PingTimeout` < 1 or > `PingInterval` | `PingInterval` | `PingTimeout 99 is out of range (1..PingInterval = 10), using 10 seconds instead.` |
 | `PingInterval` below the default timeout, no `PingTimeout` | `PingInterval` | `The default PingTimeout of 5 seconds is longer than PingInterval 2, using 2 seconds instead.` |
 | a non-integer value | the default | `Integer expected for configuration variable PingInterval in …` |
+
+## DNS names in `Address` (`DnsRefreshInterval`)
+
+A host record may name a peer by DNS name — `Address = vpn.example.net` — and
+such a record travels unchanged: invitations and host-record propagation carry
+the text, and the https/quic dials even take their SNI from it (the
+`HttpsSni`/`QuicSni` defaults read the peer's Address when it is a hostname,
+which is also what `tinc cert` wants for a real certificate). The dial path has
+always resolved names; what `DnsRefreshInterval` adds is a **standing watcher**
+that notices the name's A record moving while the link is up.
+
+**Mechanism** (`core/tincd/src/dnsrefresh.c`):
+
+- every interval, a worker thread re-resolves each watched name (a resolver
+  round trip blocks, and the daemon's event loop may not, so the resolve runs
+  off-thread and the result comes back over a wake channel);
+- of several A records, **the resolver's first answer** is the one followed;
+- when a fresh answer no longer lists the address a live meta connection is
+  on, that connection is **dropped and re-dialled** to the address DNS now
+  returns — two servers with one identity must not coexist, so a moved record
+  is followed, not waited out;
+- the last address a name resolved to is **persisted**
+  (`<confbase>/cache/dnsrefresh.state`) and is only ever replaced by a newer
+  live answer: a dead resolver (NXDOMAIN, timeout, no zone) never erases the
+  last working address, and a restarted node dials it before touching DNS.
+
+**Caveats worth knowing before relying on names:**
+
+- the poll interval beats the record's TTL: a DDNS name with a 60 s TTL still
+  moves at the interval, not at the TTL (getaddrinfo does not expose TTLs);
+- the name must resolve **outside** the tunnel: if a client's `DNSServer`
+  points inside the mesh (the Android default) and the name is only served
+  there, dialling it before the tunnel is up is a chicken-and-egg deadlock;
+- the local resolver (ISP, mobile operator) sees a query for each watched name
+  every interval. Nothing about this rides the wire — the carriers are
+  unchanged — but the resolver operator learns which names this machine dials;
+- trust is unchanged: SPTPS/Ed25519 still authenticates the peer and https/quic
+  still pin `TlsFingerprint`, so a poisoned record can only cause a failed
+  dial, never an impersonation.
+
+**Proof:** `testing/transports/dns-refresh-test.sh` (a dnsmasq whose A record
+flips: the daemon follows it live; with the resolver dead, a restart comes
+back on the persisted address; `DnsRefreshInterval = 0` is the negative
+control) and `make unit` (`test_dnsrefresh`: the name-vs-numeric decision and
+the persistence round-trip).
 
 `PingInterval: 0` reads like "stop pinging" and means "ping once a day", i.e. a
 day-long blind spot in which a dead peer stays in the routing table. That is the

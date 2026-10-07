@@ -165,6 +165,7 @@ src_tincd = [
   'conf_net.c',
   'connection.c',
   'control.c',
+  'dnsrefresh.c',
   'dummy_device.c',
   'edge.c',
   'event.c',
@@ -216,6 +217,9 @@ endif
 deps_common = []
 deps_tinc = []
 deps_tincd = [cc.find_library('m', required: false)]
+
+# dnsrefresh.c runs the DNS watcher on a pthread (CreateThread on Windows).
+deps_tincd += dependency('threads')
 
 if os_name != 'windows'
   src_lib_common += 'random.c'

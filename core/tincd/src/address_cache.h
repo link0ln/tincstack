@@ -32,6 +32,7 @@ typedef struct address_cache_t {
 	struct addrinfo *ai;
 	struct addrinfo *aip;
 	unsigned int tried;
+	bool lg_tried;                         /* the dnsrefresh last-good pass ran once this walk */
 
 	struct {
 		unsigned int version;
@@ -46,5 +47,7 @@ const sockaddr_t *get_recent_address(address_cache_t *cache);
 void close_address_cache(address_cache_t *cache);
 address_cache_t *open_address_cache(node_t *node) ATTR_DEALLOCATOR(close_address_cache);
 void reset_address_cache(address_cache_t *cache);
+void drop_address(address_cache_t *cache, const sockaddr_t *sa);
+void drop_address_ip(address_cache_t *cache, const sockaddr_t *sa);
 
 #endif

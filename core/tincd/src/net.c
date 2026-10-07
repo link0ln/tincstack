@@ -30,6 +30,7 @@
 #include "crypto.h"
 #include "graph.h"
 #include "logger.h"
+#include "dnsrefresh.h"
 #include "meta.h"
 #include "names.h"
 #include "net.h"
@@ -435,6 +436,9 @@ int reload_configuration(void) {
 	/* The dead-peer detection window is re-read here too: a deployment that
 	   needs faster failover can shorten it without restarting the daemon. */
 	setup_ping_timers(true);
+
+	/* DNS names: re-read DnsRefreshInterval and rebuild the watch list. */
+	dnsrefresh_reload();
 
 	/* If StrictSubnet is set, expire deleted Subnets and read new ones in */
 

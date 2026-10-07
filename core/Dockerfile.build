@@ -90,7 +90,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN meson setup build-test --localstatedir=/var \
         -Dbuildtype=debug -Dminiupnpc=disabled -Dtests=enabled -Ddocs=disabled \
         -Dquic=${QUIC} \
-    && TINC_AUTHN_REPORT_ONLY=1 meson test -C build-test --suite unit --print-errorlogs authn traffic_shape
+    && TINC_AUTHN_REPORT_ONLY=1 meson test -C build-test --suite unit --print-errorlogs authn dnsrefresh traffic_shape
 
 # Runtime image. Kept LAST so `docker build` with no --target produces it.
 FROM debian:13-slim AS runtime

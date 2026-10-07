@@ -1734,6 +1734,7 @@ const var_t variables[] = {
 	{"MaxTimeout", VAR_SERVER | VAR_SAFE},
 	{"Mode", VAR_SERVER | VAR_SAFE},
 	{"Name", VAR_SERVER},
+	{"DnsRefreshInterval", VAR_SERVER | VAR_SAFE},
 	{"PingInterval", VAR_SERVER | VAR_SAFE},
 	{"PingTimeout", VAR_SERVER | VAR_SAFE},
 	{"PriorityInheritance", VAR_SERVER},
