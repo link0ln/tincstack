@@ -61,6 +61,7 @@ class ConfigEditorActivity : BaseActivity() {
   private lateinit var binding: ActivityConfigEditorBinding
   override val snackbarRoot: View get() = binding.configRoot
   private val netName by lazy { intent.getStringExtra(EXTRA_NET_NAME)!! }
+  private val focusNode by lazy { intent.getStringExtra(EXTRA_FOCUS_NODE) }
   private val yaml by lazy { TincYaml(AppPaths.tincYamlFile(netName)) }
   private lateinit var stanza: String
   private val adapter = Adapter()
@@ -68,7 +69,12 @@ class ConfigEditorActivity : BaseActivity() {
   private val dirty = java.util.concurrent.atomic.AtomicBoolean(false)
 
   /** One editable key. `original` is what the file holds; `pending` is what
-      the user typed. Save writes only rows whose pending differs. */
+      the user typed. Save writes only rows whose pending differs.
+
+      `header` is a section header row: it renders as a bold label and holds
+      no key. Host records get one header per node ("Node: euvds", the own
+      node marked), because a flat list of every node's keys read like one
+      undivided pile -- the owner's question, 2026-10-09. */
   data class Row(
     val kind: Kind,
     val sectionTitle: Int,
@@ -77,14 +83,16 @@ class ConfigEditorActivity : BaseActivity() {
     val node: String?,          // hosts row
     val k: String,
     val original: String,
+    val header: Boolean = false,
+    val headerText: String = "",
   ) {
     var pending: String? = null
     fun key() = k
     fun value() = original
     fun set(v: String) { pending = v }
-    fun changed() = pending != null && pending != original
+    fun changed() = pending != null && pending != original && !header
 
-    enum class Kind { OPTION, HOST }
+    enum class Kind { OPTION, HOST, HEADER }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,15 +106,26 @@ class ConfigEditorActivity : BaseActivity() {
     binding.configAdd.setOnClickListener { addKeyDialog() }
     binding.configSave.setOnClickListener { save() }
     stanza = yaml.resolveNetwork(netName)
-    reload()
+    val scrollTo = reload()
+    if (scrollTo >= 0) binding.configList.scrollToPosition(scrollTo)
   }
 
-  private fun reload() {
+  /** Rebuild the rows; returns the row index a focus node's header landed
+      on, or -1. */
+  private fun reload(): Int {
     rows.clear()
+    var focusAt = -1
+    rows.add(Row(Row.Kind.HEADER, R.string.config_section_options, 0, stanza, null, "", "", header = true,
+                 headerText = getString(R.string.config_section_options)))
     for ((k, v) in yaml.options(stanza)) {
       rows.add(Row(Row.Kind.OPTION, R.string.config_section_options, 0, stanza, null, k, TincYaml.valuesOf(v).joinToString(", ")))
     }
+    val own = yaml.optionValue(stanza, "Name")
     for (node in hostNames()) {
+      val isOwn = node == own
+      rows.add(Row(Row.Kind.HEADER, R.string.config_section_hosts, 1, stanza, node, "", "", header = true,
+                   headerText = getString(if (isOwn) R.string.config_section_own_node else R.string.config_section_node, node)))
+      if (focusNode != null && node == focusNode && focusAt < 0) focusAt = rows.size - 1
       val text = yaml.hostText(stanza, node) ?: continue
       text.lineSequence()
         .map { it.trim() }
@@ -115,6 +134,7 @@ class ConfigEditorActivity : BaseActivity() {
         .forEach { (k, v) -> rows.add(Row(Row.Kind.HOST, R.string.config_section_hosts, 1, stanza, node, k, v)) }
     }
     adapter.notifyDataSetChanged()
+    return focusAt
   }
 
   /** Host names: the own node first, the rest after it. */
@@ -180,6 +200,7 @@ class ConfigEditorActivity : BaseActivity() {
             yaml.setOptions(r.net, mapOf(r.k to values.ifEmpty { null }))
           }
           Row.Kind.HOST -> yaml.setHostVars(r.net, r.node!!, mapOf(r.k to (r.pending ?: r.original).ifBlank { null }))
+          Row.Kind.HEADER -> {}   // a label, holds nothing
         }
       } catch (e: Exception) {
         failed = e
@@ -212,14 +233,31 @@ class ConfigEditorActivity : BaseActivity() {
 
   private inner class Adapter : RecyclerView.Adapter<Holder>() {
     override fun getItemCount() = rows.size
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+
+    override fun getItemViewType(position: Int) =
+      if (rows[position].header) VIEW_TYPE_HEADER else VIEW_TYPE_KEY
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder = if (viewType == VIEW_TYPE_HEADER) {
+      Holder(ConfigKeyItemBinding.inflate(LayoutInflater.from(parent.context), parent, false), isHeader = true)
+    } else {
       Holder(ConfigKeyItemBinding.inflate(LayoutInflater.from(parent.context), parent, false))
+    }
 
     override fun onBindViewHolder(holder: Holder, position: Int) {
       val r = rows[position]
       val b = holder.binding
+      if (r.header) {
+        b.keySection.isVisible = true
+        b.keySection.text = r.headerText
+        b.keyValueLayout.isVisible = false
+        b.keyName.isVisible = false
+        b.keyRemove.isVisible = false
+        return
+      }
       b.keySection.isVisible = position == 0 || rows[position - 1].sectionSort != r.sectionSort
       b.keySection.setText(r.sectionTitle)
+      b.keyValueLayout.isVisible = true
+      b.keyName.isVisible = true
       b.keyName.text = r.key()
       b.keyValue.setText(r.value())
       b.keyValue.addTextChangedListener(SimpleWatcher { s ->
@@ -245,7 +283,7 @@ class ConfigEditorActivity : BaseActivity() {
     }
   }
 
-  private inner class Holder(val binding: ConfigKeyItemBinding) : RecyclerView.ViewHolder(binding.root)
+  private inner class Holder(val binding: ConfigKeyItemBinding, val isHeader: Boolean = false) : RecyclerView.ViewHolder(binding.root)
 
   private class SimpleWatcher(private val onChange: (Editable?) -> Unit) : TextWatcher {
     override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -255,7 +293,17 @@ class ConfigEditorActivity : BaseActivity() {
 
   companion object {
     private const val EXTRA_NET_NAME = "netName"
+    private const val EXTRA_FOCUS_NODE = "focusNode"
+    private const val VIEW_TYPE_HEADER = 0
+    private const val VIEW_TYPE_KEY = 1
+
     fun intent(context: Context, netName: String): Intent =
       Intent(context, ConfigEditorActivity::class.java).putExtra(EXTRA_NET_NAME, netName)
+
+    /** From a peer row: the editor opens scrolled to that node's section. */
+    fun intent(context: Context, netName: String, focusNode: String): Intent =
+      Intent(context, ConfigEditorActivity::class.java)
+        .putExtra(EXTRA_NET_NAME, netName)
+        .putExtra(EXTRA_FOCUS_NODE, focusNode)
   }
 }

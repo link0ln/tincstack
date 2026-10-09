@@ -157,6 +157,8 @@
 	<string name="config_editor_title">Configuration</string>
 	<string name="config_section_options">Options</string>
 	<string name="config_section_hosts">Peer records</string>
+	<string name="config_section_node">Node: %1$s</string>
+	<string name="config_section_own_node">This device: %1$s</string>
 	<string name="config_section_host_format">Node: %1$s</string>
 	<string name="config_add_key">Add key</string>
 	<string name="config_pick_section">Section</string>

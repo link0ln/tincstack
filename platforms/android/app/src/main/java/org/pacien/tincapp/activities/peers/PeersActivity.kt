@@ -143,7 +143,9 @@ class PeersActivity : BaseActivity() {
   }
 
   private fun openConfigEditor(nodeName: String?) {
-    configEditLauncher.launch(ConfigEditorActivity.intent(this, netName))
+    val intent = if (nodeName != null) ConfigEditorActivity.intent(this, netName, nodeName)
+    else ConfigEditorActivity.intent(this, netName)
+    configEditLauncher.launch(intent)
   }
 
   private fun infoDialog(title: String, text: String) {
