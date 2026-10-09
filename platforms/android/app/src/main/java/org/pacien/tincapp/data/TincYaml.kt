@@ -139,6 +139,86 @@ class TincYaml(val file: File) {
     writeAtomically(splice("", net, mapOf("Name" to listOf(nodeName))))
   }
 
+  /**
+   * Rewrite `Key = value` lines inside the host record `networks.<net>.hosts.<name>`
+   * and write the file back atomically. Only the named keys are touched; every
+   * other line (PEM, comments, unknown keys) is preserved byte for byte, in
+   * place. A value of null removes all lines of that key; a value with no
+   * existing line is appended to the end of the record's `Key = value` lines.
+   */
+  fun setHostVars(net: String, name: String, changes: Map<String, String?>) {
+    if (changes.isEmpty()) return
+    val original = hostText(net, name)
+      ?: throw InvalidConfigurationException("no host record for '$name' in ${file.name}")
+    val edited = spliceHostVars(original, changes)
+    if (edited != original) replaceHostBlock(net, name, edited)
+  }
+
+  /** Pure function: the record text with `Key = value` lines replaced/removed/appended. */
+  fun spliceHostVars(text: String, changes: Map<String, String?>): String {
+    val lines = text.split('\n').toMutableList()
+    val changesLeft = changes.toMutableMap()
+
+    // replace/remove in place, case-insensitive on the key, first occurrence wins
+    for (i in lines.indices) {
+      val trimmed = lines[i].trim()
+      if (trimmed.startsWith("#") || !trimmed.contains('=')) continue
+      val key = trimmed.substringBefore('=').trim()
+      val match = changesLeft.keys.firstOrNull { it.equals(key, ignoreCase = true) } ?: continue
+      val value = changesLeft.remove(match)
+      lines[i] = if (value == null || value.isBlank()) "" else "${key} = $value"
+    }
+
+    // append the keys that had no line, after the last Key = value line
+    if (changesLeft.isNotEmpty()) {
+      var last = -1
+      for (i in lines.indices) {
+        val trimmed = lines[i].trim()
+        if (!trimmed.startsWith("#") && trimmed.contains('=')) last = i
+      }
+      val added = changesLeft.entries.filter { !it.value.isNullOrBlank() }.map { "${it.key} = ${it.value}" }
+      lines.addAll(last + 1, added)
+    }
+
+    // collapse runs of blank lines a removal may have produced; drop trailing ones
+    val out = lines.joinToString("\n").replace("\n{3,}".toRegex(), "\n\n").trimEnd() + "\n"
+    return out
+  }
+
+  /** Replace the body of `hosts.<name>` with [newText], preserving indentation. */
+  private fun replaceHostBlock(net: String, name: String, newText: String) {
+    val lines = file.readText().split('\n')
+    var hostsIdx = -1
+    var hostIdx = -1
+    var hostEnd = lines.size
+    for (i in lines.indices) {
+      if (lines[i].trimStart(' ') == "hosts:") hostsIdx = i
+    }
+    require(hostsIdx >= 0) { "no hosts: section in ${file.name}" }
+    val hostsIndent = lines[hostsIdx].length - lines[hostsIdx].trimStart(' ').length
+    for (i in hostsIdx + 1 until lines.size) {
+      val l = lines[i]
+      if (l.isBlank()) continue
+      val indent = l.length - l.trimStart(' ').length
+      if (indent <= hostsIndent) break
+      if (l.trimStart(' ').startsWith("$name:")) hostIdx = i
+    }
+    require(hostIdx >= 0) { "no host '$name' in ${file.name}" }
+    for (i in hostIdx + 1 until lines.size) {
+      val l = lines[i]
+      if (l.isBlank()) continue
+      val indent = l.length - l.trimStart(' ').length
+      if (indent <= (lines[hostIdx].length - lines[hostIdx].trimStart(' ').length)) {
+        hostEnd = i
+        break
+      }
+    }
+    val blockIndent = lines[hostIdx].length - lines[hostIdx].trimStart(' ').length
+    val newLines = newText.trimEnd().split('\n').map { " ".repeat(blockIndent + 2) + it }
+    val result = lines.subList(0, hostIdx + 1) + newLines + lines.subList(hostEnd, lines.size)
+    writeAtomically(result.joinToString("\n"))
+  }
+
   private fun writeAtomically(text: String) {
     val dir = file.absoluteFile.parentFile ?: throw FileNotFoundException(file.absolutePath)
     if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Could not create ${dir.absolutePath}")

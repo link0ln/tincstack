@@ -138,6 +138,21 @@
 	<string name="peers_not_connected">Connect to see which peers are reachable.</string>
 	<string name="peers_loading">Asking tinc…</string>
 
+	<!-- peer edit -->
+	<string name="peer_edit_title">Edit %1$s</string>
+	<string name="peer_edit_address_hint">Address (IP or hostname)</string>
+	<string name="peer_edit_address_remove">Remove address</string>
+	<string name="peer_edit_port_hint">Meta port (Port)</string>
+	<string name="peer_edit_https_hint">HTTPS port</string>
+	<string name="peer_edit_quic_hint">QUIC port</string>
+	<string name="peer_edit_note">Leave a field empty to remove it. Empty address = dial-only: this device will not dial the peer, but can still be reached and relayed through it. Applies after reconnect.</string>
+	<string name="peer_edit_identity">Identity (read-only)</string>
+	<string name="peer_edit_error_address">Not a valid IP or hostname</string>
+	<string name="peer_edit_error_port">Port must be 1–65535</string>
+	<string name="peer_edit_saved">Saved. Reconnect to apply.</string>
+	<string name="peer_edit_action">Edit…</string>
+	<string name="peer_info_action">Connection info</string>
+
 	<!-- connection type -->
 	<string name="transport_plain">Standard</string>
 	<string name="transport_plain_desc">tinc\'s own protocol over TCP and UDP. The fastest; use it unless your network blocks it.</string>

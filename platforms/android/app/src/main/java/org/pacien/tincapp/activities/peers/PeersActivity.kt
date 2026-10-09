@@ -36,7 +36,9 @@ import org.pacien.tincapp.activities.BaseActivity
 import org.pacien.tincapp.activities.common.Labels
 import org.pacien.tincapp.activities.common.PeersLiveData
 import org.pacien.tincapp.commands.Tinc
+import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.data.PeerStatus
+import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.databinding.ActivityPeersBinding
 import org.pacien.tincapp.databinding.PeerItemBinding
 import org.pacien.tincapp.extensions.Java.defaultMessage
@@ -70,9 +72,37 @@ class PeersActivity : BaseActivity() {
   }
 
   private fun showInfo(peer: PeerStatus) {
-    Tinc.info(netName, peer.name)
-      .thenAccept { text -> runOnUiThread { infoDialog(peer.name, text) } }
-      .exceptionallyAccept { e -> runOnUiThread { notify(e.cause?.defaultMessage() ?: e.defaultMessage()) } }
+    if (peer.self) {
+      Tinc.info(netName, peer.name)
+        .thenAccept { text -> runOnUiThread { infoDialog(peer.name, text) } }
+        .exceptionallyAccept { e -> runOnUiThread { notify(e.cause?.defaultMessage() ?: e.defaultMessage()) } }
+      return
+    }
+    val options = arrayOf(
+      getString(R.string.peer_info_action),
+      getString(R.string.peer_edit_action),
+    )
+    MaterialAlertDialogBuilder(this)
+      .setTitle(peer.name)
+      .setItems(options) { _, which ->
+        when (which) {
+          0 -> Tinc.info(netName, peer.name)
+            .thenAccept { text -> runOnUiThread { infoDialog(peer.name, text) } }
+            .exceptionallyAccept { e -> runOnUiThread { notify(e.cause?.defaultMessage() ?: e.defaultMessage()) } }
+
+          else -> PeerEditDialog(this, TincYaml(AppPaths.tincYamlFile(netName)), TincYaml(AppPaths.tincYamlFile(netName)).resolveNetwork(netName), peer.name) {
+            notify(getString(R.string.peer_edit_saved))
+            notifyAppliesReconnect()
+          }.show()
+        }
+      }
+      .setNegativeButton(R.string.action_cancel, null)
+      .show()
+  }
+
+  private fun notifyAppliesReconnect() {
+    // the daemon re-reads host records on its own reload cycle; a reconnect
+    // picks the new ports up immediately
   }
 
   private fun infoDialog(title: String, text: String) {

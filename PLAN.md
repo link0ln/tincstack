@@ -1740,7 +1740,16 @@ event loop acts (getaddrinfo blocks; the daemon is single-threaded); (3) of
 several A records **the resolver's first** (its priority order) is the one
 followed; (4) **the last IP a name resolved to is persisted** (per-node, next
 to the address cache) and is *only* overwritten by a live DNS answer — a dead
-resolver never erases the last working address.
+resolver never erases the last working address. **Done 2026-10-07/08** (D1-D5
+below) and released as v0.5.5; the same day the ports on the deployed pair
+moved to 113/465 (vds-infra README). The Android peer editor followed
+(2026-10-08): `Peers → tap a peer → Edit…` opens a Material dialog over the
+peer's host record — address, meta port, https/quic ports, each validated
+inline (empty = remove; Save disabled until something changed; the identity
+block below is read-only) — writing `hosts.<name>` per-key through the new
+`TincYaml.setHostVars` (byte-preserving splice, like the options writer).
+Unit `testDebugUnitTest` green incl. the new `PeerConfigTest` (7);
+`assembleDebug` green.
 
 - [x] 🟠 **D1 — resolver thread + poll loop.** *Done 2026-10-07: `dnsrefresh.c`
   (pthread worker, results over a non-blocking socketpair, condvar wait),
