@@ -29,6 +29,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend"))
 
 import paths  # noqa: E402
+import management  # noqa: E402
 import yaml_config  # noqa: E402
 from runtime import Runtime  # noqa: E402
 from tinc_control import TincControl  # noqa: E402
@@ -65,7 +66,20 @@ def main() -> int:
     p = sub.add_parser("join")
     p.add_argument("-n", "--net", help="network name to create (default: from the invitation / first)")
     p.add_argument("invitation")
+    sub.add_parser("--self-install", help="internal: verify this exe's manifest and install it (the update path)")
     args = ap.parse_args()
+
+    # the update path: an elevated single-file tincmgr.exe installs its own
+    # manifest-verified tree over the current one, then exits. Needs nothing
+    # else: no config, no running daemon.
+    if args.cmd == "--self-install":
+        try:
+            target = management.install_self(sys.executable)
+            print(f"installed: {target}")
+            return 0
+        except (OSError, management.DowngradeRefused) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
 
     cfg = paths.find_config(args.config)
     if not cfg:

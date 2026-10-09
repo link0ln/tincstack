@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 import time
 from collections import deque
 from typing import Any, Callable
@@ -39,6 +40,7 @@ if HERE not in sys.path:
 import paths  # noqa: E402
 import routes  # noqa: E402
 import transports  # noqa: E402
+import updates  # noqa: E402
 import yaml_config  # noqa: E402
 from yaml_config import AppConfig, ConfigError, NetworkCfg, options_to_conf, conf_to_options  # noqa: E402
 from runtime import Runtime  # noqa: E402
@@ -852,10 +854,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cert_timer.timeout.connect(self._cert_watch)
         self.cert_timer.start()
         self._quitting = False
+        self._update_banner = None
         self._build_tray()
         self._show_load_error()
         self.reload_networks()
         self.peers.sample_async()
+        self._update_check_start()
         if autostart:
             QtCore.QTimer.singleShot(300, self._autostart)
 
@@ -1171,6 +1175,93 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         text = f"{getattr(res, 'stdout', '')}\n{getattr(res, 'stderr', '')}"
         self._cert_badge(parse_cert_expiry(text), threshold)
+
+    # -- update check (GitHub Releases; at most one network poll per 3 h) ----
+
+    def _update_check_start(self) -> None:
+        if not management.is_frozen():
+            return                       # a dev run never phones home
+        installed = management.installed_version()
+        if not installed:
+            b = paths.bundle()
+            installed = b.version if b else None
+        self.pool.run(
+            updates.check,
+            installed,
+            time.time(),
+            updates.read_last_check(management.state_dir()),
+            tag="update-check",
+            on_done=self._update_seen,
+            on_error=lambda _msg: None,
+        )
+
+    def _update_seen(self, rel: updates.Release | None) -> None:
+        if rel is None:
+            return
+        from datetime import datetime, timezone
+        updates.write_last_check(management.state_dir(), datetime.now(timezone.utc).isoformat())
+        self._show_update_banner(rel)
+        if self.tray:
+            self.tray.showMessage(
+                "tincmgr",
+                f"A new version is available: {rel.version}. Open the window to update.",
+                QtWidgets.QSystemTrayIcon.Information, 8000)
+
+    def _show_update_banner(self, rel: updates.Release) -> None:
+        if self._update_banner is not None:
+            self._update_banner.deleteLater()
+        bar = QtWidgets.QFrame()
+        bar.setStyleSheet("QFrame{background:#e8f0fe;border:1px solid #1a73e8;border-radius:4px;}")
+        bl = QtWidgets.QHBoxLayout(bar)
+        lbl = QtWidgets.QLabel(f"<b>A new version is available: {rel.version}.</b> "
+                               f"The update is downloaded, verified against its SHA256SUMS and installed "
+                               f"by the same elevated installer the app already uses.")
+        lbl.setWordWrap(True)
+        bl.addWidget(lbl, stretch=1)
+        go = QtWidgets.QPushButton("Update now")
+        go.clicked.connect(lambda: self._update_install(rel))
+        later = QtWidgets.QPushButton("Later")
+        later.clicked.connect(bar.hide)
+        bl.addWidget(go); bl.addWidget(later)
+        self.outer_layout().insertWidget(1, bar)
+        self._update_banner = bar
+
+    def outer_layout(self) -> QtWidgets.QVBoxLayout:
+        # the banner sits above the tab area, like the load-error banner
+        central = self.centralWidget()
+        return central.layout()
+
+    def _update_install(self, rel: updates.Release) -> None:
+        self.statusBar().showMessage(f"Downloading {rel.version}…")
+        workdir = tempfile.mkdtemp(prefix="tincmgr-update-")
+        self.pool.run(updates.fetch, rel, workdir, tag="update-fetch",
+                      on_done=lambda r: self._update_run(rel, r, workdir),
+                      on_error=self._update_failed)
+
+    def _update_run(self, rel: updates.Release, extracted: tuple[str, str], workdir: str) -> None:
+        exe, _zip = extracted
+        self.statusBar().showMessage(f"Installing {rel.version}… (elevation prompt)")
+        # the single-file tincmgr.exe self-installs its onedir tree, elevated,
+        # exactly like run-at-startup does for a fresh build; then we restart
+        # onto the installed copy
+        def do_install() -> str:
+            if not management.is_frozen():
+                raise OSError("only the installed single-file tincmgr.exe can update in place")
+            # Same path run-at-startup uses: elevated copy + task re-point.
+            # install_self refuses a downgrade, so a stale download cannot win.
+            management.check_downgrade(rel.version, management.installed_version())
+            return management.install_remote(exe, rel.version)
+        self.pool.run(do_install, tag="update-install",
+                      on_done=lambda target: self._update_restart(target),
+                      on_error=self._update_failed)
+
+    def _update_restart(self, target: str) -> None:
+        self.statusBar().showMessage(f"Installed {target}; restarting…")
+        QtCore.QTimer.singleShot(600, lambda: management.restart_into(target))
+
+    def _update_failed(self, msg: str) -> None:
+        self.statusBar().showMessage("")
+        QtWidgets.QMessageBox.warning(self, "Update", f"The update did not complete:\n{msg}")
 
     def _cert_badge(self, days: int | None, threshold: int) -> None:
         """Mark the toolbar action when the certificate is running out. Silent

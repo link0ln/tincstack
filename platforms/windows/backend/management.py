@@ -297,6 +297,48 @@ def refresh_startup_task(exe_path: str) -> str:
     return "; ".join(n for n in (note, moved) if n)
 
 
+# ---- update from a GitHub release ----------------------------------------
+
+def state_dir() -> str:
+    """Where the update-check marker lives: next to the config the GUI
+    manages (its own directory, writable by the user)."""
+    return paths.app_dir()
+
+
+def is_frozen() -> bool:
+    return paths.is_frozen()
+
+
+def install_remote(exe_path: str, version: str) -> str:
+    """Install a downloaded single-file tincmgr.exe (verified against the
+    release's SHA256SUMS by the caller) over the current install. The
+    downloaded exe does not carry this running build's manifest, so the
+    manifest-verified staging of install_self() cannot run from it; instead
+    the downloaded exe is launched elevated with --self-install: IT verifies
+    its own manifest and stages itself, the exact path a fresh build takes
+    at run-at-startup. Returns the installed exe path."""
+    if paths.version_key(version) is None:
+        raise ValueError(f"not a release version: {version!r}")
+    ok = run_elevated(exe_path, "--self-install")
+    if not ok:
+        raise OSError("the elevated installer did not start (declined?)")
+    d = install_dir()
+    if not d:
+        raise OSError("Program Files could not be resolved")
+    return os.path.join(d, "tincmgr.exe")
+
+
+def restart_into(target: str) -> None:
+    """End this process and start the installed copy (the logon task's
+    program) detached, so the GUI comes back on the new version without the
+    user finding it in the Start menu."""
+    if sys.platform != "win32":
+        return
+    subprocess.Popen([target], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+                     close_fds=True)
+    os._exit(0)
+
+
 # ---- firewall (pre-allow tincd so Windows doesn't prompt every launch) --------
 
 FIREWALL_RULE = "tincmgr-tincd"
