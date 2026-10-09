@@ -79,6 +79,9 @@ class TincYaml(val file: File) {
     return n.entries.associate { it.key.toString() to it.value }
   }
 
+  /** The parsed network stanza, for readers that need a section this class has no accessor for. */
+  fun networkMapPublic(net: String): Map<String, Any?> = networkMap(net)
+
   private fun sectionMap(net: String, section: String): Map<String, Any?> {
     val s = networkMap(net)[section] ?: return emptyMap()
     if (s !is Map<*, *>) throw InvalidConfigurationException("${file.name}: '$section' of network '$net' is not a mapping")

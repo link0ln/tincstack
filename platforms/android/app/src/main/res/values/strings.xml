@@ -153,6 +153,25 @@
 	<string name="peer_edit_action">Edit…</string>
 	<string name="peer_info_action">Connection info</string>
 
+	<!-- whole-config editor -->
+	<string name="config_editor_title">Configuration</string>
+	<string name="config_section_options">Options</string>
+	<string name="config_section_hosts">Peer records</string>
+	<string name="config_section_host_format">Node: %1$s</string>
+	<string name="config_add_key">Add key</string>
+	<string name="config_pick_section">Section</string>
+	<string name="config_key_name_hint">Key name (e.g. HttpsPort)</string>
+	<string name="config_value_hint">Value (empty = remove; comma = several)</string>
+	<string name="config_bad_key">Letters and digits only, starting with a letter</string>
+	<string name="config_key_exists">This key is already in the list</string>
+	<string name="config_remove_key_title">Remove %1$s?</string>
+	<string name="config_remove_key_msg">The key is deleted from the config when you press Save.</string>
+	<string name="config_saved">Saved. Reconnect to apply.</string>
+	<string name="config_save_failed">Could not save</string>
+	<string name="config_row_label">Configuration…</string>
+	<string name="config_row_summary">Every option and peer record, editable</string>
+	<string name="action_add">Add</string>
+
 	<!-- connection type -->
 	<string name="transport_plain">Standard</string>
 	<string name="transport_plain_desc">tinc\'s own protocol over TCP and UDP. The fastest; use it unless your network blocks it.</string>

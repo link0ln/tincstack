@@ -49,6 +49,7 @@ import org.pacien.tincapp.activities.apps.AppPickerActivity
 import org.pacien.tincapp.activities.common.Labels
 import org.pacien.tincapp.activities.common.NetworkListLiveData
 import org.pacien.tincapp.activities.common.PeersLiveData
+import org.pacien.tincapp.activities.config.ConfigEditorActivity
 import org.pacien.tincapp.activities.join.JoinActivity
 import org.pacien.tincapp.activities.join.JoinPanel
 import org.pacien.tincapp.activities.log.LogActivity
@@ -125,6 +126,9 @@ class MainActivity : BaseActivity() {
       loadSettings()
       notifyApplies(R.string.apps_saved)
     }
+  }
+  private val configEditor = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
+    loadSettings()
   }
 
   /** What the settings rows show, read from the network's tinc.yaml. */
@@ -504,6 +508,10 @@ class MainActivity : BaseActivity() {
     binding.screenOffRow.setup(R.drawable.ic_lock, R.string.setting_screen_off_title, chevron = false) { togglePauseOnLock() }
     binding.screenOffRow.rowSwitch.isVisible = true
     binding.screenOffRow.rowSummary.setText(R.string.setting_screen_off_summary)
+    binding.configRow.setup(R.drawable.ic_yaml, R.string.config_row_label) {
+      selected?.let { configEditor.launch(ConfigEditorActivity.intent(this, it)) }
+    }
+    binding.configRow.rowSummary.setText(R.string.config_row_summary)
     binding.logRow.setup(R.drawable.ic_log, R.string.setting_log_title) { openLog() }
     binding.logRow.rowSummary.setText(R.string.setting_log_summary)
   }

@@ -88,6 +88,11 @@
             android:parentActivityName=".activities.main.MainActivity" />
 
         <activity
+            android:name=".activities.config.ConfigEditorActivity"
+            android:parentActivityName=".activities.main.MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".activities.log.LogActivity"
             android:parentActivityName=".activities.main.MainActivity" />
 

@@ -17,7 +17,11 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
+<!-- One peer row: avatar, name/status/address, and a trailing more button
+     that opens the actions menu (info and edit). Actions belong on the row,
+     not hidden behind a whole-row tap. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:app="http://schemas.android.com/apk/res-auto"
 	xmlns:tools="http://schemas.android.com/tools"
 	android:id="@+id/peer_row"
 	style="@style/Tincstack.Row"
@@ -58,4 +62,14 @@
 			android:textAppearance="?attr/textAppearanceBodySmall"
 			tools:text="10.47.31.10 port 655" />
 	</LinearLayout>
+
+	<ImageView
+		android:id="@+id/peer_menu"
+		android:layout_width="24dp"
+		android:layout_height="24dp"
+		android:layout_marginStart="8dp"
+		android:background="?attr/selectableItemBackgroundBorderless"
+		android:contentDescription="@string/peer_edit_action"
+		android:src="@android:drawable/ic_menu_more"
+		app:tint="?attr/colorOnSurfaceVariant" />
 </LinearLayout>

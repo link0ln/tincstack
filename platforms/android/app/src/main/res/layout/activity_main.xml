@@ -219,7 +219,11 @@
 						<include
 							android:id="@+id/screen_off_row"
 							layout="@layout/row_item" />
-					</LinearLayout>
+
+						<include
+							android:id="@+id/config_row"
+							layout="@layout/row_item" />
+						</LinearLayout>
 				</com.google.android.material.card.MaterialCardView>
 
 				<TextView

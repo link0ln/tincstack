@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+ * tincstack for Android
+ * Copyright (C) 2026 tincstack contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<!-- One editable key of the config editor: section header (when it is the
+     first row of its section), key name above an outlined value field,
+     remove on the right. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:app="http://schemas.android.com/apk/res-auto"
+	xmlns:tools="http://schemas.android.com/tools"
+	android:layout_width="match_parent"
+	android:layout_height="wrap_content"
+	android:orientation="vertical">
+
+	<TextView
+		android:id="@+id/key_section"
+		style="@style/Tincstack.SectionLabel"
+		android:layout_width="match_parent"
+		android:layout_height="wrap_content"
+		android:paddingStart="24dp"
+		android:paddingTop="14dp"
+		android:visibility="gone"
+		tools:text="Options" />
+
+	<LinearLayout
+		android:layout_width="match_parent"
+		android:layout_height="wrap_content"
+		android:gravity="center_vertical"
+		android:orientation="horizontal"
+		android:paddingStart="24dp"
+		android:paddingTop="4dp"
+		android:paddingEnd="16dp"
+		android:paddingBottom="4dp">
+
+		<LinearLayout
+			android:layout_width="0dp"
+			android:layout_height="wrap_content"
+			android:layout_weight="1"
+			android:orientation="vertical">
+
+			<TextView
+				android:id="@+id/key_name"
+				style="@style/Tincstack.RowTitle"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:fontFamily="monospace"
+				tools:text="HttpsPort" />
+
+			<com.google.android.material.textfield.TextInputLayout
+				android:id="@+id/key_value_layout"
+				style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content">
+
+				<com.google.android.material.textfield.TextInputEditText
+					android:id="@+id/key_value"
+					android:layout_width="match_parent"
+					android:layout_height="wrap_content"
+					android:hint="@string/config_value_hint"
+					android:inputType="text" />
+			</com.google.android.material.textfield.TextInputLayout>
+		</LinearLayout>
+
+		<ImageView
+			android:id="@+id/key_remove"
+			android:layout_width="24dp"
+			android:layout_height="24dp"
+			android:layout_marginStart="8dp"
+			android:contentDescription="@string/action_remove"
+			android:src="@android:drawable/ic_menu_delete"
+			app:tint="?attr/colorError" />
+	</LinearLayout>
+</LinearLayout>
