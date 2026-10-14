@@ -113,13 +113,9 @@ class TincYaml(val file: File) {
   fun ownHostValues(net: String, key: String): List<String> {
     val name = optionValue(net, "Name") ?: return emptyList()
     val text = hostText(net, name) ?: return emptyList()
-    return text.lineSequence()
-      .map { it.trim() }
-      .filter { !it.startsWith("#") && it.contains('=') }
-      .map { it.substringBefore('=').trim() to it.substringAfter('=').trim() }
+    return parseHostKeyValues(text)
       .filter { it.first.equals(key, ignoreCase = true) }
       .map { it.second }
-      .toList()
   }
 
   /**
@@ -161,23 +157,50 @@ class TincYaml(val file: File) {
   fun spliceHostVars(text: String, changes: Map<String, String?>): String {
     val lines = text.split('\n').toMutableList()
     val changesLeft = changes.toMutableMap()
+    val touchedKeys = changes.keys.map { it.lowercase() }.toSet()
 
-    // replace/remove in place, case-insensitive on the key, first occurrence wins
-    for (i in lines.indices) {
+    // replace/remove in place, case-insensitive on the key, first occurrence wins;
+    // subsequent occurrences of a touched key are dropped so deletions/replacements are complete.
+    var i = 0
+    var inPem = false
+    while (i < lines.size) {
       val trimmed = lines[i].trim()
-      if (trimmed.startsWith("#") || !trimmed.contains('=')) continue
+      if (trimmed.startsWith("-----BEGIN ")) inPem = true
+      if (inPem || !isHostKeyValueLine(trimmed)) {
+        if (trimmed.startsWith("-----END ")) inPem = false
+        i++
+        continue
+      }
       val key = trimmed.substringBefore('=').trim()
-      val match = changesLeft.keys.firstOrNull { it.equals(key, ignoreCase = true) } ?: continue
-      val value = changesLeft.remove(match)
-      lines[i] = if (value == null || value.isBlank()) "" else "${key} = $value"
+      if (key.lowercase() !in touchedKeys) {
+        i++
+        continue
+      }
+      val match = changesLeft.keys.firstOrNull { it.equals(key, ignoreCase = true) }
+      if (match != null) {
+        val value = changesLeft.remove(match)
+        if (value == null || value.isBlank()) {
+          lines.removeAt(i)
+          continue
+        } else {
+          lines[i] = "${key} = $value"
+        }
+      } else {
+        lines.removeAt(i)
+        continue
+      }
+      i++
     }
 
-    // append the keys that had no line, after the last Key = value line
+    // append the keys that had no line, after the last Key = value line (outside PEM blocks)
     if (changesLeft.isNotEmpty()) {
       var last = -1
-      for (i in lines.indices) {
-        val trimmed = lines[i].trim()
-        if (!trimmed.startsWith("#") && trimmed.contains('=')) last = i
+      var pem = false
+      for (idx in lines.indices) {
+        val trimmed = lines[idx].trim()
+        if (trimmed.startsWith("-----BEGIN ")) pem = true
+        if (!pem && isHostKeyValueLine(trimmed)) last = idx
+        if (trimmed.startsWith("-----END ")) pem = false
       }
       val added = changesLeft.entries.filter { !it.value.isNullOrBlank() }.map { "${it.key} = ${it.value}" }
       lines.addAll(last + 1, added)
@@ -188,37 +211,29 @@ class TincYaml(val file: File) {
     return out
   }
 
-  /** Replace the body of `hosts.<name>` with [newText], preserving indentation. */
+  /** Replace the body of `networks.<net>.hosts.<name>` with [newText], preserving indentation. */
   private fun replaceHostBlock(net: String, name: String, newText: String) {
-    val lines = file.readText().split('\n')
-    var hostsIdx = -1
-    var hostIdx = -1
-    var hostEnd = lines.size
-    for (i in lines.indices) {
-      if (lines[i].trimStart(' ') == "hosts:") hostsIdx = i
-    }
-    require(hostsIdx >= 0) { "no hosts: section in ${file.name}" }
-    val hostsIndent = lines[hostsIdx].length - lines[hostsIdx].trimStart(' ').length
-    for (i in hostsIdx + 1 until lines.size) {
-      val l = lines[i]
-      if (l.isBlank()) continue
-      val indent = l.length - l.trimStart(' ').length
-      if (indent <= hostsIndent) break
-      if (l.trimStart(' ').startsWith("$name:")) hostIdx = i
-    }
-    require(hostIdx >= 0) { "no host '$name' in ${file.name}" }
-    for (i in hostIdx + 1 until lines.size) {
-      val l = lines[i]
-      if (l.isBlank()) continue
-      val indent = l.length - l.trimStart(' ').length
-      if (indent <= (lines[hostIdx].length - lines[hostIdx].trimStart(' ').length)) {
-        hostEnd = i
-        break
-      }
-    }
-    val blockIndent = lines[hostIdx].length - lines[hostIdx].trimStart(' ').length
-    val newLines = newText.trimEnd().split('\n').map { " ".repeat(blockIndent + 2) + it }
-    val result = lines.subList(0, hostIdx + 1) + newLines + lines.subList(hostEnd, lines.size)
+    val rawLines = file.readText().split('\n')
+    val parsed = rawLines.map(::Line)
+    val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
+    require(netsIdx >= 0) { "no networks: section in ${file.name}" }
+    val netsEnd = blockEnd(parsed, netsIdx)
+    val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
+    val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
+    require(netIdx >= 0) { "no network '$net' in ${file.name}" }
+    val netEnd = blockEnd(parsed, netIdx)
+    val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
+    val hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
+    require(hostsIdx >= 0) { "no hosts: section in network '$net' of ${file.name}" }
+    val hostsEnd = blockEnd(parsed, hostsIdx)
+    val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
+    val hostIdx = findChild(parsed, hostsIdx + 1, hostsEnd, hostIndent, name)
+    require(hostIdx >= 0) { "no host '$name' in network '$net' of ${file.name}" }
+    val hostEnd = blockEnd(parsed, hostIdx)
+    val blockIndent = parsed[hostIdx].indent
+    val headerLine = "${" ".repeat(blockIndent)}$name: |"
+    val newLines = newText.trimEnd().split('\n').map { if (it.isEmpty()) "" else " ".repeat(blockIndent + 2) + it }
+    val result = rawLines.subList(0, hostIdx) + listOf(headerLine) + newLines + rawLines.subList(hostEnd, rawLines.size)
     writeAtomically(result.joinToString("\n"))
   }
 
@@ -240,8 +255,31 @@ class TincYaml(val file: File) {
 
   companion object {
     const val FILE_NAME = "tinc.yaml"
+    private val HOST_KEY_RE = Regex("^[A-Za-z][A-Za-z0-9_]*$")
 
     private fun newYaml() = Yaml(LoaderOptions().apply { isAllowDuplicateKeys = true })
+
+    /** True if [trimmed] is a `Key = value` line (and not a base64 line with `=` padding). */
+    fun isHostKeyValueLine(trimmed: String): Boolean {
+      if (trimmed.startsWith("#") || trimmed.startsWith("-----") || !trimmed.contains('=')) return false
+      val key = trimmed.substringBefore('=').trim()
+      return HOST_KEY_RE.matches(key)
+    }
+
+    /** Parse `Key = value` pairs from a host record, ignoring comments and PEM blocks. */
+    fun parseHostKeyValues(text: String): List<Pair<String, String>> {
+      val out = mutableListOf<Pair<String, String>>()
+      var inPem = false
+      for (line in text.lineSequence()) {
+        val trimmed = line.trim()
+        if (trimmed.startsWith("-----BEGIN ")) inPem = true
+        if (!inPem && isHostKeyValueLine(trimmed)) {
+          out.add(trimmed.substringBefore('=').trim() to trimmed.substringAfter('=').trim())
+        }
+        if (trimmed.startsWith("-----END ")) inPem = false
+      }
+      return out
+    }
 
     fun valuesOf(v: Any?): List<String> = when (v) {
       null -> emptyList()
@@ -277,11 +315,14 @@ class TincYaml(val file: File) {
       }
     }
 
-    /** [start, end) of the block owned by the mapping entry at [keyIndex]: following lines more indented than it. */
+    /** [start, end) of the block owned by the mapping entry at [keyIndex]: following lines more indented than it (or sequence items at the same indent). */
     private fun blockEnd(lines: List<Line>, keyIndex: Int): Int {
       val indent = lines[keyIndex].indent
       var i = keyIndex + 1
-      while (i < lines.size && (lines[i].skip || lines[i].indent > indent)) i++
+      while (i < lines.size && (lines[i].skip || lines[i].indent > indent ||
+          (lines[i].indent == indent && (lines[i].content == "-" || lines[i].content.startsWith("- "))))) {
+        i++
+      }
       // give trailing blank/comment lines back to the parent
       while (i > keyIndex + 1 && lines[i - 1].skip) i--
       return i

@@ -85,20 +85,37 @@ KNOWN_OPTIONS = [
     ("InterfaceAddress", "str", None, "Address for the tunnel adapter, e.g. 10.200.240.2/24 (absent = this node's own Subnet)"),
     ("InterfaceRoute", "str", None, "Route through the tunnel: '<prefix> [gateway]', e.g. 192.168.1.0/24 10.200.240.7. One per route; the Peers tab's Route buttons write these."),
     ("LocalDiscovery", "bool", None, "Find peers on the same LAN and connect directly"),
+    ("DirectOnly", "bool", None, "Only send packets directly to peers, never via intermediate relays"),
+    ("Forwarding", "enum", ["internal", "kernel", "off"], "How packets are forwarded (default: internal)"),
+    ("Broadcast", "enum", ["mst", "direct", "no"], "How broadcast packets are propagated"),
+    ("ClampMSS", "bool", None, "Clamp TCP MSS of inner packets to path MTU (default: yes)"),
+    ("DecrementTTL", "bool", None, "Decrement IP TTL of forwarded packets"),
+    ("PriorityInheritance", "bool", None, "Inherit IP TOS/DSCP priority on outer UDP packets"),
+    ("UDPDiscovery", "bool", None, "Probe direct UDP reachability (default: yes)"),
+    ("UDPDiscoveryKeepaliveInterval", "int", None, "Seconds between UDP keepalives once direct UDP works"),
+    ("UDPDiscoveryInterval", "int", None, "Seconds between UDP discovery probes"),
+    ("UDPDiscoveryTimeout", "int", None, "Seconds before an unresponsive direct UDP path is declared dead"),
     ("UDPRebindOnWake", "bool", None, "Re-bind the UDP socket after sleep/resume (core feature)"),
     ("UDPDiscoveryBurst", "int", None, "UDP hole-punching probes per round while unconfirmed (core feature)"),
+    ("MTUInfoInterval", "int", None, "Seconds between MTU_INFO updates"),
+    ("UDPInfoInterval", "int", None, "Seconds between UDP_INFO updates"),
     ("TCPOnly", "bool", None, "Tunnel only over TCP (forces relay; no UDP)"),
     ("IndirectData", "bool", None, "This node is only reachable via a relay"),
     ("PMTUDiscovery", "bool", None, "Discover the path MTU automatically"),
     ("Compression", "int", None, "Compression level 0-11 (0 = off)"),
     ("PingInterval", "int", None, "Seconds between keepalive pings"),
     ("PingTimeout", "int", None, "Seconds before an unresponsive peer is considered down"),
+    ("AddressDiscovery", "bool", None, "Allow tinc invite to query external address if Address is unset"),
     # certificate issuance (tinc cert; see the Certificate… toolbar button)
     ("CertDomain", "str", None, "Public DNS name this node presents on https/quic, e.g. vpn.example.com"),
     ("CloudflareToken", "str", None, "Cloudflare API token with Zone:Read + Zone:DNS:Edit on that domain's zone"),
+    ("CloudflareApi", "str", None, "Cloudflare API base URL override (optional)"),
     ("AcmeContact", "str", None, "mailto: address the CA uses for expiry warnings (optional)"),
     ("AcmeDirectory", "str", None, "ACME directory URL (default: Let's Encrypt production)"),
+    ("AcmeCaFile", "str", None, "Custom CA bundle path for ACME/Cloudflare HTTPS requests (optional)"),
     ("AcmeRenewDays", "int", None, "Renew when fewer than this many days are left (default 30)"),
+    ("AcmePropagation", "int", None, "Seconds to wait for DNS challenge propagation (default 15)"),
+    ("AcmePollTimeout", "int", None, "Seconds to poll ACME challenge validation before timing out"),
 ] + [
     (spec.name,
      {"carriers": "str", "int": "int", "port": "int", "front_port": "int", "bool": "bool", "path": "str",
@@ -1185,21 +1202,31 @@ class MainWindow(QtWidgets.QMainWindow):
         if not installed:
             b = paths.bundle()
             installed = b.version if b else None
+        last = updates.read_last_check(management.state_dir())
+        now = time.time()
         self.pool.run(
             updates.check,
             installed,
-            time.time(),
-            updates.read_last_check(management.state_dir()),
+            now,
+            last,
             tag="update-check",
-            on_done=self._update_seen,
+            on_done=lambda rel, lm=last, t=now: self._update_seen(rel, lm, t),
             on_error=lambda _msg: None,
         )
 
-    def _update_seen(self, rel: updates.Release | None) -> None:
+    def _update_seen(self, rel: updates.Release | None, last_marker: str | None = None,
+                     checked_at: float | None = None) -> None:
+        from datetime import datetime, timezone
+        due = True
+        if last_marker and checked_at is not None:
+            try:
+                due = (checked_at - datetime.fromisoformat(last_marker).timestamp()) >= updates.CHECK_MIN_SECS
+            except ValueError:
+                due = True
+        if due or rel is not None:
+            updates.write_last_check(management.state_dir(), datetime.now(timezone.utc).isoformat())
         if rel is None:
             return
-        from datetime import datetime, timezone
-        updates.write_last_check(management.state_dir(), datetime.now(timezone.utc).isoformat())
         self._show_update_banner(rel)
         if self.tray:
             self.tray.showMessage(
@@ -1232,25 +1259,35 @@ class MainWindow(QtWidgets.QMainWindow):
         return central.layout()
 
     def _update_install(self, rel: updates.Release) -> None:
+        import shutil
         self.statusBar().showMessage(f"Downloading {rel.version}…")
         workdir = tempfile.mkdtemp(prefix="tincmgr-update-")
         self.pool.run(updates.fetch, rel, workdir, tag="update-fetch",
                       on_done=lambda r: self._update_run(rel, r, workdir),
-                      on_error=self._update_failed)
+                      on_error=lambda msg, wd=workdir: (shutil.rmtree(wd, ignore_errors=True), self._update_failed(msg)))
 
     def _update_run(self, rel: updates.Release, extracted: tuple[str, str], workdir: str) -> None:
+        import shutil
         exe, _zip = extracted
         self.statusBar().showMessage(f"Installing {rel.version}… (elevation prompt)")
         # the single-file tincmgr.exe self-installs its onedir tree, elevated,
         # exactly like run-at-startup does for a fresh build; then we restart
         # onto the installed copy
         def do_install() -> str:
-            if not management.is_frozen():
-                raise OSError("only the installed single-file tincmgr.exe can update in place")
-            # Same path run-at-startup uses: elevated copy + task re-point.
-            # install_self refuses a downgrade, so a stale download cannot win.
-            management.check_downgrade(rel.version, management.installed_version())
-            return management.install_remote(exe, rel.version)
+            try:
+                if not management.is_frozen():
+                    raise OSError("only the installed single-file tincmgr.exe can update in place")
+                # Same path run-at-startup uses: elevated copy + task re-point.
+                # install_self refuses a downgrade, so a stale download cannot win.
+                management.check_downgrade(rel.version, management.installed_version())
+                if self.admin:
+                    try:
+                        self.rt.stop_all()
+                    except Exception:
+                        pass
+                return management.install_remote(exe, rel.version)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
         self.pool.run(do_install, tag="update-install",
                       on_done=lambda target: self._update_restart(target),
                       on_error=self._update_failed)
@@ -1480,6 +1517,15 @@ def main() -> None:
     # read from the exe on disk lazily: import it now, before a long-running
     # session gives anyone time to swap the exe under us (paths.bundle()).
     paths.bundle()
+    if "--self-install" in sys.argv[1:]:
+        try:
+            target = management.install_self(sys.executable)
+            print(f"installed: {target}")
+            sys.exit(0)
+        except (OSError, management.DowngradeRefused) as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+
     # always run elevated on Windows: relaunch via UAC if we're not (the built
     # exe is uac_admin so this only fires for a dev/python run)
     if sys.platform == "win32" and not management.is_admin() and not os.environ.get("TINCMGR_SELFTEST_MS"):

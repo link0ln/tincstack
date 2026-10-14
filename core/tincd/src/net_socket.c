@@ -838,6 +838,8 @@ begin:
 	connection_t *c = new_connection();
 	c->outgoing = outgoing;
 	memcpy(&c->address, sa, SALEN(sa->sa));
+	memcpy(&c->base_address, sa, SALEN(sa->sa));
+	c->status.udp_fallback = fallback;
 	c->hostname = sockaddr2hostname(&c->address);
 	c->name = xstrdup(outgoing->node->name);
 	c->outmaclength = myself->connection->outmaclength;

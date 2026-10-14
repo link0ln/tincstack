@@ -422,6 +422,8 @@ bool setup_myself_reloadable(void) {
 
 	bool choice;
 
+	myself->options &= ~(OPTION_INDIRECT | OPTION_DECLARED_INDIRECT | OPTION_TCPONLY | OPTION_PMTU_DISCOVERY | OPTION_CLAMP_MSS);
+
 	if(get_config_bool(lookup_config(&config_tree, "IndirectData"), &choice) && choice) {
 		myself->options |= OPTION_INDIRECT | OPTION_DECLARED_INDIRECT;
 	}

@@ -36,9 +36,61 @@ def is_admin() -> bool:
 
 
 def run_elevated(exe: str, params: str, wait: bool = True) -> bool:
-    """Launch exe with params elevated via UAC. Returns True if launched."""
+    """Launch exe with params elevated via UAC. Returns True if launched (and
+    exited with 0 when wait=True)."""
     if sys.platform != "win32":
         return False
+    if wait and is_admin():
+        try:
+            cmd = f'"{exe}" {params}'.strip()
+            p = subprocess.run(cmd, shell=False, capture_output=True, text=True,
+                               creationflags=_NO_WINDOW, timeout=120)
+            return p.returncode == 0
+        except Exception:
+            pass
+    if wait:
+        try:
+            from ctypes import wintypes
+
+            class SHELLEXECUTEINFOW(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("fMask", wintypes.ULONG),
+                    ("hwnd", wintypes.HWND),
+                    ("lpVerb", wintypes.LPCWSTR),
+                    ("lpFile", wintypes.LPCWSTR),
+                    ("lpParameters", wintypes.LPCWSTR),
+                    ("lpDirectory", wintypes.LPCWSTR),
+                    ("nShow", ctypes.c_int),
+                    ("hInstApp", wintypes.HINSTANCE),
+                    ("lpIDList", ctypes.c_void_p),
+                    ("lpClass", wintypes.LPCWSTR),
+                    ("hkeyClass", wintypes.HKEY),
+                    ("dwHotKey", wintypes.DWORD),
+                    ("hIcon", wintypes.HANDLE),
+                    ("hProcess", wintypes.HANDLE),
+                ]
+
+            sei = SHELLEXECUTEINFOW()
+            sei.cbSize = ctypes.sizeof(sei)
+            sei.fMask = 0x00000040  # SEE_MASK_NOCLOSEPROCESS
+            sei.lpVerb = "runas"
+            sei.lpFile = exe
+            sei.lpParameters = params
+            sei.nShow = 0  # SW_HIDE
+            if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):  # type: ignore[attr-defined]
+                return False
+            if sei.hProcess:
+                try:
+                    ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, 120000)  # type: ignore[attr-defined]
+                    code = wintypes.DWORD(1)
+                    if ctypes.windll.kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(code)):  # type: ignore[attr-defined]
+                        return code.value == 0
+                finally:
+                    ctypes.windll.kernel32.CloseHandle(sei.hProcess)  # type: ignore[attr-defined]
+            return True
+        except Exception:
+            pass
     try:
         # SW_HIDE = 0 ; returns >32 on success
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 0)  # type: ignore[attr-defined]
@@ -50,10 +102,10 @@ def run_elevated(exe: str, params: str, wait: bool = True) -> bool:
 def relaunch_self_elevated() -> bool:
     """Relaunch the current GUI elevated (so all management ops are available)."""
     if getattr(sys, "frozen", False):
-        return run_elevated(sys.executable, "")
+        return run_elevated(sys.executable, "", wait=False)
     exe = sys.executable  # pythonw.exe in the venv
     script = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "main.py"))
-    return run_elevated(exe, f'"{script}"')
+    return run_elevated(exe, f'"{script}"', wait=False)
 
 
 # ---- run-at-Windows-startup (elevated, via Scheduled Task) --------------------
@@ -77,13 +129,14 @@ def _clear_task_battery_limits(name: str) -> None:
     StopIfGoingOnBatteries are TRUE, plus a 72h ExecutionTimeLimit. On a laptop
     that boots on battery the logon task is refused with 0x800710E0. Strip those
     so the task starts on battery and the long-running GUI is never killed."""
+    safe_name = name.replace("'", "''")
     ps = (
         "$ErrorActionPreference='SilentlyContinue';"
-        f"$s=Get-ScheduledTask -TaskName '{name}';"
+        f"$s=Get-ScheduledTask -TaskName '{safe_name}';"
         "if($s){$s.Settings.DisallowStartIfOnBatteries=$false;"
         "$s.Settings.StopIfGoingOnBatteries=$false;"
         "$s.Settings.ExecutionTimeLimit='PT0S';"
-        f"Set-ScheduledTask -TaskName '{name}' -Settings $s.Settings | Out-Null}}"
+        f"Set-ScheduledTask -TaskName '{safe_name}' -Settings $s.Settings | Out-Null}}"
     )
     try:
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],

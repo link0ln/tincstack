@@ -389,6 +389,47 @@ def apply_patch(doc: dict, patch: dict[tuple, Any]) -> dict:
     return doc
 
 
+from contextlib import contextmanager
+import time
+
+
+@contextmanager
+def _file_lock(path: str):
+    """Acquire `<path>.lock` using the same protocol as C `yamlconf_lock()` so
+    concurrent daemon/CLI/GUI read-modify-writes serialize cleanly."""
+    lockpath = os.path.abspath(path) + ".lock"
+    d = os.path.dirname(lockpath)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = -1
+        for _ in range(200):
+            h = k32.CreateFileW(lockpath, 0xC0000000, 0, None, 4, 0x80, None)
+            if h not in (-1, 0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+                handle = h
+                break
+            time.sleep(0.05)
+        try:
+            yield
+        finally:
+            if handle not in (-1, 0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+                k32.CloseHandle(handle)
+    else:
+        import fcntl
+        fd = os.open(lockpath, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+
+
 def save(app: AppConfig, path: str | None = None) -> str:
     """Persist `app`.
 
@@ -403,13 +444,15 @@ def save(app: AppConfig, path: str | None = None) -> str:
         raise ConfigError("no path to save to")
     wanted = to_dict(app)
     if path and os.path.abspath(path) != os.path.abspath(app.path or ""):
-        atomic_write_text(target, dump_text(wanted))
+        with _file_lock(target):
+            atomic_write_text(target, dump_text(wanted))
         return target
     patch = diff_documents(app.baseline, wanted)
-    current = read_document(target)          # the daemon may have written meanwhile
-    merged = apply_patch(current, patch) if patch else current
-    if patch or not os.path.exists(target):
-        atomic_write_text(target, dump_text(merged))
+    with _file_lock(target):
+        current = read_document(target)          # the daemon may have written meanwhile
+        merged = apply_patch(current, patch) if patch else current
+        if patch or not os.path.exists(target):
+            atomic_write_text(target, dump_text(merged))
     # absorb what the daemon wrote so the model (and the next diff) start from
     # the file as it is now, not from the GUI's stale view of it
     refresh_in_place(app, merged)
@@ -444,7 +487,8 @@ def save_text(path: str, text: str) -> None:
     """Raw-editor save: validate the text as a config document, then write it
     atomically. Raises ConfigError instead of writing a broken file."""
     parse_text(text, path)
-    atomic_write_text(path, text if text.endswith("\n") else text + "\n")
+    with _file_lock(path):
+        atomic_write_text(path, text if text.endswith("\n") else text + "\n")
 
 
 if __name__ == "__main__":

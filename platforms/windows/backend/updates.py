@@ -35,12 +35,14 @@ USER_AGENT = "tincmgr-update-check"
 
 
 class Release:
-    def __init__(self, tag: str, version: str, zip_url: str, sums_url: str, notes: str) -> None:
+    def __init__(self, tag: str, version: str, zip_url: str, sums_url: str, notes: str,
+                 zip_name: str = "") -> None:
         self.tag = tag
         self.version = version
         self.zip_url = zip_url
         self.sums_url = sums_url
         self.notes = notes
+        self.zip_name = zip_name or f"tincstack-{tag}-windows-x86_64.zip"
 
 
 def _get(url: str, timeout: int = 30) -> bytes:
@@ -63,7 +65,8 @@ def find_assets(release: dict) -> Release | None:
     if not zips or not sums:
         return None
     return Release(release.get("tag_name", ""), release.get("tag_name", ""),
-                   assets[zips[0]], assets[sums], release.get("body", ""))
+                   assets[zips[0]], assets[sums], release.get("body", ""),
+                   zip_name=zips[0])
 
 
 def check(installed_version: str | None, now: float, last_marker: str | None) -> Release | None:
@@ -101,19 +104,13 @@ def fetch(rel: Release, workdir: str) -> tuple[str, str]:
     """Download the zip and its SHA256SUMS into workdir; verify; return the
     path of the verified tincmgr.exe (extracted, not yet run). Raises on any
     mismatch — a bad download is never installed."""
-    zpath = os.path.join(workdir, rel.tag + "-windows.zip")
+    zip_filename = os.path.basename(getattr(rel, "zip_name", "") or f"tincstack-{rel.tag}-windows-x86_64.zip")
+    zpath = os.path.join(workdir, zip_filename)
     spath = zpath + ".sums"
     with open(zpath, "wb") as f:
         f.write(_get(rel.zip_url, timeout=600))
     with open(spath, "wb") as f:
         f.write(_get(rel.sums_url, timeout=120))
-
-    # SHA256SUMS lines: "<hex>  <name>"
-    sums = {}
-    for line in open(spath, encoding="utf-8", errors="replace").read().splitlines():
-        parts = line.split()
-        if len(parts) == 2 and re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
-            sums[os.path.basename(parts[1])] = parts[0].lower()
 
     def sha(p: str) -> str:
         h = hashlib.sha256()
@@ -122,18 +119,47 @@ def fetch(rel: Release, workdir: str) -> tuple[str, str]:
                 h.update(chunk)
         return h.hexdigest()
 
-    if os.path.basename(zpath) not in sums:
+    # If the release body pins the SHA256 of SHA256SUMS itself, verify it first.
+    notes = getattr(rel, "notes", "") or ""
+    m_sums = re.search(r"([0-9a-fA-F]{64})\s+\*?SHA256SUMS\b|SHA256SUMS[^0-9a-fA-F\n]*([0-9a-fA-F]{64})", notes)
+    if m_sums:
+        expected_sums_sha = (m_sums.group(1) or m_sums.group(2)).lower()
+        if sha(spath) != expected_sums_sha:
+            os.unlink(zpath)
+            os.unlink(spath)
+            raise ValueError("SHA256SUMS does not match the digest in release notes")
+
+    # SHA256SUMS lines: "<hex>  <name>"
+    sums = {}
+    with open(spath, encoding="utf-8", errors="replace") as sf:
+        for line in sf.read().splitlines():
+            parts = line.split()
+            if len(parts) == 2 and re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
+                sums[os.path.basename(parts[1].lstrip("*"))] = parts[0].lower()
+
+    expected_zip_sha = sums.get(zip_filename) or sums.get(f"{rel.tag}-windows.zip")
+    if not expected_zip_sha:
+        os.unlink(zpath)
         raise ValueError("SHA256SUMS does not list the zip")
-    if sha(zpath) != sums[os.path.basename(zpath)]:
+    if sha(zpath) != expected_zip_sha:
         os.unlink(zpath)
         raise ValueError("the downloaded zip does not match its SHA256SUMS")
 
+    exe = os.path.join(workdir, "tincmgr.exe")
     with zipfile.ZipFile(zpath) as z:
-        names = [n for n in z.namelist() if n == "tincmgr.exe" or n.endswith("/tincmgr.exe")]
+        names = [
+            n for n in z.namelist()
+            if (n == "tincmgr.exe" or n.endswith("/tincmgr.exe"))
+            and ".." not in n.replace("\\", "/").split("/")
+        ]
         if not names:
             raise ValueError("the zip has no tincmgr.exe")
-        z.extract(names[0], workdir)
-    exe = os.path.join(workdir, names[0])
+        with z.open(names[0]) as src, open(exe, "wb") as dst:
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                dst.write(chunk)
     if not os.path.isfile(exe):
         raise ValueError("tincmgr.exe did not extract")
     return exe, zpath

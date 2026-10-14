@@ -22,7 +22,7 @@ cd "$(dirname "$0")"
 dotenv() { [[ ! -f .env ]] || sed -n "s/^$1=//p" .env | tail -n 1; }
 port=${PORT-$(dotenv PORT)}
 
-if [[ -z $port ]]; then
+if [[ -z $port || $port == 0 ]]; then
     files=${COMPOSE_FILE:-$(dotenv COMPOSE_FILE)}
     files=${files:-docker-compose.yml}
     case ":$files:" in
@@ -30,7 +30,9 @@ if [[ -z $port ]]; then
         *) files=$files:compose.leaf.yml ;;
     esac
     if [[ -f .env ]] && grep -q '^COMPOSE_FILE=' .env; then
-        sed -i "s|^COMPOSE_FILE=.*|COMPOSE_FILE=$files|" .env
+        grep -v '^COMPOSE_FILE=' .env > .env.tmp || true
+        printf 'COMPOSE_FILE=%s\n' "$files" >> .env.tmp
+        mv -f .env.tmp .env
     else
         [[ ! -s .env || -z $(tail -c 1 .env) ]] || echo >> .env
         printf 'COMPOSE_FILE=%s\n' "$files" >> .env

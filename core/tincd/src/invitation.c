@@ -1068,6 +1068,8 @@ bool invitation_yaml_apply(yamlconf_t *yc, const char *net, const char *name, co
 
 	const char *p = payload;
 	char *l, *value = NULL;
+	char *connect_to_peer = NULL;
+	char *first_chunk_tls_fp = NULL;
 
 	while((l = get_line(line, sizeof(line), &p))) {
 		if(*l == '#') {
@@ -1138,7 +1140,17 @@ bool invitation_yaml_apply(yamlconf_t *yc, const char *net, const char *name, co
 			}
 		}
 
-		if(found && (variables[i].type & VAR_HOST)) {
+		if(!strcasecmp(l, "ConnectTo") && !connect_to_peer && invitation_name_ok(value)) {
+			connect_to_peer = xstrdup(value);
+		}
+
+		if(!strcasecmp(l, "TlsFingerprint")) {
+			free(first_chunk_tls_fp);
+			first_chunk_tls_fp = xstrdup(value);
+			continue;
+		}
+
+		if(found && (variables[i].type & VAR_HOST) && !propagated) {
 			yamlconf_host_add_line(yc, net, name, variables[i].name, value);
 		} else {
 			yamlconf_add_option_value(yc, net, found ? variables[i].name : propagated, value);
@@ -1149,11 +1161,15 @@ bool invitation_yaml_apply(yamlconf_t *yc, const char *net, const char *name, co
 	while(l && !strcasecmp(l, "Name")) {
 		if(!invitation_name_ok(value)) {
 			fprintf(stderr, "Invalid Name found in invitation.\n");
+			free(connect_to_peer);
+			free(first_chunk_tls_fp);
 			return false;
 		}
 
 		if(!strcmp(value, name)) {
 			fprintf(stderr, "Secondary chunk would overwrite our own host config file.\n");
+			free(connect_to_peer);
+			free(first_chunk_tls_fp);
 			return false;
 		}
 
@@ -1186,6 +1202,16 @@ bool invitation_yaml_apply(yamlconf_t *yc, const char *net, const char *name, co
 		free(hostname);
 	}
 
+	if(first_chunk_tls_fp && connect_to_peer && strcmp(connect_to_peer, name)) {
+		char *peer_text = yamlconf_host_text(yc, net, connect_to_peer);
+		if(!peer_text || !grep(peer_text, "TlsFingerprint")) {
+			yamlconf_host_add_line(yc, net, connect_to_peer, "TlsFingerprint", first_chunk_tls_fp);
+		}
+		free(peer_text);
+	}
+
+	free(connect_to_peer);
+	free(first_chunk_tls_fp);
 	return true;
 }
 
@@ -1385,7 +1411,8 @@ make_names:
 		// Generate a random netname, ask for a better one later.
 		ask_netname = true;
 		snprintf(temp_netname, sizeof(temp_netname), "join_%x", prng(UINT32_MAX));
-		netname = temp_netname;
+		free(netname);
+		netname = xstrdup(temp_netname);
 		goto make_names;
 	}
 
@@ -1529,8 +1556,12 @@ make_names:
 			}
 		}
 
+		if(!strcasecmp(l, "TlsFingerprint")) {
+			continue;
+		}
+
 		// Copy the safe variable to the right config file
-		fprintf((variables[i].type & VAR_HOST) ? fh : f, "%s = %s\n", l, value);
+		fprintf(((variables[i].type & VAR_HOST) && !invitation_option_propagated(l)) ? fh : f, "%s = %s\n", l, value);
 	}
 
 	fclose(f);
@@ -1667,7 +1698,8 @@ ask_netname:
 			goto ask_netname;
 		}
 
-		netname = line;
+		free(netname);
+		netname = xstrdup(line);
 		make_names(false);
 	}
 

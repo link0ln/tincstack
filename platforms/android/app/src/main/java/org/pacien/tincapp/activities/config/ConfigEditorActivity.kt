@@ -66,6 +66,7 @@ class ConfigEditorActivity : BaseActivity() {
   private lateinit var stanza: String
   private val adapter = Adapter()
   private val rows = mutableListOf<Row>()
+  private val removed = mutableListOf<Row>()
   private val dirty = java.util.concurrent.atomic.AtomicBoolean(false)
 
   /** One editable key. `original` is what the file holds; `pending` is what
@@ -88,7 +89,7 @@ class ConfigEditorActivity : BaseActivity() {
   ) {
     var pending: String? = null
     fun key() = k
-    fun value() = original
+    fun value() = pending ?: original
     fun set(v: String) { pending = v }
     fun changed() = pending != null && pending != original && !header
 
@@ -114,6 +115,7 @@ class ConfigEditorActivity : BaseActivity() {
       on, or -1. */
   private fun reload(): Int {
     rows.clear()
+    removed.clear()
     var focusAt = -1
     rows.add(Row(Row.Kind.HEADER, R.string.config_section_options, 0, stanza, null, "", "", header = true,
                  headerText = getString(R.string.config_section_options)))
@@ -127,10 +129,7 @@ class ConfigEditorActivity : BaseActivity() {
                    headerText = getString(if (isOwn) R.string.config_section_own_node else R.string.config_section_node, node)))
       if (focusNode != null && node == focusNode && focusAt < 0) focusAt = rows.size - 1
       val text = yaml.hostText(stanza, node) ?: continue
-      text.lineSequence()
-        .map { it.trim() }
-        .filter { !it.startsWith("#") && it.contains('=') }
-        .map { it.substringBefore('=').trim() to it.substringAfter('=').trim() }
+      TincYaml.parseHostKeyValues(text)
         .forEach { (k, v) -> rows.add(Row(Row.Kind.HOST, R.string.config_section_hosts, 1, stanza, node, k, v)) }
     }
     adapter.notifyDataSetChanged()
@@ -167,17 +166,25 @@ class ConfigEditorActivity : BaseActivity() {
           addBinding.addKeyNameLayout.error = getString(R.string.config_bad_key)
           return@setPositiveButton
         }
-        if (rows.any { it.key().equals(k, ignoreCase = true) }) {
+        val isOption = addBinding.addKeySection.text.toString() == sections[0]
+        val dup = rows.any {
+          !it.header && it.key().equals(k, ignoreCase = true) &&
+            if (isOption) it.kind == Row.Kind.OPTION else (it.kind == Row.Kind.HOST && it.node == own)
+        }
+        if (dup) {
           addBinding.addKeyNameLayout.error = getString(R.string.config_key_exists)
           return@setPositiveButton
         }
-        if (addBinding.addKeySection.text.toString() == sections[0]) {
-          rows.add(0, Row(Row.Kind.OPTION, R.string.config_section_options, 0, stanza, null, k, ""))
+        if (isOption) {
+          val idx = (rows.indexOfFirst { it.header && it.sectionSort == 0 } + 1).coerceAtLeast(0).coerceAtMost(rows.size)
+          rows.add(idx, Row(Row.Kind.OPTION, R.string.config_section_options, 0, stanza, null, k, ""))
+          adapter.notifyDataSetChanged()
+          binding.configList.scrollToPosition(idx)
         } else {
           rows.add(Row(Row.Kind.HOST, R.string.config_section_hosts, 1, stanza, own, k, ""))
+          adapter.notifyDataSetChanged()
+          binding.configList.scrollToPosition(rows.size - 1)
         }
-        adapter.notifyDataSetChanged()
-        binding.configList.scrollToPosition(0)
         markDirty()
       }
       .setNegativeButton(R.string.action_cancel, null)
@@ -191,7 +198,7 @@ class ConfigEditorActivity : BaseActivity() {
 
   private fun save() {
     var failed: Exception? = null
-    for (r in rows) {
+    for (r in removed + rows) {
       if (!r.changed()) continue
       try {
         when (r.kind) {
@@ -246,6 +253,8 @@ class ConfigEditorActivity : BaseActivity() {
     override fun onBindViewHolder(holder: Holder, position: Int) {
       val r = rows[position]
       val b = holder.binding
+      holder.watcher?.let { b.keyValue.removeTextChangedListener(it) }
+      holder.watcher = null
       if (r.header) {
         b.keySection.isVisible = true
         b.keySection.text = r.headerText
@@ -260,10 +269,12 @@ class ConfigEditorActivity : BaseActivity() {
       b.keyName.isVisible = true
       b.keyName.text = r.key()
       b.keyValue.setText(r.value())
-      b.keyValue.addTextChangedListener(SimpleWatcher { s ->
+      val w = SimpleWatcher { s ->
         r.set(s?.toString()?.trim().orEmpty())
         markDirty()
-      })
+      }
+      holder.watcher = w
+      b.keyValue.addTextChangedListener(w)
       b.keyRemove.isVisible = true
       b.keyRemove.setOnClickListener {
         val pos = rows.indexOf(r)
@@ -272,8 +283,9 @@ class ConfigEditorActivity : BaseActivity() {
           .setTitle(getString(R.string.config_remove_key_title, rows[pos].key()))
           .setMessage(R.string.config_remove_key_msg)
           .setPositiveButton(R.string.action_remove) { _, _ ->
-            rows[pos].set("")
-            rows.removeAt(pos)
+            val target = rows.removeAt(pos)
+            target.set("")
+            if (target.original.isNotEmpty()) removed.add(target)
             adapter.notifyDataSetChanged()
             markDirty()
           }
@@ -283,7 +295,11 @@ class ConfigEditorActivity : BaseActivity() {
     }
   }
 
-  private inner class Holder(val binding: ConfigKeyItemBinding, val isHeader: Boolean = false) : RecyclerView.ViewHolder(binding.root)
+  private inner class Holder(
+    val binding: ConfigKeyItemBinding,
+    val isHeader: Boolean = false,
+    var watcher: TextWatcher? = null,
+  ) : RecyclerView.ViewHolder(binding.root)
 
   private class SimpleWatcher(private val onChange: (Editable?) -> Unit) : TextWatcher {
     override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}

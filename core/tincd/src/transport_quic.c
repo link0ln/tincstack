@@ -259,8 +259,11 @@ static void cid_del(quic_session_t *s, const uint8_t *data, size_t len) {
 	}
 }
 
-static quic_session_t *session_by_cid(const uint8_t *data, size_t len) {
+static quic_session_t *session_by_cid_addr(const uint8_t *data, size_t len, const sockaddr_t *addr, bool match_addr) {
 	for list_each(quic_session_t, s, &quic_sessions) {
+		if(match_addr && addr && sockaddrcmp(addr, &s->peer) != 0) {
+			continue;
+		}
 		for(int i = 0; i < s->ncids; i++) {
 			if(s->cids[i].len == len && !memcmp(s->cids[i].data, data, len)) {
 				return s;
@@ -269,6 +272,10 @@ static quic_session_t *session_by_cid(const uint8_t *data, size_t len) {
 	}
 
 	return NULL;
+}
+
+static quic_session_t *session_by_cid(const uint8_t *data, size_t len) {
+	return session_by_cid_addr(data, len, NULL, false);
 }
 
 /* Classifier hook (short-header 1-RTT packets): the 8-byte destination CID. */
@@ -1653,11 +1660,39 @@ static void free_session(quic_session_t *s) {
 
 /* ---- inbound: accept and receive ----------------------------------------- */
 
+static bool quic_front_full(void) {
+	int n = 0;
+	quic_session_t *oldest_unest = NULL;
+
+	for list_each(quic_session_t, s, &quic_sessions) {
+		if(s->dead || !s->is_server || !s->c) {
+			continue;
+		}
+		if(s->c->status.web_front && !s->c->edge) {
+			n++;
+			if(!s->authenticated && (!s->conn || !ngtcp2_conn_get_handshake_completed(s->conn)) && !oldest_unest) {
+				oldest_unest = s;
+			}
+		}
+	}
+
+	if(n >= DECOY_MAX_WEB_CLIENTS) {
+		if(oldest_unest) {
+			connection_t *c = oldest_unest->c;
+			terminate_connection(c, c->edge);
+			return false;
+		}
+		return true;
+	}
+
+	return false;
+}
+
 static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr) {
 	/* Admission control as an HTTP/3 server does it: a cap on concurrent
 	   clients, not a per-second budget that leaves the eleventh Initial of a
 	   burst unanswered (decoy.h). */
-	if(decoy_front_full()) {
+	if(quic_front_full()) {
 		logger(DEBUG_CONNECTIONS, LOG_WARNING, "quic: %d web clients already, dropping a new one", DECOY_MAX_WEB_CLIENTS);
 		return;
 	}
@@ -1868,16 +1903,8 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 		return false;
 	}
 
-	quic_session_t *s = session_by_cid(vc.dcid, vc.dcidlen);
-
-	if(s && (buf[0] & 0x80) && (buf[0] & 0x30) == 0 && sockaddrcmp(&addr, &s->peer) != 0) {
-		/* An Initial packet with this DCID arrived from a different remote
-		   address. A client cannot migrate before handshake confirmation
-		   (RFC 9000 §9.3), and multiple clients may select the same initial
-		   DCID (RFC 9000 §7.2: servers must distinguish by network address).
-		   Do not route it to s; treat it as an independent connection attempt. */
-		s = NULL;
-	}
+	bool is_initial = (buf[0] & 0x80) && (buf[0] & 0x30) == 0;
+	quic_session_t *s = session_by_cid_addr(vc.dcid, vc.dcidlen, &addr, is_initial);
 
 	if(!s) {
 		/* Unknown CID. Only a well-formed v1 Initial (>= 1200 bytes, parsed by
@@ -1992,23 +2019,34 @@ bool quic_dial(connection_t *c) {
 
 	/* Destination port: the peer's host-record QuicPort (a node advertises
 	   the one it listens on), else our own QuicPort if the operator set it
-	   (a network-wide choice, propagated by invitations), else the peer's
-	   tinc port as dialled. */
+	   and the peer did not specify Port, else the peer's tinc port as dialled. */
 	sockaddr_t peer = c->address;
-	int port = quic_port_option;
-	tree = create_configuration();
+	if(!c->status.udp_fallback) {
+		int port = 0;
+		tree = create_configuration();
 
-	if(read_host_config(tree, c->name, false)) {
-		get_config_int(lookup_config(tree, "QuicPort"), &port);
-	}
+		if(read_host_config(tree, c->name, false)) {
+			if(!get_config_int(lookup_config(tree, "QuicPort"), &port)) {
+				int peer_port = 0;
+				if(!get_config_int(lookup_config(tree, "Port"), &peer_port)) {
+					port = quic_port_option;
+				}
+			}
+		} else {
+			port = quic_port_option;
+		}
 
-	exit_configuration(tree);
+		exit_configuration(tree);
 
-	if(port > 0 && port < 65536) {
-		if(peer.sa.sa_family == AF_INET) {
-			peer.in.sin_port = htons((uint16_t)port);
-		} else if(peer.sa.sa_family == AF_INET6) {
-			peer.in6.sin6_port = htons((uint16_t)port);
+		if(port > 0 && port < 65536) {
+			if(peer.sa.sa_family == AF_INET) {
+				peer.in.sin_port = htons((uint16_t)port);
+			} else if(peer.sa.sa_family == AF_INET6) {
+				peer.in6.sin6_port = htons((uint16_t)port);
+			}
+			c->address = peer;
+			free(c->hostname);
+			c->hostname = sockaddr2hostname(&c->address);
 		}
 	}
 

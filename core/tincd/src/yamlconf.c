@@ -756,7 +756,8 @@ char *yamlconf_options_text(yamlconf_t *yc, const char *net) {
 		const yval_t *v = opts->vals[i];
 		size_t nvals = (v->type == Y_SEQ) ? v->nitems : 1;
 		for(size_t k = 0; k < nvals; k++) {
-			const char *val = (v->type == Y_SEQ) ? v->items[k]->scalar
+			const char *val = (v->type == Y_SEQ)
+			                  ? (v->items[k]->type == Y_SCALAR ? bool_to_tinc(v->items[k]->scalar) : "")
 			                  : (v->type == Y_SCALAR ? bool_to_tinc(v->scalar) : "");
 			if(!val) val = "";
 			size_t need = strlen(key) + strlen(val) + 8;
@@ -821,7 +822,7 @@ bool yamlconf_has_option(yamlconf_t *yc, const char *net, const char *key) {
 
 const char *yamlconf_get_option(yamlconf_t *yc, const char *net, const char *key) {
 	const yval_t *v = map_get(map_get(net_node(yc, net), "options"), key);
-	return (v && v->type == Y_SCALAR) ? v->scalar : NULL;
+	return (v && v->type == Y_SCALAR) ? bool_to_tinc(v->scalar) : NULL;
 }
 
 const char **yamlconf_option_values(yamlconf_t *yc, const char *net, const char *key) {
@@ -832,7 +833,7 @@ const char **yamlconf_option_values(yamlconf_t *yc, const char *net, const char 
 	size_t k = 0;
 	if(v->type == Y_SEQ) {
 		for(size_t i = 0; i < v->nitems; i++)
-			if(v->items[i]->type == Y_SCALAR) arr[k++] = v->items[i]->scalar;
+			if(v->items[i]->type == Y_SCALAR) arr[k++] = bool_to_tinc(v->items[i]->scalar);
 	} else if(v->type == Y_SCALAR) {
 		arr[k++] = bool_to_tinc(v->scalar);
 	}

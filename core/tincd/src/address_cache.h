@@ -29,6 +29,7 @@ typedef struct address_cache_t {
 	struct node_t *node;
 	struct splay_tree_t *config_tree;
 	struct config_t *cfg;
+	struct config_t *lg_cfg;               /* cursor for the dnsrefresh last-good pass */
 	struct addrinfo *ai;
 	struct addrinfo *aip;
 	unsigned int tried;

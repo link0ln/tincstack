@@ -78,7 +78,10 @@ class Gateway:
 
 def _ipv4(text: str):
     try:
-        return ipaddress.IPv4Address(str(text).strip())
+        ip = ipaddress.ip_address(str(text).strip())
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped
+        return ip if isinstance(ip, ipaddress.IPv4Address) else None
     except (ValueError, TypeError):
         return None
 
@@ -135,8 +138,9 @@ def neighbour_addresses(snap, own: str) -> set[str]:
     split routes are not installed until they are all pinned."""
     out = set()
     for e in getattr(snap, "edges", []) or []:
-        if e.frm == own and _ipv4(e.address):
-            out.add(e.address)
+        ip = _ipv4(e.address) if e.frm == own else None
+        if ip:
+            out.add(str(ip))
     return out
 
 
@@ -145,12 +149,14 @@ def snapshot_addresses(snap, own: str) -> set[str]:
     sends UDP to that node, and where each meta connection in the mesh runs."""
     out = set()
     for n in (getattr(snap, "nodes", {}) or {}).values():
-        if n.name != own and not n.is_self and _ipv4(n.address):
-            out.add(n.address)
+        ip = _ipv4(n.address) if (n.name != own and not n.is_self) else None
+        if ip:
+            out.add(str(ip))
     for e in getattr(snap, "edges", []) or []:
         # an edge towards this node carries this node's own public address
-        if e.to != own and _ipv4(e.address):
-            out.add(e.address)
+        ip = _ipv4(e.address) if e.to != own else None
+        if ip:
+            out.add(str(ip))
     return out
 
 
@@ -250,17 +256,25 @@ class FullTunnel:
     state: str = "starting"
     _resolved: dict = field(default_factory=dict)   # host -> (expiry, [ip])
 
-    def _connect_to_ips(self, options: dict, hosts: dict) -> set[str]:
+    def _connect_to_ips(self, options: dict, hosts: dict, own: str = "") -> set[str]:
         out = set()
         now = self.clock()
-        for host in connect_to_hosts(options, hosts):
-            if _ipv4(host):
-                out.add(host)
+        targets = list(connect_to_hosts(options, hosts))
+        for name, text in (hosts or {}).items():
+            if own and str(name).strip() == own:
+                continue
+            for a in host_addresses(text):
+                if a not in targets:
+                    targets.append(a)
+        for host in targets:
+            ip = _ipv4(host)
+            if ip:
+                out.add(str(ip))
                 continue
             exp, ips = self._resolved.get(host, (0.0, []))
             if now >= exp:
                 try:
-                    ips = [a for a in self.system.resolve(host) if _ipv4(a)]
+                    ips = [str(_ipv4(a)) for a in self.system.resolve(host) if _ipv4(a)]
                 except OSError:
                     ips = ips or []   # keep the last answer while DNS is down
                 self._resolved[host] = (now + RESOLVE_TTL, ips)
@@ -302,7 +316,7 @@ class FullTunnel:
 
         local = sysm.local_nets()
         vpn = vpn_networks(snap, options)
-        must = {a for a in neighbour_addresses(snap, own) | self._connect_to_ips(options, hosts)
+        must = {a for a in neighbour_addresses(snap, own) | self._connect_to_ips(options, hosts, own)
                 if pinnable(a, local, vpn)}
         want = must | {a for a in snapshot_addresses(snap, own) if pinnable(a, local, vpn)}
 
@@ -321,6 +335,12 @@ class FullTunnel:
             else:
                 self.pins.pop(ip, None)
                 failed[ip] = msg
+
+        # Prune stale pins for endpoints that moved or are no longer in the snapshot/config
+        for ip in sorted(set(self.pins) - want):
+            old_gw = self.pins.pop(ip)
+            ok, msg = sysm.delete_route(f"{ip}/32", old_gw.ifindex, old_gw.via)
+            log.append(f"full tunnel: unpinned stale {ip}" if ok else f"full tunnel: unpinning {ip}: {msg}")
 
         # 2. then the split routes, and only when the exit can take them
         usable, why = exit_ready(snap, self.exit_node)
@@ -455,6 +475,8 @@ class Win32(System):
         out = []
         for i in range(count):
             r = rows[i]
+            if int(r.type) == 2:   # MIB_IPROUTE_TYPE_INVALID
+                continue
             try:
                 net = ipaddress.IPv4Network(f"{self._addr(r.dest)}/{self._addr(r.mask)}", strict=False)
             except ValueError:

@@ -640,7 +640,7 @@ size_t https_record_padding_cb(SSL *ssl, int type, size_t len, void *arg) {
 	(void) ssl;
 	https_session_t *s = arg;
 
-	if(!s || type != SSL3_RT_APPLICATION_DATA || s->pad_budget == 0) {
+	if(!s || type != SSL3_RT_APPLICATION_DATA || s->pad_budget == 0 || len < 64) {
 		return 0;
 	}
 
@@ -1175,23 +1175,36 @@ bool https_dial(connection_t *c) {
 	}
 
 	/* Destination port: the peer's host-record HttpsPort (a node advertises
-	   the one it listens on), else our own HttpsPort if the operator set it,
-	   else the peer's tinc port as dialled -- whose front still takes TLS. */
+	   the one it listens on), else our own HttpsPort if the operator set it
+	   and the peer did not specify Port, else the peer's tinc port as dialled
+	   -- whose front still takes TLS. */
 	sockaddr_t peer = c->address;
-	int port = https_port_option;
-	splay_tree_t *tree = create_configuration();
+	if(!c->status.udp_fallback) {
+		int port = 0;
+		splay_tree_t *tree = create_configuration();
 
-	if(read_host_config(tree, c->name, false)) {
-		get_config_int(lookup_config(tree, "HttpsPort"), &port);
-	}
+		if(read_host_config(tree, c->name, false)) {
+			if(!get_config_int(lookup_config(tree, "HttpsPort"), &port)) {
+				int peer_port = 0;
+				if(!get_config_int(lookup_config(tree, "Port"), &peer_port)) {
+					port = https_port_option;
+				}
+			}
+		} else {
+			port = https_port_option;
+		}
 
-	exit_configuration(tree);
+		exit_configuration(tree);
 
-	if(port > 0 && port < 65536) {
-		if(peer.sa.sa_family == AF_INET) {
-			peer.in.sin_port = htons((uint16_t)port);
-		} else if(peer.sa.sa_family == AF_INET6) {
-			peer.in6.sin6_port = htons((uint16_t)port);
+		if(port > 0 && port < 65536) {
+			if(peer.sa.sa_family == AF_INET) {
+				peer.in.sin_port = htons((uint16_t)port);
+			} else if(peer.sa.sa_family == AF_INET6) {
+				peer.in6.sin6_port = htons((uint16_t)port);
+			}
+			c->address = peer;
+			free(c->hostname);
+			c->hostname = sockaddr2hostname(&c->address);
 		}
 	}
 

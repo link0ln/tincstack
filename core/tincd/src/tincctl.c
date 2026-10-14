@@ -2290,6 +2290,9 @@ static int cmd_config(int argc, char *argv[]) {
 		} else {
 			if((size_t)snprintf(tmpfile, sizeof(tmpfile), "%s.config.tmp", filename) >= sizeof(tmpfile)) {
 				fprintf(stderr, "Filename too long: %s.config.tmp\n", filename);
+				fclose(f);
+				yamlconf_unlock();
+				free(yaml_host);
 				return 1;
 			}
 
@@ -2356,6 +2359,10 @@ static int cmd_config(int argc, char *argv[]) {
 				// Otherwise, replace.
 				if(fprintf(tf, "%s = %s\n", variable, value) < 0) {
 					fprintf(stderr, "Error writing to temporary file %s: %s\n", tmpfile, strerror(errno));
+					fclose(f);
+					fclose(tf);
+					yamlconf_unlock();
+					free(yaml_host);
 					return 1;
 				}
 
@@ -2373,6 +2380,10 @@ static int cmd_config(int argc, char *argv[]) {
 			// Copy original line...
 			if(fputs(buf1, tf) < 0) {
 				fprintf(stderr, "Error writing to temporary file %s: %s\n", tmpfile, strerror(errno));
+				fclose(f);
+				fclose(tf);
+				yamlconf_unlock();
+				free(yaml_host);
 				return 1;
 			}
 
@@ -2380,6 +2391,10 @@ static int cmd_config(int argc, char *argv[]) {
 			if(*buf1 && buf1[strlen(buf1) - 1] != '\n') {
 				if(fputc('\n', tf) < 0) {
 					fprintf(stderr, "Error writing to temporary file %s: %s\n", tmpfile, strerror(errno));
+					fclose(f);
+					fclose(tf);
+					yamlconf_unlock();
+					free(yaml_host);
 					return 1;
 				}
 			}
@@ -2389,11 +2404,22 @@ static int cmd_config(int argc, char *argv[]) {
 	// Make sure we read everything...
 	if(ferror(f) || !feof(f)) {
 		fprintf(stderr, "Error while reading from configuration file %s: %s\n", filename, strerror(errno));
+		fclose(f);
+		if(tf) {
+			fclose(tf);
+		}
+		yamlconf_unlock();
+		free(yaml_host);
 		return 1;
 	}
 
 	if(fclose(f)) {
 		fprintf(stderr, "Error closing configuration file %s: %s\n", filename, strerror(errno));
+		if(tf) {
+			fclose(tf);
+		}
+		yamlconf_unlock();
+		free(yaml_host);
 		return 1;
 	}
 
@@ -2401,6 +2427,9 @@ static int cmd_config(int argc, char *argv[]) {
 	if((action == ADD && !found) || (action == SET && !set)) {
 		if(fprintf(tf, "%s = %s\n", variable, value) < 0) {
 			fprintf(stderr, "Error writing to temporary file %s: %s\n", tmpfile, strerror(errno));
+			fclose(tf);
+			yamlconf_unlock();
+			free(yaml_host);
 			return 1;
 		}
 	}

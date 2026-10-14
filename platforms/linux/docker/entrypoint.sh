@@ -150,6 +150,7 @@ address=
 if [[ -n $PUBLIC_ADDRESS ]]; then
     case $PUBLIC_ADDRESS in
         \[*\]:*) address="${PUBLIC_ADDRESS%%\]:*}"; address="${address#\[} ${PUBLIC_ADDRESS##*\]:}" ;;   # [v6]:port
+        \[*\])   address="${PUBLIC_ADDRESS#\[}"; address="${address%\]}" ;;                                # [v6]
         *:*:*)   address=$PUBLIC_ADDRESS ;;                                                                # bare v6
         *:*)     address="${PUBLIC_ADDRESS%%:*} ${PUBLIC_ADDRESS##*:}" ;;                                  # host:port
         *)       address=$PUBLIC_ADDRESS ;;
@@ -211,8 +212,13 @@ fi
 # The first check runs a minute after start, not one interval after it: a node
 # restarted more often than CERT_RENEW_INTERVAL would otherwise never check.
 renew_loop() {
-    local domain token out delay=$(( CERT_RENEW_INTERVAL < 60 ? CERT_RENEW_INTERVAL : 60 ))
-    while sleep "$delay"; do
+    local domain token out sleep_pid delay=$(( CERT_RENEW_INTERVAL < 60 ? CERT_RENEW_INTERVAL : 60 ))
+    trap '[[ -z ${sleep_pid:-} ]] || kill -TERM "$sleep_pid" 2>/dev/null || true; exit 0' TERM INT
+    while true; do
+        sleep "$delay" &
+        sleep_pid=$!
+        wait "$sleep_pid" || break
+        kill -0 "$daemon" 2>/dev/null || break
         delay=$CERT_RENEW_INTERVAL
         domain=$(cli get CertDomain 2>/dev/null || true)
         token=$(cli get CloudflareToken 2>/dev/null || true)   # never logged

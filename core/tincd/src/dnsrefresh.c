@@ -60,6 +60,8 @@ typedef struct dnsrefresh_job_t {
 	char *port;                              /* port from the Address statement / Port option */
 	sockaddr_t last_good;                    /* last live answer, persisted (sa_family 0 = none) */
 	bool has_last_good;
+	sockaddr_t *addrs;                       /* all addresses from latest resolution */
+	size_t naddrs;
 	struct dnsrefresh_job_t *next;
 } dnsrefresh_job_t;
 
@@ -67,9 +69,35 @@ typedef struct dnsrefresh_result_t {
 	char *node_name;
 	char *hostname;
 	sockaddr_t addr;                         /* first address of the answer (priority order) */
+	sockaddr_t *addrs;                       /* all addresses returned by getaddrinfo */
+	size_t naddrs;
+	int gai_err;                             /* getaddrinfo error code when !ok */
 	bool ok;                                 /* false = the name did not resolve */
 	struct dnsrefresh_result_t *next;
 } dnsrefresh_result_t;
+
+static void dnsrefresh_free_job_list(dnsrefresh_job_t *list) {
+	while(list) {
+		dnsrefresh_job_t *next = list->next;
+		free(list->node_name);
+		free(list->hostname);
+		free(list->port);
+		free(list->addrs);
+		free(list);
+		list = next;
+	}
+}
+
+static void dnsrefresh_free_result_list(dnsrefresh_result_t *list) {
+	while(list) {
+		dnsrefresh_result_t *next = list->next;
+		free(list->node_name);
+		free(list->hostname);
+		free(list->addrs);
+		free(list);
+		list = next;
+	}
+}
 
 /* Shared between the event loop and the worker. All fields except the
    queues are written only from the event loop; the queues use the mutex. */
@@ -98,10 +126,11 @@ static int dnsrefresh_pair[2] = {-1, -1};
 
 #ifdef HAVE_WINDOWS
 static bool dnsrefresh_make_pair(void) {
-	struct sockaddr_in inaddr;
+	struct sockaddr_in inaddr, peeraddr;
 	SOCKET sock = INVALID_SOCKET;
 	SOCKET peer = INVALID_SOCKET;
 	int sock_size = sizeof(inaddr);
+	int peer_size = sizeof(peeraddr);
 
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
 
@@ -127,7 +156,20 @@ static bool dnsrefresh_make_pair(void) {
 		return false;
 	}
 
-	if(connect(peer, (struct sockaddr *)&inaddr, sock_size) == SOCKET_ERROR) {
+	memset(&peeraddr, 0, sizeof(peeraddr));
+	peeraddr.sin_family = AF_INET;
+	peeraddr.sin_addr.s_addr = htonl(0x7f000001);
+
+	if(bind(peer, (struct sockaddr *)&peeraddr, sizeof(peeraddr)) == SOCKET_ERROR) {
+		closesocket(sock);
+		closesocket(peer);
+		return false;
+	}
+
+	getsockname(peer, (struct sockaddr *)&peeraddr, &peer_size);
+
+	if(connect(peer, (struct sockaddr *)&inaddr, sock_size) == SOCKET_ERROR ||
+	                connect(sock, (struct sockaddr *)&peeraddr, peer_size) == SOCKET_ERROR) {
 		closesocket(sock);
 		closesocket(peer);
 		return false;
@@ -136,6 +178,8 @@ static bool dnsrefresh_make_pair(void) {
 	/* Datagram: nothing is ever buffered; wake bytes are drained below. */
 	u_long nb = 1;
 	ioctlsocket(sock, FIONBIO, &nb);
+	nb = 1;
+	ioctlsocket(peer, FIONBIO, &nb);
 
 	dnsrefresh_pair[0] = (int)sock;
 	dnsrefresh_pair[1] = (int)peer;
@@ -154,8 +198,8 @@ static bool dnsrefresh_make_pair(void) {
 		int flags = fcntl(dnsrefresh_pair[i], F_GETFL, 0);
 
 		if(flags < 0 || fcntl(dnsrefresh_pair[i], F_SETFL, flags | O_NONBLOCK) < 0) {
-			close(dnsrefresh_pair[0]);
-			close(dnsrefresh_pair[1]);
+			closesocket(dnsrefresh_pair[0]);
+			closesocket(dnsrefresh_pair[1]);
 			dnsrefresh_pair[0] = dnsrefresh_pair[1] = -1;
 			return false;
 		}
@@ -308,6 +352,9 @@ static void *dnsrefresh_thread(void *arg) {
 
 				if(sa.sa.sa_family != AF_UNKNOWN) {
 					r->addr = sa;
+					r->addrs = xmalloc(sizeof(sockaddr_t));
+					r->addrs[0] = sa;
+					r->naddrs = 1;
 					r->ok = true;
 				} else {
 					r->ok = false;
@@ -322,14 +369,31 @@ static void *dnsrefresh_thread(void *arg) {
 				int err = getaddrinfo(j->hostname, j->port ? j->port : "655", &hint, &ai);
 
 				if(!err && ai) {
-					/* The resolver's first answer, in its priority order. */
+					/* The resolver's first answer, in its priority order, plus all
+					   returned records so multi-A/AAAA names do not flap. */
 					memcpy(&r->addr, ai->ai_addr, ai->ai_addrlen);
+					size_t count = 0;
+					for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
+						if(aip->ai_addr && aip->ai_addrlen <= sizeof(sockaddr_t)) {
+							count++;
+						}
+					}
+					if(count > 0) {
+						r->addrs = xzalloc(count * sizeof(sockaddr_t));
+						for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
+							if(aip->ai_addr && aip->ai_addrlen <= sizeof(sockaddr_t)) {
+								memcpy(&r->addrs[r->naddrs++], aip->ai_addr, aip->ai_addrlen);
+							}
+						}
+					}
 					r->ok = true;
 					freeaddrinfo(ai);
 				} else {
 					r->ok = false;
-					logger(DEBUG_CONNECTIONS, LOG_DEBUG, "dnsrefresh: %s did not resolve: %s", j->hostname,
-					       err ? gai_strerror(err) : "empty answer");
+					r->gai_err = err;
+					if(ai) {
+						freeaddrinfo(ai);
+					}
 				}
 			}
 
@@ -339,14 +403,7 @@ static void *dnsrefresh_thread(void *arg) {
 
 		/* Free the batch; results cross the boundary and are freed by the
 		   event loop. */
-		while(batch) {
-			dnsrefresh_job_t *next = batch->next;
-			free(batch->node_name);
-			free(batch->hostname);
-			free(batch->port);
-			free(batch);
-			batch = next;
-		}
+		dnsrefresh_free_job_list(batch);
 
 		/* Publish the results under the mutex FIRST, then wake the loop.
 		   The old order (wake, then publish) raced: the loop drained the
@@ -370,10 +427,12 @@ static void *dnsrefresh_thread(void *arg) {
 
 		pthread_mutex_unlock(&dnsrefresh.mutex);
 
-		if(write(dnsrefresh_pair[1], "R", 1) < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+		if(send(dnsrefresh_pair[1], "R", 1, 0) < 0 && !sockwouldblock(sockerrno)) {
 			/* Loop gone; it will reap us at shutdown. The results stay
 			   on the done list; nothing leaks per tick. */
 		}
+
+		pthread_mutex_lock(&dnsrefresh.mutex);
 	}
 
 	pthread_mutex_unlock(&dnsrefresh.mutex);
@@ -388,14 +447,8 @@ static void *dnsrefresh_thread(void *arg) {
 static dnsrefresh_job_t *dnsrefresh_jobs = NULL;
 
 static void dnsrefresh_free_jobs(void) {
-	while(dnsrefresh_jobs) {
-		dnsrefresh_job_t *next = dnsrefresh_jobs->next;
-		free(dnsrefresh_jobs->node_name);
-		free(dnsrefresh_jobs->hostname);
-		free(dnsrefresh_jobs->port);
-		free(dnsrefresh_jobs);
-		dnsrefresh_jobs = next;
-	}
+	dnsrefresh_free_job_list(dnsrefresh_jobs);
+	dnsrefresh_jobs = NULL;
 }
 
 static bool dnsrefresh_job_match(const dnsrefresh_job_t *j, const char *node_name, const char *hostname) {
@@ -407,11 +460,13 @@ static bool dnsrefresh_job_match(const dnsrefresh_job_t *j, const char *node_nam
    classic mode from hosts/<name>. */
 
 static void dnsrefresh_rebuild(void) {
-	dnsrefresh_free_jobs();
+	dnsrefresh_job_t *old_jobs = dnsrefresh_jobs;
+	dnsrefresh_jobs = NULL;
 
-	/* Reload persisted last-good endpoints first: a job found again below
-	   re-attaches to its saved address. */
-	dnsrefresh_load_state(&dnsrefresh_jobs);
+	/* Also load persisted last-good endpoints from disk in case this is the
+	   first rebuild since startup. */
+	dnsrefresh_job_t *saved_disk = NULL;
+	dnsrefresh_load_state(&saved_disk);
 
 	for splay_each(node_t, n, &node_tree) {
 		if(n == myself) {
@@ -464,6 +519,30 @@ static void dnsrefresh_rebuild(void) {
 						job->node_name = xstrdup(n->name);
 						job->hostname = xstrdup(address);
 						job->port = xstrdup(port ? port : "655");
+
+						for(dnsrefresh_job_t *oj = old_jobs; oj; oj = oj->next) {
+							if(dnsrefresh_job_match(oj, n->name, address)) {
+								job->last_good = oj->last_good;
+								job->has_last_good = oj->has_last_good;
+								if(oj->addrs && oj->naddrs > 0) {
+									job->addrs = xmalloc(oj->naddrs * sizeof(sockaddr_t));
+									memcpy(job->addrs, oj->addrs, oj->naddrs * sizeof(sockaddr_t));
+									job->naddrs = oj->naddrs;
+								}
+								break;
+							}
+						}
+
+						if(!job->has_last_good) {
+							for(dnsrefresh_job_t *sj = saved_disk; sj; sj = sj->next) {
+								if(dnsrefresh_job_match(sj, n->name, address) && sj->has_last_good) {
+									job->last_good = sj->last_good;
+									job->has_last_good = true;
+									break;
+								}
+							}
+						}
+
 						job->next = dnsrefresh_jobs;
 						dnsrefresh_jobs = job;
 					}
@@ -478,6 +557,9 @@ static void dnsrefresh_rebuild(void) {
 
 		exit_configuration(config);
 	}
+
+	dnsrefresh_free_job_list(old_jobs);
+	dnsrefresh_free_job_list(saved_disk);
 }
 
 static void dnsrefresh_queue_batch(void) {
@@ -500,38 +582,67 @@ static void dnsrefresh_queue_batch(void) {
 
 	pthread_mutex_lock(&dnsrefresh.mutex);
 	dnsrefresh_result_t *stale = dnsrefresh.pending_done;
+	dnsrefresh_job_t *old_pending = dnsrefresh.pending;
 	dnsrefresh.pending_done = NULL;
 	dnsrefresh.pending = copy;
 	pthread_cond_signal(&dnsrefresh.work);
 	pthread_mutex_unlock(&dnsrefresh.mutex);
 
-	while(stale) {
-		dnsrefresh_result_t *next = stale->next;
-		free(stale->node_name);
-		free(stale->hostname);
-		free(stale);
-		stale = next;
+	dnsrefresh_free_job_list(old_pending);
+	dnsrefresh_free_result_list(stale);
+}
+
+static bool dnsrefresh_ip_equal(const sockaddr_t *a, const sockaddr_t *b) {
+	if(a->sa.sa_family != b->sa.sa_family) {
+		return false;
 	}
+
+	if(a->sa.sa_family == AF_INET) {
+		return a->in.sin_addr.s_addr == b->in.sin_addr.s_addr;
+	}
+
+	if(a->sa.sa_family == AF_INET6) {
+		return !memcmp(&a->in6.sin6_addr, &b->in6.sin6_addr, sizeof(struct in6_addr));
+	}
+
+	return false;
 }
 
 /* Does the fresh answer still list the address a live connection is on? */
 
 static bool dnsrefresh_answer_lists(const dnsrefresh_result_t *r, const sockaddr_t *sa) {
-	/* The result carries only the first address (the one we follow). The
-	   live endpoint's PORT is not comparable: an accepted connection sits
-	   on the peer's ephemeral source port, while the resolved address
-	   carries the service port. Compare address family + IP only; the
-	   service port rides along in the resolved sockaddr for the re-dial. */
-	if(!r->ok || r->addr.sa.sa_family != sa->sa.sa_family) {
+	/* The live endpoint's PORT is not comparable: an accepted connection sits
+	   on the peer's ephemeral source port, and a carrier connection may use
+	   HttpsPort/QuicPort/ObfsPort, while the resolved address carries the
+	   service port. Compare address family + IP across all returned records. */
+	if(!r->ok) {
 		return false;
 	}
 
-	if(r->addr.sa.sa_family == AF_INET) {
-		return r->addr.in.sin_addr.s_addr == sa->in.sin_addr.s_addr;
+	if(r->addrs && r->naddrs > 0) {
+		for(size_t i = 0; i < r->naddrs; i++) {
+			if(dnsrefresh_ip_equal(&r->addrs[i], sa)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
-	if(r->addr.sa.sa_family == AF_INET6) {
-		return !memcmp(&r->addr.in6.sin6_addr, &sa->in6.sin6_addr, sizeof(struct in6_addr));
+	return dnsrefresh_ip_equal(&r->addr, sa);
+}
+
+static bool dnsrefresh_job_lists(const dnsrefresh_job_t *j, const sockaddr_t *sa) {
+	if(j->addrs && j->naddrs > 0) {
+		for(size_t i = 0; i < j->naddrs; i++) {
+			if(dnsrefresh_ip_equal(&j->addrs[i], sa)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	if(j->has_last_good) {
+		return dnsrefresh_ip_equal(&j->last_good, sa);
 	}
 
 	return false;
@@ -553,7 +664,16 @@ static void dnsrefresh_apply(dnsrefresh_result_t *r) {
 	}
 
 	if(r->ok) {
-		bool changed = !job->has_last_good || sockaddrcmp(&job->last_good, &r->addr);
+		free(job->addrs);
+		job->addrs = NULL;
+		job->naddrs = 0;
+		if(r->addrs && r->naddrs > 0) {
+			job->addrs = xmalloc(r->naddrs * sizeof(sockaddr_t));
+			memcpy(job->addrs, r->addrs, r->naddrs * sizeof(sockaddr_t));
+			job->naddrs = r->naddrs;
+		}
+
+		bool changed = !job->has_last_good || !dnsrefresh_answer_lists(r, &job->last_good);
 
 		if(changed) {
 			char old[128] = "(none)";
@@ -584,7 +704,8 @@ static void dnsrefresh_apply(dnsrefresh_result_t *r) {
 			dnsrefresh_save_state(dnsrefresh_jobs);
 		}
 	} else {
-		logger(DEBUG_CONNECTIONS, LOG_INFO, "dnsrefresh: %s (%s) did not resolve; keeping the last-known address", r->node_name, r->hostname);
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "dnsrefresh: %s (%s) did not resolve (%s); keeping the last-known address",
+		       r->node_name, r->hostname, r->gai_err ? gai_strerror(r->gai_err) : "empty answer");
 	}
 
 	/* The owner's rule: when DNS no longer lists the address a live meta
@@ -599,7 +720,18 @@ static void dnsrefresh_apply(dnsrefresh_result_t *r) {
 
 	sockaddr_t *live = &n->connection->address;
 
-	if(!dnsrefresh_answer_lists(r, live)) {
+	/* Check if ANY watched DNS name for this node still lists the live IP. */
+	bool any_job_lists = dnsrefresh_answer_lists(r, live);
+	if(!any_job_lists) {
+		for(dnsrefresh_job_t *j = dnsrefresh_jobs; j; j = j->next) {
+			if(j != job && !strcmp(j->node_name, r->node_name) && dnsrefresh_job_lists(j, live)) {
+				any_job_lists = true;
+				break;
+			}
+		}
+	}
+
+	if(!any_job_lists) {
 		char *old = NULL;
 		char *oldp = NULL;
 		char *new = NULL;
@@ -642,11 +774,33 @@ static void dnsrefresh_handle_results(void) {
 	dnsrefresh.pending_done = NULL;
 	pthread_mutex_unlock(&dnsrefresh.mutex);
 
+	/* First pass: update job->addrs for all results in the batch so
+	   multi-Address nodes have complete state before checking connections. */
+	for(dnsrefresh_result_t *r = results; r; r = r->next) {
+		if(!r->ok) {
+			continue;
+		}
+		for(dnsrefresh_job_t *j = dnsrefresh_jobs; j; j = j->next) {
+			if(dnsrefresh_job_match(j, r->node_name, r->hostname)) {
+				free(j->addrs);
+				j->addrs = NULL;
+				j->naddrs = 0;
+				if(r->addrs && r->naddrs > 0) {
+					j->addrs = xmalloc(r->naddrs * sizeof(sockaddr_t));
+					memcpy(j->addrs, r->addrs, r->naddrs * sizeof(sockaddr_t));
+					j->naddrs = r->naddrs;
+				}
+				break;
+			}
+		}
+	}
+
 	while(results) {
 		dnsrefresh_result_t *next = results->next;
 		dnsrefresh_apply(results);
 		free(results->node_name);
 		free(results->hostname);
+		free(results->addrs);
 		free(results);
 		results = next;
 	}
@@ -658,7 +812,7 @@ static void dnsrefresh_io_cb(void *data, int flags) {
 	char buf[64];
 
 	/* Drain the wake byte(s); datagram socketpair cannot buffer much. */
-	while(read(dnsrefresh_pair[0], buf, sizeof(buf)) > 0) {
+	while(recv(dnsrefresh_pair[0], buf, sizeof(buf), 0) > 0) {
 	}
 
 	dnsrefresh_handle_results();
@@ -691,14 +845,17 @@ void dnsrefresh_init(void) {
 		return;
 	}
 
+	dnsrefresh.stop = false;
 	pthread_mutex_init(&dnsrefresh.mutex, NULL);
 	pthread_cond_init(&dnsrefresh.work, NULL);
 
 	if(pthread_create(&dnsrefresh.thread, NULL, dnsrefresh_thread, NULL)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "dnsrefresh: could not start the resolver thread; DNS polling is off");
-		close(dnsrefresh_pair[0]);
-		close(dnsrefresh_pair[1]);
+		closesocket(dnsrefresh_pair[0]);
+		closesocket(dnsrefresh_pair[1]);
 		dnsrefresh_pair[0] = dnsrefresh_pair[1] = -1;
+		pthread_mutex_destroy(&dnsrefresh.mutex);
+		pthread_cond_destroy(&dnsrefresh.work);
 		return;
 	}
 
@@ -728,14 +885,19 @@ void dnsrefresh_exit(void) {
 	pthread_cond_signal(&dnsrefresh.work);
 	pthread_mutex_unlock(&dnsrefresh.mutex);
 
-	if(write(dnsrefresh_pair[1], "S", 1) < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+	if(send(dnsrefresh_pair[1], "S", 1, 0) < 0 && !sockwouldblock(sockerrno)) {
 		/* The loop is gone; pthread_join below still reaps the thread. */
 	}
 
 	pthread_join(dnsrefresh.thread, NULL);
 
-	close(dnsrefresh_pair[0]);
-	close(dnsrefresh_pair[1]);
+	dnsrefresh_free_job_list(dnsrefresh.pending);
+	dnsrefresh.pending = NULL;
+	dnsrefresh_free_result_list(dnsrefresh.pending_done);
+	dnsrefresh.pending_done = NULL;
+
+	closesocket(dnsrefresh_pair[0]);
+	closesocket(dnsrefresh_pair[1]);
 	dnsrefresh_pair[0] = dnsrefresh_pair[1] = -1;
 	pthread_mutex_destroy(&dnsrefresh.mutex);
 	pthread_cond_destroy(&dnsrefresh.work);
@@ -760,7 +922,7 @@ void dnsrefresh_reload(void) {
 		timeout_del(&dnsrefresh_timer);
 		logger(DEBUG_CONNECTIONS, LOG_NOTICE, "dnsrefresh: disabled (DnsRefreshInterval = 0)");
 		return;
-        }
+	}
 
 	timeout_set(&dnsrefresh_timer, &(struct timeval) {
 		dnsrefresh_interval, jitter()

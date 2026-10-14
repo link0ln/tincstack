@@ -311,11 +311,7 @@ class Runtime:
         except Exception as e:
             self._log_line(net_name, f"[tincmgr] wintun MTU: import failed: {e}")
             return
-        aliases = [net_name]
-        for k in ("WintunInterface", "Interface"):
-            v = nc.options.get(k)
-            if v and str(v) not in aliases:
-                aliases.append(str(v))
+        aliases = routes.adapter_aliases(nc.options, net_name)
         try:
             ok, msg = netmtu.set_interface_mtu(aliases, mtu)
         except Exception as e:

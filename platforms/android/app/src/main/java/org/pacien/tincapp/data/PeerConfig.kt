@@ -35,11 +35,7 @@ data class PeerConfig(
 ) {
   /** `Key = value` pairs, in file order, without comments/blank/PEM lines. */
   val vars: List<Pair<String, String>> by lazy {
-    text.lineSequence()
-      .map { it.trim() }
-      .filter { !it.startsWith("#") && it.contains('=') }
-      .map { it.substringBefore('=').trim() to it.substringAfter('=').trim() }
-      .toList()
+    TincYaml.parseHostKeyValues(text)
   }
 
   private fun first(key: String): String? =
@@ -55,9 +51,10 @@ data class PeerConfig(
   /** Meta port (`Port`), or null when absent (the daemon defaults to 655). */
   val port: String? get() = first("Port")
 
-  /** https/quic front ports, or null when absent. */
+  /** https/quic/obfs front ports, or null when absent. */
   val httpsPort: String? get() = first("HttpsPort")
   val quicPort: String? get() = first("QuicPort")
+  val obfsPort: String? get() = first("ObfsPort")
 
   val ed25519PublicKey: String? get() = first("Ed25519PublicKey")
   val subnet: List<String> get() = vars.filter { it.first.equals("Subnet", ignoreCase = true) }.map { it.second }
@@ -66,7 +63,7 @@ data class PeerConfig(
     companion object {
       private val HOSTNAME = Regex("""^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$""")
       private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
-      private val IPV6 = Regex("""^[0-9a-fA-F:]+$""")
+      private val IPV6 = Regex("""^[0-9a-fA-F:.]+$""")
 
       /** Null when OK, a user-presentable problem otherwise. */
       fun address(v: String?): String? = when {
@@ -74,7 +71,7 @@ data class PeerConfig(
         v.contains(':') && !v.contains("::") && v.count { it == ':' } < 2 -> "not a valid address"
         v == "localhost" || v == "*" -> null
         IPV4.matches(v) -> v.split('.').firstOrNull { it.toInt() > 255 }?.let { "octet $it > 255" }
-        IPV6.matches(v) -> null
+        v.contains(':') && IPV6.matches(v) && !v.contains(":::") && v.count { it == ':' } in 2..7 -> null
         HOSTNAME.matches(v) -> null
         else -> "not an IP or a hostname"
       }
@@ -84,6 +81,13 @@ data class PeerConfig(
         v.isNullOrBlank() -> null
         v.toIntOrNull()?.let { it in 1..65535 } == true -> null
         else -> "port is 1-65535"
+      }
+
+      /** Null when OK; a front port is 0..65535 decimal (0 = off). */
+      fun frontPort(v: String?): String? = when {
+        v.isNullOrBlank() -> null
+        v.toIntOrNull()?.let { it in 0..65535 } == true -> null
+        else -> "port is 0-65535"
       }
     }
   }

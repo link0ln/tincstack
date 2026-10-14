@@ -443,12 +443,13 @@ void read_config_options(splay_tree_t *config_tree, const char *prefix) {
 
 		if(prefix) {
 			new->variable = xstrdup(cfg->variable + prefix_len + 1);
+			xasprintf(&new->file, "%s" SLASH "hosts" SLASH "%s", confbase ? confbase : "", prefix);
 		} else {
 			new->variable = xstrdup(cfg->variable);
+			new->file = NULL;
 		}
 
 		new->value = xstrdup(cfg->value);
-		new->file = NULL;
 		new->line = cfg->line;
 
 		config_add(config_tree, new);
@@ -476,14 +477,20 @@ bool read_server_config(splay_tree_t *config_tree) {
 		return false;
 	}
 
+	if(yamlconf_path) {
+		return true;
+	}
+
 	// We will try to read the conf files in the "conf.d" dir, if it exists
 	char dname[PATH_MAX];
 	snprintf(dname, sizeof(dname), "%s" SLASH "conf.d", confbase);
 	DIR *dir = opendir(dname);
 
-	if(!dir && errno == ENOENT) {
-		return true;
-	} else {
+	if(!dir) {
+		if(errno == ENOENT || errno == ENOTDIR) {
+			return true;
+		}
+
 		logger(DEBUG_ALWAYS, LOG_ERR, "Failed to read `%s': %s", dname, strerror(errno));
 		return false;
 	}
@@ -498,16 +505,19 @@ bool read_server_config(splay_tree_t *config_tree) {
 		if(l > 5 && !strcmp(".conf", & ep->d_name[ l - 5 ])) {
 			if((size_t)snprintf(fname, sizeof(fname), "%s" SLASH "%s", dname, ep->d_name) >= sizeof(fname)) {
 				logger(DEBUG_ALWAYS, LOG_ERR, "Pathname too long: %s/%s", dname, ep->d_name);
+				closedir(dir);
 				return false;
 			}
 
 			if(!read_config_file(config_tree, fname, true)) {
 				logger(DEBUG_ALWAYS, LOG_ERR, "Failed to read `%s': %s", fname, strerror(errno));
+				closedir(dir);
 				return false;
 			}
 		}
 	}
 
+	closedir(dir);
 	return true;
 }
 

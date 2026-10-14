@@ -19,6 +19,14 @@ cmd = [
     "--match=" + PREFIX + "*",
 ]
 
-result = subp.run(cmd, stdout=subp.PIPE, encoding="utf-8", check=True)
-version = result.stdout.strip().replace("release-", "", 1)
+try:
+    result = subp.run(cmd, stdout=subp.PIPE, stderr=subp.DEVNULL, encoding="utf-8", check=True)
+    version = result.stdout.strip().replace("release-", "", 1)
+except (FileNotFoundError, subp.CalledProcessError):
+    version_file = path.join(SOURCE_ROOT, "VERSION")
+    if path.exists(version_file):
+        with open(version_file, "r", encoding="utf-8") as f:
+            version = f.read().strip()
+    else:
+        version = "1.1pre18"
 print(version)

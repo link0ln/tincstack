@@ -43,10 +43,11 @@ services:
       - "${PORT:-655}:${PORT:-655}/tcp"
       - "${PORT:-655}:${PORT:-655}/udp"
       # The https and quic fronts (docs/transports.md 3.1): TLS and QUIC on 443,
-      # where they look like the web, not on tinc's port. The node advertises
-      # this port to its peers, so it is published as is. Host port 443 taken
-      # by a web server: set FRONT_PORT to a free one (8443). A router that
-      # forwards another external port to it: set FRONT_PORT_PUBLIC.
+      # where they look like the web, not on tinc's port. All meta and VPN data
+      # for the negotiated carrier flow over its single port (FRONT_PORT for
+      # https/quic, OBFS_PORT or PORT for obfs, PORT for sf/plain). Host port
+      # 443 taken by a web server: set FRONT_PORT to a free one (8443). A router
+      # that forwards another external port to it: set FRONT_PORT_PUBLIC.
       - "${FRONT_PORT:-443}:${FRONT_PORT:-443}/tcp"
       - "${FRONT_PORT:-443}:${FRONT_PORT:-443}/udp"
     volumes:

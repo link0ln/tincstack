@@ -2540,6 +2540,9 @@ bool decoy_front_full(void) {
 	int n = 0;
 
 	for list_each(connection_t, c, &connection_list) {
+		if(c->transport && c->transport->id == TRANSPORT_QUIC) {
+			continue;
+		}
 		if(c->status.web_front && !c->edge && ++n >= DECOY_MAX_WEB_CLIENTS) {
 			return true;
 		}

@@ -156,35 +156,34 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 	if(!cache->config_tree) {
 		cache->config_tree = create_configuration();
 		read_host_config(cache->config_tree, cache->node->name, false);
+		cache->cfg = lookup_config(cache->config_tree, "Address");
+		cache->lg_cfg = cache->lg_tried ? NULL : cache->cfg;
+		cache->lg_tried = true;
 	}
 
-	if(!cache->lg_tried) {
-		cache->lg_tried = true;
+	while(cache->lg_cfg) {
+		config_t *cfg = cache->lg_cfg;
+		cache->lg_cfg = lookup_config_next(cache->config_tree, cfg);
+		char *address = NULL;
+		get_config_string(cfg, &address);
 
-		for(config_t *cfg = lookup_config(cache->config_tree, "Address"); cfg; cfg = lookup_config_next(cache->config_tree, cfg)) {
-			char *address = NULL;
-			get_config_string(cfg, &address);
+		if(address && *address) {
+			char *space = strchr(address, ' ');
 
-			if(address && *address) {
-				char *space = strchr(address, ' ');
-
-				if(space) {
-					*space = 0;
-				}
-
-				const sockaddr_t *lg = dnsrefresh_last_good(cache->node->name, address);
-
-				if(lg && find_cached(cache, lg) == NOT_CACHED) {
-					free(address);
-					return lg;
-				}
+			if(space) {
+				*space = 0;
 			}
 
-			free(address);
-		}
-	}
+			const sockaddr_t *lg = dnsrefresh_last_good(cache->node->name, address);
 
-	cache->cfg = lookup_config(cache->config_tree, "Address");
+			if(lg && find_cached(cache, lg) == NOT_CACHED) {
+				free(address);
+				return lg;
+			}
+		}
+
+		free(address);
+	}
 
 	while(cache->cfg && !cache->aip) {
 		char *address, *port;
@@ -273,6 +272,7 @@ address_cache_t *open_address_cache(node_t *node) {
 	// Ensure we have a valid state
 	cache->config_tree = NULL;
 	cache->cfg = NULL;
+	cache->lg_cfg = NULL;
 	cache->ai = NULL;
 	cache->aip = NULL;
 	cache->tried = 0;
@@ -298,6 +298,7 @@ void reset_address_cache(address_cache_t *cache) {
 
 	cache->config_tree = NULL;
 	cache->cfg = NULL;
+	cache->lg_cfg = NULL;
 	cache->ai = NULL;
 	cache->aip = NULL;
 	cache->tried = 0;

@@ -21,6 +21,7 @@
 #include "system.h"
 
 #include "conf.h"
+#include "conf_net.h"
 #include "connection.h"
 #include "control.h"
 #include "control_common.h"
@@ -253,6 +254,15 @@ static bool store_invitee(connection_t *c, const char *data) {
 		}
 
 		fprintf(f, "Ed25519PublicKey = %s\n", data);
+
+		if(c->config_tree) {
+			for(config_t *cfg = lookup_config(c->config_tree, "Subnet"); cfg; cfg = lookup_config_next(c->config_tree, cfg)) {
+				if(cfg->value) {
+					fprintf(f, "Subnet = %s\n", cfg->value);
+				}
+			}
+		}
+
 		fclose(f);
 	}
 
@@ -266,6 +276,20 @@ static bool store_invitee(connection_t *c, const char *data) {
 		c->node = new_node(c->name);
 		c->node->connection = c;
 		node_add(c->node);
+	}
+
+	if(c->config_tree) {
+		for(config_t *cfg = lookup_config(c->config_tree, "Subnet"); cfg; cfg = lookup_config_next(c->config_tree, cfg)) {
+			subnet_t *s;
+
+			if(get_config_subnet(cfg, &s)) {
+				if(lookup_subnet(c->node, s)) {
+					free_subnet(s);
+				} else {
+					subnet_add(c->node, s);
+				}
+			}
+		}
 	}
 
 	if(!c->node->address_cache) {
@@ -1089,7 +1113,28 @@ bool send_ack(connection_t *c) {
 	/* ... and the direct-seal capability after it (obfs.h). */
 	char dseal[32];
 
-	return send_request(c, "%d %s %d %x %s %s", ACK, myport.udp, c->estimated_weight, (c->options & 0xffffff) | (experimental ? (PROT_MINOR << 24) : 0), transport_accept_string(transports), dseal_token(dseal, sizeof(dseal)));
+	const char *ack_port = myport.udp;
+	char port_buf[16];
+	sockaddr_t local_sa;
+
+	if(c->transport &&
+	                (c->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP) &&
+	                transport_local_address(c, &local_sa)) {
+		uint16_t lp = 0;
+
+		if(local_sa.sa.sa_family == AF_INET) {
+			lp = ntohs(local_sa.in.sin_port);
+		} else if(local_sa.sa.sa_family == AF_INET6) {
+			lp = ntohs(local_sa.in6.sin6_port);
+		}
+
+		if(lp > 0) {
+			snprintf(port_buf, sizeof(port_buf), "%u", (unsigned)lp);
+			ack_port = port_buf;
+		}
+	}
+
+	return send_request(c, "%d %s %d %x %s %s", ACK, ack_port, c->estimated_weight, (c->options & 0xffffff) | (experimental ? (PROT_MINOR << 24) : 0), transport_accept_string(transports), dseal_token(dseal, sizeof(dseal)));
 }
 
 static void send_everything(connection_t *c) {
@@ -1260,13 +1305,17 @@ bool ack_h(connection_t *c, const char *request) {
 	   §2 "When the peer dials first"): the peer reached us on a carrier we
 	   rank below the one we would dial, and the dedup above parked our
 	   outgoing_t on its link, so nothing would ever re-dial. Arm it; the link
-	   the peer opened keeps carrying traffic until ours activates. */
+	   the peer opened keeps carrying traffic until ours activates. Detach
+	   c->outgoing so `c' and the new outgoing attempt never share ownership
+	   of the same outgoing_t. */
 	if(!we_dialled && c->outgoing && transport_outranks_connection(c->outgoing, c)) {
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "%s reached us over %s, which we rank below %s: re-dialling",
 		       c->name, c->transport ? c->transport->name : "plain",
 		       transport_current(c->outgoing)->name);
-		c->outgoing->timeout = 0;
-		retry_outgoing(c->outgoing);
+		outgoing_t *out = c->outgoing;
+		c->outgoing = NULL;
+		out->timeout = 0;
+		retry_outgoing(out);
 	}
 
 	if(!(c->options & options & OPTION_PMTU_DISCOVERY)) {
@@ -1306,11 +1355,18 @@ bool ack_h(connection_t *c, const char *request) {
 
 	/* Create an edge_t for this connection */
 
+	bool is_single_flow_udp = c->transport &&
+	                          (c->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP);
+
 	c->edge = new_edge();
 	c->edge->from = myself;
 	c->edge->to = n;
 	sockaddrcpy(&c->edge->address, &c->address);
-	sockaddr_setport(&c->edge->address, hisport);
+
+	if(!is_single_flow_udp) {
+		sockaddr_setport(&c->edge->address, hisport);
+	}
+
 	sockaddr_t local_sa;
 
 	/* Ask the carrier for the local address: a single-flow connection has no
@@ -1318,7 +1374,10 @@ bool ack_h(connection_t *c, const char *request) {
 	if(!transport_local_address(c, &local_sa)) {
 		logger(DEBUG_ALWAYS, LOG_WARNING, "Could not get local socket address for connection with %s", c->name);
 	} else {
-		sockaddr_setport(&local_sa, myport.udp);
+		if(!is_single_flow_udp) {
+			sockaddr_setport(&local_sa, myport.udp);
+		}
+
 		c->edge->local_address = local_sa;
 	}
 
@@ -1327,6 +1386,10 @@ bool ack_h(connection_t *c, const char *request) {
 	c->edge->options = c->options;
 
 	edge_add(c->edge);
+
+	if(is_single_flow_udp) {
+		update_node_udp(n, &c->address);
+	}
 
 	/* Notify everyone of the new edge */
 

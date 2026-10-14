@@ -50,7 +50,9 @@ def human(n: int) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(prog="tincmgr", description="single-YAML tinc manager (CLI)")
     ap.add_argument("-c", "--config", help="path to tinc.yaml (default: auto-detect)")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap.add_argument("--self-install", action="store_true",
+                    help="internal: verify this exe's manifest and install it (the update path)")
+    sub = ap.add_subparsers(dest="cmd", required=False)
     sub.add_parser("list")
     sub.add_parser("status")
     for c in ("up", "down"):
@@ -66,13 +68,13 @@ def main() -> int:
     p = sub.add_parser("join")
     p.add_argument("-n", "--net", help="network name to create (default: from the invitation / first)")
     p.add_argument("invitation")
-    sub.add_parser("--self-install", help="internal: verify this exe's manifest and install it (the update path)")
+    sub.add_parser("self-install", help="internal: verify this exe's manifest and install it (the update path)")
     args = ap.parse_args()
 
     # the update path: an elevated single-file tincmgr.exe installs its own
     # manifest-verified tree over the current one, then exits. Needs nothing
     # else: no config, no running daemon.
-    if args.cmd == "--self-install":
+    if args.self_install or args.cmd in ("--self-install", "self-install"):
         try:
             target = management.install_self(sys.executable)
             print(f"installed: {target}")
@@ -80,6 +82,10 @@ def main() -> int:
         except (OSError, management.DowngradeRefused) as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
+
+    if not args.cmd:
+        ap.print_help()
+        return 2
 
     cfg = paths.find_config(args.config)
     if not cfg:

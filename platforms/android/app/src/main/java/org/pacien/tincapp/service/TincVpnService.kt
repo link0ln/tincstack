@@ -241,7 +241,12 @@ class TincVpnService : VpnService() {
   private fun launchDaemon(netName: String, stanza: String, run: DaemonRun): CompletableFuture<Unit> {
     val fd = tunFd ?: return CompletableFuture.failedFuture(IllegalStateException("no tun fd"))
     daemonLaunchedAt = SystemClock.elapsedRealtime()
+    try {
+      fdServerSocket?.close()
+    } catch (_: Exception) {
+    }
     val serverSocket = LocalServerSocket(DEVICE_FD_ABSTRACT_SOCKET)
+    fdServerSocket = serverSocket
     Executor.runAsyncTask { serveDeviceFd(serverSocket, fd) }
 
     val process = Tincd.start(netName, stanza, DEVICE_FD_ABSTRACT_SOCKET)
@@ -251,7 +256,13 @@ class TincVpnService : VpnService() {
       dispatch(Event.DaemonExited(run))
     }
 
-    return waitForDaemonStartup(process).whenComplete { _, _ -> serverSocket.close() }
+    return waitForDaemonStartup(process).whenComplete { _, _ ->
+      try {
+        serverSocket.close()
+      } catch (_: Exception) {
+      }
+      if (fdServerSocket === serverSocket) fdServerSocket = null
+    }
   }
 
   // ---- state machine plumbing ----------------------------------------------
@@ -385,6 +396,11 @@ class TincVpnService : VpnService() {
 
     val netName = getCurrentNetName()
     netName?.let { stopDaemon(it) }
+    try {
+      fdServerSocket?.close()
+    } catch (_: Exception) {
+    }
+    fdServerSocket = null
     try {
       tunFd?.close()
     } catch (e: Exception) {
@@ -584,6 +600,7 @@ class TincVpnService : VpnService() {
     @Volatile private var interfaceCfg: VpnInterfaceConfiguration? = null
     @Volatile private var stanza: String? = null
     @Volatile private var tunFd: ParcelFileDescriptor? = null
+    @Volatile private var fdServerSocket: LocalServerSocket? = null
     @Volatile private var daemon: CompletableFuture<Unit>? = null
     @Volatile private var failedDaemonStart = false
     @Volatile private var resumeFailure: String? = null
@@ -678,7 +695,17 @@ class TincVpnService : VpnService() {
       val self = peers.firstOrNull { it.self }?.name
       val reachable = peers.filter { it.reachable }.map { it.name }.toSet()
       if (self == null || reachable.none { it != self }) {
-        routeCandidate = null // linked to nobody yet: no view of the network, keep what we have
+        if (announcedRoutes.isNotEmpty() && SystemClock.elapsedRealtime() - daemonLaunchedAt >= ROUTES_FAST_PHASE_MS) {
+          if (routeCandidate != emptyList<CidrAddress>()) {
+            routeCandidate = emptyList()
+          } else {
+            routeCandidate = null
+            log.info("No reachable peers after startup; dropping remembered announced routes: {}", announcedRoutes)
+            dispatch(Event.RoutesChanged(emptyList()))
+          }
+        } else {
+          routeCandidate = null // still within initial grace/fast window: keep what we have
+        }
         return
       }
       val subnets = AnnouncedRoutes.parse(Tinc.dumpSubnets(netName).get(ROUTES_TIMEOUT_S, TimeUnit.SECONDS))

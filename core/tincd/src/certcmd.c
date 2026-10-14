@@ -87,6 +87,10 @@ static int days_left(X509 *cert) {
 		return INT_MIN;
 	}
 
+	if(days == 0 && secs < 0) {
+		return -1;
+	}
+
 	return days;
 }
 
@@ -301,6 +305,13 @@ static int issue(bool staging, bool forced, bool renew_only) {
 	report(rc, &res);
 
 	if(rc != ACME_OK) {
+		if(res.account_key_pem && yamlconf_lock(yamlconf_path)) {
+			if(yamlconf_reload_global() && yamlconf_global) {
+				yamlconf_set_key_pem(yamlconf_global, netname, "acme_account", res.account_key_pem);
+				yamlconf_save(yamlconf_global, yamlconf_path);
+			}
+			yamlconf_unlock();
+		}
 		acme_result_free(&res);
 		free(domain);
 		return 1;

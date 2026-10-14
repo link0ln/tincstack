@@ -23,9 +23,11 @@ from dataclasses import dataclass
 from typing import Any
 
 CARRIERS: tuple[str, ...] = ("plain", "obfs", "https", "quic")
+VALID_CARRIERS: tuple[str, ...] = ("plain", "sf", "obfs", "https", "quic")
 
 CARRIER_HELP = {
     "plain": "Plain tinc UDP/TCP (default, unchanged wire image)",
+    "sf": "Single-flow UDP: control + data multiplexed on one UDP flow",
     "obfs": "Obfuscated UDP: keyed junk around the handshake, header shaping",
     "https": "HTTPS-mimicking front: TLS session, probers see a decoy site",
     "quic": "QUIC carrier: SPTPS over datagrams + one stream, migration-friendly",
@@ -49,21 +51,37 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
     OptionSpec("PreferredTransports", "carriers", ["plain"],
                "Dial preference, in order; first one in the peer's accept list wins (default: plain)",
                "negotiation"),
+    OptionSpec("DirectSeal", "bool", True,
+               "Direct AEAD seal for single-port UDP transport (default: yes)", "negotiation"),
+    OptionSpec("AllowPlainMeta", "bool", True,
+               "Accept plain meta connections on the listen port (default: yes)", "negotiation"),
+    OptionSpec("UdpMetaFallback", "bool", True,
+               "Fall back to UDP meta when TCP is blocked (default: yes)", "negotiation"),
     OptionSpec("ObfsPort", "front_port", 0,
                "UDP port for the obfuscated carrier; 0 = tinc UDP port (default)", "obfs"),
+    OptionSpec("ObfsPortPublic", "front_port", 0,
+               "External UDP port advertised in invitations for obfs (0 = ObfsPort)", "obfs"),
     OptionSpec("ObfsJunkPacketCount", "int", 0,
                "Junk datagrams sent around the handshake (0 = off)", "obfs", 0, 64),
     OptionSpec("ObfsJunkPacketMinSize", "int", 40, "Smallest junk datagram, bytes", "obfs", 1, 1400),
     OptionSpec("ObfsJunkPacketMaxSize", "int", 200, "Largest junk datagram, bytes", "obfs", 1, 1400),
     OptionSpec("ObfsInitHeaderJunkSize", "int", 0,
                "Junk bytes prepended to the handshake (0 = off)", "obfs", 0, 1024),
+    OptionSpec("ObfsTransportHeaderJunkSize", "int", 0,
+               "Junk bytes prepended to transport frames (0 = off)", "obfs", 0, 1024),
     OptionSpec("ObfsInitMagicHeader", "magic", 0,
                "Handshake magic header: 0 = off, N, or MIN-MAX range", "obfs"),
+    OptionSpec("ObfsTransportMagicHeader", "magic", 0,
+               "Transport frame magic header: 0 = off, N, or MIN-MAX range", "obfs"),
     # The core's key is HttpsPort (docs/config-schema.md). Until 2026-09-23 the
     # editor wrote `HttpsFront` / `HttpsFrontPort`, which no core reads: the
     # setting looked saved and did nothing.
     OptionSpec("HttpsPort", "front_port", 443,
                "TCP port of the HTTPS front; 0 = off (default 443 on a listening node)", "https"),
+    OptionSpec("HttpsPortPublic", "front_port", 0,
+               "External TCP port advertised for the HTTPS front (0 = HttpsPort)", "https"),
+    OptionSpec("HttpsSni", "str", "",
+               "SNI hostname sent when dialing the HTTPS front", "https"),
     OptionSpec("TlsCert", "path", "",
                "Real certificate chain (PEM). Empty = self-signed, generated at first start", "https"),
     OptionSpec("TlsKey", "path", "", "Private key for TlsCert (PEM); required with TlsCert", "https"),
@@ -73,6 +91,8 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
                "Or transparently proxy probers to this host:port / URL", "https"),
     OptionSpec("QuicPort", "front_port", 443,
                "UDP port of the QUIC front; 0 = off (default 443 on a listening node)", "quic"),
+    OptionSpec("QuicPortPublic", "front_port", 0,
+               "External UDP port advertised for the QUIC front (0 = QuicPort)", "quic"),
 )
 
 SPEC_BY_NAME: dict[str, OptionSpec] = {o.name: o for o in TRANSPORT_OPTIONS}
@@ -144,10 +164,10 @@ def validate(options: dict) -> list[str]:
             lst = parse_carrier_list(v)
             if not lst:
                 errors.append(f"{spec.name}: must list at least one carrier ({', '.join(CARRIERS)})")
-            unknown = [c for c in lst if c not in CARRIERS]
+            unknown = [c for c in lst if c not in VALID_CARRIERS]
             if unknown:
                 errors.append(f"{spec.name}: unknown carrier(s) {', '.join(unknown)}; "
-                              f"valid: {', '.join(CARRIERS)}")
+                              f"valid: {', '.join(VALID_CARRIERS)}")
             if len(set(lst)) != len(lst):
                 errors.append(f"{spec.name}: duplicate carrier")
         elif spec.kind in ("int", "port", "front_port"):

@@ -566,8 +566,13 @@ bool sf_local_address(connection_t *c, sockaddr_t *sa) {
 		return false;
 	}
 
+	int fd = s->obfs ? obfs_pick_socket(&s->peer) : -1;
+	if(fd < 0) {
+		fd = listen_socket[s->sock].udp.fd;
+	}
+
 	socklen_t salen = sizeof(*sa);
-	return getsockname(listen_socket[s->sock].udp.fd, &sa->sa, &salen) >= 0;
+	return getsockname(fd, &sa->sa, &salen) >= 0;
 }
 
 /* ---- receiving ----------------------------------------------------------- */

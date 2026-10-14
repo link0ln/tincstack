@@ -30,17 +30,25 @@
    two sources, so both platforms answer "what is my address" identically. */
 char *autoif_own_address(void) {
 	char *addr = NULL;
+	uint32_t pool_net;
+	int prefix = 24;
+	bool have_pool = address_pool && zeroconf_pool_parse(address_pool, &pool_net, &prefix);
 
 	if(get_config_string(lookup_config(&config_tree, "InterfaceAddress"), &addr)) {
+		if(addr && !strchr(addr, '/') && !strchr(addr, ':')) {
+			char *with_prefix = NULL;
+			xasprintf(&with_prefix, "%s/%d", addr, prefix);
+			free(addr);
+			return with_prefix;
+		}
 		return addr;
 	}
 
-	uint32_t pool_net;
-	int prefix;
-
-	if(!address_pool || !zeroconf_pool_parse(address_pool, &pool_net, &prefix)) {
+	if(!have_pool) {
 		return NULL;
 	}
+
+	const uint8_t *fallback_x = NULL;
 
 	for splay_each(subnet_t, s, &myself->subnet_tree) {
 		if(s->type != SUBNET_IPV4 || s->net.ipv4.prefixlength != 32) {
@@ -48,7 +56,21 @@ char *autoif_own_address(void) {
 		}
 
 		const uint8_t *x = s->net.ipv4.address.x;
-		xasprintf(&addr, "%u.%u.%u.%u/%d", x[0], x[1], x[2], x[3], prefix);
+		uint32_t host_ip = ((uint32_t)x[0] << 24) | ((uint32_t)x[1] << 16) | ((uint32_t)x[2] << 8) | (uint32_t)x[3];
+		uint32_t mask = prefix == 0 ? 0 : (~0u << (32 - prefix));
+
+		if((host_ip & mask) == (pool_net & mask)) {
+			xasprintf(&addr, "%u.%u.%u.%u/%d", x[0], x[1], x[2], x[3], prefix);
+			return addr;
+		}
+
+		if(!fallback_x) {
+			fallback_x = x;
+		}
+	}
+
+	if(fallback_x) {
+		xasprintf(&addr, "%u.%u.%u.%u/%d", fallback_x[0], fallback_x[1], fallback_x[2], fallback_x[3], prefix);
 		return addr;
 	}
 

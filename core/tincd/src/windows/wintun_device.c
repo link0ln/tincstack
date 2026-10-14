@@ -39,6 +39,7 @@
 #include "../route.h"
 #include "../utils.h"
 #include "../xalloc.h"
+#include "../zeroconf.h"
 #include "wintun_device.h"
 
 /* ---- Wintun API (loaded dynamically from wintun.dll) ----------------------
@@ -204,10 +205,20 @@ static void configure_ip(void) {
 	struct in6_addr v6;
 
 	if(inet_pton(AF_INET, spec, &v4) == 1) {
+		if(prefix < 0 || prefix > 32) {
+			uint32_t pool_net;
+			int pool_prefix = 24;
+			if(address_pool && zeroconf_pool_parse(address_pool, &pool_net, &pool_prefix)) {
+				prefix = pool_prefix;
+			} else {
+				logger(DEBUG_ALWAYS, LOG_WARNING, "WintunAddress `%s' has no /prefix and no AddressPool is set; assuming /24", spec);
+				prefix = 24;
+			}
+		}
 		row.Address.si_family = AF_INET;
 		row.Address.Ipv4.sin_family = AF_INET;
 		row.Address.Ipv4.sin_addr = v4;
-		row.OnLinkPrefixLength = (UINT8)(prefix >= 0 && prefix <= 32 ? prefix : 24);
+		row.OnLinkPrefixLength = (UINT8)prefix;
 	} else if(inet_pton(AF_INET6, spec, &v6) == 1) {
 		row.Address.si_family = AF_INET6;
 		row.Address.Ipv6.sin6_family = AF_INET6;

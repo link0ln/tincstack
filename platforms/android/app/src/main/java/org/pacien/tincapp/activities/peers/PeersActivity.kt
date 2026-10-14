@@ -96,13 +96,16 @@ class PeersActivity : BaseActivity() {
         transport = livePeer?.transport,
       )
     }
-    render(rows)
+    adapter.submit(rows)
   }
 
   private fun staticPort(yaml: TincYaml, stanza: String, node: String, live: PeerStatus?): String? {
     live?.port?.let { return it }
     val cfg = PeerConfig(node, yaml.hostText(stanza, node) ?: return null)
     return cfg.port ?: cfg.addressPort
+      ?: cfg.quicPort?.takeIf { it != "0" }
+      ?: cfg.httpsPort?.takeIf { it != "0" }
+      ?: cfg.obfsPort?.takeIf { it != "0" }
   }
 
   private fun hostNames(yaml: TincYaml, stanza: String): List<String> {
@@ -114,8 +117,8 @@ class PeersActivity : BaseActivity() {
 
   private fun render(peers: List<PeerStatus>?) {
     if (peers.isNullOrEmpty()) renderStatic() else adapter.submit(peers)
-    binding.peersPlaceholder.isVisible = peers == null
-    if (peers == null) binding.peersPlaceholder.setText(R.string.peers_not_connected)
+    binding.peersPlaceholder.isVisible = peers == null && adapter.itemCount == 0
+    if (peers == null && adapter.itemCount == 0) binding.peersPlaceholder.setText(R.string.peers_not_connected)
   }
 
   private fun showInfo(peer: PeerStatus) {

@@ -271,7 +271,8 @@ static void check_reachability(void) {
 							n->address_cache = open_address_cache(n);
 						}
 
-						add_recent_address(n->address_cache, &n->connection->address);
+						const sockaddr_t *cache_sa = n->connection->base_address.sa.sa_family ? &n->connection->base_address : &n->connection->address;
+						add_recent_address(n->address_cache, cache_sa);
 					}
 				}
 			} else {

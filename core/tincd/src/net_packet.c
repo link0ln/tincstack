@@ -161,7 +161,8 @@ static bool carrier_datagram_path(const node_t *n) {
 static bool carrier_beacon_raw;
 
 static bool direct_seal_permits(node_t *n, bool probing) {
-	if(carrier_datagram_path(n) || obfs_link_is_active(n)) {
+	if(carrier_datagram_path(n) ||
+	                (n->connection && n->connection->transport && n->connection->transport->id == TRANSPORT_OBFS)) {
 		return true;
 	}
 
@@ -799,6 +800,21 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 		return;
 	}
 
+	if(origpkt->len > 14 &&
+	                (routing_mode == RMODE_ROUTER ||
+	                 (DATA(origpkt)[12] == 0x08 && DATA(origpkt)[13] == 0x00) ||
+	                 (DATA(origpkt)[12] == 0x86 && DATA(origpkt)[13] == 0xdd)) &&
+	                is_tls_client_hello((const uint8_t *)DATA(origpkt) + 14, origpkt->len - 14)) {
+		node_t *hop = (n->connection) ? n : (n->nexthop ? n->nexthop : n);
+		if(hop && hop->connection) {
+			https_pad_next_burst(hop->connection, 1350, 1650);
+		}
+		obfs_pad_next_burst(hop ? hop : n);
+		if(n != hop) {
+			obfs_pad_next_burst(n);
+		}
+	}
+
 	vpn_packet_t outpkt;
 
 	if(n->outcompression != COMPRESS_NONE) {
@@ -811,17 +827,6 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 			outpkt.len = len + offset;
 			origpkt = &outpkt;
 			type |= PKT_COMPRESSED;
-		}
-	}
-
-	if(origpkt->len > offset && is_tls_client_hello((const uint8_t *)DATA(origpkt) + offset, origpkt->len - offset)) {
-		node_t *hop = (n->connection) ? n : (n->nexthop ? n->nexthop : n);
-		if(hop && hop->connection) {
-			https_pad_next_burst(hop->connection, 1350, 1650);
-		}
-		obfs_pad_next_burst(hop ? hop : n);
-		if(n != hop) {
-			obfs_pad_next_burst(n);
 		}
 	}
 
@@ -849,6 +854,14 @@ static void adapt_socket(const sockaddr_t *sa, size_t *sock) {
 }
 
 static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *sock) {
+	if(n->connection && n->connection->transport &&
+	                (n->connection->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) {
+		*sa = &n->connection->address;
+		*sock = n->sock;
+		adapt_socket(*sa, sock);
+		return;
+	}
+
 	/* Latest guess */
 	*sa = &n->address;
 	*sock = n->sock;

@@ -637,7 +637,12 @@ void tls_expiry_warn(void) {
 		return;
 	}
 
-	int days = (int)((tls_cert_expires_at - now) / 86400);
+	int days;
+	if(tls_cert_expires_at < now) {
+		days = -1 - (int)((now - tls_cert_expires_at) / 86400);
+	} else {
+		days = (int)((tls_cert_expires_at - now) / 86400);
+	}
 	int threshold = 30;                    /* AcmeRenewDays, same default */
 	get_config_int(lookup_config(&config_tree, "AcmeRenewDays"), &threshold);
 

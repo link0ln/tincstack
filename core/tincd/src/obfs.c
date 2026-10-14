@@ -153,6 +153,7 @@ struct obfs_link_t {
 	bool active;               /* an obfs flow to this node is up */
 	sockaddr_t addr;           /* last verified peer UDP address (fast-path match) */
 	bool have_addr;
+	int rx_fd;                 /* UDP socket fd this link's flow arrived on / dials from */
 
 	/* Fast self-heal: the send path flags a link that is still sealing under
 	   the mesh-wide bootstrap key while it is active and authenticated, so a
@@ -193,10 +194,25 @@ static int obfs_listens;
 static int obfs_port_option; /* operator's ObfsPort (dial fallback), else 0 */
 
 int obfs_pick_socket(const sockaddr_t *sa) {
-	if(obfs_listens > 0 && sa) {
-		for(int i = 0; i < obfs_listens; i++) {
-			if(obfs_listen[i].sa.sa.sa_family == sa->sa.sa_family) {
-				return obfs_listen[i].udp.fd;
+	if(!sa) {
+		return -1;
+	}
+
+	sockaddr_t a = *sa;
+	sockaddrunmap(&a);
+
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(l->have_addr && !sockaddrcmp(&a, &l->addr) && l->rx_fd >= 0) {
+			for(int i = 0; i < obfs_listens; i++) {
+				if(obfs_listen[i].udp.fd == l->rx_fd) {
+					return l->rx_fd;
+				}
+			}
+
+			for(int i = 0; i < listen_sockets; i++) {
+				if(listen_socket[i].udp.fd == l->rx_fd) {
+					return l->rx_fd;
+				}
 			}
 		}
 	}
@@ -379,6 +395,7 @@ obfs_link_t *obfs_link_for_node(node_t *n) {
 	obfs_link_t *l = xzalloc(sizeof(*l));
 	l->node = n;
 	l->i_am_lo = i_am_lo;
+	l->rx_fd = -1;
 	memcpy(l->base, base, sizeof(l->base));
 	memset(base, 0, sizeof(base));
 
@@ -426,6 +443,7 @@ void obfs_link_reset_for_test(node_t *n) {
 		if(l->node == n) {
 			l->active = false;
 			l->have_addr = false;
+			l->rx_fd = -1;
 			keyset_free(&l->sess);
 			keyset_free(&l->next);
 			keyset_free(&l->prev);
@@ -930,14 +948,26 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 
 	if(l->pad_burst && !init && room > 0) {
 		l->pad_burst = false;
-		/* Displace inner ClientHello burst out of nDPI centroids (tls12, tls13, chrome)
-		   by padding the frame close to path budget with randomized variance. */
+		size_t burst_room = room;
+		if(l->node && l->node->minmtu > 0) {
+			size_t pmtu_cap = (size_t)l->node->minmtu;
+			size_t min_target = base + 64;
+			if(pmtu_cap < min_target) {
+				pmtu_cap = min_target;
+			}
+			if(pmtu_cap < budget) {
+				size_t pmtu_room = pmtu_cap > base ? pmtu_cap - base : 0;
+				if(pmtu_room < burst_room) {
+					burst_room = pmtu_room;
+				}
+			}
+		}
 		size_t margin = 64;
-		if(margin > room) {
-			margin = room;
+		if(margin > burst_room) {
+			margin = burst_room;
 		}
 		size_t variance = margin ? (((size_t)mask[OBFS_HDR_LEN] << 8) | mask[OBFS_HDR_LEN + 1]) % (margin + 1) : 0;
-		tail = room - variance;
+		tail = burst_room - variance;
 	} else if(cap) {
 		tail = (((size_t)mask[OBFS_HDR_LEN] << 8) | mask[OBFS_HDR_LEN + 1]) % (cap + 1);
 	}
@@ -1136,6 +1166,12 @@ obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, s
 }
 
 static obfs_send_t obfs_link_send(obfs_link_t *l, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
+	if(!l->have_addr && sa && sa->sa.sa_family) {
+		l->addr = *sa;
+		sockaddrunmap(&l->addr);
+		l->have_addr = true;
+	}
+
 	/* The SPTPS data path cannot chunk: tinc sized this datagram to what it
 	   believes the path carries, which knows nothing about the seal. Check the
 	   sealed size against the path budget BEFORE the kernel does, and report
@@ -1269,12 +1305,17 @@ static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerl
 	listen_socket_t *main_ls = ls;
 
 	if(ls < listen_socket || ls >= listen_socket + listen_sockets) {
+		main_ls = listen_sockets > 0 ? &listen_socket[0] : NULL;
 		for(int i = 0; i < listen_sockets; i++) {
 			if(listen_socket[i].sa.sa.sa_family == addr->sa.sa_family) {
 				main_ls = &listen_socket[i];
 				break;
 			}
 		}
+	}
+
+	if(!main_ls) {
+		return true;
 	}
 
 	/* A single-flow meta frame carries the SF magic; anything else is an
@@ -1414,6 +1455,7 @@ static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, 
 	ks->last_ok = now.tv_sec;
 	obfs_follow_version(l, ver);
 	l->rx_since_dial = true;
+	l->rx_fd = ls ? ls->udp.fd : -1;
 	obfs_link_activate(l, addr);
 	return obfs_inject(ls, inner, innerlen, addr, l);
 }
@@ -1440,7 +1482,7 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 				return obfs_accept(ls, l, ks, seq, ver, inner, (size_t)n, &addr);
 			}
 
-			return false; /* junk around a handshake, or a still-plain datagram */
+			break;
 		}
 	}
 
@@ -1573,24 +1615,34 @@ bool obfs_dial(connection_t *c) {
 
 	/* Destination port: the peer's host-record ObfsPort (a node advertises
 	   the one it listens on), else our own ObfsPort if the operator set it
-	   (dial fallback), else the peer's tinc port as dialled. */
-	int port = obfs_port_option;
-	splay_tree_t *tree = create_configuration();
+	   and the peer did not specify Port, else the peer's tinc port as dialled.
+	   Skip port override when dialing a learned UDP fallback address. */
+	if(!c->status.udp_fallback) {
+		int port = 0;
+		splay_tree_t *tree = create_configuration();
 
-	if(read_host_config(tree, c->name, false)) {
-		get_config_int(lookup_config(tree, "ObfsPort"), &port);
-	}
-
-	exit_configuration(tree);
-
-	if(port > 0 && port < 65536) {
-		if(c->address.sa.sa_family == AF_INET) {
-			c->address.in.sin_port = htons((uint16_t)port);
-		} else if(c->address.sa.sa_family == AF_INET6) {
-			c->address.in6.sin6_port = htons((uint16_t)port);
+		if(read_host_config(tree, c->name, false)) {
+			if(!get_config_int(lookup_config(tree, "ObfsPort"), &port)) {
+				int peer_port = 0;
+				if(!get_config_int(lookup_config(tree, "Port"), &peer_port)) {
+					port = obfs_port_option;
+				}
+			}
+		} else {
+			port = obfs_port_option;
 		}
-		free(c->hostname);
-		c->hostname = sockaddr2hostname(&c->address);
+
+		exit_configuration(tree);
+
+		if(port > 0 && port < 65536) {
+			if(c->address.sa.sa_family == AF_INET) {
+				c->address.in.sin_port = htons((uint16_t)port);
+			} else if(c->address.sa.sa_family == AF_INET6) {
+				c->address.in6.sin6_port = htons((uint16_t)port);
+			}
+			free(c->hostname);
+			c->hostname = sockaddr2hostname(&c->address);
+		}
 	}
 
 	int sock = -1;
@@ -1605,6 +1657,16 @@ bool obfs_dial(connection_t *c) {
 	if(sock < 0) {
 		logger(DEBUG_CONNECTIONS, LOG_ERR, "No UDP socket with the address family of %s for an obfs dial", c->name);
 		return false;
+	}
+
+	l->rx_fd = listen_socket[sock].udp.fd;
+	if(!c->status.udp_fallback && obfs_listens > 0) {
+		for(int i = 0; i < obfs_listens; i++) {
+			if(obfs_listen[i].sa.sa.sa_family == c->address.sa.sa_family) {
+				l->rx_fd = obfs_listen[i].udp.fd;
+				break;
+			}
+		}
 	}
 
 	obfs_link_activate(l, &c->address);
@@ -1694,6 +1756,7 @@ void obfs_close(connection_t *c) {
 	if(l && !superseded) {
 		l->active = false;
 		l->have_addr = false;
+		l->rx_fd = -1;
 	}
 
 	if(l && !superseded && negotiated) {
@@ -2064,6 +2127,12 @@ const char *dseal_token(char *buf, size_t len) {
 	return buf;
 }
 
+/* Is the node's meta connection an obfs link? Then OBFS_KEY owns the
+   session key and DSEAL_KEX stays out of it. */
+static bool dseal_obfs_connected(const node_t *n) {
+	return n->connection && n->connection->transport && n->connection->transport->id == TRANSPORT_OBFS;
+}
+
 void dseal_learn(node_t *n, const char *token) {
 	unsigned flags;
 	uint8_t was = n->dseal;
@@ -2076,6 +2145,17 @@ void dseal_learn(node_t *n, const char *token) {
 		   tinc accepts only plain and reads none. */
 		bool reads = transport_node_mask(n) & TRANSPORT_BIT(TRANSPORT_OBFS);
 		n->dseal = DSEAL_KNOWN | DSEAL_OLD | (reads ? DSEAL_READS : 0);
+	}
+
+	if(!(n->dseal & DSEAL_READS) && !dseal_obfs_connected(n)) {
+		for list_each(obfs_link_t, l, &obfs_links) {
+			if(l->node == n) {
+				l->active = false;
+				l->have_addr = false;
+				l->rx_fd = -1;
+				break;
+			}
+		}
 	}
 
 	if(was != n->dseal) {
@@ -2096,12 +2176,6 @@ bool obfs_link_is_active(const node_t *n) {
 	}
 
 	return false;
-}
-
-/* Is the node's meta connection an obfs link? Then OBFS_KEY owns the
-   session key and DSEAL_KEX stays out of it. */
-static bool dseal_obfs_connected(const node_t *n) {
-	return n->connection && n->connection->transport && n->connection->transport->id == TRANSPORT_OBFS;
 }
 
 dseal_verdict_t dseal_verdict(node_t *n) {

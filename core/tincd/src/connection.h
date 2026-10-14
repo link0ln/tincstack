@@ -63,6 +63,7 @@ typedef union connection_status_t {
 		bool front_pending: 1;          /* 1 if an inbound TCP connection has not been classified by the front yet */
 		bool front_tls_only: 1;         /* 1 if it arrived on the HttpsPort listener: TLS or nothing */
 		bool web_front: 1;              /* answers like a web server: nginx timeouts, no tarpit */
+		bool udp_fallback: 1;           /* 1 if dialled via UdpMetaFallback onto a confirmed UDP flow */
 	};
 	uint32_t value;
 } connection_status_t;
@@ -97,7 +98,8 @@ typedef struct connection_t {
 	char *name;                     /* name he claims to have */
 	char *hostname;                 /* the hostname of its real ip */
 
-	union sockaddr_t address;       /* his real (internet) ip */
+	union sockaddr_t address;       /* his real (internet) ip and active carrier port */
+	union sockaddr_t base_address;  /* base Address ip:port before carrier-specific port override */
 	int protocol_major;             /* used protocol */
 	int protocol_minor;             /* used protocol */
 

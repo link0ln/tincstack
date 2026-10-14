@@ -365,6 +365,18 @@ bool transport_read_config(void) {
 		       "Could not reload the node certificate; keeping the one already in use");
 	}
 
+	if(tls_ready && tls_own_fp_hex[0] && myself) {
+		if(!myself->tls_fingerprint || strcmp(myself->tls_fingerprint, tls_own_fp_hex)) {
+			bool had_old = myself->tls_fingerprint != NULL;
+			free(myself->tls_fingerprint);
+			myself->tls_fingerprint = xstrdup(tls_own_fp_hex);
+
+			if(had_old && myself->name) {
+				replace_config_file(myself->name, "TlsFingerprint", tls_own_fp_hex);
+			}
+		}
+	}
+
 #endif
 
 	/* Re-read the decoy config so HttpsDecoyRoot/HttpsDecoyUpstream changes take
@@ -597,15 +609,19 @@ void transport_node_read_config(node_t *n, splay_tree_t *config_tree) {
 	/* The peer's pinned TLS certificate fingerprint, if its host record carries
 	   one (from an invitation or a first-use pin). Used by the https carrier. */
 	char *fp = NULL;
+	free(n->tls_fingerprint);
+	n->tls_fingerprint = NULL;
 
 	if(get_config_string(lookup_config(config_tree, "TlsFingerprint"), &fp) && fp) {
-		free(n->tls_fingerprint);
 		n->tls_fingerprint = fp;
 	}
 
 	char *list = config_join(config_tree, "Transports");
 
 	if(!list) {
+		if(!n->connection) {
+			n->transports = 0;
+		}
 		return;
 	}
 
