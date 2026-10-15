@@ -20,9 +20,10 @@
 # deployment is `docker compose` against the published image
 # (platforms/linux/docker/compose.release.yml).
 #
-# Architecture: linux/amd64 only for now. arm64 needs either QEMU (the ngtcp2
-# source stage makes that ~10x slower) or an arm64 runner; add it as a matrix
-# leg once a first release has gone out on amd64.
+# Architecture: linux/amd64 (ubuntu-latest) and linux/arm64 (ubuntu-24.04-arm)
+# built natively in parallel, smoke-tested on each architecture, pushed as
+# `<tag>-amd64` / `<tag>-arm64` (and `latest-amd64` / `latest-arm64`), and
+# combined into multi-arch manifests at `<tag>` and `latest`.
 #
 # FIRST RELEASE, ONE MANUAL STEP: a package that Actions creates in ghcr.io is
 # private even when the repository is public, so `docker pull` fails for
@@ -76,10 +77,18 @@ jobs:
           echo "node=ghcr.io/${repo}/node" >> "$GITHUB_OUTPUT"
 
   images:
-    name: linux images (ghcr.io)
+    name: linux images (${{ matrix.arch }}, ghcr.io)
     needs: meta
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +97,7 @@ jobs:
       # Build into the local docker daemon, not into the registry: the smoke
       # test below has to run against exactly these bits before anyone can pull
       # them.
-      - name: Build core
+      - name: Build core (${{ matrix.arch }})
         uses: docker/build-push-action@v6
         # Without this the action uploads a `<owner>~<repo>~XXXX.dockerbuild`
         # record as a workflow artifact. The release job downloads every
@@ -101,8 +110,8 @@ jobs:
           file: core/Dockerfile.build
           load: true
           tags: tincstack/core:rel
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
       - name: Core sanity
         run: docker run --rm tincstack/core:rel tincd --version | tee /dev/stderr | grep -ci tinc >/dev/null
@@ -115,7 +124,7 @@ jobs:
       # it with the daemon's own builder, which can see that image. (The core
       # build above stays on buildx for the gha cache; it pulls only public
       # bases.)
-      - name: Build node
+      - name: Build node (${{ matrix.arch }})
         run: |
           set -eo pipefail
           docker build --build-arg CORE_IMAGE=tincstack/core:rel \
@@ -163,20 +172,50 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push core and node
+      - name: Push core and node (${{ matrix.arch }})
         if: needs.meta.outputs.publish == 'true'
         run: |
           set -eu
-          for img in "${{ needs.meta.outputs.core }}:${{ needs.meta.outputs.version }}" \
-                     "${{ needs.meta.outputs.core }}:latest"; do
+          for img in "${{ needs.meta.outputs.core }}:${{ needs.meta.outputs.version }}-${{ matrix.arch }}" \
+                     "${{ needs.meta.outputs.core }}:latest-${{ matrix.arch }}"; do
             docker tag tincstack/core:rel "$img"
             docker push "$img"
           done
-          for img in "${{ needs.meta.outputs.node }}:${{ needs.meta.outputs.version }}" \
-                     "${{ needs.meta.outputs.node }}:latest"; do
+          for img in "${{ needs.meta.outputs.node }}:${{ needs.meta.outputs.version }}-${{ matrix.arch }}" \
+                     "${{ needs.meta.outputs.node }}:latest-${{ matrix.arch }}"; do
             docker tag tincstack/node:rel "$img"
             docker push "$img"
           done
+
+  manifests:
+    name: multi-arch manifests (ghcr.io)
+    needs: [meta, images]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-arch manifests for core and node
+        run: |
+          set -eu
+          ver="${{ needs.meta.outputs.version }}"
+          core="${{ needs.meta.outputs.core }}"
+          node="${{ needs.meta.outputs.node }}"
+          docker buildx imagetools create \
+            -t "${core}:${ver}" \
+            -t "${core}:latest" \
+            "${core}:${ver}-amd64" \
+            "${core}:${ver}-arm64"
+          docker buildx imagetools create \
+            -t "${node}:${ver}" \
+            -t "${node}:latest" \
+            "${node}:${ver}-amd64" \
+            "${node}:${ver}-arm64"
 
   windows:
     name: windows x86_64
@@ -409,7 +448,7 @@ jobs:
 
   release:
     name: publish the release
-    needs: [meta, images, windows, android]
+    needs: [meta, images, manifests, windows, android]
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -450,7 +489,7 @@ jobs:
           set -eu
           find assets -type f -print
           cat > notes.md <<EOF
-          ## Linux (docker compose)
+          ## Linux (docker compose — multi-arch: linux/amd64 & linux/arm64)
 
               curl -LO https://github.com/$REPO/releases/download/$VERSION/tincstack-$VERSION-source.tar.gz
               tar xzf tincstack-$VERSION-source.tar.gz
@@ -458,13 +497,18 @@ jobs:
               export COMPOSE_FILE=compose.release.yml
               TINCSTACK_VERSION=$VERSION docker compose up -d
 
-          The image is pulled, not built:
+          Multi-arch images (\`linux/amd64\` + \`linux/arm64\`) and per-arch tags:
 
-              $NODE_IMAGE:$VERSION
-              $CORE_IMAGE:$VERSION
+              $NODE_IMAGE:$VERSION          (multi-arch: amd64 + arm64)
+              $NODE_IMAGE:$VERSION-amd64
+              $NODE_IMAGE:$VERSION-arm64
+              $CORE_IMAGE:$VERSION          (multi-arch: amd64 + arm64)
+              $CORE_IMAGE:$VERSION-amd64
+              $CORE_IMAGE:$VERSION-arm64
 
-          Both images were smoke-tested (two-node YAML lab, ping both ways, and a
-          zero-config start from an empty volume) before this tag was published.
+          Both \`amd64\` and \`arm64\` images were natively built and smoke-tested
+          (two-node YAML lab, ping both ways, and a zero-config start from an empty
+          volume) before this tag was published.
 
           ## Windows
 
