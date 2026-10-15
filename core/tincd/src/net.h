@@ -152,6 +152,7 @@ typedef struct outgoing_t {
 	   to plain for the session (2026-09-24, platforms/android/docker/
 	   join-on-emulator.sh TRANSPORT=https). Cleared by every new dial. */
 	bool retry_requested;
+	bool from_config;
 } outgoing_t;
 
 typedef struct ports_t {

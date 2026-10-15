@@ -67,7 +67,7 @@
 
 #define QUIC_ALPN_DEFAULT "h3"
 #define QUIC_MAX_DGRAM 1400
-#define QUIC_DGRAM_QUEUE 64
+#define QUIC_DGRAM_QUEUE 256
 #define QUIC_PKT_BUF 1452
 #define QUIC_CID_SLOTS 16               /* issued connection ids we track per session */
 #define QUIC_UNI_STREAMS 3              /* control, QPACK encoder, QPACK decoder */
@@ -1862,28 +1862,31 @@ static void quic_client_read(void *data, int flags) {
 	(void)flags;
 	quic_session_t *s = data;
 	uint8_t buf[MAXSIZE];
-	sockaddr_t addr;
-	socklen_t addrlen = sizeof(addr);
-	ssize_t len = recvfrom(s->fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
 
-	if(len <= 0) {
-		if(len < 0 && !sockwouldblock(sockerrno)) {
-			logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: receive on the socket for %s failed: %s", s->c->hostname, sockstrerror(sockerrno));
+	for(int i = 0; i < 64 && !s->dead; i++) {
+		sockaddr_t addr;
+		socklen_t addrlen = sizeof(addr);
+		ssize_t len = recvfrom(s->fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
+
+		if(len <= 0) {
+			if(len < 0 && !sockwouldblock(sockerrno)) {
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: receive on the socket for %s failed: %s", s->c->hostname, sockstrerror(sockerrno));
+			}
+
+			break;
 		}
 
-		return;
+		sockaddrunmap(&addr);
+		ngtcp2_version_cid vc;
+
+		/* Our connection id is empty, so every packet for us carries an empty
+		   destination connection id. */
+		if(ngtcp2_pkt_decode_version_cid(&vc, buf, (size_t)len, 0) < 0 || vc.dcidlen) {
+			continue;
+		}
+
+		session_read(s, buf, (size_t)len, &addr);
 	}
-
-	sockaddrunmap(&addr);
-	ngtcp2_version_cid vc;
-
-	/* Our connection id is empty, so every packet for us carries an empty
-	   destination connection id. */
-	if(ngtcp2_pkt_decode_version_cid(&vc, buf, (size_t)len, 0) < 0 || vc.dcidlen) {
-		return;
-	}
-
-	session_read(s, buf, (size_t)len, &addr);
 }
 
 bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {

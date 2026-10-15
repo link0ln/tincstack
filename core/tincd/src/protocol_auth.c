@@ -287,6 +287,10 @@ static bool store_invitee(connection_t *c, const char *data) {
 					free_subnet(s);
 				} else {
 					subnet_add(c->node, s);
+
+					if(!tunnelserver) {
+						send_add_subnet(everyone, s);
+					}
 				}
 			}
 		}

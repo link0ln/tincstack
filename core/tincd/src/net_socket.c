@@ -42,8 +42,8 @@
 int addressfamily = AF_UNSPEC;
 int maxtimeout = 900;
 int seconds_till_retry = 5;
-int udp_rcvbuf = 1024 * 1024;
-int udp_sndbuf = 1024 * 1024;
+int udp_rcvbuf = 4 * 1024 * 1024;
+int udp_sndbuf = 4 * 1024 * 1024;
 bool udp_rcvbuf_warnings;
 bool udp_sndbuf_warnings;
 int max_connection_burst = 10;
@@ -1143,6 +1143,7 @@ void try_outgoing_connections(void) {
 			if(!strcmp(outgoing->node->name, name)) {
 				found = true;
 				outgoing->timeout = 0;
+				outgoing->from_config = true;
 				break;
 			}
 		}
@@ -1157,6 +1158,7 @@ void try_outgoing_connections(void) {
 			}
 
 			outgoing->node = n;
+			outgoing->from_config = true;
 			list_insert_tail(&outgoing_list, outgoing);
 			setup_outgoing_connection(outgoing, true);
 		}

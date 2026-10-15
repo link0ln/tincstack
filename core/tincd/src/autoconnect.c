@@ -132,7 +132,7 @@ static void drop_superfluous_outgoing_connection(void) {
 	uint32_t count = 0;
 
 	for list_each(connection_t, c, &connection_list) {
-		if(!c->edge || !c->outgoing || !c->node || c->node->edge_tree.count < 2) {
+		if(!c->edge || !c->outgoing || c->outgoing->from_config || !c->node || c->node->edge_tree.count < 2) {
 			continue;
 		}
 
@@ -146,7 +146,7 @@ static void drop_superfluous_outgoing_connection(void) {
 	uint32_t r = prng(count);
 
 	for list_each(connection_t, c, &connection_list) {
-		if(!c->edge || !c->outgoing || !c->node || c->node->edge_tree.count < 2) {
+		if(!c->edge || !c->outgoing || c->outgoing->from_config || !c->node || c->node->edge_tree.count < 2) {
 			continue;
 		}
 
@@ -164,6 +164,10 @@ static void drop_superfluous_outgoing_connection(void) {
 
 static void drop_superfluous_pending_connections(void) {
 	for list_each(outgoing_t, o, &outgoing_list) {
+		if(o->from_config) {
+			continue;
+		}
+
 		/* Only look for connections that are waiting to be retried later. */
 		bool found = false;
 
