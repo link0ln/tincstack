@@ -853,6 +853,10 @@ static void adapt_socket(const sockaddr_t *sa, size_t *sock) {
 	}
 }
 
+static bool node_tcponly(const node_t *n) {
+	return ((myself->options | n->options | (n->connection ? n->connection->options : 0)) & OPTION_TCPONLY) != 0;
+}
+
 static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *sock) {
 	if(n->connection && n->connection->transport &&
 	                (n->connection->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) {
@@ -879,6 +883,11 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 
 	if(++x >= 3) {
 		x = 0;
+
+		if((*sa)->sa.sa_family == AF_UNSPEC || (*sa)->sa.sa_family == AF_UNKNOWN || address_routes_via_vpn(*sa)) {
+			*sa = NULL;
+		}
+
 		return;
 	}
 
@@ -891,14 +900,31 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 
 	for splay_each(edge_t, e, &n->edge_tree) {
 		if(i++ == j) {
-			candidate = e->reverse;
+			if(e->reverse && !address_routes_via_vpn(&e->reverse->address)) {
+				candidate = e->reverse;
+			}
+
 			break;
+		}
+	}
+
+	if(!candidate) {
+		for splay_each(edge_t, e, &n->edge_tree) {
+			if(e->reverse && !address_routes_via_vpn(&e->reverse->address)) {
+				candidate = e->reverse;
+				break;
+			}
 		}
 	}
 
 	if(candidate) {
 		*sa = &candidate->address;
 		*sock = prng(listen_sockets);
+	}
+
+	if(!*sa || (*sa)->sa.sa_family == AF_UNSPEC || (*sa)->sa.sa_family == AF_UNKNOWN || address_routes_via_vpn(*sa)) {
+		*sa = NULL;
+		return;
 	}
 
 	adapt_socket(*sa, sock);
@@ -920,7 +946,7 @@ static void choose_local_address(const node_t *n, const sockaddr_t **sa, size_t 
 		}
 	}
 
-	if(candidate && candidate->local_address.sa.sa_family) {
+	if(candidate && candidate->local_address.sa.sa_family && !address_routes_via_vpn(&candidate->local_address)) {
 		*sa = &candidate->local_address;
 		*sock = prng(listen_sockets);
 		adapt_socket(*sa, sock);
@@ -1048,6 +1074,10 @@ static void send_udppacket(node_t *n, vpn_packet_t *origpkt) {
 		choose_udp_address(n, &sa, &sock);
 	}
 
+	if(!sa) {
+		goto end;
+	}
+
 	if(priorityinheritance && origpriority != listen_socket[sock].priority) {
 		listen_socket[sock].priority = origpriority;
 
@@ -1147,7 +1177,7 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	node_t *relay = (to->via != myself && (type == PKT_PROBE || origlen <= to->via->minmtu)) ? to->via : to->nexthop;
 	bool direct = from == myself && to == relay;
 	bool relay_supported = (relay->options >> 24) >= 4;
-	bool tcponly = (myself->options | relay->options) & OPTION_TCPONLY;
+	bool tcponly = node_tcponly(relay);
 
 	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, this is a relay packet that the other node cannot understand, or this packet is larger than the MTU. */
 
@@ -1193,6 +1223,14 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 
 	if(!sa) {
 		choose_udp_address(relay, &sa, &sock);
+	}
+
+	if(!sa && !( !carrier_beacon_raw && relay->connection && relay->connection->transport && relay->connection->transport->send_datagram )) {
+		if(type == PKT_PROBE) {
+			return true;
+		}
+
+		return send_sptps_data_meta(to, from, type, data, len);
 	}
 
 	logger(DEBUG_TRAFFIC, LOG_INFO, "Sending packet from %s (%s) to %s (%s) via %s (%s) (UDP)", from->name, from->hostname, to->name, to->hostname, relay->name, relay->hostname);
@@ -1475,7 +1513,7 @@ static void send_udp_probe_packet(node_t *n, size_t len) {
    mapping for the data socket alive. */
 static void send_carrier_beacon(node_t *n) {
 	if(!n->status.validkey || !n->status.sptps || (n->options >> 24) < 4 ||
-	                ((myself->options | n->options) & OPTION_TCPONLY)) {
+	                node_tcponly(n)) {
 		return;
 	}
 
@@ -2037,7 +2075,7 @@ static void try_tx_sptps(node_t *n, bool mtu) {
 	/* If n is a TCP-only neighbor, we'll only use "cleartext" PACKET
 	   messages anyway, so there's no need for SPTPS at all. */
 
-	if(n->connection && ((myself->options | n->options) & OPTION_TCPONLY)) {
+	if(n->connection && node_tcponly(n)) {
 		return;
 	}
 
@@ -2162,7 +2200,7 @@ void send_packet(node_t *n, vpn_packet_t *packet) {
 
 	// Try to send via UDP, unless TCP is forced.
 
-	if(packet->priority == -1 || ((myself->options | via->options) & OPTION_TCPONLY)) {
+	if(packet->priority == -1 || node_tcponly(via)) {
 		if(!send_tcppacket(via->connection, packet)) {
 			terminate_connection(via->connection, true);
 		}

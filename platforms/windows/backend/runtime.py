@@ -164,6 +164,33 @@ class Runtime:
         self._ft_interval = ft_interval
         self._ensure_bins()
 
+    def _kill_orphan_daemons(self) -> None:
+        """On Windows, kill any orphaned tincd.exe processes left over from a
+        previous session whose pidfile was lost or overwritten, provided no
+        network managed by this Runtime currently has a live child process."""
+        if sys.platform != "win32":
+            return
+        if any(self.has_live_process(n) for n in list(self._procs)):
+            return
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "tincd.exe"],
+                           capture_output=True, text=True, timeout=5.0,
+                           stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        except Exception:
+            pass
+
+    def _stage_all(self, names: list[str], bindir: str, b) -> None:
+        for n in names:
+            src = os.path.join(paths.resource_dir(), n)
+            if os.path.isfile(src):
+                want = b.files.get("_internal/" + n) if b else None
+                if want:
+                    paths.stage_verified(src, os.path.join(bindir, n), want[0])
+                else:
+                    paths.stage_file(src, os.path.join(bindir, n))
+        if not os.path.isfile(os.path.join(bindir, "tincd.exe")):
+            raise OSError("tincd not staged")
+
     def _ensure_bins(self) -> None:
         """Windows: copy the bundled tincd/tinc (+ wintun.dll) to a STABLE bin
         dir and run from there. A onefile exe unpacks to a random %TEMP% path
@@ -189,16 +216,15 @@ class Runtime:
         # tincd.exe there is not even open, so it is checked, not trusted.
         b = paths.bundle()
         try:
-            for n in names:
-                src = os.path.join(paths.resource_dir(), n)
-                if os.path.isfile(src):
-                    want = b.files.get("_internal/" + n) if b else None
-                    if want:
-                        paths.stage_verified(src, os.path.join(bindir, n), want[0])
-                    else:
-                        paths.stage_file(src, os.path.join(bindir, n))
-            if not os.path.isfile(os.path.join(bindir, "tincd.exe")):
-                raise OSError("tincd not staged")
+            try:
+                self._stage_all(names, bindir, b)
+            except OSError:
+                # A daemon from the previous version still runs from bindir and
+                # holds tincd.exe / wintun.dll open: terminate orphan daemons
+                # and retry once so upgrades always replace the binary cleanly.
+                self._kill_orphan_daemons()
+                time.sleep(0.3)
+                self._stage_all(names, bindir, b)
             self.tincd = os.path.join(bindir, "tincd.exe")
             self.tinc = os.path.join(bindir, "tinc.exe")
             self.bindir = bindir
@@ -262,6 +288,10 @@ class Runtime:
                 self.full_tunnel_sync(net_name)
                 return True, "already running"
             self.stop(net_name)
+        else:
+            # Ensure no orphan tincd.exe processes (whose pidfile was lost by an
+            # older build) linger in the background and fight our connection.
+            self._kill_orphan_daemons()
         # No key check here: the core materialises Name/keys/pool on first start
         # (M1 zero-config) — an empty network stanza is a valid starting point.
         # pre-allow tincd (stable path) through the firewall so Windows doesn't
@@ -366,6 +396,7 @@ class Runtime:
         sink = self._sinks.pop(net_name, None)
         if sink:
             sink.join(timeout=2)
+        self._kill_orphan_daemons()
         return (not self.is_running(net_name)), "stopped"
 
     def restart(self, net_name: str) -> tuple[bool, str]:

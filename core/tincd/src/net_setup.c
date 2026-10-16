@@ -1418,6 +1418,10 @@ bool setup_network(void) {
 	init_connections();
 	init_subnets();
 
+	if(control_already_running()) {
+		return false;
+	}
+
 	setup_ping_timers(false);
 
 	if(!get_config_int(lookup_config(&config_tree, "MaxOutputBufferSize"), &maxoutbufsize)) {

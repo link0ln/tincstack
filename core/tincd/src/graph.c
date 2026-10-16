@@ -183,6 +183,15 @@ void sssp_bfs(void) {
 
 			bool indirect = n->status.indirect || e->options & OPTION_INDIRECT;
 
+			/* A direct neighbour (visited at distance 1 from myself) already has its
+			   authoritative edge with us. A 2-hop edge through another node must never
+			   clear its indirect flag, strip OPTION_TCPONLY (e.g. from an https link,
+			   which would make send_sptps_data() send raw UDP to a TLS-only peer), or
+			   bump its distance from 1 to 2 while leaving nexthop on the direct link. */
+			if(e->to->status.visited && e->to->distance == 1 && n != myself) {
+				continue;
+			}
+
 			if(e->to->status.visited
 			                && (!e->to->status.indirect || indirect)
 			                && (e->to->distance != n->distance + 1 || e->to->weighted_distance <= n->weighted_distance + e->weight)) {
@@ -194,6 +203,7 @@ void sssp_bfs(void) {
 			if(!e->to->status.visited || (e->to->distance == n->distance + 1 && e->to->weighted_distance > n->weighted_distance + e->weight)) {
 				e->to->nexthop = (n->nexthop == myself) ? e->to : n->nexthop;
 				e->to->weighted_distance = n->weighted_distance + e->weight;
+				e->to->distance = n->distance + 1;
 			}
 
 			e->to->status.visited = true;
@@ -201,7 +211,10 @@ void sssp_bfs(void) {
 			e->to->prevedge = e;
 			e->to->via = indirect ? n->via : e->to;
 			e->to->options = e->options;
-			e->to->distance = n->distance + 1;
+
+			if(e->to->connection && (e->to->connection->options & OPTION_TCPONLY)) {
+				e->to->options |= OPTION_TCPONLY;
+			}
 
 			if(!e->to->status.reachable || (e->to->address.sa.sa_family == AF_UNSPEC && e->address.sa.sa_family != AF_UNKNOWN)) {
 				update_node_udp(e->to, &e->address);

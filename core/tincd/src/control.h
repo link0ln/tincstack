@@ -22,6 +22,7 @@
 
 #include "system.h"
 
+extern bool control_already_running(void);
 extern bool init_control(void);
 extern void exit_control(void);
 extern char controlcookie[];

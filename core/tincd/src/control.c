@@ -202,7 +202,72 @@ bool control_h(connection_t *c, const char *request) {
 	}
 }
 
+static bool control_initialized = false;
+
+bool control_already_running(void) {
+#ifndef HAVE_WINDOWS
+	int unix_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+	if(unix_fd >= 0) {
+		struct sockaddr_un sa_un = {
+			.sun_family = AF_UNIX,
+		};
+
+		if(strlen(unixsocketname) < sizeof(sa_un.sun_path)) {
+			strncpy(sa_un.sun_path, unixsocketname, sizeof(sa_un.sun_path));
+
+			if(connect(unix_fd, (struct sockaddr *)&sa_un, sizeof(sa_un)) >= 0) {
+				close(unix_fd);
+				logger(DEBUG_ALWAYS, LOG_ERR, "Another tincd is already running (UNIX socket %s is still in use)!", unixsocketname);
+				return true;
+			}
+		}
+
+		close(unix_fd);
+	}
+#else
+	pidfile_t *pf = read_pidfile();
+
+	if(pf) {
+		if(pf->pid > 0 && pf->pid != (int)getpid()) {
+			HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pf->pid);
+
+			if(h) {
+				DWORD wait = WaitForSingleObject(h, 0);
+				CloseHandle(h);
+
+				if(wait == WAIT_TIMEOUT) {
+					sockaddr_t sa = str2sockaddr(pf->host, pf->port);
+
+					if(sa.sa.sa_family == AF_INET || sa.sa.sa_family == AF_INET6) {
+						int s = socket(sa.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
+
+						if(s >= 0) {
+							bool in_use = (connect(s, &sa.sa, SALEN(sa.sa)) == 0);
+							closesocket(s);
+
+							if(in_use) {
+								logger(DEBUG_ALWAYS, LOG_ERR, "Another tincd is already running for this network (pid %d, %s port %s)!", pf->pid, pf->host, pf->port);
+								free(pf);
+								return true;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		free(pf);
+	}
+#endif
+	return false;
+}
+
 bool init_control(void) {
+	if(control_already_running()) {
+		return false;
+	}
+
 	randomize(controlcookie, sizeof(controlcookie) / 2);
 	bin2hex(controlcookie, controlcookie, sizeof(controlcookie) / 2);
 
@@ -232,18 +297,11 @@ bool init_control(void) {
 		localhost = sockaddr2hostname(&sa);
 	}
 
-	bool wrote = write_pidfile(controlcookie, localhost);
-	free(localhost);
-
-	if(!wrote) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "Cannot write control socket cookie file %s: %s", pidfilename, strerror(errno));
-		return false;
-	}
-
 #ifndef HAVE_WINDOWS
 	int unix_fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
 	if(unix_fd < 0) {
+		free(localhost);
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not create UNIX socket: %s", sockstrerror(sockerrno));
 		return false;
 	}
@@ -253,6 +311,8 @@ bool init_control(void) {
 	};
 
 	if(strlen(unixsocketname) >= sizeof(sa_un.sun_path)) {
+		free(localhost);
+		close(unix_fd);
 		logger(DEBUG_ALWAYS, LOG_ERR, "UNIX socket filename %s is too long!", unixsocketname);
 		return false;
 	}
@@ -260,6 +320,8 @@ bool init_control(void) {
 	strncpy(sa_un.sun_path, unixsocketname, sizeof(sa_un.sun_path));
 
 	if(connect(unix_fd, (struct sockaddr *)&sa_un, sizeof(sa_un)) >= 0) {
+		free(localhost);
+		close(unix_fd);
 		logger(DEBUG_ALWAYS, LOG_ERR, "UNIX socket %s is still in use!", unixsocketname);
 		return false;
 	}
@@ -272,11 +334,15 @@ bool init_control(void) {
 	umask(mask);
 
 	if(result < 0) {
+		free(localhost);
+		close(unix_fd);
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not bind UNIX socket to %s: %s", unixsocketname, sockstrerror(sockerrno));
 		return false;
 	}
 
 	if(listen(unix_fd, 3) < 0) {
+		free(localhost);
+		close(unix_fd);
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not listen on UNIX socket %s: %s", unixsocketname, sockstrerror(sockerrno));
 		return false;
 	}
@@ -284,15 +350,35 @@ bool init_control(void) {
 	io_add(&unix_socket, handle_new_unix_connection, &unix_socket, unix_fd, IO_READ);
 #endif
 
+	bool wrote = write_pidfile(controlcookie, localhost);
+	free(localhost);
+
+	if(!wrote) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Cannot write control socket cookie file %s: %s", pidfilename, strerror(errno));
+		return false;
+	}
+
+	control_initialized = true;
 	return true;
 }
 
 void exit_control(void) {
+	if(!control_initialized) {
+		return;
+	}
+
 #ifndef HAVE_WINDOWS
 	unlink(unixsocketname);
 	io_del(&unix_socket);
 	close(unix_socket.fd);
 #endif
 
-	unlink(pidfilename);
+	pidfile_t *pf = read_pidfile();
+
+	if(!pf || pf->pid == (int)getpid()) {
+		unlink(pidfilename);
+	}
+
+	free(pf);
+	control_initialized = false;
 }

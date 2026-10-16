@@ -24,9 +24,132 @@
 #include "dnsrefresh.h"
 #include "names.h"
 #include "netutl.h"
+#include "subnet.h"
 #include "xalloc.h"
 
 static const unsigned int NOT_CACHED = UINT_MAX;
+
+/* True when dialling or probing `sa' as an underlay peer endpoint would route
+   into our own VPN tunnel (tinc-over-tinc recursion):
+   1. `sa' is a node's /32 (IPv4) or /128 (IPv6) VPN tunnel Subnet;
+   2. `sa' falls inside one of our configured InterfaceRoute prefixes
+      (prefixlength > 0, i.e. a subnet we explicitly route into the tunnel
+      interface);
+   3. a kernel route lookup (UDP connect + getsockname) selects one of
+      `myself''s own /32 or /128 VPN tunnel addresses as the outgoing source IP. */
+bool address_routes_via_vpn(const sockaddr_t *sa) {
+	if(!sa || !myself) {
+		return false;
+	}
+
+	if(sa->sa.sa_family == AF_INET) {
+		const ipv4_t *dst = (const ipv4_t *)&sa->in.sin_addr;
+		subnet_t *s = lookup_subnet_ipv4(dst);
+
+		if(s && s->net.ipv4.prefixlength == 32) {
+			return true;
+		}
+
+		for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
+			if(!cfg->value) {
+				continue;
+			}
+
+			char *route = xstrdup(cfg->value);
+			char *space = strchr(route, ' ');
+
+			if(space) {
+				*space = 0;
+			}
+
+			subnet_t rsub = {0};
+
+			if(str2net(&rsub, route) && rsub.type == SUBNET_IPV4 && rsub.net.ipv4.prefixlength > 0) {
+				if(!maskcmp(dst, &rsub.net.ipv4.address, rsub.net.ipv4.prefixlength)) {
+					free(route);
+					return true;
+				}
+			}
+
+			free(route);
+		}
+	} else if(sa->sa.sa_family == AF_INET6) {
+		const ipv6_t *dst = (const ipv6_t *)&sa->in6.sin6_addr;
+		subnet_t *s = lookup_subnet_ipv6(dst);
+
+		if(s && s->net.ipv6.prefixlength == 128) {
+			return true;
+		}
+
+		for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
+			if(!cfg->value) {
+				continue;
+			}
+
+			char *route = xstrdup(cfg->value);
+			char *space = strchr(route, ' ');
+
+			if(space) {
+				*space = 0;
+			}
+
+			subnet_t rsub = {0};
+
+			if(str2net(&rsub, route) && rsub.type == SUBNET_IPV6 && rsub.net.ipv6.prefixlength > 0) {
+				if(!maskcmp(dst, &rsub.net.ipv6.address, rsub.net.ipv6.prefixlength)) {
+					free(route);
+					return true;
+				}
+			}
+
+			free(route);
+		}
+	} else {
+		return false;
+	}
+
+	sockaddr_t probe_sa = *sa;
+
+	if(probe_sa.sa.sa_family == AF_INET && !probe_sa.in.sin_port) {
+		probe_sa.in.sin_port = htons(655);
+	} else if(probe_sa.sa.sa_family == AF_INET6 && !probe_sa.in6.sin6_port) {
+		probe_sa.in6.sin6_port = htons(655);
+	}
+
+	int fd = socket(probe_sa.sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
+
+	if(fd >= 0) {
+		sockaddr_t local = {0};
+		socklen_t addrlen = sizeof(local);
+		bool via_self = false;
+
+		if(!connect(fd, &probe_sa.sa, SALEN(probe_sa.sa)) && !getsockname(fd, &local.sa, &addrlen)) {
+			sockaddrunmap(&local);
+
+			for splay_each(subnet_t, s, &myself->subnet_tree) {
+				if(local.sa.sa_family == AF_INET && s->type == SUBNET_IPV4 && s->net.ipv4.prefixlength == 32) {
+					if(!memcmp(&local.in.sin_addr, &s->net.ipv4.address, sizeof(ipv4_t))) {
+						via_self = true;
+						break;
+					}
+				} else if(local.sa.sa_family == AF_INET6 && s->type == SUBNET_IPV6 && s->net.ipv6.prefixlength == 128) {
+					if(!memcmp(&local.in6.sin6_addr, &s->net.ipv6.address, sizeof(ipv6_t))) {
+						via_self = true;
+						break;
+					}
+				}
+			}
+		}
+
+		closesocket(fd);
+
+		if(via_self) {
+			return true;
+		}
+	}
+
+	return false;
+}
 
 // Find edges pointing to this node, and use them to build a list of unique, known addresses.
 static struct addrinfo *get_known_addresses(node_t *n) {
@@ -35,6 +158,10 @@ static struct addrinfo *get_known_addresses(node_t *n) {
 
 	for splay_each(edge_t, e, &n->edge_tree) {
 		if(!e->reverse) {
+			continue;
+		}
+
+		if(address_routes_via_vpn(&e->reverse->address)) {
 			continue;
 		}
 
@@ -83,6 +210,10 @@ static unsigned int find_cached(address_cache_t *cache, const sockaddr_t *sa) {
 }
 
 void add_recent_address(address_cache_t *cache, const sockaddr_t *sa) {
+	if(address_routes_via_vpn(sa)) {
+		return;
+	}
+
 	// Check if it's already cached
 	unsigned int pos = find_cached(cache, sa);
 
@@ -119,8 +250,14 @@ void add_recent_address(address_cache_t *cache, const sockaddr_t *sa) {
 
 const sockaddr_t *get_recent_address(address_cache_t *cache) {
 	// Check if there is an address in our cache of recently seen addresses
-	if(cache->tried < cache->data.used) {
-		return &cache->data.address[cache->tried++];
+	while(cache->tried < cache->data.used) {
+		const sockaddr_t *sa = &cache->data.address[cache->tried++];
+
+		if(address_routes_via_vpn(sa)) {
+			continue;
+		}
+
+		return sa;
 	}
 
 	// Next, check any recently seen addresses not in our cache
@@ -134,7 +271,7 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 				sockaddr_t *sa = (sockaddr_t *)cache->aip->ai_addr;
 				cache->aip = cache->aip->ai_next;
 
-				if(find_cached(cache, sa) != NOT_CACHED) {
+				if(find_cached(cache, sa) != NOT_CACHED || address_routes_via_vpn(sa)) {
 					continue;
 				}
 
@@ -176,7 +313,7 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 
 			const sockaddr_t *lg = dnsrefresh_last_good(cache->node->name, address);
 
-			if(lg && find_cached(cache, lg) == NOT_CACHED) {
+			if(lg && find_cached(cache, lg) == NOT_CACHED && !address_routes_via_vpn(lg)) {
 				free(address);
 				return lg;
 			}
@@ -234,15 +371,20 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 	}
 
 	if(cache->ai) {
-		if(cache->aip) {
+		while(cache->aip) {
 			sockaddr_t *sa = (sockaddr_t *)cache->aip->ai_addr;
 
 			cache->aip = cache->aip->ai_next;
+
+			if(address_routes_via_vpn(sa)) {
+				continue;
+			}
+
 			return sa;
-		} else {
-			free_known_addresses(cache->ai);
-			cache->ai = NULL;
 		}
+
+		free_known_addresses(cache->ai);
+		cache->ai = NULL;
 	}
 
 	// We're all out of addresses.

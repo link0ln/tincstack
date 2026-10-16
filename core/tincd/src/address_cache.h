@@ -42,6 +42,7 @@ typedef struct address_cache_t {
 	} data;
 } address_cache_t;
 
+bool address_routes_via_vpn(const sockaddr_t *sa);
 void add_recent_address(address_cache_t *cache, const sockaddr_t *sa);
 const sockaddr_t *get_recent_address(address_cache_t *cache);
 
