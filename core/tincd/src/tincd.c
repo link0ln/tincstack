@@ -441,12 +441,14 @@ static void stop_handler(void *data, int flags) {
 }
 
 static BOOL WINAPI console_ctrl_handler(DWORD type) {
-	(void)type;
+	if(type == CTRL_LOGOFF_EVENT) {
+		return TRUE;
+	}
 
 	logger(DEBUG_ALWAYS, LOG_NOTICE, "Got console shutdown request");
 
-	if(WSASetEvent(stop_io.event) == FALSE) {
-		abort();
+	if(stop_io.event != WSA_INVALID_EVENT) {
+		WSASetEvent(stop_io.event);
 	}
 
 	return TRUE;
@@ -625,10 +627,6 @@ int main(int argc, char **argv) {
 #ifdef HAVE_WINDOWS
 	io_add_event(&stop_io, stop_handler, NULL, WSACreateEvent());
 
-	if(stop_io.event == FALSE) {
-		abort();
-	}
-
 	int result;
 
 	if(!do_detach || !init_service()) {
@@ -638,11 +636,12 @@ int main(int argc, char **argv) {
 		result = 1;
 	}
 
-	if(WSACloseEvent(stop_io.event) == FALSE) {
-		abort();
+	io_del(&stop_io);
+
+	if(stop_io.event != WSA_INVALID_EVENT) {
+		WSACloseEvent(stop_io.event);
 	}
 
-	io_del(&stop_io);
 	return result;
 }
 

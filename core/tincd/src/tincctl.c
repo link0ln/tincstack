@@ -1755,7 +1755,7 @@ const var_t variables[] = {
 	{"ObfsInitMagicHeader", VAR_SERVER | VAR_SAFE},
 	{"ObfsTransportMagicHeader", VAR_SERVER | VAR_SAFE},
 	{"StrictSubnets", VAR_SERVER | VAR_SAFE},
-	{"PreferredTransports", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
+	{"PreferredTransports", VAR_SERVER | VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
 	/* https carrier / TLS front (M5) */
 	{"TlsCert", VAR_SERVER},
 	{"TlsKey", VAR_SERVER},

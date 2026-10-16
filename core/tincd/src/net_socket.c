@@ -283,7 +283,7 @@ int setup_listen_socket(const sockaddr_t *sa) {
 		return -1;
 	}
 
-	if(listen(nfd, 3)) {
+	if(listen(nfd, SOMAXCONN)) {
 		closesocket(nfd);
 		logger(DEBUG_ALWAYS, LOG_ERR, "System call `%s' failed: %s", "listen", sockstrerror(sockerrno));
 		return -1;
@@ -364,6 +364,13 @@ int setup_udp_socket(const sockaddr_t *sa, bool shared) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Call to `%s' failed: %s", "ioctlsocket", sockstrerror(sockerrno));
 			return -1;
 		}
+
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+		BOOL new_behavior = FALSE;
+		DWORD bytes_returned = 0;
+		WSAIoctl(nfd, SIO_UDP_CONNRESET, &new_behavior, sizeof(new_behavior), NULL, 0, &bytes_returned, NULL, NULL);
 	}
 #endif
 

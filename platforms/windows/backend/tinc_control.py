@@ -68,6 +68,8 @@ class Node:
     tx_bytes: int = 0
     rtt: float = 0.0
     subnets: list = field(default_factory=list)
+    transport: str = ""        # active carrier on this peer's connection (quic/https/obfs/sf/plain)
+    supported_transports: list = field(default_factory=list)
 
     @property
     def reachable(self) -> bool:
@@ -134,9 +136,10 @@ class Subnet:
 @dataclass
 class NetworkSnapshot:
     net: str
-    nodes: dict = field(default_factory=dict)     # name -> Node
-    edges: list = field(default_factory=list)     # list[Edge]
-    subnets: list = field(default_factory=list)   # list[Subnet]
+    nodes: dict = field(default_factory=dict)        # name -> Node
+    edges: list = field(default_factory=list)        # list[Edge]
+    subnets: list = field(default_factory=list)      # list[Subnet]
+    connections: dict = field(default_factory=dict)  # peer name -> active transport
     error: str = ""
 
     def attach_subnets(self) -> None:
@@ -144,6 +147,18 @@ class NetworkSnapshot:
             n = self.nodes.get(s.owner)
             if n and s.subnet not in n.subnets:
                 n.subnets.append(s.subnet)
+
+    def attach_connections(self) -> None:
+        for name, n in self.nodes.items():
+            if n.is_self:
+                continue
+            direct = self.connections.get(name, "")
+            if direct:
+                n.transport = direct
+            elif n.status.get("udp_confirmed"):
+                n.transport = "udp"
+            elif n.reachable and n.nexthop and n.nexthop in self.connections:
+                n.transport = self.connections[n.nexthop]
 
 
 @dataclass
@@ -273,6 +288,11 @@ class TincControl:
                         n.rx_packets = int(t[i + 1]); n.rx_bytes = int(t[i + 2]); i += 3
                     elif kw == "tx":
                         n.tx_packets = int(t[i + 1]); n.tx_bytes = int(t[i + 2]); i += 3
+                    elif kw == "transports":
+                        n.supported_transports = [
+                            c.strip() for c in t[i + 1].split(",") if c.strip()
+                        ]
+                        i += 2
                     elif kw == "rtt":
                         n.rtt = float(t[i + 1]); i += 2
                     else:
@@ -322,6 +342,26 @@ class TincControl:
                 subnets.append(Subnet(subnet=t[0], owner=t[2]))
         return subnets
 
+    def parse_connections(self, text: str) -> dict[str, str]:
+        """Parse `tinc -n NET dump connections` into {peer_name: transport}.
+        Format: `<name> at <host> port <port> options <x> socket <d> status <x> transport <t>`."""
+        conns: dict[str, str] = {}
+        for line in text.splitlines():
+            t = line.split()
+            if len(t) < 2 or t[1] != "at":
+                continue
+            name = t[0]
+            if not name or name.startswith("<"):
+                continue
+            carrier = "plain"
+            for i in range(2, len(t) - 1):
+                if t[i] == "transport":
+                    carrier = t[i + 1]
+                    break
+            if name not in conns or conns[name] == "plain":
+                conns[name] = carrier
+        return conns
+
     # -- high level --
 
     def is_running(self, net: str) -> bool:
@@ -340,8 +380,31 @@ class TincControl:
         snap.edges = self.parse_edges(eout)
         _, sout, _ = self._run(net, "dump", "subnets")
         snap.subnets = self.parse_subnets(sout)
+        _, cout, _ = self._run(net, "dump", "connections")
+        snap.connections = self.parse_connections(cout)
         snap.attach_subnets()
+        snap.attach_connections()
         return snap
+
+    def reload(self, net: str, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "reload", timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def disconnect(self, net: str, peer: str, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "disconnect", peer, timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def retry(self, net: str, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "retry", timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def switch_peer_transport(self, net: str, peer: str) -> CommandResult:
+        """Reload the daemon config, drop any active connection to `peer`, and
+        trigger an immediate retry so the newly configured carrier is dialled."""
+        r1 = self.reload(net)
+        self.disconnect(net, peer)
+        r3 = self.retry(net)
+        return r1 if not r1.ok else r3
 
     # -- invitations (M2 CLI contract) --
 

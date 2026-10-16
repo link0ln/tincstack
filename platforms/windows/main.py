@@ -66,6 +66,18 @@ LINK_LABEL = {
     "direct-udp": "● direct UDP", "direct-tcp": "◐ direct TCP", "relay": "↻ relay",
     "down": "○ down", "self": "★ this node",
 }
+TRANSPORT_COLORS = {
+    "quic": "#1e8e3e", "https": "#1a73e8", "obfs": "#9334e6",
+    "sf": "#e8710a", "plain": "#5f6368", "udp": "#1e8e3e",
+}
+TRANSPORT_CHOICES = [
+    ("auto", "Auto (network default)"),
+    ("quic", "quic — QUIC (UDP / HTTP/3)"),
+    ("https", "https — HTTPS / TLS 1.3 (TCP)"),
+    ("obfs", "obfs — Obfuscated UDP"),
+    ("sf", "sf — Single-flow UDP"),
+    ("plain", "plain — Plain tinc TCP/UDP"),
+]
 
 # catalog of known tinc options for the interactive editor:
 #   (name, kind, choices, help)   kind in {str,int,bool,enum}
@@ -139,7 +151,7 @@ def human_bytes(n: int) -> str:
 # ---- Peers + persistent throughput graph -------------------------------------
 
 class PeersTab(QtWidgets.QWidget):
-    COLS = ["Peer", "Link", "Via", "Dist", "RTT ms", "PMTU", "RX", "TX", "Subnets", "Route here"]
+    COLS = ["Peer", "Link", "Transport", "Via", "Dist", "RTT ms", "PMTU", "RX", "TX", "Subnets", "Route here"]
     FULL_TUNNEL_LABEL = "all traffic ({})"     # the Route here toggle for an announced default route
 
     def __init__(self, tc: TincControl, nets_fn: Callable[[], list[str]], pool: WorkerPool,
@@ -150,6 +162,7 @@ class PeersTab(QtWidgets.QWidget):
         # a button recreated under the pointer is a button that cannot be
         # clicked. Rebuild a cell only when what it shows actually changed.
         self._route_cells: dict[str, tuple[tuple, QtWidgets.QWidget]] = {}
+        self._transport_cells: dict[str, tuple[tuple, QtWidgets.QWidget]] = {}
         self.tc = tc
         self.nets_fn = nets_fn
         self.pool = pool
@@ -168,6 +181,8 @@ class PeersTab(QtWidgets.QWidget):
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAlternatingRowColors(True)
+        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
         v.addWidget(self.table, stretch=3)
 
         ctl = QtWidgets.QHBoxLayout()
@@ -202,6 +217,8 @@ class PeersTab(QtWidgets.QWidget):
 
     def set_network(self, net: str | None) -> None:
         self.net = net
+        self._route_cells.clear()
+        self._transport_cells.clear()
         if net:
             self.hist.setdefault(net, deque(maxlen=HIST_MAX))
         self._table(self._snaps.get(net) if net else None)
@@ -219,20 +236,31 @@ class PeersTab(QtWidgets.QWidget):
 
     def _apply(self, snaps: dict[str, NetworkSnapshot]) -> None:
         now = time.time()
+        running_map: dict[str, bool] = {}
         for net, snap in snaps.items():
+            if snap.error and self.ctx and self.ctx.rt.has_live_process(net):
+                # Transient control socket hiccup while tincd child process is alive:
+                # keep the previous snapshot and running state instead of flipping UI to stopped.
+                running_map[net] = True
+                if net not in self._snaps:
+                    self._snaps[net] = snap
+                continue
             self._snaps[net] = snap
+            running_map[net] = not snap.error
             if snap.error:
                 continue
             rx = sum(n.rx_bytes for n in snap.nodes.values() if not n.is_self)
             tx = sum(n.tx_bytes for n in snap.nodes.values() if not n.is_self)
             self.hist.setdefault(net, deque(maxlen=HIST_MAX)).append((now, rx, tx))
-        self.on_running({net: not snap.error for net, snap in snaps.items()})
+        self.on_running(running_map)
         if self.net:
             self._table(self._snaps.get(self.net))
             self._redraw()
 
     def _table(self, snap: NetworkSnapshot | None) -> None:
         if snap is None or snap.error:
+            self._route_cells.clear()
+            self._transport_cells.clear()
             self.table.setRowCount(1)
             it = QtWidgets.QTableWidgetItem("not running" + (f" / {snap.error}" if snap else ""))
             it.setForeground(QtGui.QColor("#9aa0a6"))
@@ -245,7 +273,8 @@ class PeersTab(QtWidgets.QWidget):
         for r, n in enumerate(nodes):
             link = n.link
             via = "" if n.is_self or link.startswith("direct") else n.nexthop
-            cells = [n.name, LINK_LABEL.get(link, link), via,
+            tr_text = "—" if n.is_self else (n.transport or "—")
+            cells = [n.name, LINK_LABEL.get(link, link), tr_text, via,
                      "" if n.distance < 0 else str(n.distance),
                      f"{n.rtt:.0f}" if n.rtt > 0 else "",
                      str(n.pmtu) if n.pmtu else "",
@@ -256,11 +285,164 @@ class PeersTab(QtWidgets.QWidget):
                 if c == 1:
                     it.setForeground(QtGui.QColor(LINK_COLORS.get(link, "#000")))
                     f = it.font(); f.setBold(True); it.setFont(f)
+                elif c == 2 and n.transport:
+                    it.setForeground(QtGui.QColor(TRANSPORT_COLORS.get(n.transport, "#5f6368")))
+                    f = it.font(); f.setBold(True); it.setFont(f)
                 self.table.setItem(r, c, it)
+            self._transport_cell(r, n)
             self._route_cell(r, n)
-        for name in [k for k in self._route_cells if k not in {n.name for n in nodes}]:
+        live_names = {n.name for n in nodes}
+        for name in [k for k in self._route_cells if k not in live_names]:
             self._route_cells.pop(name, None)
+        for name in [k for k in self._transport_cells if k not in live_names]:
+            self._transport_cells.pop(name, None)
         self.table.resizeColumnsToContents()
+
+    # -- per-node transport display and quick-access protocol switcher ---------
+
+    def _peer_preferred_transport(self, peer_name: str) -> str:
+        nc = self.ctx.app.net(self.net) if (self.ctx and self.net) else None
+        if not nc:
+            return ""
+        return transports.host_preferred_transport(nc.hosts.get(peer_name, ""))
+
+    def _build_transport_menu(self, parent: QtWidgets.QWidget, n) -> QtWidgets.QMenu:
+        menu = QtWidgets.QMenu(parent)
+        pref = self._peer_preferred_transport(n.name) or "auto"
+        for code, title in TRANSPORT_CHOICES:
+            suffix = ""
+            if code != "auto" and n.supported_transports and code not in n.supported_transports:
+                suffix = "  (not advertised)"
+            act = menu.addAction(title + suffix)
+            act.setCheckable(True)
+            act.setChecked(pref == code)
+            act.triggered.connect(lambda _checked=False, p=n.name, c=code: self._set_peer_transport(p, c))
+            if code == "auto":
+                menu.addSeparator()
+        menu.addSeparator()
+        rec = menu.addAction(f"⟳ Reconnect {n.name} now")
+        rec.triggered.connect(lambda _checked=False, p=n.name: self._reconnect_peer(p))
+        return menu
+
+    def _transport_cell(self, row: int, n) -> None:
+        col = 2
+        if n.is_self or self.ctx is None:
+            self._transport_cells.pop(n.name, None)
+            self.table.removeCellWidget(row, col)
+            return
+        pref = self._peer_preferred_transport(n.name)
+        active = n.transport or ""
+        supported = tuple(n.supported_transports or ())
+        sig = (active, pref, supported)
+        cached = self._transport_cells.get(n.name)
+        if cached and cached[0] == sig:
+            self.table.setCellWidget(row, col, cached[1])
+            return
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QHBoxLayout(w)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(2)
+        btn = QtWidgets.QToolButton()
+        btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        if pref:
+            if active and active == pref:
+                label = f"📌 {active} ▾"
+            elif active:
+                label = f"{active} (📌 {pref}) ▾"
+            else:
+                label = f"— (📌 {pref}) ▾"
+        else:
+            label = f"{active} ▾" if active else "auto ▾"
+        btn.setText(label)
+        color = TRANSPORT_COLORS.get(active or pref, "#5f6368")
+        btn.setStyleSheet(f"QToolButton {{ color: {color}; font-weight: bold; padding: 1px 6px; }}")
+        sup_str = ", ".join(supported) if supported else "unknown"
+        btn.setToolTip(
+            f"Active transport to {n.name}: {active or 'none (down/relayed)'}\n"
+            f"Pinned preference for {n.name}: {pref or 'auto (network default)'}\n"
+            f"Peer accepts: {sup_str}\n\n"
+            f"Click to switch transport protocol (quic, https, obfs, sf, plain, auto) "
+            f"for {n.name} and reconnect immediately."
+        )
+        btn.setMenu(self._build_transport_menu(btn, n))
+        lay.addWidget(btn)
+        lay.addStretch()
+        self._transport_cells[n.name] = (sig, w)
+        self.table.setCellWidget(row, col, w)
+
+    def _on_table_context_menu(self, pos: QtCore.QPoint) -> None:
+        if not self.ctx or not self.net:
+            return
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+        item = self.table.item(row, 0)
+        if not item:
+            return
+        peer_name = item.text()
+        snap = self._snaps.get(self.net)
+        n = snap.nodes.get(peer_name) if snap else None
+        if not n or n.is_self:
+            return
+        menu = self._build_transport_menu(self.table, n)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _set_peer_transport(self, peer_name: str, carrier: str) -> None:
+        ctx, net = self.ctx, self.net
+        nc = ctx.app.net(net) if (ctx and net) else None
+        if nc is None:
+            return
+        if peer_name not in nc.hosts and os.path.exists(ctx.app.path):
+            try:
+                yaml_config.refresh_in_place(ctx.app, yaml_config.read_document(ctx.app.path))
+            except Exception:
+                pass
+        old_host = nc.hosts.get(peer_name, "")
+        nc.hosts[peer_name] = transports.set_host_preferred_transport(old_host, carrier)
+        # If the user pinned a specific transport for a peer that has an Address
+        # in its host block, make sure ConnectTo includes it so tincd dials it directly.
+        if carrier != "auto" and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer_name], re.I | re.M):
+            ct = nc.options.get("ConnectTo")
+            if isinstance(ct, list):
+                if peer_name not in ct:
+                    ct.append(peer_name)
+            elif isinstance(ct, str) and ct.strip():
+                if ct.strip() != peer_name:
+                    nc.options["ConnectTo"] = [ct.strip(), peer_name]
+            else:
+                nc.options["ConnectTo"] = peer_name
+        if not ctx.save_config():
+            nc.hosts[peer_name] = old_host
+            self._transport_cells.pop(peer_name, None)
+            self._table(self._snaps.get(net))
+            return
+        if hasattr(ctx, "network"):
+            ctx.network.reload()
+        self._transport_cells.pop(peer_name, None)
+        self._table(self._snaps.get(net))
+        desc = "auto (default)" if carrier == "auto" else carrier
+        if not ctx._running.get(net, False):
+            ctx.status(f"{peer_name}: transport set to {desc} (will apply when '{net}' starts)")
+            return
+        ctx.status(f"{peer_name}: switching transport to {desc}…")
+
+        def done(_res: Any) -> None:
+            ctx.status(f"{peer_name}: transport switched to {desc} — reconnecting")
+            self.sample_async()
+
+        ctx.pool.run(self.tc.switch_peer_transport, net, peer_name,
+                     tag=f"switch-tr-{net}-{peer_name}", on_done=done,
+                     on_error=lambda m: ctx.status(f"{peer_name}: switch failed: {m}"))
+
+    def _reconnect_peer(self, peer_name: str) -> None:
+        ctx, net = self.ctx, self.net
+        if not ctx or not net or not ctx._running.get(net, False):
+            return
+        ctx.status(f"Reconnecting {peer_name}…")
+        ctx.pool.run(self.tc.switch_peer_transport, net, peer_name,
+                     tag=f"switch-tr-{net}-{peer_name}",
+                     on_done=lambda _r: (ctx.status(f"Reconnected {peer_name}"), self.sample_async()),
+                     on_error=lambda m: ctx.status(f"Reconnect {peer_name} failed: {m}"))
 
     # -- routes to the subnets a peer announces --------------------------------
 
@@ -813,6 +995,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.admin = management.is_admin()
         self.pool = WorkerPool(self)
         self._running: dict[str, bool] = {}
+        self._wanted_running: dict[str, bool] = {}
+        self._last_autorestart: dict[str, float] = {}
         self.load_error = ""
         self.app = self._load(cfg_path)
         self.rt = Runtime(self.app)
@@ -1137,16 +1321,28 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_running(self, running: dict[str, bool]) -> None:
         """Called from the sampler (Qt thread) with fresh running flags."""
+        prev = dict(self._running)
         changed = any(self._running.get(n) != v for n, v in running.items())
         self._running.update(running)
         if changed:
             self.reload_networks()
+        now = time.time()
         # a running network with a full tunnel configured but no maintainer
         # (its daemon outlived a previous manager, or was started elsewhere)
         for net, up in running.items():
             nc = self.app.net(net)
             if up and self.admin and nc and nc.full_tunnel and not self.rt.full_tunnel_state(net):
                 self.pool.run(self.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}")
+            # If tincd exited unexpectedly while the network was supposed to be running,
+            # automatically restart it so the user does not have to manually start it again.
+            if (not up and prev.get(net, False) and self._wanted_running.get(net, False)
+                    and self.admin and not self.quitting_or_busy(net)
+                    and (now - self._last_autorestart.get(net, 0.0)) >= 10.0):
+                self._last_autorestart[net] = now
+                self._lifecycle(self.rt.start, net, "auto-restart")
+
+    def quitting_or_busy(self, net: str) -> bool:
+        return bool(getattr(self, "_quitting", False) or self.pool.busy(f"life-{net}"))
 
     def _select_net(self, name: str) -> bool:
         for i in range(self.net_list.count()):
@@ -1339,9 +1535,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.admin:
             self.status(f"{len(autos)} network(s) set to autostart — elevation needed.")
             return
+        for n in autos:
+            self._wanted_running[n] = True
         self.status("autostart: " + ", ".join(autos))
 
         def done(results: list[tuple[str, bool, str]]) -> None:
+            for n, ok, _m in results:
+                self._wanted_running[n] = ok
             self.status("autostart: " + "; ".join(f"{n}: {m}" for n, _ok, m in results))
             self.peers.sample_async()
         self.pool.run(self.rt.start_autostart, tag="autostart", on_done=done,
@@ -1361,16 +1561,19 @@ class MainWindow(QtWidgets.QMainWindow):
     def _start(self) -> None:
         net = self.cur_net()
         if net and not self._need_admin():
+            self._wanted_running[net] = True
             self._lifecycle(self.rt.start, net, "start")
 
     def _stop(self) -> None:
         net = self.cur_net()
         if net and not self._need_admin():
+            self._wanted_running[net] = False
             self._lifecycle(self.rt.stop, net, "stop")
 
     def _restart(self) -> None:
         net = self.cur_net()
         if net and not self._need_admin():
+            self._wanted_running[net] = True
             self._lifecycle(self.rt.restart, net, "restart")
 
     def _sync_startup_radio(self) -> None:

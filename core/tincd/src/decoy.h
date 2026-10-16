@@ -196,7 +196,11 @@ bool decoy_request_refused(const char *head, size_t len);
    ten connections this second. The fronts (HttpsPort, QuicPort) use this
    cap instead of tinc's MaxConnectionBurst: past it, a new TCP connection is
    closed and a new QUIC Initial dropped. */
+#ifdef HAVE_WINDOWS
+#define DECOY_MAX_WEB_CLIENTS 24
+#else
 #define DECOY_MAX_WEB_CLIENTS 256
+#endif
 
 /* True when DECOY_MAX_WEB_CLIENTS unauthenticated front connections are open. */
 bool decoy_front_full(void);

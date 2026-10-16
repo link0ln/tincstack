@@ -124,6 +124,16 @@ bool control_h(connection_t *c, const char *request) {
 			return control_return(c, REQ_DISCONNECT, -1);
 		}
 
+		for list_each(outgoing_t, outgoing, &outgoing_list) {
+			if(outgoing->node && !strcmp(outgoing->node->name, name)) {
+				outgoing->ncandidates = 0;
+				outgoing->transport_idx = 0;
+				outgoing->last_ok_mask = 0;
+				outgoing->last_ok_failures = 0;
+				outgoing->timeout = 0;
+			}
+		}
+
 		/* Snapshot first, terminate second. terminate_connection() re-dials
 		   an outgoing connection there and then, and connection_add() appends
 		   that replacement to connection_list -- the very list this loop

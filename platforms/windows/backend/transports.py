@@ -239,3 +239,33 @@ def apply_changes(options: dict, delta: dict[str, Any]) -> None:
             options.pop(k, None)
         else:
             options[k] = v
+
+
+_HOST_PREF_RE = re.compile(r"^[ \t]*PreferredTransports[ \t]*=[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE)
+
+
+def host_preferred_transport(host_text: str) -> str:
+    """Return the per-node PreferredTransports carrier pinned in `host_text`
+    (e.g. 'quic', 'https', 'obfs', 'sf', 'plain'), or '' when none is set."""
+    if not host_text:
+        return ""
+    for m in _HOST_PREF_RE.finditer(host_text):
+        lst = parse_carrier_list(m.group(1))
+        for c in lst:
+            if c in VALID_CARRIERS:
+                return c
+    return ""
+
+
+def set_host_preferred_transport(host_text: str, carrier: str) -> str:
+    """Set or clear `PreferredTransports` in a peer's raw host-file text while
+    preserving all other lines (keys, PEM blocks, Subnet, Address, Port)."""
+    kept = [
+        ln for ln in (host_text or "").splitlines()
+        if not _HOST_PREF_RE.match(ln)
+    ]
+    c = (carrier or "").strip().lower()
+    if c and c != "auto" and c in VALID_CARRIERS:
+        kept.append(f"PreferredTransports = {c}")
+    return "\n".join(kept).strip()
+

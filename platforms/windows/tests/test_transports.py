@@ -64,3 +64,21 @@ def test_front_ports_zero_is_off_not_an_error():
     # The core reads 0 as "no front" (transport_front_port); the editor must let it through.
     assert tr.validate({"HttpsPort": 0, "QuicPort": 0, "ObfsPort": 0}) == []
     assert tr.changes({}, {"HttpsPort": 0}) == {"HttpsPort": 0}
+
+
+def test_host_preferred_transport_read_and_write():
+    host_blob = "Address = 203.0.113.9\nSubnet = 10.99.0.2/32\nEd25519PublicKey = BBBB\n"
+    assert tr.host_preferred_transport(host_blob) == ""
+    updated = tr.set_host_preferred_transport(host_blob, "quic")
+    assert tr.host_preferred_transport(updated) == "quic"
+    assert "PreferredTransports = quic" in updated
+    assert "Ed25519PublicKey = BBBB" in updated
+    # Replacing existing preference updates in place without duplicating lines
+    updated2 = tr.set_host_preferred_transport(updated, "https")
+    assert tr.host_preferred_transport(updated2) == "https"
+    assert updated2.count("PreferredTransports") == 1
+    # Setting to "" / auto removes the line cleanly
+    cleared = tr.set_host_preferred_transport(updated2, "")
+    assert tr.host_preferred_transport(cleared) == ""
+    assert "PreferredTransports" not in cleared
+

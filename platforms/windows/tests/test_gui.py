@@ -91,8 +91,12 @@ class FakeTinc:
                        "192.168.1.0/24 owner gw\n"
                        "0.0.0.0/0 owner gw\n"
                        + ("::/0 owner gw\n" if self.v6_default else "")), ""
+        if sub[:2] == ["dump", "connections"] and self.peer:
+            return 0, "gw at 203.0.113.9 port 443 options c socket -1 status 002a outbuf 0/0/0 transport quic supported plain,obfs,https,quic\n", ""
         if sub[0] == "dump":
             return 0, "", ""
+        if sub[0] in ("reload", "disconnect", "retry"):
+            return 0, "OK\n", ""
         if sub[0] == "invite":
             return 0, f"203.0.113.9:655/INV_{sub[1]}\n", "Warning: using local address 203.0.113.9\n"
         if sub[0] == "cert":
@@ -635,3 +639,43 @@ def test_startup_state_query_runs_off_the_qt_thread(window, monkeypatch):
     assert wait_until(lambda: window.startup_radio.isChecked())
     assert "ON" in window.startup_radio.text()
     assert seen["thread"] != threading.get_ident()
+
+
+def test_peer_transport_column_and_quick_switcher(window_with_peer):
+    w = window_with_peer
+    # Find row for 'gw'
+    gw_row = None
+    for r in range(w.peers.table.rowCount()):
+        item = w.peers.table.item(r, 0)
+        if item and item.text() == "gw":
+            gw_row = r
+            break
+    assert gw_row is not None
+    cell = w.peers.table.cellWidget(gw_row, 2)
+    assert cell is not None
+    btns = cell.findChildren(QtWidgets.QToolButton)
+    assert len(btns) == 1
+    btn = btns[0]
+    assert btn.text() == "quic ▾"
+    assert "Active transport to gw: quic" in btn.toolTip()
+
+    # Switch 'gw' transport preference to 'https' via the quick switcher
+    w.peers._set_peer_transport("gw", "https")
+    host_blob = yc.load(w.app.path).net("demo").hosts.get("gw", "")
+    assert "PreferredTransports = https" in host_blob
+    assert wait_until(lambda: any(c[-2:] == ["disconnect", "gw"] for c in w.fake.calls))
+    assert any(c[-1:] == ["reload"] for c in w.fake.calls)
+    assert any(c[-1:] == ["retry"] for c in w.fake.calls)
+
+    # Rebuild table and check button reflects active 'quic' with preferred 'https'
+    w.peers._table(w.peers._snaps.get("demo"))
+    cell2 = w.peers.table.cellWidget(gw_row, 2)
+    btn2 = cell2.findChildren(QtWidgets.QToolButton)[0]
+    assert btn2.text() == "quic (📌 https) ▾"
+
+    # Reset back to 'auto'
+    w.peers._set_peer_transport("gw", "auto")
+    host_blob2 = yc.load(w.app.path).net("demo").hosts.get("gw", "")
+    assert "PreferredTransports" not in host_blob2
+
+

@@ -232,6 +232,11 @@ class Runtime:
         except (OSError, subprocess.TimeoutExpired) as e:
             return 1, str(e)
 
+    def has_live_process(self, net: str) -> bool:
+        """True when a tincd child process spawned by this Runtime is still alive."""
+        proc = self._procs.get(net)
+        return proc is not None and proc.poll() is None
+
     def is_running(self, net: str) -> bool:
         rc, _ = self._tinc(net, "dump", "nodes", timeout=5.0)
         return rc == 0
@@ -248,6 +253,15 @@ class Runtime:
             # still gets its full tunnel maintained
             self.full_tunnel_sync(net_name)
             return True, "already running"
+        # If a previous child process for this network is still alive (e.g. a
+        # single control-socket poll timed out right before Start was clicked),
+        # check once more; if still wedged, stop it cleanly first so two tincd
+        # instances never run side by side with duplicate Wintun adapters.
+        if self.has_live_process(net_name):
+            if self.is_running(net_name):
+                self.full_tunnel_sync(net_name)
+                return True, "already running"
+            self.stop(net_name)
         # No key check here: the core materialises Name/keys/pool on first start
         # (M1 zero-config) — an empty network stanza is a valid starting point.
         # pre-allow tincd (stable path) through the firewall so Windows doesn't
@@ -323,16 +337,21 @@ class Runtime:
             # 65535, Windows advertises a huge MSS and large packets fragment
             self._log_line(net_name, f"[tincmgr] wintun MTU clamp to {mtu} FAILED: {msg}")
 
-    def stop(self, net_name: str, timeout: float = 8.0) -> tuple[bool, str]:
+    def stop(self, net_name: str, timeout: float = 10.0) -> tuple[bool, str]:
         # the split routes and pins go first, while the adapter still exists
         self._full_tunnel_off(net_name)
         # graceful: tincd removes its Wintun adapter on a clean stop
         self._tinc(net_name, "stop", timeout=timeout)
         proc = self._procs.get(net_name)
+        pid_file = os.path.join(self.runtime_dir(net_name), "pid")
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if not self.is_running(net_name) and (proc is None or proc.poll() is not None):
-                break
+            if proc is not None:
+                if proc.poll() is not None:
+                    break
+            else:
+                if not os.path.exists(pid_file) and not self.is_running(net_name):
+                    break
             time.sleep(0.25)
         if proc and proc.poll() is None:
             try:
@@ -358,8 +377,7 @@ class Runtime:
         return self._ft_system if self._ft_system is not None else fulltunnel.system()
 
     def _daemon_alive(self, net_name: str) -> bool:
-        proc = self._procs.get(net_name)
-        return (proc is not None and proc.poll() is None) or self.is_running(net_name)
+        return self.has_live_process(net_name) or self.is_running(net_name)
 
     def _full_tunnel_off(self, net_name: str) -> None:
         with self._ft_lock:

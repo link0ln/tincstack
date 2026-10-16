@@ -382,6 +382,16 @@ bool transport_read_config(void) {
 	/* Re-read the decoy config so HttpsDecoyRoot/HttpsDecoyUpstream changes take
 	   effect on reload (this runs on every setup_myself_reloadable). */
 	decoy_read_config();
+
+	/* Reset cached candidate lists on all outgoing connections so a reload
+	   of global or per-node PreferredTransports takes effect on the next dial. */
+	for list_each(outgoing_t, outgoing, &outgoing_list) {
+		outgoing->ncandidates = 0;
+		outgoing->transport_idx = 0;
+		outgoing->last_ok_mask = 0;
+		outgoing->last_ok_failures = 0;
+	}
+
 	return true;
 }
 
@@ -616,6 +626,29 @@ void transport_node_read_config(node_t *n, splay_tree_t *config_tree) {
 		n->tls_fingerprint = fp;
 	}
 
+	/* Per-node PreferredTransports override (e.g. set via UI protocol selector). */
+	n->pref_transports_count = 0;
+	char *plist = config_join(config_tree, "PreferredTransports");
+
+	if(plist) {
+		uint32_t pmask = 0;
+		transport_id_t porder[TRANSPORT_MAX];
+		int pcount = 0;
+		char pbad[TRANSPORT_LIST_MAX];
+
+		if(transport_parse_list(plist, &pmask, porder, &pcount, pbad) && pcount > 0) {
+			for(int i = 0; i < pcount && n->pref_transports_count < sizeof(n->pref_transports); i++) {
+				if(transports[porder[i]].dial) {
+					n->pref_transports[n->pref_transports_count++] = (uint8_t)porder[i];
+				}
+			}
+		} else {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring PreferredTransports of %s: unknown carrier `%s'", n->name, pbad);
+		}
+
+		free(plist);
+	}
+
 	char *list = config_join(config_tree, "Transports");
 
 	if(!list) {
@@ -675,11 +708,21 @@ static void build_candidates(outgoing_t *outgoing) {
 	outgoing->ncandidates = 0;
 	outgoing->transport_idx = 0;
 
-	for(int i = 0; i < transport_pref_count; i++) {
-		transport_id_t id = transport_pref[i];
+	if(outgoing->node && outgoing->node->pref_transports_count > 0) {
+		for(int i = 0; i < outgoing->node->pref_transports_count && outgoing->ncandidates < TRANSPORT_MAX; i++) {
+			transport_id_t id = (transport_id_t)outgoing->node->pref_transports[i];
 
-		if((peer & TRANSPORT_BIT(id)) && transports[id].dial) {
-			outgoing->candidates[outgoing->ncandidates++] = id;
+			if(transports[id].dial) {
+				outgoing->candidates[outgoing->ncandidates++] = id;
+			}
+		}
+	} else {
+		for(int i = 0; i < transport_pref_count; i++) {
+			transport_id_t id = transport_pref[i];
+
+			if((peer & TRANSPORT_BIT(id)) && transports[id].dial) {
+				outgoing->candidates[outgoing->ncandidates++] = id;
+			}
 		}
 	}
 

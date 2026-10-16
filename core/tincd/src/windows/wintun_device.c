@@ -33,6 +33,7 @@
 #include "../autoif.h"
 #include "../conf.h"
 #include "../device.h"
+#include "../ed25519/sha512.h"
 #include "../logger.h"
 #include "../names.h"
 #include "../net.h"
@@ -76,6 +77,7 @@ static WINTUN_ALLOCATE_SEND_PACKET_FUNC WintunAllocateSendPacket;
 static WINTUN_SEND_PACKET_FUNC WintunSendPacket;
 
 #define WINTUN_RING_CAPACITY (0x400000)  /* 4 MiB ring, per Wintun examples */
+#define WINTUN_MAX_BATCH 256             /* max packets drained per event-loop turn */
 #define ETH_HDR 14                       /* synthesized ethernet header size */
 
 static HMODULE wintun_dll = NULL;
@@ -156,6 +158,22 @@ static void adapter_name_w(WCHAR *out, size_t cch) {
 
 	MultiByteToWideChar(CP_UTF8, 0, name, -1, out, (int)cch);
 	free(override);
+}
+
+/* Derive a deterministic per-network GUID from the adapter name so Windows and
+   wintun.dll always refer to the same adapter identity instead of allocating a
+   fresh random GUID on every restart. */
+static void adapter_guid(const char *name, GUID *guid) {
+	static const char prefix[] = "tincstack-wintun-guid:";
+	unsigned char digest[64];
+	sha512_context ctx;
+	sha512_init(&ctx);
+	sha512_update(&ctx, prefix, sizeof(prefix) - 1);
+	sha512_update(&ctx, name ? name : "tinc", strlen(name ? name : "tinc"));
+	sha512_final(&ctx, digest);
+	memcpy(guid, digest, sizeof(*guid));
+	guid->Data3 = (UINT16)((guid->Data3 & 0x0fff) | 0x5000);
+	guid->Data4[0] = (BYTE)((guid->Data4[0] & 0x3f) | 0x80);
 }
 
 /* Programmatically assign the adapter's IP from the `WintunAddress` option
@@ -366,13 +384,36 @@ static bool setup_device(void) {
 	WCHAR wname[256];
 	adapter_name_w(wname, sizeof(wname) / sizeof(wname[0]));
 
-	/* A stable per-network GUID would let the adapter keep its settings across
-	   runs; passing NULL lets Wintun allocate one. We create fresh each time so
-	   the adapter truly appears on connect and disappears on close. */
-	adapter = WintunCreateAdapter(wname, L"tinc", NULL);
+	/* Clean up any orphaned Wintun adapter(s) with the same name left over
+	   from an unclean shutdown or crash. Passing NULL GUID to WintunCreateAdapter
+	   creates a duplicate adapter (<net> 2) with identical IP/subnet settings
+	   instead of failing when an adapter with the same name already exists. */
+	for(int i = 0; i < 8; i++) {
+		WINTUN_ADAPTER_HANDLE stale = WintunOpenAdapter(wname);
+
+		if(!stale) {
+			break;
+		}
+
+		logger(DEBUG_ALWAYS, LOG_INFO, "Removing stale Wintun adapter '%s' from previous run", iface);
+		WintunCloseAdapter(stale);
+	}
+
+	GUID guid;
+	adapter_guid(iface, &guid);
+	adapter = WintunCreateAdapter(wname, L"tinc", &guid);
 
 	if(!adapter) {
-		/* Maybe a stale adapter exists from a crash — try to open & reuse it. */
+		WINTUN_ADAPTER_HANDLE stale = WintunOpenAdapter(wname);
+
+		if(stale) {
+			WintunCloseAdapter(stale);
+		}
+
+		adapter = WintunCreateAdapter(wname, L"tinc", &guid);
+	}
+
+	if(!adapter) {
 		adapter = WintunOpenAdapter(wname);
 	}
 
@@ -395,7 +436,7 @@ static bool setup_device(void) {
 }
 
 static void read_from_wintun(void) {
-	for(;;) {
+	for(int count = 0; count < WINTUN_MAX_BATCH; count++) {
 		DWORD size = 0;
 		BYTE *ippkt = WintunReceivePacket(session, &size);
 
@@ -407,7 +448,7 @@ static void read_from_wintun(void) {
 				logger(DEBUG_ALWAYS, LOG_ERR, "Error reading from %s: %s",
 				       device_info, winerror(e));
 
-			break;
+			return;
 		}
 
 		if(size + ETH_HDR <= MTU && size >= 1) {
@@ -432,6 +473,12 @@ static void read_from_wintun(void) {
 		}
 
 		WintunReleaseReceivePacket(session, ippkt);
+	}
+
+	/* Yield to the event loop so sockets and timers (pings, control commands)
+	   are serviced under heavy tunnel load, then immediately continue draining. */
+	if(read_wait) {
+		SetEvent(read_wait);
 	}
 }
 

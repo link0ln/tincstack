@@ -22,6 +22,7 @@
 #include <assert.h>
 
 #include "../event.h"
+#include "../logger.h"
 #include "../utils.h"
 #include "../net.h"
 
@@ -42,7 +43,8 @@ void io_add(io_t *io, io_cb_t cb, void *data, int fd, int flags) {
 		io->event = WSACreateEvent();
 
 		if(io->event == WSA_INVALID_EVENT) {
-			abort();
+			logger(DEBUG_ALWAYS, LOG_ERR, "WSACreateEvent failed: %s", winerror(WSAGetLastError()));
+			return;
 		}
 	}
 
@@ -55,7 +57,12 @@ void io_add(io_t *io, io_cb_t cb, void *data, int fd, int flags) {
 	io_set(io, flags);
 
 	if(!splay_insert_node(&io_tree, &io->node)) {
-		abort();
+		logger(DEBUG_ALWAYS, LOG_ERR, "Duplicate io_t node in io_tree (fd=%d)", fd);
+		if(io->fd != -1 && io->event != WSA_INVALID_EVENT) {
+			WSACloseEvent(io->event);
+		}
+		event_count--;
+		io->cb = NULL;
 	}
 }
 
@@ -86,7 +93,7 @@ void io_set(io_t *io, int flags) {
 	}
 
 	if(WSAEventSelect(io->fd, io->event, events) != 0) {
-		abort();
+		logger(DEBUG_ALWAYS, LOG_WARNING, "WSAEventSelect failed on fd %d: %s", io->fd, winerror(WSAGetLastError()));
 	}
 }
 
@@ -98,10 +105,13 @@ void io_del(io_t *io) {
 	io_set(io, 0);
 
 	if(io->fd != -1 && WSACloseEvent(io->event) == FALSE) {
-		abort();
+		logger(DEBUG_ALWAYS, LOG_WARNING, "WSACloseEvent failed on fd %d: %s", io->fd, winerror(WSAGetLastError()));
 	}
 
-	event_count--;
+	if(event_count > 0) {
+		event_count--;
+	}
+
 	splay_unlink_node(&io_tree, &io->node);
 	io->cb = NULL;
 }
@@ -114,6 +124,11 @@ bool event_loop(void) {
 	while(running) {
 		struct timeval diff;
 		struct timeval *tv = timeout_execute(&diff);
+
+		if(!running) {
+			break;
+		}
+
 		DWORD timeout_ms = tv ? (DWORD)(tv->tv_sec * 1000 + tv->tv_usec / 1000 + 1) : WSA_INFINITE;
 
 		if(!event_count) {
@@ -132,20 +147,31 @@ bool event_loop(void) {
 		   this event being fired again if ignored.
 		*/
 		unsigned int curgen = io_tree.generation;
+		bool ran_write = false;
 
 		for splay_each(io_t, io, &io_tree) {
-			if(io->flags & IO_WRITE && send(io->fd, NULL, 0, 0) == 0) {
+			if((io->flags & IO_WRITE) && io->fd != -1 && send(io->fd, NULL, 0, 0) == 0) {
+				ran_write = true;
 				io->cb(io->data, IO_WRITE);
 
-				if(curgen != io_tree.generation) {
+				if(!running || curgen != io_tree.generation) {
 					break;
 				}
 			}
 		}
 
-		if(event_count > WSA_MAXIMUM_WAIT_EVENTS) {
-			WSASetLastError(WSA_INVALID_PARAMETER);
-			return(false);
+		if(!running) {
+			break;
+		}
+
+		if(ran_write) {
+			tv = timeout_execute(&diff);
+
+			if(!running) {
+				break;
+			}
+
+			timeout_ms = tv ? (DWORD)(tv->tv_sec * 1000 + tv->tv_usec / 1000 + 1) : WSA_INFINITE;
 		}
 
 		WSAEVENT events[WSA_MAXIMUM_WAIT_EVENTS];
@@ -153,9 +179,17 @@ bool event_loop(void) {
 		DWORD event_index = 0;
 
 		for splay_each(io_t, io, &io_tree) {
+			if(event_index >= WSA_MAXIMUM_WAIT_EVENTS) {
+				break;
+			}
+
 			events[event_index] = io->event;
 			io_map[event_index] = io;
 			event_index++;
+		}
+
+		if(event_count > WSA_MAXIMUM_WAIT_EVENTS && timeout_ms > 50) {
+			timeout_ms = 50;
 		}
 
 		/*
@@ -164,51 +198,57 @@ bool event_loop(void) {
 		 */
 		curgen = io_tree.generation;
 
-		for(DWORD event_offset = 0; event_offset < event_count;) {
-			DWORD result = WSAWaitForMultipleEvents(event_count - event_offset, &events[event_offset], FALSE, timeout_ms, FALSE);
+		for(DWORD event_offset = 0; event_offset < event_index && running;) {
+			DWORD result = WSAWaitForMultipleEvents(event_index - event_offset, &events[event_offset], FALSE, timeout_ms, FALSE);
 
 			if(result == WSA_WAIT_TIMEOUT) {
 				break;
 			}
 
-			if(result >= event_count - event_offset) {
-				return false;
+			if(result == WSA_WAIT_FAILED || result >= event_index - event_offset) {
+				logger(DEBUG_ALWAYS, LOG_WARNING, "WSAWaitForMultipleEvents failed: %s", winerror(WSAGetLastError()));
+				break;
 			}
 
 			/* Look up io in the map by index. */
-			event_index = result + event_offset;
-			io_t *io = io_map[event_index];
+			DWORD fired_index = result + event_offset;
+			io_t *io = io_map[fired_index];
 
 			if(io->fd == -1) {
 				io->cb(io->data, 0);
 
-				if(curgen != io_tree.generation) {
+				if(!running || curgen != io_tree.generation) {
 					break;
 				}
 			} else {
 				WSANETWORKEVENTS network_events;
 
 				if(WSAEnumNetworkEvents(io->fd, io->event, &network_events) != 0) {
-					return(false);
+					logger(DEBUG_ALWAYS, LOG_WARNING, "WSAEnumNetworkEvents failed on fd %d: %s", io->fd, winerror(WSAGetLastError()));
+					event_offset = fired_index + 1;
+					timeout_ms = 0;
+					continue;
 				}
 
-				if(network_events.lNetworkEvents & READ_EVENTS) {
+				if((network_events.lNetworkEvents & READ_EVENTS) && (io->flags & IO_READ)) {
 					io->cb(io->data, IO_READ);
 
-					if(curgen != io_tree.generation) {
+					if(!running || curgen != io_tree.generation) {
 						break;
 					}
 				}
 
-				/*
-				    The fd might be available for write too. However, if we already fired the read callback, that
-				    callback might have deleted the io (e.g. through terminate_connection()), so we can't fire the
-				    write callback here. Instead, we loop back and let the writable io loop above handle it.
-				 */
+				if((network_events.lNetworkEvents & WRITE_EVENTS) && (io->flags & IO_WRITE)) {
+					io->cb(io->data, IO_WRITE);
+
+					if(!running || curgen != io_tree.generation) {
+						break;
+					}
+				}
 			}
 
 			/* Continue checking the rest of the events. */
-			event_offset = event_index + 1;
+			event_offset = fired_index + 1;
 
 			/* Just poll the next time through. */
 			timeout_ms = 0;

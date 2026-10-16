@@ -1447,12 +1447,18 @@ bool setup_network(void) {
   close all open network connections
 */
 void close_network_connections(void) {
+	int control_fds[64];
+	int n_control_fds = 0;
+
 	for(list_node_t *node = connection_list.head, *next; node; node = next) {
 		next = node->next;
 		connection_t *c = node->data;
 
 		/* Keep control connections open until the end, so they know when we really terminated */
 		if(c->status.control) {
+			if(c->socket != -1 && n_control_fds < (int)(sizeof(control_fds) / sizeof(control_fds[0]))) {
+				control_fds[n_control_fds++] = c->socket;
+			}
 			c->socket = -1;
 		}
 
@@ -1500,6 +1506,10 @@ void close_network_connections(void) {
 	}
 
 	exit_control();
+
+	for(int i = 0; i < n_control_fds; i++) {
+		closesocket(control_fds[i]);
+	}
 
 	free(scriptextension);
 	free(scriptinterpreter);

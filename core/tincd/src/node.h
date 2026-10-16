@@ -119,6 +119,8 @@ typedef struct node_t {
 	struct address_cache_t *address_cache;
 
 	uint32_t transports;                    /* carriers this node accepts (TRANSPORT_BIT mask); 0 = unknown, treated as plain */
+	uint8_t pref_transports[5];             /* per-node PreferredTransports override from its host record */
+	uint8_t pref_transports_count;          /* number of entries in pref_transports (0 = use global PreferredTransports) */
 	char *tls_fingerprint;                  /* pinned SHA-256 of its TLS cert (hex), or NULL if unknown */
 	time_t last_req_pubkey;                 /* Last time a bare REQ_PUBKEY was relayed towards this node (rate limit) */
 	time_t last_req_transports;             /* Last time we asked this node for its carrier list (rate limit) */
