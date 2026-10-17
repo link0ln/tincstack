@@ -210,12 +210,19 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 	}
 
 	/* invalidate UDP information - note that this is a security feature as well to make sure
-	   we can't be tricked into flooding any random address with UDP packets */
-	n->status.udp_confirmed = false;
-	n->maxrecentlen = 0;
-	n->mtuprobes = 0;
-	n->minmtu = 0;
-	n->maxmtu = MTU;
+	   we can't be tricked into flooding any random address with UDP packets.
+	   For a datagram carrier (quic), data packets ride the carrier flow rather
+	   than n->address, so learning the peer's raw UDP data-socket address
+	   (send_carrier_beacon) must not wipe out the carrier's confirmed PMTU. */
+	n->status.udp_addr_confirmed = false;
+
+	if(!sa || !n->connection || !n->connection->transport || !n->connection->transport->send_datagram) {
+		n->status.udp_confirmed = false;
+		n->maxrecentlen = 0;
+		n->mtuprobes = 0;
+		n->minmtu = 0;
+		n->maxmtu = MTU;
+	}
 }
 
 bool dump_nodes(connection_t *c) {

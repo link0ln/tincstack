@@ -313,6 +313,7 @@ static void check_reachability(void) {
 			n->last_req_key = 0;
 
 			n->status.udp_confirmed = false;
+			n->status.udp_addr_confirmed = false;
 			n->maxmtu = MTU;
 			n->maxrecentlen = 0;
 			n->minmtu = 0;

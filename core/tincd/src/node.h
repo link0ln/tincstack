@@ -45,6 +45,7 @@ typedef union node_status_t {
 		bool has_address: 1;            /* 1 if we know an external address for this node */
 		bool ping_sent: 1;              /* 1 if we sent a UDP probe but haven't received the reply yet */
 		bool sptps_route_stale: 1;      /* 1 if the route changed under a pending key exchange (graph.c) */
+		bool udp_addr_confirmed: 1;     /* 1 if n->address was confirmed by a raw UDP packet (!via_carrier) */
 	};
 	uint32_t value;
 } node_status_t;
@@ -127,6 +128,7 @@ typedef struct node_t {
 	uint8_t dseal;                          /* direct-seal capability, DSEAL_* (obfs.h); 0 = not learned yet */
 	time_t dseal_logged;                    /* rate limit for the "no direct UDP to it" log line */
 	time_t carrier_beacon_sent;             /* last send_carrier_beacon() to it (net_packet.c) */
+	time_t last_vpn_route_check;            /* last address_routes_via_vpn() check while udp_confirmed */
 	struct timeval punch_go;                /* coordinated hole punch: start of the current round (net_packet.c) */
 	time_t punch_req_sent;                  /* last PUNCH_REQ asking for a round */
 	time_t punch_backoff_until;             /* no probes to it before this, after a failed round */

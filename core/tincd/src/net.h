@@ -229,6 +229,7 @@ extern void handle_incoming_carrier_datagram(listen_socket_t *ls, const uint8_t 
 /* REQ_KEY extension of the coordinated hole punch (net_packet.c). */
 #define PUNCH_REQ 98
 extern bool punch_h(struct node_t *from, struct node_t *to, const char *request);
+extern void maybe_send_carrier_beacon(struct node_t *n);
 extern bool sptps_udp_addresses_known_nodes(const struct node_t *n, const uint8_t *buf, size_t len);
 extern void finish_connecting(struct connection_t *c);
 extern bool do_outgoing_connection(struct outgoing_t *outgoing);

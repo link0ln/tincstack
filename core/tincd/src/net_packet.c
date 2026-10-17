@@ -203,6 +203,7 @@ static void udp_probe_timeout_handler(void *data) {
 
 	logger(DEBUG_TRAFFIC, LOG_INFO, "Too much time has elapsed since last UDP ping response from %s (%s), stopping UDP communication", n->name, n->hostname);
 	n->status.udp_confirmed = false;
+	n->status.udp_addr_confirmed = false;
 	n->udp_ping_rtt = -1;
 	n->maxrecentlen = 0;
 	n->mtuprobes = 0;
@@ -320,6 +321,11 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 
 	if(n->minmtu < len) {
 		n->minmtu = len;
+
+		if(n->mtu < n->minmtu) {
+			n->mtu = n->minmtu;
+		}
+
 		try_fix_mtu(n);
 	}
 }
@@ -737,7 +743,7 @@ bool receive_tcppacket_sptps(connection_t *c, const char *data, size_t len) {
 	/* Help the sender reach us over UDP.
 	   Note that we only do this if we're the destination or the static relay;
 	   otherwise every hop would initiate its own UDP info message, resulting in elevated chatter. */
-	if(to->via == myself) {
+	if(to == myself || (to->via == myself && to->nexthop == to)) {
 		send_udp_info(myself, from);
 	}
 
@@ -870,8 +876,31 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 	*sa = &n->address;
 	*sock = n->sock;
 
-	/* If the UDP address is confirmed, use it. */
+	/* If the UDP address is confirmed, use it, unless OS routing changed
+	   so that this address now routes back into our own VPN interface. */
 	if(n->status.udp_confirmed) {
+		if(n->last_vpn_route_check != now.tv_sec) {
+			node_t *mut_n = (node_t *)n;
+			mut_n->last_vpn_route_check = now.tv_sec;
+
+			if((*sa)->sa.sa_family == AF_UNSPEC || (*sa)->sa.sa_family == AF_UNKNOWN || address_routes_via_vpn(*sa)) {
+				*sa = NULL;
+
+				if(!carrier_datagram_path(n)) {
+					logger(DEBUG_TRAFFIC, LOG_INFO, "Confirmed UDP address of %s (%s) now routes via VPN, stopping direct UDP communication", n->name, n->hostname);
+					mut_n->status.udp_confirmed = false;
+					mut_n->status.udp_addr_confirmed = false;
+					mut_n->udp_ping_rtt = -1;
+					mut_n->maxrecentlen = 0;
+					mut_n->mtuprobes = 0;
+					mut_n->minmtu = 0;
+					mut_n->maxmtu = MTU;
+				}
+
+				return;
+			}
+		}
+
 		return;
 	}
 
@@ -1533,6 +1562,16 @@ static void send_carrier_beacon(node_t *n) {
 	carrier_beacon_raw = false;
 }
 
+void maybe_send_carrier_beacon(node_t *n) {
+	if(n && n->nexthop && n->nexthop != n && n->nexthop != myself && carrier_datagram_path(n->nexthop)) {
+		send_carrier_beacon(n->nexthop);
+	}
+}
+
+static bool has_confirmed_udp_addr(const node_t *n) {
+	return n->status.udp_confirmed && (!carrier_datagram_path(n) || n->status.udp_addr_confirmed);
+}
+
 /* ---- coordinated hole punch (stream N2) ------------------------------------
 
    tinc used to probe a peer it has no direct path to as soon as it had a key,
@@ -1679,7 +1718,7 @@ static bool punch_may_probe(node_t *n) {
 static bool punch_send_go(node_t *a, node_t *b) {
 	char *addr = NULL, *port = NULL;
 
-	if(a->status.udp_confirmed && a->address.sa.sa_family != AF_UNSPEC && a->address.sa.sa_family != AF_UNKNOWN) {
+	if(has_confirmed_udp_addr(a) && a->address.sa.sa_family != AF_UNSPEC && a->address.sa.sa_family != AF_UNKNOWN) {
 		sockaddr2str(&a->address, &addr, &port);
 	}
 
@@ -1711,9 +1750,9 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 			   PUNCH_REQ_RETRY s and runs a round on its own after
 			   PUNCH_MAX_UNANSWERED requests (a relay that never has UDP to
 			   them, e.g. TCP-only links). */
-			if(!from->status.udp_confirmed || !to->status.udp_confirmed) {
+			if(!has_confirmed_udp_addr(from) || !has_confirmed_udp_addr(to)) {
 				logger(DEBUG_PROTOCOL, LOG_INFO, "Coordinated hole punch between %s and %s: not yet, no confirmed UDP address of %s", from->name, to->name,
-				       !from->status.udp_confirmed ? from->name : to->name);
+				       !has_confirmed_udp_addr(from) ? from->name : to->name);
 				return true;
 			}
 
@@ -2473,7 +2512,7 @@ skip_harder:
 		   Note that we only do this if we're the destination or the static relay;
 		   otherwise every hop would initiate its own UDP info message, resulting in elevated chatter. */
 
-		if(n != from->via && to->via == myself) {
+		if(n != from->via && (to == myself || (to->via == myself && to->nexthop == to))) {
 			send_udp_info(myself, from);
 		}
 
@@ -2495,15 +2534,19 @@ skip_harder:
 
 	n->sock = ls - listen_socket;
 
-	if(direct && !via_carrier && sockaddrcmp(addr, &n->address)) {
-		update_node_udp(n, addr);
+	if(direct && !via_carrier) {
+		if(sockaddrcmp(addr, &n->address)) {
+			update_node_udp(n, addr);
+		}
+
+		n->status.udp_addr_confirmed = true;
 	}
 
 	/* If the packet went through a relay, help the sender find the appropriate MTU
 	   through the relay path. */
 
 	if(!direct) {
-		send_mtu_info(myself, n, MTU);
+		send_mtu_info(myself, from, MTU);
 	}
 }
 

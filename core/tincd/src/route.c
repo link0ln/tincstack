@@ -386,15 +386,42 @@ static bool do_decrement_ttl(node_t *source, vpn_packet_t *packet) {
 	}
 }
 
-static void clamp_mss(const node_t *source, const node_t *via, vpn_packet_t *packet) {
-	if(!source || !via || !(via->options & OPTION_CLAMP_MSS)) {
+static uint16_t effective_node_mtu(const node_t *n) {
+	if(!n) {
+		return MTU;
+	}
+
+	uint16_t mtu = n->mtu;
+
+	if(n == myself) {
+		return mtu;
+	}
+
+	const node_t *via = (n->via == myself) ? n->nexthop : n->via;
+
+	if(via && via != myself && via->mtu < mtu) {
+		mtu = via->mtu;
+	}
+
+	if(n->nexthop && n->nexthop != myself && (!via || !via->status.udp_confirmed || via->minmtu == 0)) {
+		if(n->nexthop->mtu < mtu) {
+			mtu = n->nexthop->mtu;
+		}
+	}
+
+	return mtu;
+}
+
+static void clamp_mss(const node_t *source, const node_t *dest, const node_t *via, vpn_packet_t *packet) {
+	if(!source || !dest || !(((via ? via->options : 0) | dest->options) & OPTION_CLAMP_MSS)) {
 		return;
 	}
 
-	uint16_t mtu = source->mtu;
+	uint16_t mtu = effective_node_mtu(source);
+	uint16_t dest_mtu = effective_node_mtu(dest);
 
-	if(via != myself && via->mtu < mtu) {
-		mtu = via->mtu;
+	if(dest_mtu < mtu) {
+		mtu = dest_mtu;
 	}
 
 	/* Find TCP header */
@@ -462,6 +489,10 @@ static void clamp_mss(const node_t *source, const node_t *via, vpn_packet_t *pac
 			break;
 		}
 
+		if(mtu <= start + 20) {
+			break;
+		}
+
 		/* Found it */
 		uint16_t oldmss = DATA(packet)[start + 22 + i] << 8 | DATA(packet)[start + 23 + i];
 		uint16_t newmss = mtu - start - 20;
@@ -471,7 +502,7 @@ static void clamp_mss(const node_t *source, const node_t *via, vpn_packet_t *pac
 			break;
 		}
 
-		logger(DEBUG_TRAFFIC, LOG_INFO, "Clamping MSS of packet from %s to %s to %d", source->name, via->name, newmss);
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Clamping MSS of packet from %s to %s to %d", source->name, dest->name, newmss);
 
 		/* Update the MSS value and the checksum */
 		DATA(packet)[start + 22 + i] = newmss >> 8;
@@ -567,7 +598,7 @@ static void route_broadcast(node_t *source, vpn_packet_t *packet) {
 
 /* RFC 791 */
 
-static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t ether_size) {
+static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t ether_size, uint16_t path_mtu) {
 	struct ip ip;
 	vpn_packet_t fragment;
 	size_t maxlen, todo;
@@ -592,7 +623,7 @@ static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t et
 	logger(DEBUG_TRAFFIC, LOG_INFO, "Fragmenting packet of %d bytes to %s (%s)", packet->len, dest->name, dest->hostname);
 
 	offset = DATA(packet) + ether_size + ip_size;
-	maxlen = (MAX(dest->mtu, 590) - ether_size - ip_size) & ~0x7;
+	maxlen = (MAX(path_mtu, 590) - ether_size - ip_size) & ~0x7;
 	ip_off = ntohs(ip.ip_off);
 	origf = ip_off & ~IP_OFFMASK;
 	ip_off &= IP_OFFMASK;
@@ -682,20 +713,22 @@ static void route_ipv4(node_t *source, vpn_packet_t *packet) {
 		return;
 	}
 
-	if(via && packet->len > MAX(via->mtu, 590) && via != myself) {
-		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, via->mtu);
+	uint16_t path_mtu = effective_node_mtu(subnet->owner);
+
+	if(via && packet->len > MAX(path_mtu, 590) && via != myself) {
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, path_mtu);
 
 		if(DATA(packet)[20] & 0x40) {
-			packet->len = MAX(via->mtu, 590);
+			packet->len = MAX(path_mtu, 590);
 			route_ipv4_unreachable(source, packet, ether_size, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED);
 		} else {
-			fragment_ipv4_packet(via, packet, ether_size);
+			fragment_ipv4_packet(subnet->owner, packet, ether_size, path_mtu);
 		}
 
 		return;
 	}
 
-	clamp_mss(source, via, packet);
+	clamp_mss(source, subnet->owner, via, packet);
 
 	send_packet(subnet->owner, packet);
 }
@@ -776,14 +809,16 @@ static void route_ipv6(node_t *source, vpn_packet_t *packet) {
 		return;
 	}
 
-	if(via && packet->len > MAX(via->mtu, 1294) && via != myself) {
-		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, via->mtu);
-		packet->len = MAX(via->mtu, 1294);
+	uint16_t path_mtu = effective_node_mtu(subnet->owner);
+
+	if(via && packet->len > MAX(path_mtu, 1294) && via != myself) {
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, path_mtu);
+		packet->len = MAX(path_mtu, 1294);
 		route_ipv6_unreachable(source, packet, ether_size, ICMP6_PACKET_TOO_BIG, 0);
 		return;
 	}
 
-	clamp_mss(source, via, packet);
+	clamp_mss(source, subnet->owner, via, packet);
 
 	send_packet(subnet->owner, packet);
 }
@@ -1076,8 +1111,10 @@ static void route_mac(node_t *source, vpn_packet_t *packet) {
 		return;
 	}
 
-	if(via && packet->len > via->mtu && via != myself) {
-		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, via->mtu);
+	uint16_t path_mtu = effective_node_mtu(subnet->owner);
+
+	if(via && packet->len > path_mtu && via != myself) {
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, path_mtu);
 		length_t ethlen = 14;
 
 		if(type == ETH_P_8021Q) {
@@ -1087,21 +1124,21 @@ static void route_mac(node_t *source, vpn_packet_t *packet) {
 
 		if(type == ETH_P_IP && packet->len > 576 + ethlen) {
 			if(DATA(packet)[6 + ethlen] & 0x40) {
-				packet->len = via->mtu;
+				packet->len = path_mtu;
 				route_ipv4_unreachable(source, packet, ethlen, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED);
 			} else {
-				fragment_ipv4_packet(via, packet, ethlen);
+				fragment_ipv4_packet(subnet->owner, packet, ethlen, path_mtu);
 			}
 
 			return;
 		} else if(type == ETH_P_IPV6 && packet->len > 1280 + ethlen) {
-			packet->len = via->mtu;
+			packet->len = path_mtu;
 			route_ipv6_unreachable(source, packet, ethlen, ICMP6_PACKET_TOO_BIG, 0);
 			return;
 		}
 	}
 
-	clamp_mss(source, via, packet);
+	clamp_mss(source, subnet->owner, via, packet);
 
 	send_packet(subnet->owner, packet);
 }

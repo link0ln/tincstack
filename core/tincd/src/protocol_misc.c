@@ -268,6 +268,24 @@ bool udp_info_h(connection_t *c, const char *request) {
 
 /* Transmitting MTU information */
 
+static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
+	if(!n || n == myself) {
+		return mtu;
+	}
+
+	const node_t *via = (n->via == myself) ? n->nexthop : n->via;
+
+	if(n->minmtu == n->maxmtu && n->minmtu > 0 && n->via == myself && n->nexthop == n) {
+		mtu = MIN(mtu, n->minmtu);
+	} else if(via && via->minmtu == via->maxmtu && via->minmtu > 0) {
+		mtu = MIN(mtu, via->minmtu);
+	} else if(via && via->nexthop && via->nexthop->minmtu == via->nexthop->maxmtu && via->nexthop->minmtu > 0) {
+		mtu = MIN(mtu, via->nexthop->minmtu);
+	}
+
+	return mtu;
+}
+
 bool send_mtu_info(node_t *from, node_t *to, int mtu) {
 	/* Skip cases where sending MTU info messages doesn't make sense.
 	   This is done here in order to avoid repeating the same logic in multiple callsites. */
@@ -298,23 +316,16 @@ bool send_mtu_info(node_t *from, node_t *to, int mtu) {
 		return true;
 	}
 
-	/* We will send the passed-in MTU value, unless we believe ours is better. */
+	/* Clamp the advertised MTU by both legs of the relay path (incoming from
+	   `from` and outgoing towards `to`), and by our own relay leg on receipt.
+	   Without clamping the `to` leg, a relay bridging a high-MTU carrier (e.g.
+	   sf/obfs 1413) and a lower-MTU carrier (e.g. quic 1119) advertises 1413
+	   towards the 1413 side, which then sends 1413-byte SPTPS packets that
+	   exceed the 1119-byte ceiling on the quic leg and fall back to TCP/H3 meta
+	   streams on the relay. */
 
-	node_t *via = (from->via == myself) ? from->nexthop : from->via;
-
-	if(from->minmtu == from->maxmtu && from->via == myself) {
-		/* We have a direct measurement. Override the value entirely.
-		   Note that we only do that if we are sitting as a static relay in the path;
-		   otherwise, we can't guarantee packets will flow through us, and increasing
-		   MTU could therefore end up being too optimistic. */
-		mtu = from->minmtu;
-	} else if(via->minmtu == via->maxmtu) {
-		/* Static relay. Ensure packets will make it through the entire relay path. */
-		mtu = MIN(mtu, via->minmtu);
-	} else if(via->nexthop->minmtu == via->nexthop->maxmtu) {
-		/* Dynamic relay. Ensure packets will make it through the entire relay path. */
-		mtu = MIN(mtu, via->nexthop->minmtu);
-	}
+	mtu = clamp_relay_leg_mtu(from, mtu);
+	mtu = clamp_relay_leg_mtu(to, mtu);
 
 	if(from == myself) {
 		to->mtu_info_sent = now;
@@ -354,6 +365,10 @@ bool mtu_info_h(connection_t *c, const char *request) {
 	if(!from) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got %s from %s (%s) origin %s which does not exist in our connection list", "MTU_INFO", c->name, c->hostname, from_name);
 		return true;
+	}
+
+	if(!from->status.udp_confirmed) {
+		mtu = clamp_relay_leg_mtu(from, mtu);
 	}
 
 	/* If we don't know the current MTU for that node, use the one we received.

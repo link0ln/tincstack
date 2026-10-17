@@ -228,6 +228,7 @@ bool send_req_key(node_t *to) {
 		   handshake runs, so the first probe after it need not wait for the
 		   answer (a no-op once known). */
 		send_req_dseal(to);
+		maybe_send_carrier_beacon(to);
 		return sptps_start(&to->sptps, to, true, true, myself->connection->ecdsa, to->ecdsa, label, labellen, send_initial_sptps_data, receive_sptps_record);
 	}
 
@@ -242,7 +243,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 	/* If this is a SPTPS packet, see if sending UDP info helps.
 	   Note that we only do this if we're the destination or the static relay;
 	   otherwise every hop would initiate its own UDP info message, resulting in elevated chatter. */
-	if((reqno == REQ_KEY || reqno == SPTPS_PACKET) && to->via == myself) {
+	if((reqno == REQ_KEY || reqno == SPTPS_PACKET) && (to == myself || (to->via == myself && to->nexthop == to))) {
 		send_udp_info(myself, from);
 	}
 
@@ -386,6 +387,8 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			send_request(from->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, from->name, REQ_PUBKEY);
 			return true;
 		}
+
+		maybe_send_carrier_beacon(from);
 
 		if(from->sptps.label && from->sptps.initiator) {
 			/* REQ_KEY glare (patch 5): both peers started an SPTPS session as
