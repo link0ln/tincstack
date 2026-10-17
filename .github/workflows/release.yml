@@ -488,6 +488,18 @@ jobs:
         run: |
           set -eu
           find assets -type f -print
+          mapfile -t built < <(find assets -type f | sort)
+          if [ ${#built[@]} -eq 0 ]; then
+            echo "::error title=no assets::download-artifact produced nothing under assets/"
+            exit 1
+          fi
+          rm -f SHA256SUMS
+          for f in "${built[@]}" "tincstack-$VERSION-source.tar.gz"; do
+            sum=$(sha256sum "$f" | awk '{print $1}')
+            printf '%s  %s\n' "$sum" "$(basename "$f")" >> SHA256SUMS
+          done
+          cat SHA256SUMS
+          sums_sha=$(sha256sum SHA256SUMS | awk '{print $1}')
           cat > notes.md <<EOF
           ## Linux (docker compose — multi-arch: linux/amd64 & linux/arm64)
 
@@ -536,17 +548,17 @@ jobs:
 
           Its core links OpenSSL 3.5 and ngtcp2: the \`https\` and \`quic\`
           carriers and the legacy protocol, as on Linux and Windows.
+
+          ## Checksums
+
+          SHA256SUMS: $sums_sha
           EOF
-          mapfile -t built < <(find assets -type f)
-          if [ ${#built[@]} -eq 0 ]; then
-            echo "::error title=no assets::download-artifact produced nothing under assets/"
-            exit 1
-          fi
           gh release create "$VERSION" \
             --repo "$REPO" \
             --title "tincstack $VERSION" \
             --notes-file notes.md \
             "tincstack-$VERSION-source.tar.gz" \
+            SHA256SUMS \
             "${built[@]}" 2>&1 | tee gh.log || {
               msg=$(tail -n 20 gh.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
               echo "::error title=gh release create failed::$msg"

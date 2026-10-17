@@ -679,3 +679,20 @@ def test_peer_transport_column_and_quick_switcher(window_with_peer):
     assert "PreferredTransports" not in host_blob2
 
 
+def test_manual_update_check_shows_banner_and_updates_toolbar(window, monkeypatch):
+    import management
+    import updates
+    w = window
+    assert hasattr(w, "update_act")
+    assert "Check updates" in w.update_act.text()
+    monkeypatch.setattr(management, "current_version", lambda: "v0.5.12")
+    rel = updates.Release("v0.5.14", "v0.5.14", "https://x/v0.5.14.zip", "https://x/SHA256SUMS", "notes")
+    monkeypatch.setattr(updates, "check_detailed", lambda cur: ("update", rel, "v0.5.14"))
+    w.check_updates_manual()
+    assert wait_until(lambda: w._update_banner is not None)
+    assert not w._update_banner.isHidden()
+    assert "v0.5.14" in w.update_act.text()
+    assert "New version available: v0.5.14" in w.statusBar().currentMessage()
+
+
+

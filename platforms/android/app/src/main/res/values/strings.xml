@@ -68,12 +68,28 @@
 	<string name="setting_screen_off_summary">Saves battery. Nothing leaves outside the VPN while paused.</string>
 	<string name="setting_log_title">Log</string>
 	<string name="setting_log_summary">What tinc did, step by step</string>
+	<string name="setting_update_title">App updates</string>
+	<string name="setting_update_summary_format">Version %1$s · Tap to check for updates</string>
+	<string name="setting_update_available_format">Update available: %1$s (installed: %2$s) · Tap to install</string>
 	<string name="applies_on_reconnect">Takes effect the next time you connect.</string>
 
 	<string name="menu_add_network">Add network</string>
 	<string name="menu_remove_network">Remove network</string>
 	<string name="menu_log">Log</string>
+	<string name="menu_check_updates">Check for updates</string>
 	<string name="menu_about">About</string>
+
+	<string name="update_banner_title_format">New version available: %1$s</string>
+	<string name="update_banner_summary_format">Installed: %1$s. The APK will be downloaded, verified with SHA-256 and opened in the system installer.</string>
+	<string name="update_action_install">Update now</string>
+	<string name="update_checking">Checking GitHub Releases for updates…</string>
+	<string name="update_up_to_date_format">Up to date (%1$s)</string>
+	<string name="update_check_failed_format">Could not check for updates: %1$s</string>
+	<string name="update_downloading_format">Downloading %1$s…</string>
+	<string name="update_downloading_pct_format">Downloading %1$s (%2$d%%)…</string>
+	<string name="update_verifying_format">Verifying SHA-256 of %1$s…</string>
+	<string name="update_download_failed_format">Update failed: %1$s</string>
+	<string name="update_permission_prompt">Allow installing updates from tincstack, then return to continue.</string>
 
 	<string name="remove_title_format">Remove %1$s?</string>
 	<string name="remove_message">This deletes the network and this phone\'s keys for it. To join again you will need a new invitation.</string>

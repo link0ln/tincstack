@@ -61,11 +61,16 @@ abstract class BaseActivity : AppCompatActivity() {
     private const val ACTION_DURATION_MS = 8000
   }
 
-  fun showAbout() {
+  open fun showAbout(onCheckUpdates: (() -> Unit)? = null) {
     MaterialAlertDialogBuilder(this)
       .setIcon(R.drawable.ic_mark)
       .setTitle(R.string.app_name)
       .setMessage(getString(R.string.about_text_format, "${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})"))
+      .apply {
+        if (onCheckUpdates != null) {
+          setNeutralButton(R.string.menu_check_updates) { _, _ -> onCheckUpdates() }
+        }
+      }
       .setPositiveButton(R.string.action_close, null)
       .show()
   }

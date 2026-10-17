@@ -1002,7 +1002,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rt = Runtime(self.app)
         self.tc = TincControl(tinc_exe=self.rt.tinc, yaml_path=self.app.path, runner=runner)
 
-        self.setWindowTitle("tincmgr" + ("  [admin]" if self.admin else "  [not elevated]"))
+        ver = management.current_version()
+        ver_str = f" {ver}" if ver else ""
+        self.setWindowTitle(f"tincmgr{ver_str}" + ("  [admin]" if self.admin else "  [not elevated]"))
         self.resize(1180, 780)
         self._build_toolbar()
 
@@ -1046,6 +1048,7 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addLayout(h, stretch=1)
 
         self.statusBar()
+        self._status_hold_until = 0.0
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(REFRESH_MS)
         self.timer.timeout.connect(self._tick)
@@ -1054,8 +1057,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cert_timer.setInterval(self.CERT_WATCH_MS)
         self.cert_timer.timeout.connect(self._cert_watch)
         self.cert_timer.start()
+        self.update_timer = QtCore.QTimer(self)
+        self.update_timer.setInterval(updates.CHECK_MIN_SECS * 1000)
+        self.update_timer.timeout.connect(self._update_check_start)
+        self.update_timer.start()
         self._quitting = False
         self._update_banner = None
+        self._available_update: updates.Release | None = None
         self._build_tray()
         self._show_load_error()
         self.reload_networks()
@@ -1103,12 +1111,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = None
             return
+        ver = management.current_version()
         self.tray = QtWidgets.QSystemTrayIcon(icon, self)
-        self.tray.setToolTip("tincmgr")
+        self.tray.setToolTip(f"tincmgr {ver}" if ver else "tincmgr")
         menu = QtWidgets.QMenu()
         menu.addAction("Show window", self._show_window)
         self.net_menu = menu.addMenu("Networks")
         self.net_menu.aboutToShow.connect(self._rebuild_net_menu)
+        menu.addSeparator()
+        menu.addAction("Check for updates…", self.check_updates_manual)
         menu.addSeparator()
         menu.addAction("Exit", self._quit_app)
         self.tray.setContextMenu(menu)
@@ -1151,7 +1162,9 @@ class MainWindow(QtWidgets.QMainWindow):
         n = self.cur_net()
         return self.app.net(n) if n else None
 
-    def status(self, msg: str) -> None:
+    def status(self, msg: str, hold_secs: float = 5.0) -> None:
+        if hold_secs > 0:
+            self._status_hold_until = time.time() + hold_secs
         self.statusBar().showMessage(msg)
 
     def refresh_startup_async(self, exe: str) -> None:
@@ -1244,6 +1257,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_startup_radio()
         tb.addAction("📁 Open folder", self._open_folder)
         tb.addAction("↻ Reload config", self.reload_config)
+        self.update_act = tb.addAction("🔄 Check updates", self.check_updates_manual)
+        self.update_act.setToolTip("Check GitHub Releases for a newer tincmgr build and install it in place.")
         if not self.admin:
             tb.addSeparator()
             tb.addAction("🛡 Run as admin", self._elevate)
@@ -1393,11 +1408,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_check_start(self) -> None:
         if not management.is_frozen():
-            return                       # a dev run never phones home
-        installed = management.installed_version()
-        if not installed:
-            b = paths.bundle()
-            installed = b.version if b else None
+            return                       # a dev run never phones home automatically
+        updates.cleanup_old_workdirs()
+        installed = management.current_version()
         last = updates.read_last_check(management.state_dir())
         now = time.time()
         self.pool.run(
@@ -1408,6 +1421,50 @@ class MainWindow(QtWidgets.QMainWindow):
             tag="update-check",
             on_done=lambda rel, lm=last, t=now: self._update_seen(rel, lm, t),
             on_error=lambda _msg: None,
+        )
+
+    def check_updates_manual(self) -> None:
+        """Triggered by the user clicking 'Check updates' in the toolbar or tray."""
+        if self._available_update is not None and self._update_banner is not None and self._update_banner.isHidden():
+            self._update_banner.show()
+        installed = management.current_version()
+        self.status("Checking GitHub Releases for updates…", hold_secs=10.0)
+        if hasattr(self, "update_act"):
+            self.update_act.setEnabled(False)
+        self.pool.run(
+            updates.check_detailed,
+            installed,
+            tag="update-check-manual",
+            on_done=lambda res, cur=installed: self._update_manual_done(res, cur),
+            on_error=lambda msg: self._update_manual_done(("error", None, msg), installed),
+        )
+
+    def _update_manual_done(self, res: tuple[str, updates.Release | None, str],
+                            installed: str | None) -> None:
+        from datetime import datetime, timezone
+        if hasattr(self, "update_act"):
+            self.update_act.setEnabled(True)
+        status, rel, detail = res
+        if status in ("update", "up_to_date"):
+            updates.write_last_check(management.state_dir(), datetime.now(timezone.utc).isoformat())
+        if status == "update" and rel is not None:
+            self._show_update_banner(rel)
+            self._show_window()
+            cur_note = f" (installed: {installed})" if installed else ""
+            self.status(f"New version available: {rel.version}{cur_note}", hold_secs=10.0)
+            return
+        if status == "up_to_date":
+            ver_note = detail or installed or "latest"
+            self.status(f"Up to date ({ver_note})", hold_secs=8.0)
+            QtWidgets.QMessageBox.information(
+                self, "Check for updates",
+                f"You are running the latest version ({ver_note})."
+            )
+            return
+        self.status(f"Update check failed: {detail}", hold_secs=8.0)
+        QtWidgets.QMessageBox.warning(
+            self, "Check for updates",
+            f"Could not check for updates:\n{detail}"
         )
 
     def _update_seen(self, rel: updates.Release | None, last_marker: str | None = None,
@@ -1431,14 +1488,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtWidgets.QSystemTrayIcon.Information, 8000)
 
     def _show_update_banner(self, rel: updates.Release) -> None:
+        self._available_update = rel
+        if hasattr(self, "update_act"):
+            self.update_act.setText(f"⬆ Update ({rel.version})")
         if self._update_banner is not None:
             self._update_banner.deleteLater()
         bar = QtWidgets.QFrame()
         bar.setStyleSheet("QFrame{background:#e8f0fe;border:1px solid #1a73e8;border-radius:4px;}")
         bl = QtWidgets.QHBoxLayout(bar)
-        lbl = QtWidgets.QLabel(f"<b>A new version is available: {rel.version}.</b> "
-                               f"The update is downloaded, verified against its SHA256SUMS and installed "
-                               f"by the same elevated installer the app already uses.")
+        cur = management.current_version()
+        cur_txt = f" (current: {cur})" if cur else ""
+        lbl = QtWidgets.QLabel(f"<b>A new version is available: {rel.version}{cur_txt}.</b> "
+                               f"The update is downloaded, verified against its SHA-256 checksum and installed "
+                               f"by the elevated installer, then tincmgr restarts automatically.")
         lbl.setWordWrap(True)
         bl.addWidget(lbl, stretch=1)
         go = QtWidgets.QPushButton("Update now")
@@ -1456,7 +1518,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_install(self, rel: updates.Release) -> None:
         import shutil
-        self.statusBar().showMessage(f"Downloading {rel.version}…")
+        self.status(f"Downloading {rel.version}…", hold_secs=60.0)
         workdir = tempfile.mkdtemp(prefix="tincmgr-update-")
         self.pool.run(updates.fetch, rel, workdir, tag="update-fetch",
                       on_done=lambda r: self._update_run(rel, r, workdir),
@@ -1464,36 +1526,50 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_run(self, rel: updates.Release, extracted: tuple[str, str], workdir: str) -> None:
         import shutil
-        exe, _zip = extracted
-        self.statusBar().showMessage(f"Installing {rel.version}… (elevation prompt)")
-        # the single-file tincmgr.exe self-installs its onedir tree, elevated,
-        # exactly like run-at-startup does for a fresh build; then we restart
-        # onto the installed copy
+        exe, zpath = extracted
+        try:
+            if zpath and os.path.isfile(zpath):
+                os.unlink(zpath)
+        except OSError:
+            pass
+        self.status(f"Installing {rel.version}… (elevation prompt)", hold_secs=60.0)
+        # Launch the downloaded single-file tincmgr.exe asynchronously with
+        # --self-install --wait-pid <our PID> --relaunch so this process can
+        # stop its tunnels and exit first, releasing all locks on Program Files
+        # before the installer swaps the new tree in and restarts the GUI.
         def do_install() -> str:
             try:
                 if not management.is_frozen():
-                    raise OSError("only the installed single-file tincmgr.exe can update in place")
-                # Same path run-at-startup uses: elevated copy + task re-point.
-                # install_self refuses a downgrade, so a stale download cannot win.
+                    raise OSError("only the built tincmgr.exe can update in place")
                 management.check_downgrade(rel.version, management.installed_version())
+                target = management.start_self_update(
+                    exe, rel.version, caller_pid=os.getpid(), caller_exe=sys.executable
+                )
                 if self.admin:
                     try:
                         self.rt.stop_all()
                     except Exception:
                         pass
-                return management.install_remote(exe, rel.version)
-            finally:
+                return target
+            except BaseException:
                 shutil.rmtree(workdir, ignore_errors=True)
+                raise
         self.pool.run(do_install, tag="update-install",
                       on_done=lambda target: self._update_restart(target),
                       on_error=self._update_failed)
 
     def _update_restart(self, target: str) -> None:
-        self.statusBar().showMessage(f"Installed {target}; restarting…")
-        QtCore.QTimer.singleShot(600, lambda: management.restart_into(target))
+        self.status(f"Installing into {target}; restarting…", hold_secs=30.0)
+        self._quitting = True
+        self.timer.stop()
+        self.cert_timer.stop()
+        self.update_timer.stop()
+        if getattr(self, "tray", None):
+            self.tray.hide()
+        QtCore.QTimer.singleShot(250, lambda: os._exit(0))
 
     def _update_failed(self, msg: str) -> None:
-        self.statusBar().showMessage("")
+        self.status("", hold_secs=0.0)
         QtWidgets.QMessageBox.warning(self, "Update", f"The update did not complete:\n{msg}")
 
     def _cert_badge(self, days: int | None, threshold: int) -> None:
@@ -1647,8 +1723,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _tick(self) -> None:
         self.peers.sample_async()
-        if not self.load_error:
-            self.status(f"config: {self.app.path}  |  admin: {self.admin}  |  {time.strftime('%H:%M:%S')}")
+        if not self.load_error and time.time() >= getattr(self, "_status_hold_until", 0.0):
+            ver = management.current_version()
+            ver_part = f"version: {ver}  |  " if ver else ""
+            self.statusBar().showMessage(
+                f"{ver_part}config: {self.app.path}  |  admin: {self.admin}  |  {time.strftime('%H:%M:%S')}"
+            )
 
     def closeEvent(self, ev: QtGui.QCloseEvent) -> None:
         # the X button minimizes to the tray (VPNs keep running); only Exit quits
@@ -1659,6 +1739,10 @@ class MainWindow(QtWidgets.QMainWindow):
                                   QtWidgets.QSystemTrayIcon.Information, 2000)
             return
         self.timer.stop()
+        if hasattr(self, "cert_timer"):
+            self.cert_timer.stop()
+        if hasattr(self, "update_timer"):
+            self.update_timer.stop()
         if self.admin:
             try:
                 self.rt.stop_all()      # exit path: blocking is acceptable here
@@ -1721,8 +1805,29 @@ def main() -> None:
     # session gives anyone time to swap the exe under us (paths.bundle()).
     paths.bundle()
     if "--self-install" in sys.argv[1:]:
+        args = sys.argv[1:]
+        wait_pid = 0
+        replace_exe = ""
+        relaunch = "--relaunch" in args
+        if "--wait-pid" in args:
+            idx = args.index("--wait-pid")
+            if idx + 1 < len(args):
+                try:
+                    wait_pid = int(args[idx + 1])
+                except ValueError:
+                    wait_pid = 0
+        if "--replace-exe" in args:
+            idx = args.index("--replace-exe")
+            if idx + 1 < len(args):
+                replace_exe = args[idx + 1].strip('"')
         try:
-            target = management.install_self(sys.executable)
+            if wait_pid > 0:
+                management.wait_for_pid(wait_pid, timeout=15.0)
+            target = management.install_self(sys.executable, retry_secs=10.0 if wait_pid > 0 else 0.0)
+            if replace_exe:
+                management.replace_standalone_exe(sys.executable, replace_exe, retry_secs=10.0)
+            if relaunch:
+                management.launch_detached(target)
             print(f"installed: {target}")
             sys.exit(0)
         except (OSError, management.DowngradeRefused) as e:

@@ -46,200 +46,283 @@
 		android:fillViewport="true"
 		app:layout_behavior="@string/appbar_scrolling_view_behavior">
 
-		<FrameLayout
+		<LinearLayout
 			android:layout_width="match_parent"
-			android:layout_height="wrap_content">
+			android:layout_height="wrap_content"
+			android:orientation="vertical">
 
-			<include
-				android:id="@+id/join_panel"
-				layout="@layout/join_panel"
-				android:visibility="gone" />
-
-			<LinearLayout
-				android:id="@+id/network_panel"
+			<com.google.android.material.card.MaterialCardView
+				android:id="@+id/update_banner_card"
+				style="@style/Tincstack.Card"
 				android:layout_width="match_parent"
 				android:layout_height="wrap_content"
-				android:orientation="vertical"
-				android:paddingStart="16dp"
-				android:paddingTop="4dp"
-				android:paddingEnd="16dp"
-				android:paddingBottom="24dp"
+				android:layout_marginStart="16dp"
+				android:layout_marginTop="8dp"
+				android:layout_marginEnd="16dp"
 				android:visibility="gone"
 				tools:visibility="visible">
 
-				<com.google.android.material.button.MaterialButton
-					android:id="@+id/network_selector"
-					style="@style/Widget.Material3.Button.TextButton"
-					android:layout_width="wrap_content"
-					android:layout_height="wrap_content"
-					android:layout_gravity="center_horizontal"
-					android:textAppearance="?attr/textAppearanceTitleMedium"
-					app:icon="@drawable/ic_expand_more"
-					app:iconGravity="end"
-					tools:text="phonenet" />
-
-				<com.google.android.material.card.MaterialCardView
-					android:id="@+id/status_card"
-					style="@style/Tincstack.Card"
+				<LinearLayout
 					android:layout_width="match_parent"
 					android:layout_height="wrap_content"
-					android:layout_marginTop="4dp">
+					android:orientation="vertical"
+					android:padding="16dp">
+
+					<TextView
+						android:id="@+id/update_banner_title"
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content"
+						android:textAppearance="?attr/textAppearanceTitleMedium"
+						android:textColor="?attr/colorOnSurface"
+						tools:text="Update available: v0.5.14" />
+
+					<TextView
+						android:id="@+id/update_banner_summary"
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content"
+						android:layout_marginTop="4dp"
+						android:textAppearance="?attr/textAppearanceBodyMedium"
+						android:textColor="?attr/colorOnSurfaceVariant"
+						tools:text="Installed: v0.5.13 — tap Update to download and install." />
+
+					<com.google.android.material.progressindicator.LinearProgressIndicator
+						android:id="@+id/update_banner_progress"
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content"
+						android:layout_marginTop="10dp"
+						android:indeterminate="true"
+						android:visibility="gone" />
 
 					<LinearLayout
 						android:layout_width="match_parent"
 						android:layout_height="wrap_content"
-						android:gravity="center_horizontal"
-						android:orientation="vertical"
-						android:paddingStart="24dp"
-						android:paddingTop="32dp"
-						android:paddingEnd="24dp"
-						android:paddingBottom="24dp">
+						android:layout_marginTop="8dp"
+						android:gravity="end"
+						android:orientation="horizontal">
 
-						<FrameLayout
-							android:layout_width="136dp"
-							android:layout_height="136dp">
-
-							<com.google.android.material.progressindicator.CircularProgressIndicator
-								android:id="@+id/connect_progress"
-								android:layout_width="match_parent"
-								android:layout_height="match_parent"
-								android:indeterminate="true"
-								android:visibility="invisible"
-								app:indicatorSize="136dp"
-								app:trackThickness="4dp" />
-
-							<com.google.android.material.button.MaterialButton
-								android:id="@+id/connect_button"
-								style="@style/Widget.Material3.Button.Icon"
-								android:layout_width="112dp"
-								android:layout_height="112dp"
-								android:layout_gravity="center"
-								android:contentDescription="@string/main_connect"
-								android:insetLeft="0dp"
-								android:insetTop="0dp"
-								android:insetRight="0dp"
-								android:insetBottom="0dp"
-								android:padding="0dp"
-								app:cornerRadius="56dp"
-								app:icon="@drawable/ic_power"
-								app:iconGravity="textStart"
-								app:iconPadding="0dp"
-								app:iconSize="48dp" />
-						</FrameLayout>
-
-						<TextView
-							android:id="@+id/state_title"
+						<Button
+							android:id="@+id/update_dismiss_button"
+							style="@style/Widget.Material3.Button.TextButton"
 							android:layout_width="wrap_content"
 							android:layout_height="wrap_content"
-							android:layout_marginTop="20dp"
-							android:textAppearance="?attr/textAppearanceHeadlineSmall"
-							android:textColor="?attr/colorOnSurface"
-							tools:text="Connected" />
+							android:text="@string/action_dismiss" />
 
-						<TextView
-							android:id="@+id/state_detail"
+						<Button
+							android:id="@+id/update_install_button"
+							style="@style/Widget.Material3.Button.TonalButton"
 							android:layout_width="wrap_content"
 							android:layout_height="wrap_content"
-							android:layout_marginTop="6dp"
-							android:gravity="center"
-							android:textAppearance="?attr/textAppearanceBodyMedium"
-							android:textColor="?attr/colorOnSurfaceVariant"
-							tools:text="Linked to node_a over HTTPS" />
+							android:layout_marginStart="8dp"
+							android:text="@string/update_action_install" />
+					</LinearLayout>
+				</LinearLayout>
+			</com.google.android.material.card.MaterialCardView>
+
+			<FrameLayout
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content">
+
+				<include
+					android:id="@+id/join_panel"
+					layout="@layout/join_panel"
+					android:visibility="gone" />
+
+				<LinearLayout
+					android:id="@+id/network_panel"
+					android:layout_width="match_parent"
+					android:layout_height="wrap_content"
+					android:orientation="vertical"
+					android:paddingStart="16dp"
+					android:paddingTop="4dp"
+					android:paddingEnd="16dp"
+					android:paddingBottom="24dp"
+					android:visibility="gone"
+					tools:visibility="visible">
+
+					<com.google.android.material.button.MaterialButton
+						android:id="@+id/network_selector"
+						style="@style/Widget.Material3.Button.TextButton"
+						android:layout_width="wrap_content"
+						android:layout_height="wrap_content"
+						android:layout_gravity="center_horizontal"
+						android:textAppearance="?attr/textAppearanceTitleMedium"
+						app:icon="@drawable/ic_expand_more"
+						app:iconGravity="end"
+						tools:text="phonenet" />
+
+					<com.google.android.material.card.MaterialCardView
+						android:id="@+id/status_card"
+						style="@style/Tincstack.Card"
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content"
+						android:layout_marginTop="4dp">
 
 						<LinearLayout
-							android:id="@+id/state_actions"
-							android:layout_width="wrap_content"
+							android:layout_width="match_parent"
 							android:layout_height="wrap_content"
-							android:layout_marginTop="8dp"
-							android:orientation="horizontal"
-							android:visibility="gone">
+							android:gravity="center_horizontal"
+							android:orientation="vertical"
+							android:paddingStart="24dp"
+							android:paddingTop="32dp"
+							android:paddingEnd="24dp"
+							android:paddingBottom="24dp">
 
-							<Button
-								android:id="@+id/state_log_button"
-								style="@style/Widget.Material3.Button.TonalButton"
+							<FrameLayout
+								android:layout_width="136dp"
+								android:layout_height="136dp">
+
+								<com.google.android.material.progressindicator.CircularProgressIndicator
+									android:id="@+id/connect_progress"
+									android:layout_width="match_parent"
+									android:layout_height="match_parent"
+									android:indeterminate="true"
+									android:visibility="invisible"
+									app:indicatorSize="136dp"
+									app:trackThickness="4dp" />
+
+								<com.google.android.material.button.MaterialButton
+									android:id="@+id/connect_button"
+									style="@style/Widget.Material3.Button.Icon"
+									android:layout_width="112dp"
+									android:layout_height="112dp"
+									android:layout_gravity="center"
+									android:contentDescription="@string/main_connect"
+									android:insetLeft="0dp"
+									android:insetTop="0dp"
+									android:insetRight="0dp"
+									android:insetBottom="0dp"
+									android:padding="0dp"
+									app:cornerRadius="56dp"
+									app:icon="@drawable/ic_power"
+									app:iconGravity="textStart"
+									app:iconPadding="0dp"
+									app:iconSize="48dp" />
+							</FrameLayout>
+
+							<TextView
+								android:id="@+id/state_title"
 								android:layout_width="wrap_content"
 								android:layout_height="wrap_content"
-								android:text="@string/action_view_log"
-								app:icon="@drawable/ic_log" />
+								android:layout_marginTop="20dp"
+								android:textAppearance="?attr/textAppearanceHeadlineSmall"
+								android:textColor="?attr/colorOnSurface"
+								tools:text="Connected" />
 
-							<Button
-								android:id="@+id/state_dismiss_button"
-								style="@style/Widget.Material3.Button.TextButton"
+							<TextView
+								android:id="@+id/state_detail"
 								android:layout_width="wrap_content"
 								android:layout_height="wrap_content"
-								android:layout_marginStart="8dp"
-								android:text="@string/action_dismiss" />
+								android:layout_marginTop="6dp"
+								android:gravity="center"
+								android:textAppearance="?attr/textAppearanceBodyMedium"
+								android:textColor="?attr/colorOnSurfaceVariant"
+								tools:text="Linked to node_a over HTTPS" />
+
+							<LinearLayout
+								android:id="@+id/state_actions"
+								android:layout_width="wrap_content"
+								android:layout_height="wrap_content"
+								android:layout_marginTop="8dp"
+								android:orientation="horizontal"
+								android:visibility="gone">
+
+								<Button
+									android:id="@+id/state_log_button"
+									style="@style/Widget.Material3.Button.TonalButton"
+									android:layout_width="wrap_content"
+									android:layout_height="wrap_content"
+									android:text="@string/action_view_log"
+									app:icon="@drawable/ic_log" />
+
+								<Button
+									android:id="@+id/state_dismiss_button"
+									style="@style/Widget.Material3.Button.TextButton"
+									android:layout_width="wrap_content"
+									android:layout_height="wrap_content"
+									android:layout_marginStart="8dp"
+									android:text="@string/action_dismiss" />
+							</LinearLayout>
 						</LinearLayout>
-					</LinearLayout>
-				</com.google.android.material.card.MaterialCardView>
+					</com.google.android.material.card.MaterialCardView>
 
-				<com.google.android.material.card.MaterialCardView
-					style="@style/Tincstack.Card"
-					android:layout_width="match_parent"
-					android:layout_height="wrap_content"
-					android:layout_marginTop="12dp">
-
-					<LinearLayout
+					<com.google.android.material.card.MaterialCardView
+						style="@style/Tincstack.Card"
 						android:layout_width="match_parent"
 						android:layout_height="wrap_content"
-						android:orientation="vertical">
+						android:layout_marginTop="12dp">
 
-						<include
-							android:id="@+id/address_row"
-							layout="@layout/row_item" />
+						<LinearLayout
+							android:layout_width="match_parent"
+							android:layout_height="wrap_content"
+							android:orientation="vertical">
 
-						<include
-							android:id="@+id/peers_row"
-							layout="@layout/row_item" />
-					</LinearLayout>
-				</com.google.android.material.card.MaterialCardView>
+							<include
+								android:id="@+id/address_row"
+								layout="@layout/row_item" />
 
-				<TextView
-					style="@style/Tincstack.SectionLabel"
-					android:text="@string/main_settings_label" />
-
-				<com.google.android.material.card.MaterialCardView
-					style="@style/Tincstack.Card"
-					android:layout_width="match_parent"
-					android:layout_height="wrap_content">
-
-					<LinearLayout
-						android:layout_width="match_parent"
-						android:layout_height="wrap_content"
-						android:orientation="vertical">
-
-						<include
-							android:id="@+id/transport_row"
-							layout="@layout/row_item" />
-
-						<include
-							android:id="@+id/apps_row"
-							layout="@layout/row_item" />
-
-						<include
-							android:id="@+id/screen_off_row"
-							layout="@layout/row_item" />
-
-						<include
-							android:id="@+id/config_row"
-							layout="@layout/row_item" />
+							<include
+								android:id="@+id/peers_row"
+								layout="@layout/row_item" />
 						</LinearLayout>
-				</com.google.android.material.card.MaterialCardView>
+					</com.google.android.material.card.MaterialCardView>
 
-				<TextView
-					style="@style/Tincstack.SectionLabel"
-					android:text="@string/main_help_label" />
+					<TextView
+						style="@style/Tincstack.SectionLabel"
+						android:text="@string/main_settings_label" />
 
-				<com.google.android.material.card.MaterialCardView
-					style="@style/Tincstack.Card"
-					android:layout_width="match_parent"
-					android:layout_height="wrap_content">
+					<com.google.android.material.card.MaterialCardView
+						style="@style/Tincstack.Card"
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content">
 
-					<include
-						android:id="@+id/log_row"
-						layout="@layout/row_item" />
-				</com.google.android.material.card.MaterialCardView>
-			</LinearLayout>
-		</FrameLayout>
+						<LinearLayout
+							android:layout_width="match_parent"
+							android:layout_height="wrap_content"
+							android:orientation="vertical">
+
+							<include
+								android:id="@+id/transport_row"
+								layout="@layout/row_item" />
+
+							<include
+								android:id="@+id/apps_row"
+								layout="@layout/row_item" />
+
+							<include
+								android:id="@+id/screen_off_row"
+								layout="@layout/row_item" />
+
+							<include
+								android:id="@+id/config_row"
+								layout="@layout/row_item" />
+							</LinearLayout>
+					</com.google.android.material.card.MaterialCardView>
+
+					<TextView
+						style="@style/Tincstack.SectionLabel"
+						android:text="@string/main_help_label" />
+
+					<com.google.android.material.card.MaterialCardView
+						style="@style/Tincstack.Card"
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content">
+
+						<LinearLayout
+							android:layout_width="match_parent"
+							android:layout_height="wrap_content"
+							android:orientation="vertical">
+
+							<include
+								android:id="@+id/log_row"
+								layout="@layout/row_item" />
+
+							<include
+								android:id="@+id/update_row"
+								layout="@layout/row_item" />
+						</LinearLayout>
+					</com.google.android.material.card.MaterialCardView>
+				</LinearLayout>
+			</FrameLayout>
+		</LinearLayout>
 	</androidx.core.widget.NestedScrollView>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

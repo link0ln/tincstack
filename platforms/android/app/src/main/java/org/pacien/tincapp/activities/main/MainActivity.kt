@@ -26,12 +26,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -40,9 +42,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.AttrRes
 import androidx.annotation.ColorInt
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.R
 import org.pacien.tincapp.activities.BaseActivity
 import org.pacien.tincapp.activities.apps.AppPickerActivity
@@ -74,7 +78,9 @@ import org.pacien.tincapp.intent.Actions
 import org.pacien.tincapp.service.ConnectionState
 import org.pacien.tincapp.service.TincVpnService
 import org.pacien.tincapp.service.VpnStatus
+import org.pacien.tincapp.utils.AppUpdater
 import org.slf4j.LoggerFactory
+import java.io.File
 
 /**
  * The one screen: no network yet -> the join form; otherwise the selected
@@ -111,6 +117,10 @@ class MainActivity : BaseActivity() {
   /** Remove once its session is down. */
   private var pendingRemoval: String? = null
 
+  private var availableUpdate: AppUpdater.Release? = null
+  private var updateDownloading: Boolean = false
+  private var pendingInstallApk: File? = null
+
   private val notificationPermission =
     registerForActivityResult(ActivityResultContracts.RequestPermission()) { askVpnConsent() }
 
@@ -129,6 +139,13 @@ class MainActivity : BaseActivity() {
   }
   private val configEditor = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
     loadSettings()
+  }
+  private val unknownSourcesSettings = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
+    val apk = pendingInstallApk ?: return@registerForActivityResult
+    pendingInstallApk = null
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+      launchPackageInstaller(apk)
+    }
   }
 
   /** What the settings rows show, read from the network's tinc.yaml. */
@@ -154,6 +171,8 @@ class MainActivity : BaseActivity() {
     binding.networkSelector.setOnClickListener { showNetworkMenu() }
     binding.stateLogButton.setOnClickListener { openLog() }
     binding.stateDismissButton.setOnClickListener { VpnStatus.dismissFailure() }
+    binding.updateDismissButton.setOnClickListener { binding.updateBannerCard.isVisible = false }
+    binding.updateInstallButton.setOnClickListener { availableUpdate?.let { downloadAndInstallUpdate(it) } }
 
     VpnStatus.state.observe(this) { onStatus(it) }
     networkList.observe(this) { onNetworks(it) }
@@ -161,6 +180,7 @@ class MainActivity : BaseActivity() {
     if (savedInstanceState == null) {
       handleIntent(intent)
       if (CrashRecorder.hasPreviouslyCrashed()) showCrashDialog()
+      checkForUpdates(manual = false)
     }
   }
 
@@ -220,8 +240,12 @@ class MainActivity : BaseActivity() {
       selected?.let { confirmRemove(it) }; true
     }
 
+    R.id.menu_check_updates -> {
+      checkForUpdates(manual = true); true
+    }
+
     R.id.menu_about -> {
-      showAbout(); true
+      showAbout { checkForUpdates(manual = true) }; true
     }
 
     else -> super.onOptionsItemSelected(item)
@@ -514,6 +538,16 @@ class MainActivity : BaseActivity() {
     binding.configRow.rowSummary.setText(R.string.config_row_summary)
     binding.logRow.setup(R.drawable.ic_log, R.string.setting_log_title) { openLog() }
     binding.logRow.rowSummary.setText(R.string.setting_log_summary)
+    binding.updateRow.setup(R.drawable.ic_info, R.string.setting_update_title) {
+      val rel = availableUpdate
+      if (rel != null) {
+        binding.updateBannerCard.isVisible = true
+        downloadAndInstallUpdate(rel)
+      } else {
+        checkForUpdates(manual = true)
+      }
+    }
+    renderUpdateRow()
   }
 
   private fun RowItemBinding.setup(icon: Int, title: Int, chevron: Boolean = true, onClick: () -> Unit) {
@@ -571,6 +605,17 @@ class MainActivity : BaseActivity() {
     }
 
     binding.screenOffRow.rowSwitch.isChecked = s?.pauseOnLock == true
+    renderUpdateRow()
+  }
+
+  private fun renderUpdateRow() {
+    val cur = BuildConfig.VERSION_NAME
+    val rel = availableUpdate
+    binding.updateRow.rowSummary.text = if (rel != null) {
+      getString(R.string.setting_update_available_format, rel.version, cur)
+    } else {
+      getString(R.string.setting_update_summary_format, cur)
+    }
   }
 
   private fun copyAddress() {
@@ -646,6 +691,145 @@ class MainActivity : BaseActivity() {
     startActivity(LogActivity.intent(this, selected))
   }
 
+  // ---- app updates (GitHub Releases) -----------------------------------------
+
+  private fun checkForUpdates(manual: Boolean) {
+    val now = System.currentTimeMillis()
+    val last = prefs.getLong(PREF_LAST_UPDATE_CHECK, 0L)
+    if (!manual && last > 0L && (now - last) < AppUpdater.CHECK_MIN_MS) {
+      return
+    }
+    if (manual) {
+      notify(R.string.update_checking)
+    }
+    val currentVersion = BuildConfig.VERSION_NAME
+    Executor.supplyAsyncTask { AppUpdater.checkDetailed(currentVersion) }
+      .thenAccept { result ->
+        runOnUiThread {
+          when (result) {
+            is AppUpdater.CheckResult.UpdateAvailable -> {
+              prefs.edit().putLong(PREF_LAST_UPDATE_CHECK, System.currentTimeMillis()).apply()
+              showUpdateBanner(result.release)
+              if (manual) {
+                notify(
+                  getString(R.string.update_banner_title_format, result.release.version),
+                  R.string.update_action_install,
+                ) { downloadAndInstallUpdate(result.release) }
+              }
+            }
+
+            is AppUpdater.CheckResult.UpToDate -> {
+              prefs.edit().putLong(PREF_LAST_UPDATE_CHECK, System.currentTimeMillis()).apply()
+              if (manual) {
+                notify(getString(R.string.update_up_to_date_format, result.version))
+              }
+            }
+
+            is AppUpdater.CheckResult.Error -> {
+              log.warn("Update check failed: {}", result.message)
+              if (manual) {
+                notify(getString(R.string.update_check_failed_format, result.message))
+              }
+            }
+          }
+        }
+      }
+      .exceptionallyAccept { e ->
+        val msg = e.cause?.defaultMessage() ?: e.defaultMessage()
+        log.warn("Update check failed: {}", msg)
+        if (manual) {
+          runOnUiThread { notify(getString(R.string.update_check_failed_format, msg)) }
+        }
+      }
+  }
+
+  private fun showUpdateBanner(rel: AppUpdater.Release) {
+    availableUpdate = rel
+    binding.updateBannerTitle.text = getString(R.string.update_banner_title_format, rel.version)
+    binding.updateBannerSummary.text = getString(R.string.update_banner_summary_format, BuildConfig.VERSION_NAME)
+    binding.updateBannerProgress.isVisible = false
+    binding.updateInstallButton.isEnabled = !updateDownloading
+    binding.updateBannerCard.isVisible = true
+    renderUpdateRow()
+  }
+
+  private fun downloadAndInstallUpdate(rel: AppUpdater.Release) {
+    if (updateDownloading) return
+    updateDownloading = true
+    binding.updateBannerCard.isVisible = true
+    binding.updateInstallButton.isEnabled = false
+    binding.updateBannerProgress.isIndeterminate = true
+    binding.updateBannerProgress.isVisible = true
+    binding.updateBannerSummary.text = getString(R.string.update_downloading_format, rel.version)
+
+    val destDir = AppPaths.updatesDir()
+    var lastPct = -1
+    Executor.supplyAsyncTask {
+      AppUpdater.fetchApk(rel, destDir) { read, total ->
+        if (total > 0) {
+          val pct = ((read * 100L) / total).toInt().coerceIn(0, 100)
+          if (pct != lastPct) {
+            lastPct = pct
+            runOnUiThread {
+              binding.updateBannerProgress.isIndeterminate = false
+              binding.updateBannerProgress.progress = pct
+              binding.updateBannerSummary.text = getString(R.string.update_downloading_pct_format, rel.version, pct)
+            }
+          }
+        }
+      }
+    }
+      .thenAccept { apkFile ->
+        runOnUiThread {
+          updateDownloading = false
+          binding.updateBannerProgress.isVisible = false
+          binding.updateInstallButton.isEnabled = true
+          binding.updateBannerSummary.text = getString(R.string.update_banner_summary_format, BuildConfig.VERSION_NAME)
+          installApkFile(apkFile)
+        }
+      }
+      .exceptionallyAccept { e ->
+        val msg = e.cause?.defaultMessage() ?: e.defaultMessage()
+        log.error("Failed to download/verify update {}: {}", rel.version, msg)
+        runOnUiThread {
+          updateDownloading = false
+          binding.updateBannerProgress.isVisible = false
+          binding.updateInstallButton.isEnabled = true
+          binding.updateBannerSummary.text = getString(R.string.update_download_failed_format, msg)
+          notify(getString(R.string.update_download_failed_format, msg))
+        }
+      }
+  }
+
+  private fun installApkFile(apkFile: File) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+      pendingInstallApk = apkFile
+      notify(R.string.update_permission_prompt)
+      try {
+        val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+        unknownSourcesSettings.launch(intent)
+        return
+      } catch (e: ActivityNotFoundException) {
+        log.warn("ACTION_MANAGE_UNKNOWN_APP_SOURCES not available, falling back to package installer", e)
+      }
+    }
+    launchPackageInstaller(apkFile)
+  }
+
+  private fun launchPackageInstaller(apkFile: File) {
+    try {
+      val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apkFile)
+      val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.android.package-archive")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      startActivity(intent)
+    } catch (e: Exception) {
+      log.error("Could not launch package installer for {}", apkFile.absolutePath, e)
+      notify(getString(R.string.update_download_failed_format, e.defaultMessage()))
+    }
+  }
+
   private fun showCrashDialog() {
     MaterialAlertDialogBuilder(this)
       .setIcon(R.drawable.ic_error)
@@ -664,6 +848,7 @@ class MainActivity : BaseActivity() {
     private const val PREFS = "ui"
     private const val PREF_SELECTED = "selected_network"
     private const val PREF_ASKED_NOTIFICATIONS = "asked_notifications"
+    private const val PREF_LAST_UPDATE_CHECK = "last_update_check_ms"
     private const val STATE_PENDING_CONNECT = "pending_connect"
   }
 }

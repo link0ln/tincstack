@@ -186,8 +186,61 @@ def installed_version() -> str | None:
     return first[1] if len(first) == 2 and first[0] == "version" else None
 
 
+def current_version() -> str | None:
+    """The version of the running build (or installed copy when running from
+    the onedir tree or source)."""
+    b = paths.bundle()
+    inst = installed_version()
+    if b and b.version:
+        if inst:
+            bk, ik = paths.version_key(b.version), paths.version_key(inst)
+            if bk and ik:
+                return b.version if bk >= ik else inst
+        return b.version
+    return inst
+
+
 def _same_path(a: str, b: str) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _inside_dir(path: str, directory: str | None) -> bool:
+    if not directory:
+        return False
+    p = os.path.normcase(os.path.abspath(path))
+    d = os.path.normcase(os.path.abspath(directory)).rstrip("\\/")
+    return p == d or p.startswith(d + os.sep)
+
+
+def wait_for_pid(pid: int, timeout: float = 15.0) -> None:
+    """Wait up to `timeout` seconds for process `pid` to exit before replacing
+    its installed files."""
+    if pid <= 0 or pid == os.getpid():
+        return
+    import time
+    if sys.platform == "win32":
+        try:
+            from ctypes import wintypes
+            synchronize = 0x00100000
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            h = kernel32.OpenProcess(synchronize, False, int(pid))
+            if h:
+                try:
+                    kernel32.WaitForSingleObject(h, int(max(0.0, timeout) * 1000))
+                finally:
+                    kernel32.CloseHandle(h)
+                time.sleep(0.15)
+                return
+        except Exception:
+            pass
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.1)
 
 
 def check_downgrade(ours: str, installed: str | None) -> None:
@@ -209,7 +262,7 @@ def check_downgrade(ours: str, installed: str | None) -> None:
         raise DowngradeRefused(f"installed {installed} is newer than this {ours}")
 
 
-def install_self(exe_path: str, allow_downgrade: bool = False) -> str:
+def install_self(exe_path: str, allow_downgrade: bool = False, retry_secs: float = 0.0) -> str:
     """Install this build's onedir tree into install_dir() and return the exe
     the logon task should run. The task runs its target elevated with no
     prompt, so the target must be a file only administrators can replace and
@@ -253,11 +306,19 @@ def install_self(exe_path: str, allow_downgrade: bool = False) -> str:
         raise
     shutil.rmtree(old, ignore_errors=True)
     if os.path.isdir(d):
-        try:
-            os.rename(d, old)
-        except OSError as e:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise OSError(f"cannot replace {d} (is the installed tincmgr running?): {e}") from e
+        import time
+        deadline = time.time() + max(0.0, retry_secs)
+        while True:
+            try:
+                os.rename(d, old)
+                break
+            except OSError as e:
+                if time.time() < deadline:
+                    shutil.rmtree(old, ignore_errors=True)
+                    time.sleep(0.25)
+                    continue
+                shutil.rmtree(staging, ignore_errors=True)
+                raise OSError(f"cannot replace {d} (is the installed tincmgr running?): {e}") from e
     os.rename(staging, d)
     shutil.rmtree(old, ignore_errors=True)
     legacy = _legacy_installed_exe()
@@ -267,6 +328,28 @@ def install_self(exe_path: str, allow_downgrade: bool = False) -> str:
         except OSError:
             pass
     return target
+
+
+def replace_standalone_exe(src_exe: str, dst_exe: str, retry_secs: float = 10.0) -> None:
+    """When the user launched a standalone onefile tincmgr.exe outside
+    Program Files (e.g. from Desktop or Downloads) and clicked Update, also
+    replace that file once the old GUI exits so future launches use the new
+    version too."""
+    if not dst_exe or _same_path(src_exe, dst_exe) or _inside_dir(dst_exe, install_dir()):
+        return
+    if not dst_exe.lower().endswith(".exe") or not os.path.isfile(src_exe):
+        return
+    import time
+    deadline = time.time() + max(0.0, retry_secs)
+    while True:
+        try:
+            paths.stage_file(src_exe, dst_exe)
+            return
+        except OSError:
+            if time.time() < deadline:
+                time.sleep(0.25)
+                continue
+            return
 
 
 def startup_task_command() -> str | None:
@@ -355,6 +438,9 @@ def refresh_startup_task(exe_path: str) -> str:
 def state_dir() -> str:
     """Where the update-check marker lives: next to the config the GUI
     manages (its own directory, writable by the user)."""
+    prot = paths.protected_dir() if is_admin() else None
+    if prot and paths._writable(prot):
+        return prot
     return paths.app_dir()
 
 
@@ -381,14 +467,59 @@ def install_remote(exe_path: str, version: str) -> str:
     return os.path.join(d, "tincmgr.exe")
 
 
+def start_self_update(exe_path: str, version: str, caller_pid: int | None = None,
+                      caller_exe: str | None = None) -> str:
+    """Launch the downloaded `exe_path` asynchronously with `--self-install`
+    so the calling GUI can stop its tunnels and exit first, releasing locks on
+    Program Files\\tincmgr\\app (and caller_exe) before the installer swaps the
+    new tree in and relaunches."""
+    if paths.version_key(version) is None:
+        raise ValueError(f"not a release version: {version!r}")
+    d = install_dir()
+    if not d:
+        raise OSError("Program Files could not be resolved")
+    parts = ["--self-install"]
+    if caller_pid and caller_pid > 0:
+        parts += ["--wait-pid", str(int(caller_pid))]
+    if caller_exe and caller_exe.lower().endswith(".exe") and not _inside_dir(caller_exe, d):
+        parts += ["--replace-exe", f'"{caller_exe}"']
+    parts.append("--relaunch")
+    params = " ".join(parts)
+    if sys.platform == "win32" and is_admin():
+        try:
+            subprocess.Popen(
+                f'"{exe_path}" {params}',
+                shell=False,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | _NO_WINDOW,
+                close_fds=True,
+            )
+            return os.path.join(d, "tincmgr.exe")
+        except OSError:
+            pass
+    ok = run_elevated(exe_path, params, wait=False)
+    if not ok:
+        raise OSError("the elevated installer did not start (declined?)")
+    return os.path.join(d, "tincmgr.exe")
+
+
+def launch_detached(target: str) -> None:
+    """Start `target` as an independent background GUI process."""
+    if sys.platform != "win32":
+        return
+    subprocess.Popen(
+        [target],
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+        close_fds=True,
+    )
+
+
 def restart_into(target: str) -> None:
     """End this process and start the installed copy (the logon task's
     program) detached, so the GUI comes back on the new version without the
     user finding it in the Start menu."""
     if sys.platform != "win32":
         return
-    subprocess.Popen([target], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
-                     close_fds=True)
+    launch_detached(target)
     os._exit(0)
 
 

@@ -38,6 +38,7 @@ object AppPaths {
   private const val APP_LOGS_DIR = "logs"
   private const val APP_TINC_RUNTIME_DIR = "run"
   private const val APP_TINC_NETWORKS_DIR = "networks"
+  private const val APP_UPDATES_DIR = "updates"
 
   private const val TINCD_BIN = "libtincd.so"
   private const val TINC_BIN = "libtinc.so"
@@ -55,6 +56,7 @@ object AppPaths {
 
   fun runtimeDir() = withDir(File(privateCacheDir(), APP_TINC_RUNTIME_DIR))
   fun logsDir() = withDir(File(privateCacheDir(), APP_LOGS_DIR))
+  fun updatesDir() = withDir(File(privateCacheDir(), APP_UPDATES_DIR))
   fun confDir() = withDir(File(privateFilesDir(), APP_TINC_NETWORKS_DIR))
 
   fun confDir(netName: String) = File(confDir(), netName)
