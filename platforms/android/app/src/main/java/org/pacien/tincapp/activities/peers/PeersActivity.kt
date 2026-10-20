@@ -25,6 +25,7 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -52,7 +53,13 @@ class PeersActivity : BaseActivity() {
   private lateinit var binding: ActivityPeersBinding
   override val snackbarRoot: View get() = binding.peersRoot
   private val netName by lazy { intent.getStringExtra(EXTRA_NET_NAME)!! }
-  private val adapter = Adapter(onClick = { showInfo(it) })
+  // Row tap goes straight to that node's editor tab; the trailing ⋮ opens the
+  // anchored dropdown (edit / transport / live info) -- not a centered dialog,
+  // which read as "another tiny window", the owner's words, 2026-10-20.
+  private val adapter = Adapter(
+    onRowClick = { openConfigEditor(it.name) },
+    onMenuClick = { peer, anchor -> showPeerMenu(peer, anchor) },
+  )
   private val configEditLauncher = registerForActivityResult(
     androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { renderStatic() }
 
@@ -108,12 +115,39 @@ class PeersActivity : BaseActivity() {
       ?: cfg.obfsPort?.takeIf { it != "0" }
   }
 
-  private fun hostNames(yaml: TincYaml, stanza: String): List<String> {
-    val own = yaml.optionValue(stanza, "Name")
-    val hosts = yaml.networkMapPublic(stanza)["hosts"] as? Map<*, *> ?: return emptyList()
-    val names = hosts.keys.map { it.toString() }
-    return (listOfNotNull(own?.takeIf { it in names }) + names.filter { it != own })
+  private fun staticAddressSummary(yaml: TincYaml, stanza: String, node: String, live: PeerStatus?): String? {
+    val hostText = yaml.hostText(stanza, node)
+    val cfg = hostText?.let { PeerConfig(node, it) }
+    val addr = live?.address ?: cfg?.address
+    val port = live?.port
+      ?: cfg?.port
+      ?: cfg?.addressPort
+      ?: cfg?.quicPort?.takeIf { it != "0" }
+      ?: cfg?.httpsPort?.takeIf { it != "0" }
+      ?: cfg?.obfsPort?.takeIf { it != "0" }
+
+    val base = when {
+      addr != null && port != null -> getString(R.string.peer_address_format, addr, port)
+      addr != null -> addr
+      cfg?.subnet?.isNotEmpty() == true -> cfg.subnet.joinToString(", ")
+      else -> null
+    }
+
+    val extras = mutableListOf<String>()
+    cfg?.preferredTransport?.takeIf { it.isNotBlank() && !it.equals("auto", ignoreCase = true) }?.let {
+      extras.add("pref: ${it.uppercase(Locale.ROOT)}")
+    }
+    cfg?.httpsPort?.takeIf { it != "0" }?.let { extras.add("https:$it") }
+    cfg?.quicPort?.takeIf { it != "0" }?.let { extras.add("quic:$it") }
+    cfg?.obfsPort?.takeIf { it != "0" }?.let { extras.add("obfs:$it") }
+
+    return listOfNotNull(base, extras.takeIf { it.isNotEmpty() }?.joinToString(" · "))
+      .takeIf { it.isNotEmpty() }
+      ?.joinToString("  ·  ")
   }
+
+  private fun hostNames(yaml: TincYaml, stanza: String): List<String> =
+    yaml.hostNames(stanza)
 
   private fun render(peers: List<PeerStatus>?) {
     if (peers.isNullOrEmpty()) renderStatic() else adapter.submit(peers)
@@ -121,25 +155,69 @@ class PeersActivity : BaseActivity() {
     if (peers == null && adapter.itemCount == 0) binding.peersPlaceholder.setText(R.string.peers_not_connected)
   }
 
-  private fun showInfo(peer: PeerStatus) {
+  /** The anchored dropdown on a peer's ⋮ button; the own node has no per-peer
+      actions, so its button is just a shortcut to the editor. */
+  private fun showPeerMenu(peer: PeerStatus, anchor: View) {
     if (peer.self) {
       openConfigEditor(peer.name)
       return
     }
-    val options = arrayOf(
-      getString(R.string.peer_info_action),
-      getString(R.string.peer_edit_action),
-    )
-    MaterialAlertDialogBuilder(this)
-      .setTitle(peer.name)
-      .setItems(options) { _, which ->
-        when (which) {
-          0 -> Tinc.info(netName, peer.name)
-            .thenAccept { text -> runOnUiThread { infoDialog(peer.name, text) } }
-            .exceptionallyAccept { e -> runOnUiThread { notify(e.cause?.defaultMessage() ?: e.defaultMessage()) } }
-
-          else -> openConfigEditor(peer.name)
+    PopupMenu(this, anchor).apply {
+      menu.add(0, MENU_EDIT, 0, R.string.peer_edit_action)
+      menu.add(0, MENU_TRANSPORT, 1, R.string.peer_transport_action)
+      menu.add(0, MENU_INFO, 2, R.string.peer_info_action)
+      setOnMenuItemClickListener { item ->
+        when (item.itemId) {
+          MENU_EDIT -> openConfigEditor(peer.name)
+          MENU_TRANSPORT -> showPeerTransportDialog(peer.name)
+          else -> fetchLivePeerInfo(peer.name)
         }
+        true
+      }
+    }.show()
+  }
+
+  private fun fetchLivePeerInfo(peerName: String) {
+    Tinc.info(netName, peerName)
+      .thenAccept { text -> runOnUiThread { infoDialog(peerName, text) } }
+      .exceptionallyAccept { e -> runOnUiThread { notify(e.cause?.defaultMessage() ?: e.defaultMessage()) } }
+  }
+
+  private fun showPeerTransportDialog(peerName: String) {
+    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+    val stanza = yaml.resolveNetwork(netName)
+    val currentPref = yaml.hostText(stanza, peerName)
+      ?.let { PeerConfig(peerName, it).preferredTransport?.lowercase(Locale.ROOT) }
+      ?.takeIf { it.isNotBlank() }
+      ?: "auto"
+
+    val codes = arrayOf("auto", "quic", "https", "obfs", "sf", "plain")
+    val labels = arrayOf(
+      getString(R.string.peer_transport_auto),
+      getString(R.string.transport_quic),
+      getString(R.string.transport_https),
+      getString(R.string.transport_obfs),
+      getString(R.string.transport_sf),
+      getString(R.string.transport_plain),
+    )
+    val checked = codes.indexOf(currentPref).coerceAtLeast(0)
+
+    MaterialAlertDialogBuilder(this)
+      .setTitle("$peerName — ${getString(R.string.setting_transport_title)}")
+      .setSingleChoiceItems(labels, checked) { dialog, which ->
+        val chosen = codes[which]
+        try {
+          val valToSet = if (chosen == "auto") null else listOf(chosen)
+          yaml.setHostMultiVars(stanza, peerName, mapOf("PreferredTransport" to valToSet), createIfMissing = true)
+          if (org.pacien.tincapp.service.TincVpnService.isDaemonRunning()) {
+            org.pacien.tincapp.service.TincVpnService.connect(netName)
+          }
+          renderStatic()
+          notify(getString(R.string.config_saved))
+        } catch (e: Exception) {
+          notify(e.cause?.defaultMessage() ?: e.defaultMessage())
+        }
+        dialog.dismiss()
       }
       .setNegativeButton(R.string.action_cancel, null)
       .show()
@@ -165,15 +243,14 @@ class PeersActivity : BaseActivity() {
   private class Holder(val binding: PeerItemBinding) : RecyclerView.ViewHolder(binding.root)
 
   private inner class Adapter(
-    private val onClick: (PeerStatus) -> Unit,
-    private val editCallback: (String) -> Unit = { openConfigEditor(it) },
+    private val onRowClick: (PeerStatus) -> Unit,
+    private val onMenuClick: (PeerStatus, View) -> Unit,
   ) : RecyclerView.Adapter<Holder>() {
     private var items: List<PeerStatus> = emptyList()
 
     val current: List<PeerStatus> get() = items
 
     fun submit(list: List<PeerStatus>) {
-      if (list == items) return
       items = list
       @Suppress("NotifyDataSetChanged") notifyDataSetChanged()
     }
@@ -205,27 +282,14 @@ class PeersActivity : BaseActivity() {
         b.peerAvatar.setTextColor(MaterialColors.getColor(b.root, fg))
       }
       b.peerStatus.text = status(context, peer)
-      b.peerAddress.text = if (peer.address != null) context.getString(R.string.peer_address_format, peer.address, peer.port ?: "655") else ""
-      b.peerAddress.isVisible = peer.address != null
-      b.peerRow.setOnClickListener { onClick(peer) }
+      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+      val stanza = yaml.resolveNetwork(netName)
+      val addrText = staticAddressSummary(yaml, stanza, peer.name, peer)
+      b.peerAddress.text = addrText.orEmpty()
+      b.peerAddress.isVisible = !addrText.isNullOrBlank()
+      b.peerRow.setOnClickListener { onRowClick(peer) }
       val menu = b.peerMenu
-      menu.isVisible = !peer.self
-      menu.setOnClickListener { anchor ->
-        val options = arrayOf(
-          context.getString(R.string.peer_info_action),
-          context.getString(R.string.peer_edit_action),
-        )
-        MaterialAlertDialogBuilder(context)
-          .setTitle(peer.name)
-          .setItems(options) { _, which ->
-            when (which) {
-              0 -> onClick(peer)
-              else -> editCallback(peer.name)
-            }
-          }
-          .setNegativeButton(R.string.action_cancel, null)
-          .show()
-      }
+      menu.setOnClickListener { onMenuClick(peer, menu) }
     }
 
     private fun status(context: Context, peer: PeerStatus): String = when {
@@ -241,6 +305,9 @@ class PeersActivity : BaseActivity() {
 
   companion object {
     private const val EXTRA_NET_NAME = "netName"
+    private const val MENU_EDIT = 1
+    private const val MENU_TRANSPORT = 2
+    private const val MENU_INFO = 3
 
     fun intent(context: Context, netName: String): Intent =
       Intent(context, PeersActivity::class.java).putExtra(EXTRA_NET_NAME, netName)

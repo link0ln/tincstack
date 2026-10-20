@@ -166,28 +166,51 @@
 	<string name="peer_edit_error_address">Not a valid IP or hostname</string>
 	<string name="peer_edit_error_port">Port must be 1–65535</string>
 	<string name="peer_edit_saved">Saved. Reconnect to apply.</string>
-	<string name="peer_edit_action">Edit…</string>
-	<string name="peer_info_action">Connection info</string>
+	<string name="peer_edit_action">Edit node config…</string>
+	<string name="peer_transport_action">Preferred transport…</string>
+	<string name="peer_transport_auto">Automatic (use global order)</string>
+	<string name="peer_info_action">Connection info (live)</string>
 
-	<!-- whole-config editor -->
+	<!-- whole-config & per-node editor -->
 	<string name="config_editor_title">Configuration</string>
-	<string name="config_section_options">Options</string>
+	<string name="config_scope_options">⚙ Options</string>
+	<string name="config_scope_own_format">📱 %1$s (this device)</string>
+	<string name="config_scope_node_format">🖥 %1$s</string>
+	<string name="config_scope_all">📋 All sections</string>
+	<string name="config_scope_raw">📄 Raw YAML</string>
+	<string name="config_scope_add_node">+ Add node</string>
+	<string name="config_quick_add_label">Quick add parameter:</string>
+	<string name="config_presets_label">Quick select parameter:</string>
+	<string name="config_value_presets_label">Quick value:</string>
+	<string name="config_section_options">Network Options</string>
 	<string name="config_section_hosts">Peer records</string>
 	<string name="config_section_node">Node: %1$s</string>
 	<string name="config_section_own_node">This device: %1$s</string>
 	<string name="config_section_host_format">Node: %1$s</string>
-	<string name="config_add_key">Add key</string>
-	<string name="config_pick_section">Section</string>
-	<string name="config_key_name_hint">Key name (e.g. HttpsPort)</string>
-	<string name="config_value_hint">Value (empty = remove; comma = several)</string>
-	<string name="config_bad_key">Letters and digits only, starting with a letter</string>
+	<string name="config_add_key">Add parameter</string>
+	<string name="config_pick_section">Target section / node</string>
+	<string name="config_key_name_hint">Parameter name (e.g. Address, HttpsPort, PreferredTransport)</string>
+	<string name="config_value_hint">Value (comma = multiple values)</string>
+	<string name="config_bad_key">Letters, digits, and _ only, starting with a letter</string>
+	<string name="config_bad_value">Enter a value for this parameter</string>
 	<string name="config_key_exists">This key is already in the list</string>
 	<string name="config_remove_key_title">Remove %1$s?</string>
 	<string name="config_remove_key_msg">The key is deleted from the config when you press Save.</string>
+	<string name="config_add_node_title">Add peer node</string>
+	<string name="config_add_node_name_hint">Node name (letters, digits, _)</string>
+	<string name="config_add_node_address_hint">Address (IP or hostname, optional)</string>
+	<string name="config_add_node_bad_name">Node name must start with a letter or digit (letters, digits, _ only)</string>
+	<string name="config_add_node_exists">Node already exists</string>
+	<string name="config_delete_node_action">Delete node</string>
+	<string name="config_delete_node_title">Delete node %1$s?</string>
+	<string name="config_delete_node_msg">Removes hosts.%1$s and takes effect when you press Save.</string>
+	<string name="config_unsaved_title">Discard unsaved changes?</string>
+	<string name="config_unsaved_msg">You have unsaved configuration edits. Leave without saving?</string>
+	<string name="config_action_discard">Discard</string>
 	<string name="config_saved">Saved. Reconnect to apply.</string>
 	<string name="config_save_failed">Could not save</string>
 	<string name="config_row_label">Configuration…</string>
-	<string name="config_row_summary">Every option and peer record, editable</string>
+	<string name="config_row_summary">Network options, per-node records, and raw tinc.yaml</string>
 	<string name="action_add">Add</string>
 
 	<!-- connection type -->

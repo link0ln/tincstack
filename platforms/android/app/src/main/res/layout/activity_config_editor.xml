@@ -17,13 +17,12 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
-<!-- The whole-config editor: one "key = value" row per setting, sections for
-     options / each node's host record, a Save that applies everything. -->
 <androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
 	xmlns:app="http://schemas.android.com/apk/res-auto"
 	android:id="@+id/config_root"
 	android:layout_width="match_parent"
-	android:layout_height="match_parent">
+	android:layout_height="match_parent"
+	android:background="?attr/colorSurface">
 
 	<LinearLayout
 		android:layout_width="match_parent"
@@ -32,7 +31,8 @@
 
 		<com.google.android.material.appbar.AppBarLayout
 			android:layout_width="match_parent"
-			android:layout_height="wrap_content">
+			android:layout_height="wrap_content"
+			android:background="?attr/colorSurface">
 
 			<com.google.android.material.appbar.MaterialToolbar
 				android:id="@+id/toolbar"
@@ -40,30 +40,145 @@
 				android:layout_height="?attr/actionBarSize" />
 		</com.google.android.material.appbar.AppBarLayout>
 
-		<androidx.recyclerview.widget.RecyclerView
-			android:id="@+id/config_list"
+		<!-- Scope selector: Options | This device | Peer nodes | All | Raw YAML | + Node -->
+		<HorizontalScrollView
+			android:id="@+id/config_scope_scroll"
+			android:layout_width="match_parent"
+			android:layout_height="wrap_content"
+			android:background="?attr/colorSurfaceContainerLow"
+			android:clipToPadding="false"
+			android:paddingStart="16dp"
+			android:paddingTop="6dp"
+			android:paddingEnd="16dp"
+			android:paddingBottom="6dp"
+			android:scrollbars="none">
+
+			<com.google.android.material.chip.ChipGroup
+				android:id="@+id/config_scope_chips"
+				android:layout_width="wrap_content"
+				android:layout_height="wrap_content"
+				app:selectionRequired="true"
+				app:singleLine="true"
+				app:singleSelection="true" />
+		</HorizontalScrollView>
+
+		<!-- Quick-add strip for missing common keys in the selected scope -->
+		<LinearLayout
+			android:id="@+id/config_quick_bar"
+			android:layout_width="match_parent"
+			android:layout_height="wrap_content"
+			android:background="?attr/colorSurface"
+			android:orientation="vertical"
+			android:paddingStart="16dp"
+			android:paddingTop="6dp"
+			android:paddingEnd="16dp"
+			android:paddingBottom="4dp"
+			android:visibility="gone">
+
+			<TextView
+				android:layout_width="wrap_content"
+				android:layout_height="wrap_content"
+				android:text="@string/config_quick_add_label"
+				android:textAppearance="?attr/textAppearanceLabelMedium"
+				android:textColor="?attr/colorOnSurfaceVariant" />
+
+			<HorizontalScrollView
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:clipToPadding="false"
+				android:scrollbars="none">
+
+				<com.google.android.material.chip.ChipGroup
+					android:id="@+id/config_quick_chips"
+					android:layout_width="wrap_content"
+					android:layout_height="wrap_content"
+					app:singleLine="true" />
+			</HorizontalScrollView>
+		</LinearLayout>
+
+		<View
+			android:layout_width="match_parent"
+			android:layout_height="1dp"
+			android:background="?attr/colorOutlineVariant" />
+
+		<!-- Main content: either structured RecyclerView or Raw YAML editor -->
+		<FrameLayout
 			android:layout_width="match_parent"
 			android:layout_height="0dp"
-			android:layout_weight="1"
-			android:clipToPadding="false"
-			android:paddingBottom="96dp" />
+			android:layout_weight="1">
 
-		<com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
-			android:id="@+id/config_add"
-			android:layout_width="wrap_content"
+			<androidx.recyclerview.widget.RecyclerView
+				android:id="@+id/config_list"
+				android:layout_width="match_parent"
+				android:layout_height="match_parent"
+				android:clipToPadding="false"
+				android:paddingTop="8dp"
+				android:paddingBottom="24dp" />
+
+			<ScrollView
+				android:id="@+id/config_raw_container"
+				android:layout_width="match_parent"
+				android:layout_height="match_parent"
+				android:fillViewport="true"
+				android:padding="12dp"
+				android:visibility="gone">
+
+				<com.google.android.material.textfield.TextInputLayout
+					android:id="@+id/config_raw_layout"
+					style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+					android:layout_width="match_parent"
+					android:layout_height="wrap_content"
+					android:hint="tinc.yaml">
+
+					<com.google.android.material.textfield.TextInputEditText
+						android:id="@+id/config_raw_edit"
+						android:layout_width="match_parent"
+						android:layout_height="wrap_content"
+						android:fontFamily="monospace"
+						android:gravity="top|start"
+						android:inputType="textMultiLine|textNoSuggestions"
+						android:minLines="18"
+						android:textSize="12sp" />
+				</com.google.android.material.textfield.TextInputLayout>
+			</ScrollView>
+		</FrameLayout>
+
+		<View
+			android:layout_width="match_parent"
+			android:layout_height="1dp"
+			android:background="?attr/colorOutlineVariant" />
+
+		<!-- Non-overlapping bottom action bar -->
+		<LinearLayout
+			android:id="@+id/config_bottom_bar"
+			android:layout_width="match_parent"
 			android:layout_height="wrap_content"
-			android:layout_gravity="bottom|end"
-			android:layout_margin="16dp"
-			android:text="@string/config_add_key"
-			app:icon="@android:drawable/ic_input_add" />
-	</LinearLayout>
+			android:background="?attr/colorSurfaceContainerLow"
+			android:gravity="center_vertical"
+			android:orientation="horizontal"
+			android:paddingStart="12dp"
+			android:paddingTop="10dp"
+			android:paddingEnd="12dp"
+			android:paddingBottom="10dp">
 
-	<com.google.android.material.button.MaterialButton
-		android:id="@+id/config_save"
-		android:layout_width="match_parent"
-		android:layout_height="wrap_content"
-		android:layout_gravity="bottom"
-		android:layout_margin="12dp"
-		android:enabled="false"
-		android:text="@string/action_save" />
+			<com.google.android.material.button.MaterialButton
+				android:id="@+id/config_add"
+				style="@style/Widget.Material3.Button.TonalButton"
+				android:layout_width="wrap_content"
+				android:layout_height="wrap_content"
+				android:layout_marginEnd="8dp"
+				android:text="@string/config_add_key"
+				app:icon="@drawable/ic_add" />
+
+			<!-- "Delete node" is a toolbar menu item while a non-own node tab is
+			     open: three buttons here squeezed Save on narrow screens. -->
+			<com.google.android.material.button.MaterialButton
+				android:id="@+id/config_save"
+				android:layout_width="0dp"
+				android:layout_height="wrap_content"
+				android:layout_weight="1"
+				android:enabled="false"
+				android:text="@string/action_save" />
+		</LinearLayout>
+	</LinearLayout>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

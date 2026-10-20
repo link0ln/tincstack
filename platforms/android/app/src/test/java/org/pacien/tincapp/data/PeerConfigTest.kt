@@ -105,4 +105,38 @@ class PeerConfigTest {
     assertEquals(true, PeerConfig.Validation.port("70000") != null)
     assertEquals(true, PeerConfig.Validation.port("abc") != null)
   }
+
+  @Test
+  fun multiValueHostKeysAndPreferredTransport() {
+    val multiRecord = """
+      Subnet = 10.8.179.2/32
+      Subnet = 192.168.50.0/24
+      Address = 80.87.200.39
+      PreferredTransport = quic
+    """.trimIndent()
+    val grouped = TincYaml.parseHostMultiKeyValues(multiRecord)
+    assertEquals(
+      listOf(
+        "Subnet" to listOf("10.8.179.2/32", "192.168.50.0/24"),
+        "Address" to listOf("80.87.200.39"),
+        "PreferredTransport" to listOf("quic"),
+      ),
+      grouped,
+    )
+    val cfg = PeerConfig("ruvds2", multiRecord)
+    assertEquals(listOf("10.8.179.2/32", "192.168.50.0/24"), cfg.subnet)
+    assertEquals("quic", cfg.preferredTransport)
+
+    val spliced = yaml.spliceHostMultiVars(
+      multiRecord,
+      mapOf(
+        "Subnet" to listOf("10.8.179.2/32", "10.99.0.0/16"),
+        "ObfsPort" to listOf("19505"),
+      )
+    )
+    val reparsed = TincYaml.parseHostMultiKeyValues(spliced).toMap()
+    assertEquals(listOf("10.8.179.2/32", "10.99.0.0/16"), reparsed["Subnet"])
+    assertEquals(listOf("19505"), reparsed["ObfsPort"])
+    assertEquals(listOf("quic"), reparsed["PreferredTransport"])
+  }
 }

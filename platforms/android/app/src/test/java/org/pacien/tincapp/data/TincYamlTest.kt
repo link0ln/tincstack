@@ -143,6 +143,55 @@ class TincYamlTest {
     TincYaml(yamlFile("- just\n- a list\n")).networkNames()
   }
 
+  @Test
+  fun createsUpdatesAndRemovesPeerHostBlocks() {
+    val f = yamlFile(DAEMON_DOC)
+    val y = TincYaml(f)
+    assertEquals(listOf("nodeA"), y.hostNames("mynet"))
+
+    y.setHostMultiVars(
+      "mynet",
+      "ruvds",
+      mapOf(
+        "Address" to listOf("203.0.113.10"),
+        "Port" to listOf("655"),
+        "HttpsPort" to listOf("8443"),
+        "QuicPort" to listOf("8443"),
+        "ObfsPort" to listOf("19505"),
+        "PreferredTransport" to listOf("quic"),
+        "Subnet" to listOf("10.165.0.2/32", "192.168.10.0/24"),
+      ),
+      createIfMissing = true,
+    )
+    assertEquals(listOf("nodeA", "ruvds"), y.hostNames("mynet"))
+    val ruvdsText = y.hostText("mynet", "ruvds")!!
+    val ruvdsCfg = PeerConfig("ruvds", ruvdsText)
+    assertEquals("203.0.113.10", ruvdsCfg.address)
+    assertEquals("655", ruvdsCfg.port)
+    assertEquals("8443", ruvdsCfg.httpsPort)
+    assertEquals("8443", ruvdsCfg.quicPort)
+    assertEquals("19505", ruvdsCfg.obfsPort)
+    assertEquals("quic", ruvdsCfg.preferredTransport)
+    assertEquals(listOf("10.165.0.2/32", "192.168.10.0/24"), ruvdsCfg.subnet)
+
+    // Private keys section after hosts must remain intact
+    assertTrue(f.readText().contains("ed25519_priv: |"))
+
+    // Remove the peer host block
+    y.removeHost("mynet", "ruvds")
+    assertEquals(listOf("nodeA"), y.hostNames("mynet"))
+    assertTrue(f.readText().contains("ed25519_priv: |"))
+  }
+
+  @Test
+  fun validatesAndWritesRawYamlText() {
+    val f = yamlFile(DAEMON_DOC)
+    val y = TincYaml(f)
+    val editedRaw = y.readRawText().replace("Port: 655", "Port: 8443")
+    y.writeRawText(editedRaw)
+    assertEquals("8443", y.optionValue("mynet", "Port"))
+  }
+
   companion object {
     /** What `tincd -c tinc.yaml -n mynet` materialises from `Name: nodeA` (keys shortened). */
     val DAEMON_DOC = """

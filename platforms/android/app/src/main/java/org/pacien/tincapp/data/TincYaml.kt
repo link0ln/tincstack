@@ -106,6 +106,33 @@ class TincYaml(val file: File) {
   fun hostText(net: String, name: String): String? =
     sectionMap(net, "hosts")[name]?.toString()
 
+  /** All host names in `networks.<net>.hosts`, with the own node (`Name`) first if present. */
+  fun hostNames(net: String): List<String> {
+    val own = optionValue(net, "Name")
+    val names = sectionMap(net, "hosts").keys.toList()
+    return listOfNotNull(own?.takeIf { it in names }) + names.filter { it != own }
+  }
+
+  /** Raw text of `tinc.yaml`, or empty string if absent. */
+  fun readRawText(): String = if (file.exists()) file.readText() else ""
+
+  /** Validate that [newText] is a valid `tinc.yaml` mapping and write it atomically. */
+  fun writeRawText(newText: String) {
+    val root = try {
+      newYaml().load<Any?>(newText)
+    } catch (e: Exception) {
+      throw InvalidConfigurationException("${file.name}: ${e.message}")
+    }
+    if (root !is Map<*, *>) throw InvalidConfigurationException("${file.name}: top level is not a mapping")
+    val networks = root["networks"]
+    if (networks != null && networks !is Map<*, *>) {
+      throw InvalidConfigurationException("${file.name}: 'networks' is not a mapping")
+    }
+    val normalized = newText.trimEnd() + "\n"
+    val original = if (file.exists()) file.readText() else ""
+    if (normalized != original) writeAtomically(normalized)
+  }
+
   /**
    * Host-file variable `key` of this network's own node (`hosts.<Name>`), all
    * occurrences, in file order.
@@ -153,9 +180,30 @@ class TincYaml(val file: File) {
     if (edited != original) replaceHostBlock(net, name, edited)
   }
 
+  /**
+   * Rewrite single- or multi-value `Key = value` lines inside `networks.<net>.hosts.<name>`,
+   * creating the host record if it does not yet exist.
+   */
+  fun setHostMultiVars(net: String, name: String, changes: Map<String, List<String>?>, createIfMissing: Boolean = true) {
+    if (changes.isEmpty() && hostText(net, name) != null) return
+    val original = hostText(net, name)
+      ?: if (createIfMissing) "" else throw InvalidConfigurationException("no host record for '$name' in ${file.name}")
+    val edited = spliceHostMultiVars(original, changes)
+    if (edited != original || hostText(net, name) == null) replaceHostBlock(net, name, edited)
+  }
+
   /** Pure function: the record text with `Key = value` lines replaced/removed/appended. */
-  fun spliceHostVars(text: String, changes: Map<String, String?>): String {
-    val lines = text.split('\n').toMutableList()
+  fun spliceHostVars(text: String, changes: Map<String, String?>): String =
+    spliceHostMultiVars(text, changes.mapValues { (_, v) ->
+      v?.trim()?.takeIf { it.isNotEmpty() }?.let(::listOf)
+    })
+
+  /**
+   * Pure function: the record text with single- or multi-value `Key = value` lines
+   * replaced/removed/appended in place.
+   */
+  fun spliceHostMultiVars(text: String, changes: Map<String, List<String>?>): String {
+    val lines = if (text.isEmpty()) mutableListOf() else text.split('\n').toMutableList()
     val changesLeft = changes.toMutableMap()
     val touchedKeys = changes.keys.map { it.lowercase() }.toSet()
 
@@ -178,18 +226,21 @@ class TincYaml(val file: File) {
       }
       val match = changesLeft.keys.firstOrNull { it.equals(key, ignoreCase = true) }
       if (match != null) {
-        val value = changesLeft.remove(match)
-        if (value == null || value.isBlank()) {
+        val values = changesLeft.remove(match)?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+        if (values.isEmpty()) {
           lines.removeAt(i)
           continue
         } else {
-          lines[i] = "${key} = $value"
+          lines.removeAt(i)
+          val replacement = values.map { "$key = $it" }
+          lines.addAll(i, replacement)
+          i += replacement.size
+          continue
         }
       } else {
         lines.removeAt(i)
         continue
       }
-      i++
     }
 
     // append the keys that had no line, after the last Key = value line (outside PEM blocks)
@@ -202,39 +253,88 @@ class TincYaml(val file: File) {
         if (!pem && isHostKeyValueLine(trimmed)) last = idx
         if (trimmed.startsWith("-----END ")) pem = false
       }
-      val added = changesLeft.entries.filter { !it.value.isNullOrBlank() }.map { "${it.key} = ${it.value}" }
-      lines.addAll(last + 1, added)
+      val added = changesLeft.entries.flatMap { (k, vals) ->
+        vals?.map { it.trim() }?.filter { it.isNotEmpty() }?.map { "$k = $it" }.orEmpty()
+      }
+      if (added.isNotEmpty()) {
+        lines.addAll(last + 1, added)
+      }
     }
 
     // collapse runs of blank lines a removal may have produced; drop trailing ones
-    val out = lines.joinToString("\n").replace("\n{3,}".toRegex(), "\n\n").trimEnd() + "\n"
-    return out
+    val joined = lines.joinToString("\n").replace("\n{3,}".toRegex(), "\n\n").trimEnd()
+    return if (joined.isEmpty()) "" else "$joined\n"
   }
 
-  /** Replace the body of `networks.<net>.hosts.<name>` with [newText], preserving indentation. */
+  /** Replace or create the body of `networks.<net>.hosts.<name>` with [newText], preserving indentation. */
   private fun replaceHostBlock(net: String, name: String, newText: String) {
-    val rawLines = file.readText().split('\n')
-    val parsed = rawLines.map(::Line)
+    val rawLines = file.readText().split('\n').let { if (it.last().isEmpty()) it.dropLast(1) else it }.toMutableList()
+    var parsed = rawLines.map(::Line)
     val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
     require(netsIdx >= 0) { "no networks: section in ${file.name}" }
     val netsEnd = blockEnd(parsed, netsIdx)
     val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
     val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
     require(netIdx >= 0) { "no network '$net' in ${file.name}" }
-    val netEnd = blockEnd(parsed, netIdx)
+    var netEnd = blockEnd(parsed, netIdx)
     val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
-    val hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
-    require(hostsIdx >= 0) { "no hosts: section in network '$net' of ${file.name}" }
+    var hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
+    if (hostsIdx < 0) {
+      val keysIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "keys")
+      val insertHostsAt = if (keysIdx >= 0) keysIdx else netEnd
+      rawLines.add(insertHostsAt, "${" ".repeat(sectionIndent)}hosts:")
+      parsed = rawLines.map(::Line)
+      netEnd = blockEnd(parsed, netIdx)
+      hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
+    }
     val hostsEnd = blockEnd(parsed, hostsIdx)
     val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
     val hostIdx = findChild(parsed, hostsIdx + 1, hostsEnd, hostIndent, name)
-    require(hostIdx >= 0) { "no host '$name' in network '$net' of ${file.name}" }
+    val bodyLines = if (newText.trimEnd().isEmpty()) {
+      listOf("${" ".repeat(hostIndent + 2)}# $name")
+    } else {
+      newText.trimEnd().split('\n').map { if (it.isEmpty()) "" else " ".repeat(hostIndent + 2) + it }
+    }
+    if (hostIdx >= 0) {
+      val hostEnd = blockEnd(parsed, hostIdx)
+      val blockIndent = parsed[hostIdx].indent
+      val headerLine = "${" ".repeat(blockIndent)}$name: |"
+      val indentedBody = if (newText.trimEnd().isEmpty()) {
+        listOf("${" ".repeat(blockIndent + 2)}# $name")
+      } else {
+        newText.trimEnd().split('\n').map { if (it.isEmpty()) "" else " ".repeat(blockIndent + 2) + it }
+      }
+      val result = rawLines.subList(0, hostIdx) + listOf(headerLine) + indentedBody + rawLines.subList(hostEnd, rawLines.size)
+      writeAtomically(result.joinToString("\n") + "\n")
+    } else {
+      val headerLine = "${" ".repeat(hostIndent)}$name: |"
+      val result = rawLines.subList(0, hostsEnd) + listOf(headerLine) + bodyLines + rawLines.subList(hostsEnd, rawLines.size)
+      writeAtomically(result.joinToString("\n") + "\n")
+    }
+  }
+
+  /** Remove the host block `networks.<net>.hosts.<name>` if present. */
+  fun removeHost(net: String, name: String) {
+    if (!file.exists()) return
+    val rawLines = file.readText().split('\n').let { if (it.last().isEmpty()) it.dropLast(1) else it }
+    val parsed = rawLines.map(::Line)
+    val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
+    if (netsIdx < 0) return
+    val netsEnd = blockEnd(parsed, netsIdx)
+    val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
+    val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
+    if (netIdx < 0) return
+    val netEnd = blockEnd(parsed, netIdx)
+    val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
+    val hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
+    if (hostsIdx < 0) return
+    val hostsEnd = blockEnd(parsed, hostsIdx)
+    val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
+    val hostIdx = findChild(parsed, hostsIdx + 1, hostsEnd, hostIndent, name)
+    if (hostIdx < 0) return
     val hostEnd = blockEnd(parsed, hostIdx)
-    val blockIndent = parsed[hostIdx].indent
-    val headerLine = "${" ".repeat(blockIndent)}$name: |"
-    val newLines = newText.trimEnd().split('\n').map { if (it.isEmpty()) "" else " ".repeat(blockIndent + 2) + it }
-    val result = rawLines.subList(0, hostIdx) + listOf(headerLine) + newLines + rawLines.subList(hostEnd, rawLines.size)
-    writeAtomically(result.joinToString("\n"))
+    val result = rawLines.subList(0, hostIdx) + rawLines.subList(hostEnd, rawLines.size)
+    writeAtomically(result.joinToString("\n") + "\n")
   }
 
   private fun writeAtomically(text: String) {
@@ -279,6 +379,21 @@ class TincYaml(val file: File) {
         if (trimmed.startsWith("-----END ")) inPem = false
       }
       return out
+    }
+
+    /**
+     * Group `Key = value` lines from a host record by key (case-insensitive,
+     * preserving the casing and file order of the first occurrence of each key).
+     */
+    fun parseHostMultiKeyValues(text: String): List<Pair<String, List<String>>> {
+      val canonicalName = LinkedHashMap<String, String>()
+      val grouped = LinkedHashMap<String, MutableList<String>>()
+      for ((k, v) in parseHostKeyValues(text)) {
+        val lower = k.lowercase()
+        canonicalName.putIfAbsent(lower, k)
+        grouped.getOrPut(lower) { mutableListOf() }.add(v)
+      }
+      return grouped.entries.map { (lower, vals) -> canonicalName[lower]!! to vals.toList() }
     }
 
     fun valuesOf(v: Any?): List<String> = when (v) {

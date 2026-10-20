@@ -32,20 +32,22 @@
 		style="@style/Tincstack.SectionLabel"
 		android:layout_width="match_parent"
 		android:layout_height="wrap_content"
-		android:paddingStart="24dp"
+		android:paddingStart="20dp"
 		android:paddingTop="14dp"
+		android:paddingEnd="16dp"
 		android:visibility="gone"
 		tools:text="Options" />
 
 	<LinearLayout
+		android:id="@+id/key_row_container"
 		android:layout_width="match_parent"
 		android:layout_height="wrap_content"
 		android:gravity="center_vertical"
 		android:orientation="horizontal"
-		android:paddingStart="24dp"
-		android:paddingTop="4dp"
-		android:paddingEnd="16dp"
-		android:paddingBottom="4dp">
+		android:paddingStart="20dp"
+		android:paddingTop="6dp"
+		android:paddingEnd="12dp"
+		android:paddingBottom="6dp">
 
 		<LinearLayout
 			android:layout_width="0dp"
@@ -59,7 +61,33 @@
 				android:layout_width="match_parent"
 				android:layout_height="wrap_content"
 				android:fontFamily="monospace"
-				tools:text="HttpsPort" />
+				android:textStyle="bold"
+				tools:text="PreferredTransport" />
+
+			<TextView
+				android:id="@+id/key_desc"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:paddingBottom="2dp"
+				android:textAppearance="?attr/textAppearanceBodySmall"
+				android:textColor="?attr/colorOnSurfaceVariant"
+				android:visibility="gone"
+				tools:text="Preferred transport for this peer" />
+
+			<HorizontalScrollView
+				android:id="@+id/key_value_chips_scroll"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:clipToPadding="false"
+				android:scrollbars="none"
+				android:visibility="gone">
+
+				<com.google.android.material.chip.ChipGroup
+					android:id="@+id/key_value_chips"
+					android:layout_width="wrap_content"
+					android:layout_height="wrap_content"
+					app:singleLine="true" />
+			</HorizontalScrollView>
 
 			<com.google.android.material.textfield.TextInputLayout
 				android:id="@+id/key_value_layout"
@@ -72,17 +100,19 @@
 					android:layout_width="match_parent"
 					android:layout_height="wrap_content"
 					android:hint="@string/config_value_hint"
-					android:inputType="text" />
+					android:inputType="textNoSuggestions" />
 			</com.google.android.material.textfield.TextInputLayout>
 		</LinearLayout>
 
 		<ImageView
 			android:id="@+id/key_remove"
-			android:layout_width="24dp"
-			android:layout_height="24dp"
-			android:layout_marginStart="8dp"
+			android:layout_width="40dp"
+			android:layout_height="40dp"
+			android:layout_marginStart="6dp"
+			android:background="?attr/selectableItemBackgroundBorderless"
 			android:contentDescription="@string/action_remove"
-			android:src="@android:drawable/ic_menu_delete"
+			android:padding="8dp"
+			android:src="@drawable/ic_delete"
 			app:tint="?attr/colorError" />
 	</LinearLayout>
 </LinearLayout>

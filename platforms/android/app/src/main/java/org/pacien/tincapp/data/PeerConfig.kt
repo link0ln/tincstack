@@ -55,6 +55,7 @@ data class PeerConfig(
   val httpsPort: String? get() = first("HttpsPort")
   val quicPort: String? get() = first("QuicPort")
   val obfsPort: String? get() = first("ObfsPort")
+  val preferredTransport: String? get() = first("PreferredTransport")
 
   val ed25519PublicKey: String? get() = first("Ed25519PublicKey")
   val subnet: List<String> get() = vars.filter { it.first.equals("Subnet", ignoreCase = true) }.map { it.second }
