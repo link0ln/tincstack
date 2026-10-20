@@ -279,13 +279,20 @@ static void check_reachability(void) {
 				if(n != myself) {
 					became_reachable_count++;
 
-					if(n->connection && n->connection->outgoing) {
+					/* Only seed the dial cache with addresses we actually
+					   dialled. ack_h() re-attaches the outgoing_t to a peer's
+					   *incoming* connection on dedup, and such a connection's
+					   address is the peer's ephemeral source port -- cached, it
+					   became the next redial target ("Dialling euvds (x port
+					   46878)" -> refused) ahead of the real address.
+					   base_address is set only by do_outgoing_connection(), so
+					   it is exactly the address we dialled. */
+					if(n->connection && n->connection->outgoing && n->connection->base_address.sa.sa_family) {
 						if(!n->address_cache) {
 							n->address_cache = open_address_cache(n);
 						}
 
-						const sockaddr_t *cache_sa = n->connection->base_address.sa.sa_family ? &n->connection->base_address : &n->connection->address;
-						add_recent_address(n->address_cache, cache_sa);
+						add_recent_address(n->address_cache, &n->connection->base_address);
 					}
 				}
 			} else {

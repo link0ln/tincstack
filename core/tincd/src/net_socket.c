@@ -658,6 +658,13 @@ static void handle_meta_io(void *data, int flags) {
 
 			if(socket_error) {
 				logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Error while connecting to %s (%s): %s", c->name, c->hostname, sockstrerror(socket_error));
+
+				/* Same as the https dial path: a refused address is dead,
+				   take it out of the persisted cache. */
+				if(socket_error == ECONNREFUSED && c->outgoing && c->outgoing->node->address_cache) {
+					drop_address(c->outgoing->node->address_cache, &c->address);
+				}
+
 				terminate_connection(c, false);
 			}
 

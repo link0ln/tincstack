@@ -615,6 +615,12 @@ int main_loop(void) {
 	});
 
 #ifndef HAVE_WINDOWS
+	/* Ignore SIGPIPE here, not only in detach(): the foreground (-D) mode
+	   the container entrypoints use never calls detach(), and a write to a
+	   socket the peer has reset -- an SSL_write() flush, or the close_notify
+	   an https teardown sends -- would otherwise kill the daemon. */
+	signal(SIGPIPE, SIG_IGN);
+
 	signal_t sighup = {0};
 	signal_t sigterm = {0};
 	signal_t sigquit = {0};

@@ -42,6 +42,7 @@
 #include <openssl/rand.h>
 
 #include "authn.h"
+#include "address_cache.h"
 #include "conf.h"
 #include "connection.h"
 #include "event.h"
@@ -246,6 +247,12 @@ void https_close(connection_t *c) {
 	}
 
 	if(s->ssl) {
+		/* Send close_notify before the socket goes so the peer's SSL_read()
+		   lands in the logged ZERO_RETURN path ("closed the TLS session")
+		   instead of an unexpected EOF, which established_read() reports as a
+		   read failure. Best effort on a nonblocking socket: the connection
+		   is dying either way, whatever shutdown manages to flush is a bonus. */
+		SSL_shutdown(s->ssl);
 		SSL_free(s->ssl);
 	}
 
@@ -770,6 +777,26 @@ static void established_read(https_session_t *s) {
 
 		if(err == SSL_ERROR_ZERO_RETURN) {
 			logger(DEBUG_CONNECTIONS, LOG_NOTICE, "https: peer %s (%s) closed the TLS session", c->name, c->hostname);
+		} else {
+			/* SSL_ERROR_SYSCALL / SSL_ERROR_SSL used to fall through to
+			   terminate_connection() without a line of output: a link killed
+			   under us (RST on the path, abrupt peer close) left nothing but
+			   "Closing connection with ..." to debug from. Name the exact
+			   error so the next teardown diagnoses itself. */
+			char why[192];
+
+			if(err == SSL_ERROR_SYSCALL) {
+				/* errno is only meaningful when SSL_read() returned -1; on the
+				   0-return unexpected-EOF case it holds stale garbage. */
+				snprintf(why, sizeof why, "socket error (%s)",
+				         n < 0 ? sockstrerror(sockerrno) : "unexpected EOF, no close_notify");
+			} else {
+				unsigned long ossl_err = ERR_get_error();
+				snprintf(why, sizeof why, "%s",
+				         ossl_err && ERR_reason_error_string(ossl_err) ? ERR_reason_error_string(ossl_err) : "TLS protocol error");
+			}
+
+			logger(DEBUG_CONNECTIONS, LOG_NOTICE, "https: read from %s (%s) failed: %s; closing", c->name, c->hostname, why);
 		}
 
 		terminate_connection(c, c->edge);
@@ -992,6 +1019,15 @@ static void https_io(void *data, int flags) {
 
 			if(socket_error) {
 				logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: connect to %s (%s) failed: %s", c->name, c->hostname, sockstrerror(socket_error));
+
+				/* A refused address is dead, not busy: drop it from the
+				   persisted cache so later redials go straight to a live
+				   one instead of burning a cycle (and carrier-failure
+				   credit) on it. */
+				if(socket_error == ECONNREFUSED && c->outgoing && c->outgoing->node->address_cache) {
+					drop_address(c->outgoing->node->address_cache, &c->address);
+				}
+
 				fail(s);
 			}
 
