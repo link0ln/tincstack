@@ -30,6 +30,9 @@
 #include "protocol.h"
 #include "utils.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 int maxoutbufsize = 0;
 int mtu_info_interval = 5;
 int udp_info_interval = 5;
@@ -280,28 +283,28 @@ static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
 		return mtu;
 	}
 
-	if(n->mtu > 0) {
-		mtu = MIN(mtu, n->mtu);
-	}
-
 	const node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
-	if(n->minmtu > 0 && n->via == myself && n->nexthop == n) {
+	if(n->minmtu == n->maxmtu && n->minmtu > 0 && n->via == myself && n->nexthop == n) {
 		mtu = MIN(mtu, n->minmtu);
-	} else if(via && via->minmtu > 0) {
+	} else if(via && via->minmtu == via->maxmtu && via->minmtu > 0) {
 		mtu = MIN(mtu, via->minmtu);
-	} else if(via && via->nexthop && via->nexthop->minmtu > 0) {
+	} else if(via && via->nexthop && via->nexthop->minmtu == via->nexthop->maxmtu && via->nexthop->minmtu > 0) {
 		mtu = MIN(mtu, via->nexthop->minmtu);
-	} else if(n->nexthop && n->nexthop != myself && n->nexthop->minmtu > 0) {
+	} else if(n->nexthop && n->nexthop != myself && n->nexthop->minmtu == n->nexthop->maxmtu && n->nexthop->minmtu > 0) {
 		mtu = MIN(mtu, n->nexthop->minmtu);
 	}
 
-	if(via && via != myself && via->mtu > 0) {
-		mtu = MIN(mtu, via->mtu);
+	if(n->connection && n->connection->transport && n->connection->transport->send_datagram) {
+		mtu = MIN(mtu, 1119);
 	}
 
-	if(n->nexthop && n->nexthop != myself && n->nexthop->mtu > 0) {
-		mtu = MIN(mtu, n->nexthop->mtu);
+	if(via && via != myself && via->connection && via->connection->transport && via->connection->transport->send_datagram) {
+		mtu = MIN(mtu, 1119);
+	}
+
+	if(n->nexthop && n->nexthop != myself && n->nexthop->connection && n->nexthop->connection->transport && n->nexthop->connection->transport->send_datagram) {
+		mtu = MIN(mtu, 1119);
 	}
 
 	return mtu;
@@ -395,7 +398,7 @@ bool mtu_info_h(connection_t *c, const char *request) {
 	/* If we don't know the current MTU for that node, use the one we received.
 	   Even if we're about to make our own measurements, the value we got from downstream nodes should be pretty close
 	   so it's a good idea to use it in the mean time. */
-	if(from->mtu != mtu && (from->minmtu != from->maxmtu || !from->status.udp_confirmed || mtu < from->mtu)) {
+	if(from->mtu != mtu && (from->minmtu != from->maxmtu || !from->status.udp_confirmed)) {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Using provisional MTU %d for node %s (%s)", mtu, from->name, from->hostname);
 		from->mtu = mtu;
 	}

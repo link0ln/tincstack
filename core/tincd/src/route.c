@@ -421,7 +421,7 @@ static uint16_t effective_node_mtu(const node_t *n) {
 			mtu = via->mtu;
 		}
 
-		if(via->status.udp_confirmed && via->minmtu > 0 && via->minmtu < mtu) {
+		if(via->status.udp_confirmed && via->minmtu == via->maxmtu && via->minmtu > 0 && via->minmtu < mtu) {
 			mtu = via->minmtu;
 		}
 
@@ -435,7 +435,7 @@ static uint16_t effective_node_mtu(const node_t *n) {
 			mtu = n->nexthop->mtu;
 		}
 
-		if(n->nexthop->status.udp_confirmed && n->nexthop->minmtu > 0 && n->nexthop->minmtu < mtu) {
+		if(n->nexthop->status.udp_confirmed && n->nexthop->minmtu == n->nexthop->maxmtu && n->nexthop->minmtu > 0 && n->nexthop->minmtu < mtu) {
 			mtu = n->nexthop->minmtu;
 		}
 
