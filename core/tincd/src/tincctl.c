@@ -1772,6 +1772,7 @@ const var_t variables[] = {
 	{"UdpMetaFallback", VAR_SERVER},
 	{"DirectSeal", VAR_SERVER},
 	{"AutoConnect", VAR_SERVER | VAR_SAFE},
+	{"BlockedNodes", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
 	{"BindToAddress", VAR_SERVER | VAR_MULTIPLE},
 	{"BindToInterface", VAR_SERVER},
 	{"Broadcast", VAR_SERVER | VAR_SAFE},

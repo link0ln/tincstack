@@ -1150,7 +1150,7 @@ void try_outgoing_connections(void) {
 			continue;
 		}
 
-		if(!strcmp(name, myself->name)) {
+		if(!strcmp(name, myself->name) || node_is_blocked(name)) {
 			free(name);
 			continue;
 		}

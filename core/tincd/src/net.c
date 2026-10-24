@@ -87,13 +87,30 @@ void purge(void) {
 	/* Check if anyone else claims to have an edge to an unreachable node. If not, delete node. */
 
 	for splay_each(node_t, n, &node_tree) {
-		if(!n->status.reachable) {
-			for splay_each(edge_t, e, &edge_weight_tree)
-				if(e->to == n) {
-					return;
-				}
+		if(n == myself) {
+			continue;
+		}
 
-			if(!autoconnect && (!strictsubnets || !n->subnet_tree.head))
+		if(node_is_blocked(n->name)) {
+			node_del(n);
+			continue;
+		}
+
+		if(!n->status.reachable) {
+			bool has_edge = false;
+
+			for splay_each(edge_t, e, &edge_weight_tree) {
+				if(e->to == n || e->from == n) {
+					has_edge = true;
+					break;
+				}
+			}
+
+			if(has_edge) {
+				continue;
+			}
+
+			if((!autoconnect || !n->in_config) && (!strictsubnets || !n->subnet_tree.head))
 				/* in strictsubnets mode do not delete nodes with subnets */
 			{
 				node_del(n);
@@ -381,6 +398,8 @@ static void periodic_handler(void *data) {
 
 	if(autoconnect && node_tree.count > 1) {
 		do_autoconnect();
+	} else if(!autoconnect && node_tree.count > 1) {
+		do_fallback_autoconnect();
 	}
 
 #ifdef HAVE_OPENSSL
@@ -467,6 +486,8 @@ int reload_configuration(void) {
 
 	for splay_each(node_t, n, &node_tree) {
 		n->status.has_address = false;
+		n->has_config_address = false;
+		n->in_config = (n == myself);
 	}
 
 	load_all_nodes();
@@ -585,6 +606,33 @@ int reload_configuration(void) {
 		if(stat(fname, &s) || s.st_mtime > last_config_check) {
 			logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config file of %s has been changed", c->name);
 			terminate_connection(c, c->edge);
+		}
+	}
+
+	setup_blocked_nodes();
+
+	for splay_each(node_t, n, &node_tree) {
+		if(n != myself && !n->in_config && !n->status.reachable && !n->edge_tree.head) {
+			bool has_edge = false;
+
+			for splay_each(edge_t, e, &edge_weight_tree) {
+				if(e->to == n || e->from == n) {
+					has_edge = true;
+					break;
+				}
+			}
+
+			if(!has_edge && (!strictsubnets || !n->subnet_tree.head)) {
+				for splay_each(subnet_t, s, &n->subnet_tree) {
+					if(!tunnelserver) {
+						send_del_subnet(everyone, s);
+					}
+
+					subnet_del(n, s);
+				}
+
+				node_del(n);
+			}
 		}
 	}
 

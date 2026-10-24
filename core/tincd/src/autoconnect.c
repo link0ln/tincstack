@@ -46,7 +46,7 @@ static void make_new_connection(void) {
 	uint32_t count = 0;
 
 	for splay_each(node_t, n, &node_tree) {
-		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n)) {
+		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n) || node_is_blocked(n->name)) {
 			continue;
 		}
 
@@ -60,7 +60,7 @@ static void make_new_connection(void) {
 	uint32_t r = prng(count);
 
 	for splay_each(node_t, n, &node_tree) {
-		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n)) {
+		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n) || node_is_blocked(n->name)) {
 			continue;
 		}
 
@@ -106,7 +106,7 @@ static void connect_to_unreachable(void) {
 		}
 
 		/* Is it unreachable and do we know an address for it? If not, return. */
-		if(n == myself || n->connection || n->status.reachable || !n->status.has_address || declared_indirect(n)) {
+		if(n == myself || n->connection || n->status.reachable || !n->status.has_address || declared_indirect(n) || node_is_blocked(n->name)) {
 			return;
 		}
 
@@ -213,4 +213,137 @@ void do_autoconnect(void) {
 
 	/* Check if there are unreachable nodes that we should try to connect to. */
 	connect_to_unreachable();
+}
+
+/* Emergency mesh entry failover when AutoConnect = no:
+   If this node has at least one configured ConnectTo peer (so it is not a
+   passive server-only node), but currently has zero active meta connections
+   (nc == 0) and every configured ConnectTo peer has failed at least one full
+   carrier walk (failures >= 1), try connecting to one known mesh peer whose
+   address we have (from config or cache/<peer>). Once a primary ConnectTo
+   connection recovers, drop the temporary fallback connection. */
+void do_fallback_autoconnect(void) {
+	uint32_t nc = 0;
+	bool configured_active = false;
+	bool has_configured = false;
+	bool all_configured_failed = true;
+
+	for list_each(connection_t, c, &connection_list) {
+		if(c->edge) {
+			nc++;
+
+			if(c->outgoing && c->outgoing->from_config) {
+				configured_active = true;
+			}
+		}
+	}
+
+	for list_each(outgoing_t, o, &outgoing_list) {
+		if(o->from_config) {
+			has_configured = true;
+
+			if(o->failures == 0 && o->transport_idx == 0 && o->last_ok_failures == 0) {
+				all_configured_failed = false;
+			}
+		}
+	}
+
+	if(!has_configured) {
+		return;
+	}
+
+	if(configured_active) {
+		drop_superfluous_pending_connections();
+
+		if(nc > 1) {
+			drop_superfluous_outgoing_connection();
+		}
+
+		return;
+	}
+
+	if(nc > 0 || !all_configured_failed) {
+		return;
+	}
+
+	/* Check if a fallback outgoing attempt is already running or failed. */
+	for list_each(outgoing_t, o, &outgoing_list) {
+		if(o->from_config) {
+			continue;
+		}
+
+		bool active_dial = false;
+
+		for list_each(connection_t, c, &connection_list) {
+			if(c->outgoing == o) {
+				active_dial = true;
+				break;
+			}
+		}
+
+		if(active_dial || o->failures == 0) {
+			return;
+		}
+
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Fallback peer %s also unreachable; rotating candidate", o->node->name);
+		list_delete_node(&outgoing_list, node);
+	}
+
+	uint32_t count = 0;
+
+	for splay_each(node_t, n, &node_tree) {
+		if(n == myself || n->connection || !n->status.has_address || node_is_blocked(n->name)) {
+			continue;
+		}
+
+		bool in_outgoing = false;
+
+		for list_each(outgoing_t, o, &outgoing_list) {
+			if(o->node == n) {
+				in_outgoing = true;
+				break;
+			}
+		}
+
+		if(!in_outgoing) {
+			count++;
+		}
+	}
+
+	if(!count) {
+		return;
+	}
+
+	uint32_t r = prng(count);
+
+	for splay_each(node_t, n, &node_tree) {
+		if(n == myself || n->connection || !n->status.has_address || node_is_blocked(n->name)) {
+			continue;
+		}
+
+		bool in_outgoing = false;
+
+		for list_each(outgoing_t, o, &outgoing_list) {
+			if(o->node == n) {
+				in_outgoing = true;
+				break;
+			}
+		}
+
+		if(in_outgoing) {
+			continue;
+		}
+
+		if(r) {
+			--r;
+			continue;
+		}
+
+		logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Primary ConnectTo unreachable; trying fallback mesh peer %s", n->name);
+		outgoing_t *outgoing = xzalloc(sizeof(*outgoing));
+		outgoing->node = n;
+		list_insert_tail(&outgoing_list, outgoing);
+		setup_outgoing_connection(outgoing, false);
+		break;
+	}
 }

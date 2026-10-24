@@ -1546,6 +1546,19 @@ class DiagWebServer:
             if not host:
                 return False, "Host name is empty", {}
             nc.hosts[host] = content
+            blocked = nc.options.get("BlockedNodes")
+            if isinstance(blocked, list):
+                blocked = [b for b in blocked if str(b).strip() != host]
+                if blocked:
+                    nc.options["BlockedNodes"] = blocked
+                else:
+                    nc.options.pop("BlockedNodes", None)
+            elif isinstance(blocked, str):
+                parts = [p.strip() for p in re.split(r"[\s,;]+", blocked) if p.strip() and p.strip() != host]
+                if parts:
+                    nc.options["BlockedNodes"] = parts
+                else:
+                    nc.options.pop("BlockedNodes", None)
             yaml_config.save(app)
             self.tc.reload(net)
             return True, f"Saved host '{host}'", {}
@@ -1553,10 +1566,32 @@ class DiagWebServer:
             if not nc:
                 return False, "Network not found", {}
             host = str(payload.get("host") or payload.get("peer") or "").strip()
+            if not host:
+                return False, "Host name is empty", {}
             nc.hosts.pop(host, None)
+            ct = nc.options.get("ConnectTo")
+            if isinstance(ct, list):
+                ct = [c for c in ct if str(c).strip() != host]
+                if ct:
+                    nc.options["ConnectTo"] = ct
+                else:
+                    nc.options.pop("ConnectTo", None)
+            elif isinstance(ct, str) and ct.strip() == host:
+                nc.options.pop("ConnectTo", None)
+            blocked = nc.options.get("BlockedNodes")
+            if isinstance(blocked, list):
+                if host not in blocked:
+                    blocked.append(host)
+            elif isinstance(blocked, str) and blocked.strip():
+                parts = [p.strip() for p in re.split(r"[\s,;]+", blocked) if p.strip()]
+                if host not in parts:
+                    parts.append(host)
+                nc.options["BlockedNodes"] = parts
+            else:
+                nc.options["BlockedNodes"] = [host]
             yaml_config.save(app)
             self.tc.reload(net)
-            return True, f"Deleted host '{host}'", {}
+            return True, f"Deleted and blocked host '{host}'", {}
         if action == "save_settings":
             if not nc:
                 return False, "Network not found", {}

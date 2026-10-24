@@ -705,6 +705,7 @@ void transport_candidate_activated(outgoing_t *outgoing, const connection_t *c) 
 
 static void build_candidates(outgoing_t *outgoing) {
 	uint32_t peer = transport_node_mask(outgoing->node);
+	uint32_t added = 0;
 	outgoing->ncandidates = 0;
 	outgoing->transport_idx = 0;
 
@@ -712,16 +713,38 @@ static void build_candidates(outgoing_t *outgoing) {
 		for(int i = 0; i < outgoing->node->pref_transports_count && outgoing->ncandidates < TRANSPORT_MAX; i++) {
 			transport_id_t id = (transport_id_t)outgoing->node->pref_transports[i];
 
-			if(transports[id].dial) {
+			if(transports[id].dial && !(added & TRANSPORT_BIT(id))) {
 				outgoing->candidates[outgoing->ncandidates++] = id;
+				added |= TRANSPORT_BIT(id);
 			}
 		}
-	} else {
-		for(int i = 0; i < transport_pref_count; i++) {
-			transport_id_t id = transport_pref[i];
+	}
 
-			if((peer & TRANSPORT_BIT(id)) && transports[id].dial) {
+	for(int i = 0; i < transport_pref_count && outgoing->ncandidates < TRANSPORT_MAX; i++) {
+		transport_id_t id = transport_pref[i];
+
+		if((peer & TRANSPORT_BIT(id)) && transports[id].dial && !(added & TRANSPORT_BIT(id))) {
+			outgoing->candidates[outgoing->ncandidates++] = id;
+			added |= TRANSPORT_BIT(id);
+		}
+	}
+
+	/* When a per-host PreferredTransports override is set (e.g. via the UI
+	   protocol selector), also append any other non-plain carriers the peer
+	   accepts so that if both the host-preferred and global-preferred carriers
+	   are blocked on the current ISP/network, the dial can still fall back to
+	   a working obfuscated/encrypted carrier. */
+	if(outgoing->node && outgoing->node->pref_transports_count > 0) {
+		static const transport_id_t fallback_order[] = {
+			TRANSPORT_QUIC, TRANSPORT_HTTPS, TRANSPORT_OBFS, TRANSPORT_SF
+		};
+
+		for(size_t i = 0; i < sizeof(fallback_order) / sizeof(fallback_order[0]) && outgoing->ncandidates < TRANSPORT_MAX; i++) {
+			transport_id_t id = fallback_order[i];
+
+			if((peer & TRANSPORT_BIT(id)) && transports[id].dial && !(added & TRANSPORT_BIT(id))) {
 				outgoing->candidates[outgoing->ncandidates++] = id;
+				added |= TRANSPORT_BIT(id);
 			}
 		}
 	}

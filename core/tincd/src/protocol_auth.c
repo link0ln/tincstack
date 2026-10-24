@@ -575,6 +575,11 @@ bool id_h(connection_t *c, const char *request) {
 		return false;
 	}
 
+	if(node_is_blocked(name)) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "Refusing connection with blocked node %s (%s)", name, c->hostname);
+		return false;
+	}
+
 	/* If this is an outgoing connection, make sure we are connected to the right host */
 
 	if(c->outgoing) {

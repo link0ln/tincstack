@@ -21,5 +21,6 @@
 */
 
 extern void do_autoconnect(void);
+extern void do_fallback_autoconnect(void);
 
 #endif

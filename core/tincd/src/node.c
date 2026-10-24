@@ -21,11 +21,15 @@
 #include "system.h"
 
 #include "address_cache.h"
+#include "conf.h"
 #include "control_common.h"
+#include "edge.h"
 #include "logger.h"
+#include "names.h"
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "protocol.h"
 #include "splay_tree.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -68,10 +72,110 @@ static splay_tree_t node_udp_tree = {
 	.compare = (splay_compare_t) node_udp_compare,
 };
 
+static splay_tree_t blocked_node_tree = {
+	.compare = (splay_compare_t) strcmp,
+	.delete = (splay_action_t) free,
+};
+
 void exit_nodes(void) {
+	splay_empty_tree(&blocked_node_tree);
 	splay_empty_tree(&node_udp_tree);
 	splay_empty_tree(&node_id_tree);
 	splay_empty_tree(&node_tree);
+}
+
+bool node_is_blocked(const char *name) {
+	if(!name || !*name) {
+		return false;
+	}
+
+	if(myself && myself->name && !strcmp(name, myself->name)) {
+		return false;
+	}
+
+	return splay_search(&blocked_node_tree, name) != NULL;
+}
+
+void setup_blocked_nodes(void) {
+	splay_empty_tree(&blocked_node_tree);
+
+	for(config_t *cfg = lookup_config(&config_tree, "BlockedNodes"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
+		if(!cfg->value) {
+			continue;
+		}
+
+		char *copy = xstrdup(cfg->value);
+		char *saveptr = NULL;
+
+		for(char *tok = strtok_r(copy, " \t,;", &saveptr); tok; tok = strtok_r(NULL, " \t,;", &saveptr)) {
+			if(check_id(tok) && (!myself || !myself->name || strcmp(tok, myself->name))) {
+				if(!splay_search(&blocked_node_tree, tok)) {
+					splay_insert(&blocked_node_tree, xstrdup(tok));
+				}
+			}
+		}
+
+		free(copy);
+	}
+
+	for list_each(connection_t, c, &connection_list) {
+		if(c->status.control || !c->name) {
+			continue;
+		}
+
+		if(node_is_blocked(c->name)) {
+			if(c->outgoing) {
+				list_delete(&outgoing_list, c->outgoing);
+				c->outgoing = NULL;
+			}
+
+			terminate_connection(c, c->edge);
+		}
+	}
+
+	for list_each(outgoing_t, outgoing, &outgoing_list) {
+		if(outgoing->node && node_is_blocked(outgoing->node->name)) {
+			list_delete_node(&outgoing_list, node);
+		}
+	}
+
+	for splay_each(node_t, n, &node_tree) {
+		if(n == myself || !node_is_blocked(n->name)) {
+			continue;
+		}
+
+		logger(DEBUG_ALWAYS, LOG_INFO, "Purging blocked node %s from node tree", n->name);
+
+		if(confbase) {
+			char cpath[PATH_MAX];
+			snprintf(cpath, sizeof(cpath), "%s" SLASH "cache" SLASH "%s", confbase, n->name);
+			unlink(cpath);
+		}
+
+		for splay_each(subnet_t, s, &n->subnet_tree) {
+			if(!tunnelserver) {
+				send_del_subnet(everyone, s);
+			}
+
+			if(n->status.reachable) {
+				subnet_update(n, s, false);
+			}
+
+			subnet_del(n, s);
+		}
+
+		for splay_each(edge_t, e, &edge_weight_tree) {
+			if(e->from == n || e->to == n) {
+				if(!tunnelserver) {
+					send_del_edge(everyone, e);
+				}
+
+				edge_del(e);
+			}
+		}
+
+		node_del(n);
+	}
 }
 
 node_t *new_node(const char *name) {

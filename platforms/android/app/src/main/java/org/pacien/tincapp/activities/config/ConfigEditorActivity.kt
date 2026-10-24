@@ -818,6 +818,13 @@ class ConfigEditorActivity : BaseActivity() {
         }
 
         val optChanges = LinkedHashMap<String, List<String>?>()
+        if (deletedNodes.isNotEmpty()) {
+          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+          for (delNode in deletedNodes) {
+            if (delNode !in blocked) blocked.add(delNode)
+          }
+          optChanges["BlockedNodes"] = blocked
+        }
         for (r in removedRows.filter { it.kind == Row.Kind.OPTION }) {
           optChanges[r.key()] = null
         }

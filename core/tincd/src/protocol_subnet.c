@@ -74,6 +74,10 @@ bool add_subnet_h(connection_t *c, const char *request) {
 
 	/* Check if the owner of the new subnet is in the connection list */
 
+	if(node_is_blocked(name)) {
+		return true;
+	}
+
 	owner = lookup_node(name);
 
 	if(tunnelserver && owner != myself && owner != c->node) {
@@ -84,6 +88,19 @@ bool add_subnet_h(connection_t *c, const char *request) {
 	}
 
 	if(!owner) {
+		if(tunnelserver) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring unauthorized %s from %s (%s): %s",
+			       "ADD_SUBNET", c->name, c->hostname, subnetstr);
+			return true;
+		}
+
+		if(strictsubnets) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring unauthorized %s from %s (%s): %s",
+			       "ADD_SUBNET", c->name, c->hostname, subnetstr);
+			forward_request(c, request);
+			return true;
+		}
+
 		owner = new_node(name);
 		node_add(owner);
 	}
@@ -189,6 +206,10 @@ bool del_subnet_h(connection_t *c, const char *request) {
 	}
 
 	if(seen_request(request)) {
+		return true;
+	}
+
+	if(node_is_blocked(name)) {
 		return true;
 	}
 

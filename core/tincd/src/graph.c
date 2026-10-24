@@ -294,6 +294,10 @@ static void check_reachability(void) {
 
 						add_recent_address(n->address_cache, &n->connection->base_address);
 					}
+
+					if(experimental && !n->connection && (!n->transports || !node_read_ecdsa_public_key(n))) {
+						send_req_transports(n);
+					}
 				}
 			} else {
 				logger(DEBUG_TRAFFIC, LOG_DEBUG, "Node %s (%s) became unreachable",
@@ -352,8 +356,10 @@ static void check_reachability(void) {
 			subnet_update(n, NULL, n->status.reachable);
 
 			if(!n->status.reachable) {
+				bool has_address = n->status.has_address;
 				update_node_udp(n, NULL);
 				memset(&n->status, 0, sizeof(n->status));
+				n->status.has_address = has_address;
 				n->options = 0;
 			} else if(n->connection) {
 				// Speed up UDP probing by sending our key.

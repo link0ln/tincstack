@@ -22,6 +22,7 @@
 
 #include "system.h"
 
+#include "address_cache.h"
 #include "cipher.h"
 #include "conf_net.h"
 #include "conf.h"
@@ -172,7 +173,7 @@ void regenerate_key(void) {
 }
 
 static void load_one_node(const char *name) {
-	if(!check_id(name)) {
+	if(!check_id(name) || node_is_blocked(name)) {
 		return;
 	}
 
@@ -187,6 +188,8 @@ static void load_one_node(const char *name) {
 		n = new_node((char *) name);
 		node_add(n);
 	}
+
+	n->in_config = true;
 
 	if(strictsubnets) {
 		for(config_t *cfg = lookup_config(&config, "Subnet"); cfg; cfg = lookup_config_next(&config, cfg)) {
@@ -209,6 +212,17 @@ static void load_one_node(const char *name) {
 
 	if(lookup_config(&config, "Address")) {
 		n->status.has_address = true;
+		n->has_config_address = true;
+	} else {
+		n->has_config_address = false;
+	}
+
+	if(!n->address_cache) {
+		n->address_cache = open_address_cache(n);
+	}
+
+	if(n->address_cache && n->address_cache->data.used > 0) {
+		n->status.has_address = true;
 	}
 
 	transport_node_read_config(n, &config);
@@ -217,6 +231,8 @@ static void load_one_node(const char *name) {
 }
 
 void load_all_nodes(void) {
+	setup_blocked_nodes();
+
 	// YAML mode: there is no hosts/ directory; enumerate nodes from the YAML.
 	if(yamlconf_global && netname) {
 		const char **names = yamlconf_host_names(yamlconf_global, netname);
@@ -285,6 +301,7 @@ static void read_interpreter(void) {
 
 bool setup_myself_reloadable(void) {
 	read_interpreter();
+	setup_blocked_nodes();
 
 	free(scriptextension);
 

@@ -349,6 +349,8 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 
 		/* Learn the peer's accept mask even when we already had its key: the
 		   key is cached forever, the mask is what goes stale. */
+		uint32_t prev_transports = from->transports;
+
 		if(fields >= 2 && *histransports) {
 			uint32_t mask;
 			char bad[TRANSPORT_LIST_MAX];
@@ -372,6 +374,10 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		}
 
 		if(node_read_ecdsa_public_key(from)) {
+			if(from->transports != prev_transports && from->transports != TRANSPORT_MASK_PLAIN && *histransports) {
+				replace_config_file(from->name, "Transports", histransports);
+			}
+
 			logger(DEBUG_PROTOCOL, LOG_WARNING, "Got ANS_PUBKEY from %s (%s) even though we already have his pubkey", from->name, from->hostname);
 			return true;
 		}
@@ -387,6 +393,12 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 
 		logger(DEBUG_PROTOCOL, LOG_INFO, "Learned Ed25519 public key from %s (%s)", from->name, from->hostname);
 		append_config_file(from->name, "Ed25519PublicKey", pubkey);
+		from->in_config = true;
+
+		if(from->transports && from->transports != TRANSPORT_MASK_PLAIN && *histransports) {
+			replace_config_file(from->name, "Transports", histransports);
+		}
+
 		return true;
 	}
 
@@ -507,6 +519,10 @@ bool req_key_h(connection_t *c, const char *request) {
 	if(!check_id(from_name) || !check_id(to_name)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "REQ_KEY", c->name, c->hostname, "invalid name");
 		return false;
+	}
+
+	if(node_is_blocked(from_name) || node_is_blocked(to_name)) {
+		return true;
 	}
 
 	from = lookup_node(from_name);
@@ -658,6 +674,10 @@ bool ans_key_h(connection_t *c, const char *request) {
 	if(!check_id(from_name) || !check_id(to_name)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ANS_KEY", c->name, c->hostname, "invalid name");
 		return false;
+	}
+
+	if(node_is_blocked(from_name) || node_is_blocked(to_name)) {
+		return true;
 	}
 
 	from = lookup_node(from_name);

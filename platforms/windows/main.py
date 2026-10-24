@@ -796,6 +796,13 @@ class NetworkTab(QtWidgets.QWidget):
         if not name:
             self.ctx.status("node name is empty"); return
         nc.hosts[name] = self.host_edit.toPlainText().rstrip("\n")
+        blocked = nc.options.get("BlockedNodes")
+        if isinstance(blocked, list) and name in blocked:
+            blocked.remove(name)
+            if not blocked:
+                nc.options.pop("BlockedNodes", None)
+        elif isinstance(blocked, str) and blocked.strip() == name:
+            nc.options.pop("BlockedNodes", None)
         self.ctx.save_config(f"saved host {name}"); self.reload()
 
     def _del_host(self) -> None:
@@ -803,7 +810,17 @@ class NetworkTab(QtWidgets.QWidget):
         if not nc or name not in nc.hosts:
             return
         if QtWidgets.QMessageBox.question(self, "Delete node", f"Delete host '{name}'?") == QtWidgets.QMessageBox.Yes:
-            nc.hosts.pop(name, None); self.ctx.save_config(f"deleted host {name}"); self.reload()
+            nc.hosts.pop(name, None)
+            blocked = nc.options.get("BlockedNodes")
+            if isinstance(blocked, list):
+                if name not in blocked:
+                    blocked.append(name)
+            elif isinstance(blocked, str) and blocked.strip():
+                if blocked.strip() != name:
+                    nc.options["BlockedNodes"] = [blocked.strip(), name]
+            else:
+                nc.options["BlockedNodes"] = [name]
+            self.ctx.save_config(f"deleted host {name}"); self.reload()
 
     def _import_host(self) -> None:
         nc = self.ctx.cur_netcfg()

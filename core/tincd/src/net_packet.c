@@ -101,6 +101,17 @@ char *address_pool = NULL;
 
 #define MAX_SEQNO 1073741824
 
+/* The datagram path to a direct neighbour is its meta connection's carrier
+   (quic: DATAGRAM frames in the same QUIC connection). That path is alive
+   exactly as long as the connection is, and the carrier keeps it alive and
+   knows its own ceiling; so once UDP is confirmed and the MTU fixed over it,
+   tinc's own keepalive and PMTU re-probing only add packets an idle HTTP/3
+   client never sends (a burst every ~2.5 s, measured: docs/transports.md
+   §9). With plain/sf/obfs this is always false. */
+static bool carrier_datagram_path(const node_t *n) {
+	return n->connection && n->connection->transport && n->connection->transport->send_datagram;
+}
+
 static void try_fix_mtu(node_t *n) {
 	if(n->mtuprobes < 0) {
 		return;
@@ -108,6 +119,15 @@ static void try_fix_mtu(node_t *n) {
 
 	if(n->mtuprobes == 20 || n->minmtu >= n->maxmtu) {
 		if(n->minmtu < MINMTU) {
+			if(!carrier_datagram_path(n)) {
+				logger(DEBUG_TRAFFIC, LOG_INFO, "UDP path to %s (%s) passed keepalive (%d bytes) but failed all PMTU >= %d probes; keeping traffic on meta connection",
+				       n->name, n->hostname, n->minmtu, MINMTU);
+				n->mtuprobes = 0;
+				n->maxmtu = MTU;
+				n->mtu = MTU;
+				return;
+			}
+
 			n->minmtu = MINMTU;
 		}
 
@@ -137,17 +157,6 @@ static void reduce_mtu(node_t *n, int mtu) {
 	}
 
 	try_fix_mtu(n);
-}
-
-/* The datagram path to a direct neighbour is its meta connection's carrier
-   (quic: DATAGRAM frames in the same QUIC connection). That path is alive
-   exactly as long as the connection is, and the carrier keeps it alive and
-   knows its own ceiling; so once UDP is confirmed and the MTU fixed over it,
-   tinc's own keepalive and PMTU re-probing only add packets an idle HTTP/3
-   client never sends (a burst every ~2.5 s, measured: docs/transports.md
-   §9). With plain/sf/obfs this is always false. */
-static bool carrier_datagram_path(const node_t *n) {
-	return n->connection && n->connection->transport && n->connection->transport->send_datagram;
 }
 
 /* DirectSeal (obfs.h): may we probe `n' over the plain UDP socket at all?
@@ -276,6 +285,9 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 	} else {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got type %d UDP probe reply %d from %s (%s)", DATA(packet)[0], len, n->name, n->hostname);
 	}
+
+	n->udp_ping_unanswered = 0;
+	n->last_udp_rx = now.tv_sec;
 
 	/* It's a valid reply: now we know bidirectional communication
 	   is possible using the address and socket that the reply
@@ -1473,8 +1485,13 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		}
 	}
 
-	if(from->status.udppacket && inpkt.len > from->maxrecentlen) {
-		from->maxrecentlen = inpkt.len;
+	if(from->status.udppacket) {
+		from->udp_ping_unanswered = 0;
+		from->last_udp_rx = now.tv_sec;
+
+		if(inpkt.len > from->maxrecentlen) {
+			from->maxrecentlen = inpkt.len;
+		}
 	}
 
 	receive_packet(from, &inpkt);
@@ -1622,7 +1639,7 @@ static bool has_confirmed_udp_addr(const node_t *n) {
 #define PUNCH_MAX_UNANSWERED 5
 #define PUNCH_MAX_DELAY_MS 1000
 
-static void try_udp(node_t *n);
+static void try_udp(node_t *n, bool has_data);
 
 static bool punch_coordinated(const node_t *n) {
 	return (n->dseal & DSEAL_KNOWN) && (n->dseal & DSEAL_PUNCH) && !n->connection &&
@@ -1641,7 +1658,7 @@ static void punch_timer_handler(void *data) {
 	n->udp_ping_sent = (struct timeval) {
 		0, 0
 	};
-	try_udp(n);
+	try_udp(n, false);
 }
 
 static void punch_start(node_t *n, int delay_ms, const sockaddr_t *sa, const char *why) {
@@ -1811,7 +1828,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 	return true;
 }
 
-static void try_udp(node_t *n) {
+static void try_udp(node_t *n, bool has_data) {
 	if(!udp_discovery) {
 		return;
 	}
@@ -1864,11 +1881,26 @@ static void try_udp(node_t *n) {
 	struct timeval ping_tx_elapsed;
 	timersub(&now, &n->udp_ping_sent, &ping_tx_elapsed);
 
+	bool rx_silent = has_data && (now.tv_sec - n->last_udp_rx >= udp_discovery_interval);
 	int interval = n->status.udp_confirmed
-	               ? (n->status.ping_sent ? udp_discovery_interval : udp_discovery_keepalive_interval)
+	               ? ((n->status.ping_sent || rx_silent) ? udp_discovery_interval : udp_discovery_keepalive_interval)
 	               : udp_discovery_interval;
 
 	if(ping_tx_elapsed.tv_sec >= interval) {
+		if(n->status.udp_confirmed && n->status.ping_sent) {
+			n->udp_ping_unanswered++;
+
+			if(n->udp_ping_unanswered >= 3) {
+				n->status.ping_sent = false;
+				n->udp_ping_unanswered = 0;
+				timeout_del(&n->udp_ping_timeout);
+				udp_probe_timeout_handler(n);
+				return;
+			}
+		} else {
+			n->udp_ping_unanswered = 0;
+		}
+
 		gettimeofday(&now, NULL);
 		n->udp_ping_sent = now; // a probe in flight
 		n->status.ping_sent = true;
@@ -2155,7 +2187,7 @@ static void try_tx_sptps(node_t *n, bool mtu) {
 
 	/* Otherwise, try to establish UDP connectivity. */
 
-	try_udp(n);
+	try_udp(n, mtu);
 
 	if(mtu) {
 		try_mtu(n);
@@ -2187,7 +2219,7 @@ static void try_tx_legacy(node_t *n, bool mtu) {
 		return;
 	}
 
-	try_udp(n);
+	try_udp(n, mtu);
 
 	if(mtu) {
 		try_mtu(n);

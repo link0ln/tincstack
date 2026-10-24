@@ -136,6 +136,10 @@ typedef struct node_t {
 	timeout_t punch_timer;                  /* fires the first burst of a round */
 	int dseal_logged_verdict;               /* verdict that line was logged for */
 	struct node_t *prev_nexthop;            /* nexthop as of the previous graph run; only meaningful inside graph() */
+	bool in_config;                         /* true if a host record exists in tinc.yaml / hosts/ */
+	bool has_config_address;                /* true if Address is explicitly configured in the host record */
+	int udp_ping_unanswered;                /* consecutive unanswered UDP probes while udp_confirmed */
+	time_t last_udp_rx;                     /* timestamp of last received UDP packet or probe reply */
 } node_t;
 
 extern struct node_t *myself;
@@ -152,5 +156,7 @@ extern node_t *lookup_node_udp(const sockaddr_t *sa);
 extern bool dump_nodes(struct connection_t *c);
 extern bool dump_traffic(struct connection_t *c);
 extern void update_node_udp(node_t *n, const sockaddr_t *sa);
+extern bool node_is_blocked(const char *name);
+extern void setup_blocked_nodes(void);
 
 #endif

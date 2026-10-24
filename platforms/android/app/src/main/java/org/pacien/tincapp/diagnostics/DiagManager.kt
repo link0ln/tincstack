@@ -1964,7 +1964,7 @@ object DiagManager {
           val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
           val stanza = yaml.resolveNetwork(targetNet)
           if (yaml.hostText(stanza, peer) != null) {
-            yaml.setHostVars(stanza, peer, mapOf("PreferredTransport" to if (carrier == "auto") null else carrier))
+            yaml.setHostVars(stanza, peer, mapOf("PreferredTransports" to if (carrier == "auto") null else carrier))
           } else {
             val t = Transport.byId(carrier)
             Transport.setPreferred(yaml, stanza, t?.takeIf { it != Transport.PLAIN })
@@ -1980,6 +1980,43 @@ object DiagManager {
             summary = "Switched preferred transport for '$peer' to '$carrier' via Diagnostic WebUI",
           )
           true to mapOf("ok" to true, "message" to "Switched $peer transport to $carrier")
+        }
+        "save_host", "peer_save_host" -> {
+          val host = (payload["host"] ?: payload["peer"] ?: "").toString().trim()
+          val content = (payload["content"] ?: payload["text"] ?: "").toString().trimEnd('\n')
+          if (targetNet.isEmpty() || host.isEmpty()) {
+            return false to mapOf("ok" to false, "message" to "Host name is empty")
+          }
+          val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
+          val stanza = yaml.resolveNetwork(targetNet)
+          yaml.setHostMultiVars(stanza, host, emptyMap()) // ensure block exists
+          val rawLines = content.split('\n').map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") && '=' in it }
+          val vars = LinkedHashMap<String, MutableList<String>>()
+          for (ln in rawLines) {
+            val k = ln.substringBefore('=').trim()
+            val v = ln.substringAfter('=').trim()
+            if (k.isNotEmpty()) vars.getOrPut(k) { mutableListOf() }.add(v)
+          }
+          yaml.setHostMultiVars(stanza, host, vars)
+          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() && it != host }
+          yaml.setOptions(stanza, mapOf("BlockedNodes" to blocked.ifEmpty { null }))
+          runTincCli(targetNet, 3500L, "reload")
+          true to mapOf("ok" to true, "message" to "Saved host '$host'")
+        }
+        "delete_host" -> {
+          val host = (payload["host"] ?: payload["peer"] ?: "").toString().trim()
+          if (targetNet.isEmpty() || host.isEmpty()) {
+            return false to mapOf("ok" to false, "message" to "Host name is empty")
+          }
+          val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
+          val stanza = yaml.resolveNetwork(targetNet)
+          yaml.removeHost(stanza, host)
+          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+          if (host !in blocked) blocked.add(host)
+          val ct = yaml.optionValues(stanza, "ConnectTo").filter { it.trim() != host }
+          yaml.setOptions(stanza, mapOf("BlockedNodes" to blocked, "ConnectTo" to ct.ifEmpty { null }))
+          runTincCli(targetNet, 3500L, "reload")
+          true to mapOf("ok" to true, "message" to "Deleted and blocked host '$host'")
         }
         "save_settings" -> {
           val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))

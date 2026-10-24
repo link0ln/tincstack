@@ -21,6 +21,7 @@
 
 #include "system.h"
 
+#include "address_cache.h"
 #include "conf.h"
 #include "crypto.h"
 #include "connection.h"
@@ -92,6 +93,10 @@ bool add_edge_h(connection_t *c, const char *request) {
 	}
 
 	if(seen_request(request)) {
+		return true;
+	}
+
+	if(node_is_blocked(from_name) || node_is_blocked(to_name)) {
 		return true;
 	}
 
@@ -203,6 +208,29 @@ bool add_edge_h(connection_t *c, const char *request) {
 		edge_add(e);
 	}
 
+	/* Persist learned external listening endpoints (non-ephemeral ports) of
+	   mesh peers that do not have a hardcoded Address in our config, so they
+	   are available in cache/<peer> across restarts if our primary ConnectTo
+	   becomes unreachable. */
+	if(to != myself && !to->has_config_address) {
+		uint16_t edge_port = 0;
+
+		if(e->address.sa.sa_family == AF_INET) {
+			edge_port = ntohs(e->address.in.sin_port);
+		} else if(e->address.sa.sa_family == AF_INET6) {
+			edge_port = ntohs(e->address.in6.sin6_port);
+		}
+
+		if(edge_port > 0 && edge_port < 32768 && !address_routes_via_vpn(&e->address)) {
+			if(!to->address_cache) {
+				to->address_cache = open_address_cache(to);
+			}
+
+			add_recent_address(to->address_cache, &e->address);
+			to->status.has_address = true;
+		}
+	}
+
 	/* Tell the rest about the new edge */
 
 	if(!tunnelserver) {
@@ -242,6 +270,10 @@ bool del_edge_h(connection_t *c, const char *request) {
 	}
 
 	if(seen_request(request)) {
+		return true;
+	}
+
+	if(node_is_blocked(from_name) || node_is_blocked(to_name)) {
 		return true;
 	}
 
