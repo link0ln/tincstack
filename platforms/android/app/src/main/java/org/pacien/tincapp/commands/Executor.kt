@@ -18,13 +18,13 @@
 
 package org.pacien.tincapp.commands
 
-import android.os.AsyncTask
 import java8.util.concurrent.CompletableFuture
 import java8.util.function.Supplier
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.util.concurrent.Executors
 import org.pacien.tincapp.context.AppPaths
 
 /**
@@ -32,6 +32,8 @@ import org.pacien.tincapp.context.AppPaths
  */
 internal object Executor {
   class CommandExecutionException(msg: String) : Exception(msg)
+
+  private val ioPool = Executors.newCachedThreadPool()
 
   private fun read(stream: InputStream) = BufferedReader(InputStreamReader(stream)).readLines()
 
@@ -51,13 +53,15 @@ internal object Executor {
   }
 
   fun call(cmd: Command): CompletableFuture<List<String>> = run(cmd).let { process ->
+    val stdoutFuture = supplyAsyncTask { read(process.inputStream) }
+    val stderrFuture = supplyAsyncTask { read(process.errorStream) }
     supplyAsyncTask<List<String>> {
       val exitCode = process.waitFor()
-      if (exitCode == 0) read(process.inputStream)
-      else throw CommandExecutionException(read(process.errorStream).lastOrNull() ?: "Non-zero exit status ($exitCode).")
+      if (exitCode == 0) stdoutFuture.get()
+      else throw CommandExecutionException(stderrFuture.get().lastOrNull() ?: "Non-zero exit status ($exitCode).")
     }
   }
 
-  fun runAsyncTask(r: () -> Unit) = CompletableFuture.supplyAsync(Supplier(r), AsyncTask.THREAD_POOL_EXECUTOR)!!
-  fun <U> supplyAsyncTask(s: () -> U) = CompletableFuture.supplyAsync(Supplier(s), AsyncTask.THREAD_POOL_EXECUTOR)!!
+  fun runAsyncTask(r: () -> Unit) = CompletableFuture.supplyAsync(Supplier(r), ioPool)!!
+  fun <U> supplyAsyncTask(s: () -> U) = CompletableFuture.supplyAsync(Supplier(s), ioPool)!!
 }

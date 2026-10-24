@@ -248,7 +248,8 @@ class TincVpnService : VpnService() {
     }
     val serverSocket = LocalServerSocket(DEVICE_FD_ABSTRACT_SOCKET)
     fdServerSocket = serverSocket
-    Executor.runAsyncTask { serveDeviceFd(serverSocket, fd) }
+    val fdDelivered = CompletableFuture<Unit>()
+    Executor.runAsyncTask { serveDeviceFd(serverSocket, fd, fdDelivered) }
 
     val process = Tincd.start(netName, stanza, DEVICE_FD_ABSTRACT_SOCKET)
     daemon = process
@@ -257,7 +258,7 @@ class TincVpnService : VpnService() {
       dispatch(Event.DaemonExited(run))
     }
 
-    return waitForDaemonStartup(process).whenComplete { _, err ->
+    return waitForDaemonStartup(process, fdDelivered).whenComplete { _, err ->
       try {
         serverSocket.close()
       } catch (_: Exception) {
@@ -541,10 +542,11 @@ class TincVpnService : VpnService() {
   private fun daemonLogTail(netName: String): String =
     AppPaths.logFile(netName).lastLines(40).joinToString("\n")
 
-  private fun serveDeviceFd(serverSocket: LocalServerSocket, deviceFd: ParcelFileDescriptor) {
+  private fun serveDeviceFd(serverSocket: LocalServerSocket, deviceFd: ParcelFileDescriptor, fdDelivered: CompletableFuture<Unit>) {
     val socket = try {
       serverSocket.accept()
     } catch (e: Exception) {
+      fdDelivered.completeExceptionally(e)
       return // closed before the daemon connected (it died during startup)
     }
     try {
@@ -555,22 +557,33 @@ class TincVpnService : VpnService() {
       socket.setFileDescriptorsForSend(arrayOf(deviceFd.fileDescriptor))
       socket.outputStream.write(0) // dummy write
       socket.outputStream.flush()
+      fdDelivered.complete(Unit)
     } catch (e: Exception) {
       log.error("Error while serving device fd", e)
+      fdDelivered.completeExceptionally(e)
     } finally {
       socket.close()
     }
   }
 
-  private fun waitForDaemonStartup(process: CompletableFuture<Unit>) =
+  private fun waitForDaemonStartup(process: CompletableFuture<Unit>, fdDelivered: CompletableFuture<Unit>) =
     Executor
-      .runAsyncTask { Thread.sleep(SETUP_DELAY) }
+      .runAsyncTask {
+        val deadline = SystemClock.elapsedRealtime() + FD_DELIVERY_TIMEOUT_MS
+        while (!fdDelivered.isDone && !process.isDone && SystemClock.elapsedRealtime() < deadline) {
+          Thread.sleep(50L)
+        }
+        if (!process.isDone) {
+          Thread.sleep(SETUP_DELAY)
+        }
+      }
       .thenCompose { if (process.isDone) process else Executor.runAsyncTask { Unit } }
 
   companion object {
     private val log by lazy { LoggerFactory.getLogger(TincVpnService::class.java)!! }
 
-    private const val SETUP_DELAY = 500L // ms
+    private const val SETUP_DELAY = 300L // ms
+    private const val FD_DELIVERY_TIMEOUT_MS = 5_000L // ms
     // announced routes: quiet right after a launch (the daemon is still
     // dialling, its view is empty), then quick polls while a fresh link brings
     // the graph in, then slow ones; a new set must be seen twice in a row

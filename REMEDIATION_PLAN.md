@@ -225,3 +225,39 @@
   - **Решение:**
     - В `diag_intercept_ipv4()` (`core/tincd/src/diag.c:892, 1004`) добавлена строгая проверка `memcmp(ip + 16, &my_ip, 4) == 0`, чтобы exit-нода (`0.0.0.0/0`) и LAN-роутер (`192.168.1.0/24`) никогда не перехватывали транзитный ICMP и TCP-трафик пользователей.
     - В `DiagManager.kt` фоновый `samplerExec` запускается только при включённом диагностическом сервере (`serverEnabled`) и останавливается в `stopServer()`, а `ServerSocket` привязывается к `127.0.0.1` вместо `0.0.0.0`.
+
+---
+
+## Фаза 7 (P0/P1 — Live Production Audit): Дополнительные баги, выявленные при раскатке `v0.5.16`–`v0.5.18`
+
+- [x] **7.1. Залипание промежуточного PMTU (`755 B`) в `MTU_INFO` до схождения бинарного поиска (`protocol_misc.c`, `route.c` — `v0.5.17`)**
+  - **Файлы:** `core/tincd/src/protocol_misc.c`, `core/tincd/src/route.c`
+  - **Проблема:** Во время фазы бинарного поиска PMTU (`minmtu < maxmtu`) поле `minmtu` временно содержит нижнюю границу поиска (`755 B`). Использование `minmtu` до схождения (`minmtu == maxmtu`) приводило к тому, что релей (`ruvds3`) зажимал ретранслируемый `MTU_INFO` до `755 B`.
+  - **Решение:** В `clamp_relay_leg_mtu()` и `effective_node_mtu()` значение `minmtu` применяется только после схождения (`minmtu > 0 && minmtu == maxmtu`), а для QUIC-плеча потолок `1119 B` применяется напрямую по наличию `send_datagram`.
+
+- [x] **7.2. Отравление глобальной очереди ошибок OpenSSL (`ERR_get_error`) и ложные обрывы `https`-магистрали `ruvds3 <-> euvds` на `EAGAIN` (`https.c` — `v0.5.18`)**
+  - **Файлы:** `core/tincd/src/https.c`
+  - **Проблема:**
+    - `tincd` однопоточен, поэтому все TLS-соединения (`https`, интернет-сканеры, реконнекты `windows`) разделяют одну очередь ошибок OpenSSL потока.
+    - В `https_close()` вызывался `SSL_shutdown(s->ssl)` даже для незавершённых рукопожатий (`SSL_in_init(s->ssl)`), что клало в очередь ошибку `shutdown while in init`, а перед `SSL_read()` / `SSL_write()` не вызывался `ERR_clear_error()`.
+    - По спецификации OpenSSL, если при вызове `SSL_get_error()` очередь `ERR_peek_error()` не пуста, обычный возврат `-1` (`EAGAIN` / `Resource temporarily unavailable`) на неблокирующем сокете классифицируется как фатальный `SSL_ERROR_SSL` (`shutdown while in init`) или `SSL_ERROR_SYSCALL` (`Resource temporarily unavailable`), что убивало магистральный `https`-канал `ruvds3 <-> euvds`!
+  - **Решение:**
+    - Перед каждым вызовом `SSL_read()`, `SSL_write()`, `SSL_accept()`, `SSL_connect()` добавлен `ERR_clear_error()`, а после обработки ошибок и `SSL_free()` очередь очищается.
+    - `SSL_shutdown()` вызывается только если `!SSL_in_init(s->ssl)`.
+    - Возврат `SSL_ERROR_SYSCALL` при `n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR)` корректно обрабатывается как `WANT_READ` / `WANT_WRITE`.
+
+- [x] **7.3. Провал `lookup_subnet_ipv4` / `lookup_subnet_ipv6` в `0.0.0.0/0` (`euvds`) для оффлайн-пиров VPN и петля `ICMP Redirect` (`subnet.c` — `v0.5.18`)**
+  - **Файлы:** `core/tincd/src/subnet.c`
+  - **Проблема:** Когда узел VPN (`10.8.179.2/32` `phone` и др.) находился оффлайн (`!p->owner->status.reachable`), цикл в `lookup_subnet_ipv4()` не останавливался на `/32`, продолжал обход `subnet_tree`, находил `0.0.0.0/0` (`owner = euvds`, `reachable = true`) и перезаписывал результат `r = p`, кэшируя `10.8.179.2 -> euvds` в `ipv4_cache`. В результате пакеты к выключенным пирам VPN улетали на `euvds`, впрыскивались в `tun` на `euvds`, возвращались ядром обратно в `tun` и порождали паразитные `ICMP Redirect Host` от `10.8.179.4`, а ветка `if(!subnet->owner->status.reachable) route_ipv4_unreachable(...)` в `route.c:740` никогда не выполнялась.
+  - **Решение:** В `lookup_subnet_ipv4()` и `lookup_subnet_ipv6()` запрещено перезаписывать уже найденную специфичную подсеть (`r && r->net.ipv4.prefixlength > 0`) маршрутом по умолчанию `/0` (`p->net.ipv4.prefixlength == 0`).
+
+- [x] **7.4. Android: Гонка `500 мс` при передаче `tun` FD через `LocalServerSocket` и голодание потоков `AsyncTask.THREAD_POOL_EXECUTOR` при пересборке маршрутов (`TincVpnService.kt`, `Executor.kt` — `v0.5.18`)**
+  - **Файлы:** `platforms/android/app/src/main/java/org/pacien/tincapp/service/TincVpnService.kt`, `platforms/android/app/src/main/java/org/pacien/tincapp/commands/Executor.kt`
+  - **Проблема:**
+    - Через 7–9 секунд после подключения `phone` к `ruvds3` метод `pollRoutes()` вызывал `replaceInterface()`, который останавливал `tincd`, пересоздавал `tun` с новыми маршрутами и перезапускал `tincd` через `launchDaemon()`.
+    - В `launchDaemon()` метод `waitForDaemonStartup()` спал фиксированные `500 мс` и в `.whenComplete` безусловно закрывал `LocalServerSocket(DEVICE_FD_ABSTRACT_SOCKET)`, не проверяя, успел ли новый процесс `tincd` подключиться и забрать `tun` FD.
+    - Все задачи (`Tincd.start` с вечным `process.waitFor()`, `serveDeviceFd`, `pollRoutes` и секундный опрос UI `SelfRefreshingLiveData`) делили ограниченный `AsyncTask.THREAD_POOL_EXECUTOR`, из-за чего `serveDeviceFd` или старт `tincd` задерживались дольше `500 мс`, сокет закрывался раньше времени, и `tincd` падал сразу после пересборки интерфейса.
+  - **Решение:**
+    - В `Executor.kt` пул заменён на `Executors.newCachedThreadPool()`, а чтение `stdout`/`stderr` выполняется параллельно с `process.waitFor()`.
+    - В `TincVpnService.kt` `waitForDaemonStartup()` ожидает фактической передачи `tun` FD через `fdDelivered: CompletableFuture<Unit>` (до `5000 мс`) перед закрытием `serverSocket`.
+

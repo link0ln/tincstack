@@ -270,6 +270,10 @@ subnet_t *lookup_subnet_ipv4(const ipv4_t *address) {
 		}
 
 		if(!maskcmp(address, &p->net.ipv4.address, p->net.ipv4.prefixlength)) {
+			if(r && r->net.ipv4.prefixlength > 0 && p->net.ipv4.prefixlength == 0) {
+				continue;
+			}
+
 			r = p;
 
 			if(!p->owner || p->owner->status.reachable) {
@@ -304,6 +308,10 @@ subnet_t *lookup_subnet_ipv6(const ipv6_t *address) {
 		}
 
 		if(!maskcmp(address, &p->net.ipv6.address, p->net.ipv6.prefixlength)) {
+			if(r && r->net.ipv6.prefixlength > 0 && p->net.ipv6.prefixlength == 0) {
+				continue;
+			}
+
 			r = p;
 
 			if(!p->owner || p->owner->status.reachable) {

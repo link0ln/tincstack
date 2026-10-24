@@ -252,8 +252,11 @@ void https_close(connection_t *c) {
 		   instead of an unexpected EOF, which established_read() reports as a
 		   read failure. Best effort on a nonblocking socket: the connection
 		   is dying either way, whatever shutdown manages to flush is a bonus. */
-		SSL_shutdown(s->ssl);
+		if(!SSL_in_init(s->ssl)) {
+			SSL_shutdown(s->ssl);
+		}
 		SSL_free(s->ssl);
+		ERR_clear_error();
 	}
 
 	decoy_fetch_cancel(s->fetch);
@@ -291,6 +294,7 @@ static void set_wbuf(https_session_t *s, const void *buf, size_t len) {
 /* Returns 1 = fully written, 0 = would block (io set), -1 = error. */
 static int flush_wbuf(https_session_t *s) {
 	while(s->woff < s->wlen) {
+		ERR_clear_error();
 		int n = SSL_write(s->ssl, s->wbuf + s->woff, (int)(s->wlen - s->woff));
 
 		if(n > 0) {
@@ -312,11 +316,12 @@ static int flush_wbuf(https_session_t *s) {
 			return 0;
 		}
 
-		if(err == SSL_ERROR_WANT_WRITE) {
+		if(err == SSL_ERROR_WANT_WRITE || (err == SSL_ERROR_SYSCALL && n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR))) {
 			set_io(s, IO_READ | IO_WRITE);
 			return 0;
 		}
 
+		ERR_clear_error();
 		return -1;
 	}
 
@@ -345,6 +350,7 @@ static int read_head(https_session_t *s) {
 			s->rbuf = xrealloc(s->rbuf, s->rcap);
 		}
 
+		ERR_clear_error();
 		int n = SSL_read(s->ssl, s->rbuf + s->rlen, (int)(s->rcap - s->rlen - 1));
 
 		if(n > 0) {
@@ -366,7 +372,7 @@ static int read_head(https_session_t *s) {
 
 		int err = SSL_get_error(s->ssl, n);
 
-		if(err == SSL_ERROR_WANT_READ) {
+		if(err == SSL_ERROR_WANT_READ || (err == SSL_ERROR_SYSCALL && n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR))) {
 			set_io(s, IO_READ);
 			return 0;
 		}
@@ -376,6 +382,7 @@ static int read_head(https_session_t *s) {
 			return 0;
 		}
 
+		ERR_clear_error();
 		return -1;
 	}
 }
@@ -721,6 +728,7 @@ static void https_flush(connection_t *c) {
 	https_session_t *s = c->transport_data;
 
 	while(c->outbuf.len > c->outbuf.offset) {
+		ERR_clear_error();
 		int n = SSL_write(s->ssl, c->outbuf.data + c->outbuf.offset, (int)(c->outbuf.len - c->outbuf.offset));
 
 		if(n > 0) {
@@ -730,10 +738,13 @@ static void https_flush(connection_t *c) {
 
 		int err = SSL_get_error(s->ssl, n);
 
-		if(err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ) {
+		if(err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ ||
+		   (err == SSL_ERROR_SYSCALL && n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR))) {
 			set_io(s, IO_READ | IO_WRITE);
 			return;
 		}
+
+		ERR_clear_error();
 
 		/* Never terminate from inside a send (see https_reap). */
 		logger(DEBUG_CONNECTIONS, LOG_NOTICE, "https: write to %s (%s) failed; closing", c->name, c->hostname);
@@ -751,6 +762,7 @@ static void established_read(https_session_t *s) {
 	char buf[MAXBUFSIZE];
 
 	for(;;) {
+		ERR_clear_error();
 		int n = SSL_read(s->ssl, buf, sizeof(buf));
 
 		if(n > 0) {
@@ -766,7 +778,8 @@ static void established_read(https_session_t *s) {
 
 		int err = SSL_get_error(s->ssl, n);
 
-		if(err == SSL_ERROR_WANT_READ) {
+		if(err == SSL_ERROR_WANT_READ ||
+		   (err == SSL_ERROR_SYSCALL && n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR))) {
 			return;
 		}
 
@@ -796,6 +809,7 @@ static void established_read(https_session_t *s) {
 				         ossl_err && ERR_reason_error_string(ossl_err) ? ERR_reason_error_string(ossl_err) : "TLS protocol error");
 			}
 
+			ERR_clear_error();
 			logger(DEBUG_CONNECTIONS, LOG_NOTICE, "https: read from %s (%s) failed: %s; closing", c->name, c->hostname, why);
 		}
 
@@ -807,6 +821,7 @@ static void established_read(https_session_t *s) {
 /* ---- the TLS/HTTP state machine ------------------------------------------ */
 
 static void drive_tls_handshake(https_session_t *s) {
+	ERR_clear_error();
 	int r = s->is_server ? SSL_accept(s->ssl) : SSL_connect(s->ssl);
 
 	if(r == 1) {
@@ -839,11 +854,13 @@ static void drive_tls_handshake(https_session_t *s) {
 
 	int err = SSL_get_error(s->ssl, r);
 
-	if(err == SSL_ERROR_WANT_READ) {
+	if(err == SSL_ERROR_WANT_READ ||
+	   (err == SSL_ERROR_SYSCALL && r < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR))) {
 		set_io(s, IO_READ);
 	} else if(err == SSL_ERROR_WANT_WRITE) {
 		set_io(s, IO_READ | IO_WRITE);
 	} else {
+		ERR_clear_error();
 		logger(DEBUG_CONNECTIONS, LOG_DEBUG, "https: TLS handshake with %s failed", s->c->hostname);
 		fail(s);
 	}
@@ -866,7 +883,10 @@ static void decoy_written(https_session_t *s) {
 		return;
 	}
 
-	SSL_shutdown(s->ssl);
+	if(!SSL_in_init(s->ssl)) {
+		SSL_shutdown(s->ssl);
+	}
+	ERR_clear_error();
 	terminate_connection(s->c, false);
 }
 
