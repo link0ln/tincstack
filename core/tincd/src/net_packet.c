@@ -107,6 +107,10 @@ static void try_fix_mtu(node_t *n) {
 	}
 
 	if(n->mtuprobes == 20 || n->minmtu >= n->maxmtu) {
+		if(n->minmtu < MINMTU) {
+			n->minmtu = MINMTU;
+		}
+
 		if(n->minmtu > n->maxmtu) {
 			n->minmtu = n->maxmtu;
 		} else {

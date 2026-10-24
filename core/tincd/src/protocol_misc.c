@@ -285,13 +285,13 @@ static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
 
 	const node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
-	if(n->minmtu == n->maxmtu && n->minmtu > 0 && n->via == myself && n->nexthop == n) {
+	if(n->minmtu == n->maxmtu && n->minmtu >= MINMTU && n->via == myself && n->nexthop == n) {
 		mtu = MIN(mtu, n->minmtu);
-	} else if(via && via->minmtu == via->maxmtu && via->minmtu > 0) {
+	} else if(via && via->minmtu == via->maxmtu && via->minmtu >= MINMTU) {
 		mtu = MIN(mtu, via->minmtu);
-	} else if(via && via->nexthop && via->nexthop->minmtu == via->nexthop->maxmtu && via->nexthop->minmtu > 0) {
+	} else if(via && via->nexthop && via->nexthop->minmtu == via->nexthop->maxmtu && via->nexthop->minmtu >= MINMTU) {
 		mtu = MIN(mtu, via->nexthop->minmtu);
-	} else if(n->nexthop && n->nexthop != myself && n->nexthop->minmtu == n->nexthop->maxmtu && n->nexthop->minmtu > 0) {
+	} else if(n->nexthop && n->nexthop != myself && n->nexthop->minmtu == n->nexthop->maxmtu && n->nexthop->minmtu >= MINMTU) {
 		mtu = MIN(mtu, n->nexthop->minmtu);
 	}
 
@@ -305,6 +305,10 @@ static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
 
 	if(n->nexthop && n->nexthop != myself && n->nexthop->connection && n->nexthop->connection->transport && n->nexthop->connection->transport->send_datagram) {
 		mtu = MIN(mtu, 1119);
+	}
+
+	if(mtu < MINMTU) {
+		mtu = MINMTU;
 	}
 
 	return mtu;

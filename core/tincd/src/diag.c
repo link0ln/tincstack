@@ -42,7 +42,10 @@
 
 #define MAX_DIAG_TCP_CONNS 16
 #define MAX_DIAG_PING_REQS 32
-#define DIAG_TCP_MSS       1160
+/* Keep full TCP segments (14 eth + 20 IP + 20 TCP + MSS = 1078 bytes) safely
+   below the 1119-byte QUIC carrier DATAGRAM PMTU ceiling so send_packet()
+   never drops large WebUI responses on QUIC links. */
+#define DIAG_TCP_MSS       1024
 #define DIAG_TCP_INFLIGHT  16384
 #define DIAG_TCP_TX_CAP    65536
 #define DIAG_TCP_RX_CAP    16384
@@ -278,7 +281,7 @@ static void diag_tcp_send_segment(ipv4_t src_ip, ipv4_t dst_ip,
 	memcpy(ip + 2, &ip_len_net, 2);
 	uint16_t id_net = htons(++diag_ip_id);
 	memcpy(ip + 4, &id_net, 2);
-	ip[6] = 0x40; /* DF */
+	ip[6] = 0x00;
 	ip[7] = 0x00;
 	ip[8] = 64;   /* TTL */
 	ip[9] = IPPROTO_TCP;
