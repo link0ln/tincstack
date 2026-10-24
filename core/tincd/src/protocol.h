@@ -125,6 +125,7 @@ extern bool send_req_pubkey(struct node_t *to);
 extern bool send_req_transports(struct node_t *to);
 extern bool send_req_dseal(struct node_t *to);
 extern bool send_ans_key(struct node_t *to);
+extern bool random_early_drop(struct connection_t *c);
 extern bool send_tcppacket(struct connection_t *c, const struct vpn_packet_t *packet);
 extern bool send_sptps_tcppacket(struct connection_t *c, const void *packet, size_t len);
 extern bool send_udp_info(struct node_t *from, struct node_t *to);

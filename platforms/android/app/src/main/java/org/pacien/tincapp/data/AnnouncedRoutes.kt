@@ -44,6 +44,13 @@ object AnnouncedRoutes {
    * reached through the exit like everything else.
    */
   val FULL_TUNNEL_DNS = listOf("1.1.1.1", "8.8.8.8")
+  val IPV6_SINKHOLE_ADDRESS = CidrAddress("fd00:7469:6e63::2", 126)
+  val IPV6_SINKHOLE_ROUTE = CidrAddress("2000::", 3)
+
+  fun isFullTunnelV4(routes: List<CidrAddress>): Boolean =
+    routes.any { it.prefix == 0 && !isV6(it) } ||
+      (routes.any { it.prefix == 1 && it.address == "0.0.0.0" } &&
+        routes.any { it.prefix == 1 && it.address == "128.0.0.0" })
 
   data class Announcement(val subnet: CidrAddress, val owner: String)
 
@@ -146,7 +153,7 @@ object AnnouncedRoutes {
   /** [base] plus the announced routes, and [FULL_TUNNEL_DNS] when they bring the default route and [base] names no resolver. */
   fun apply(base: VpnInterfaceConfiguration, announced: List<CidrAddress>): VpnInterfaceConfiguration {
     val routes = base.routes + announced.filter { a -> base.routes.none { it == a } }
-    val fullTunnel = routes.any { it.prefix == 0 && !isV6(it) }
+    val fullTunnel = isFullTunnelV4(routes)
     return base.copy(
       routes = routes,
       dnsServers = if (fullTunnel && base.dnsServers.isEmpty()) FULL_TUNNEL_DNS else base.dnsServers)

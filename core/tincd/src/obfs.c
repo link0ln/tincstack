@@ -951,10 +951,6 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 		size_t burst_room = room;
 		if(l->node && l->node->minmtu > 0) {
 			size_t pmtu_cap = (size_t)l->node->minmtu;
-			size_t min_target = base + 64;
-			if(pmtu_cap < min_target) {
-				pmtu_cap = min_target;
-			}
 			if(pmtu_cap < budget) {
 				size_t pmtu_room = pmtu_cap > base ? pmtu_cap - base : 0;
 				if(pmtu_room < burst_room) {

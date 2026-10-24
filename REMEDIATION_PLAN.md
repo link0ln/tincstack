@@ -142,3 +142,86 @@
 ## Фаза 3: Сборка и тестирование
 - [x] **3.1. Сборка C-ядра (`tincd`, `tinc`) и прогон существующих и новых юнит/интеграционных тестов** (20/20 OK, 2 EXPECTEDFAIL, 0 Fail)
 - [x] **3.2. Прогон Python-тестов (`platforms/windows/tests/`) и проверка Kotlin/Android и Docker-скриптов** (124 passed, 0 failed)
+
+
+---
+
+## Фаза 4 (P0): Устранение отказа YouTube / YouTube Music, QUIC MTU Deadlock и голодания контрольного потока (Аудит 2026-10-24)
+
+- [x] **4.1. Защита от QUIC-over-QUIC MTU Deadlock при сохранении anti-DPI фингерпринта curl 8.14 (`route.c`, `protocol_misc.c`)**
+  - **Файлы:** `core/tincd/src/route.c`, `core/tincd/src/protocol_misc.c`, `core/tincd/src/transport_quic.c`
+  - **Проблема:** `QUIC_CURL_UDP_PAYLOAD = 1200` (обязательный параметр мимикрии под curl 8.14 / OpenSSL 3.5 в `quic-wire-test.sh`) даёт `dgram_room = 1152` и туннельный `pmtu = 1119` (максимальный внутренний IPv4 пакет = `1105` байт). По RFC 9000 §14.1 пакеты `QUIC Initial` (YouTube / YouTube Music / Cronet HTTP/3) обязаны быть `>= 1200` байт UDP payload (`1228` байт IPv4 с `DF=1`). При `path_mtu = 1119` `route_ipv4()` отбрасывал `QUIC Initial` и возвращал `ICMP_FRAG_NEEDED (mtu = 1105)`, что приводило к мёртвому зависанию QUIC.
+  - **Решение:**
+    - В `route_ipv4()` (`route.c:773-792`): для пользовательских UDP-пакетов с флагом `DF=1`, когда `path_mtu < 1294` (внутренний IPv4 MTU `< 1280`, например `1119` на `quic`), выполняется прозрачная туннельная фрагментация `fragment_ipv4_packet()` вместо возврата `ICMP_FRAG_NEEDED (mtu < 1280)`.
+    - В `fragment_ipv4_packet()` (`route.c:669-684`): на создаваемых фрагментах сбрасывается бит `IP_DF` и генерируется ненулевой инкрементируемый `ip_id`, если исходный пакет имел `ip_id == 0` (что характерно для Linux/Android при `DF=1`), благодаря чему `nf_defrag_ipv4` на exit-ноде корректно собирает пакет перед отправкой в интернет.
+
+- [x] **4.2. Отмена глобального лимита `ratelimit(3)` для `ICMP_FRAG_NEEDED` / локального `tun0` и немедленный расчёт `effective_node_mtu` / `clamp_mss` (`route.c`, `protocol_misc.c`)**
+  - **Файлы:** `core/tincd/src/route.c`, `core/tincd/src/protocol_misc.c`
+  - **Проблема:**
+    - В `route_ipv4_unreachable()` и `route_ipv6_unreachable()` глобальный `ratelimit(3)` (3 пакета/сек на весь демон) отбрасывал >90% ответов `ICMP_FRAG_NEEDED` / `ICMP6_PACKET_TOO_BIG` и локальных `ICMP6_DST_UNREACH_NOROUTE` при параллельных потоках YouTube, вызывая PMTUD Blackhole и задержки Happy Eyeballs.
+    - `effective_node_mtu()` и `clamp_relay_leg_mtu()` ждали окончания 20 раундов проб (`minmtu == maxmtu`), а на `https` (`OPTION_TCPONLY`) `n->mtu` навсегда оставался `1518`, поэтому `clamp_mss()` не зажимал TCP MSS (`1464 >= 1460`).
+  - **Решение:**
+    - Отменён `ratelimit(3)` для `ICMP_DEST_UNREACH` с кодом `ICMP_FRAG_NEEDED`, `ICMP6_PACKET_TOO_BIG`, а также для всех локальных пакетов (`source == myself`).
+    - В `effective_node_mtu()`, `clamp_mss()`, `clamp_relay_leg_mtu()` и `mtu_info_h()` потолок активного транспорта (`1119` для `quic`, `minmtu` для подтверждённого UDP, `1400` / MSS `<= 1346` для `https` и неподтверждённых путей) применяется немедленно со старта сессии.
+
+- [x] **4.3. Устранение голодания контрольного/мета-потока в `quic_flush()` и учёт буфера транспорта в `random_early_drop()` (`transport_quic.c`, `protocol_misc.c`, `net_packet.c`)**
+  - **Файлы:** `core/tincd/src/transport_quic.c`, `core/tincd/src/connection.h`, `core/tincd/src/protocol.h`, `core/tincd/src/protocol_misc.c`, `core/tincd/src/net_packet.c`
+  - **Проблема:**
+    - В `quic_flush()` ветка `if(s->dgram_n) ... else ...` отправляла контрольный стрим `s->tx` только когда очередь дейтаграмм `s->dgram_n` была полностью пуста. При нагрузке контрольные сообщения (`PING`, `PONG`, `REQ_KEY`, `ANS_KEY`, `MTU_INFO`) голодали за дейтаграммами, разгоняя RTT на `router <-> ruvds3` до `14826 мс`.
+    - В `quic_send()` буфер `c->outbuf` мгновенно сливался в `s->tx`, из-за чего `c->outbuf.len == 0` и `random_early_drop()` никогда не срабатывал на `quic`.
+  - **Решение:**
+    - В `quic_flush()` реализовано справедливое чередование (`prefer_stream_next`) отправки `s->tx` и `s->dgram`, а при отказе `ngtcp2_conn_writev_datagram` принять дейтаграмму (`!accepted`) отправка дейтаграмм откладывается (`dgram_deferred = true`), чтобы немедленно отправить stream-фреймы и ACK.
+    - В `connection_t` добавлено поле `transport_outbuf_len`, обновляемое из `quic_txq_unsent(&s->tx)` и учитываемое в `random_early_drop()` как для `PACKET`, так и для `send_sptps_data_meta()`.
+
+- [x] **4.4. Android: Блокировка утечки IPv6 (`AAAA`), безопасный дефолтный MTU на `tun0` и защита от ложного сброса маршрутов при старте (`TincVpnService.kt`, `AnnouncedRoutes.kt`, `VpnServiceBuilder.kt`)**
+  - **Файлы:** `platforms/android/app/src/main/java/org/pacien/tincapp/service/TincVpnService.kt`, `platforms/android/app/src/main/java/org/pacien/tincapp/data/AnnouncedRoutes.kt`, `platforms/android/app/src/main/java/org/pacien/tincapp/extensions/VpnServiceBuilder.kt`
+  - **Проблема:**
+    - На Android при IPv4 full-tunnel в `tun0` отсутствовали IPv6-маршруты, но DNS `1.1.1.1` отдавал `AAAA`-записи для YouTube/GoogleVideo, из-за чего трафик уходил мимо VPN в заблокированный провайдерский IPv6.
+    - Дефолтный MTU на `tun0` был равен `1500` (если `MTU` не задан в `tinc.yaml`), что превышало MTU любого туннельного транспорта (`1119`–`1451`).
+    - При старте `pollRoutes()` мог сбросить запомненный маршрут `0.0.0.0/0` через 7 секунд, если локальный пир (`router`) подключился быстрее, чем exit-нода (`euvds`), вызывая убийство и перезапуск `tincd`.
+  - **Решение:**
+    - В `VpnServiceBuilder.applyCfg()` при активном full-tunnel IPv4 (`0.0.0.0/0` или `0.0.0.0/1` + `128.0.0.0/1`) без настроенного IPv6 автоматически добавляются ULA IPv6-адрес `fd00:7469:6e63::2/126` и маршрут `2000::/3` в `tun0`, чтобы `route_ipv6` мгновенно (<1 мс) отвечал `ICMP6_DST_UNREACH_NOROUTE`, переключая Cronet/YouTube на IPv4 внутри туннеля.
+    - В `VpnServiceBuilder` установлен безопасный дефолтный `DEFAULT_TUN_MTU = 1280`, если `MTU` явно не задан в `tinc.yaml`.
+    - В `TincVpnService.pollRoutes()` добавлено окно `ROUTES_DROP_GRACE_MS = 20_000L`, предотвращающее сужение/сброс запомненных маршрутов (`0.0.0.0/0`), пока более медленные пиры завершают рукопожатие.
+
+---
+
+## Фаза 5 (P1): Устранение штормов реконнектов, гонки SPTPS Rekey и обрывов UDP/OBFS
+
+- [x] **5.1. Прекращение бесконечного цикла апгрейда транспорта (`terminate_connection` в `net.c`)**
+  - **Файлы:** `core/tincd/src/net.c`
+  - **Проблема:** Узел `windows` (подключённый по `obfs`) каждые 30–40 секунд пытался подняться до `quic` и `https`, а после прохода по списку кандидатов сбрасывал `carrier_index` в 0 (`quic`) и планировал `do_outgoing_connection` заново, бесконечно повторяя цикл и не сбрасывая `address_cache` при смене транспорта.
+  - **Решение:** В `terminate_connection()` при переходе к следующему транспорту вызывается `reset_address_cache()`, а если соединение с пиром уже активно (`outgoing->node->connection != NULL`) и более приоритетных кандидатов в текущем проходе не осталось (`!moved || !transport_outranks_connection`), `outgoing` паркуется на живом соединении без перезапуска бесконечного цикла.
+
+- [x] **5.2. Устранение гонки при ежечасном SPTPS Rekey (`sptps.c`, `net_packet.c`, `protocol_key.c`)**
+  - **Файлы:** `core/tincd/src/sptps.c`, `core/tincd/src/net_packet.c`, `core/tincd/src/protocol_key.c`
+  - **Проблема:** `receive_sig()` переключал `s->outcipher` до того, как `SPTPS_ACK` дойдёт по TCP/meta-каналу. Пакеты с новым ключом приходили раньше `SPTPS_ACK`, вызывали ошибку расшифровки и `send_req_key()` -> `sptps_stop()`, убивая сессию на 10–30 секунд.
+  - **Решение:**
+    - В `sptps_verify_datagram()` (`sptps.c:589-609`) при `s->state == SPTPS_ACK` добавлена проверка расшифровки новым ключом `s->key`: если датаграмма от пира уже зашифрована новым ключом (пир переключил `outcipher` после отправки `SPTPS_ACK`), сессия бесшовно завершает переход в `SPTPS_SECONDARY_KEX`, а запоздавший 0-байтовый `SPTPS_ACK` по TCP игнорируется (`sptps.c:396`).
+    - В `send_key_changed()` обновляется `n->last_req_key = now.tv_sec`, а в `receive_udppacket()`, `receive_tcppacket_sptps()` и `req_key_ext_h()` разрушающий `send_req_key()` не вызывается во время активного `SPTPS_KEX` / `SPTPS_ACK`.
+
+- [x] **5.3. Ускорение повтора потерянных UDP keepalive-проб и фикс burst-паддинга `obfs` (`net_packet.c`, `obfs.c`)**
+  - **Файлы:** `core/tincd/src/net_packet.c`, `core/tincd/src/obfs.c`
+  - **Проблема:**
+    - В `try_udp()` при `ping_sent == true` (неотвеченный пробник) ожидание следующего пробника составляло `udp_discovery_keepalive_interval` (10 сек) при `udp_discovery_timeout` (12 сек), поэтому потеря единственного пакета приводила к таймауту `udp_confirmed`.
+    - В `obfs.c:952` при `burst_left > 0` `if(pmtu_cap < min_target) pmtu_cap = min_target;` превышал `l->node->minmtu`.
+  - **Решение:**
+    - В `try_udp()` (`net_packet.c:1863`) при `n->status.ping_sent` повторные пробники отправляются с интервалом `udp_discovery_interval` (2 сек) вместо 10 сек.
+    - В `obfs.c:952` удалено принудительное повышение `pmtu_cap` выше `l->node->minmtu`.
+
+---
+
+## Фаза 6 (P2): Защита от транзитных петель маршрутизации и починка подсистемы диагностики (`diag`)
+
+- [x] **6.1. Защита от петель на транзитных SPTPS-релеях и исправление `address_routes_via_vpn()` / `subnet_cache_flush()` (`net_packet.c`, `protocol_key.c`, `address_cache.c`, `subnet.c`)**
+  - **Файлы:** `core/tincd/src/net_packet.c`, `core/tincd/src/protocol_key.c`, `core/tincd/src/address_cache.c`, `core/tincd/src/subnet.c`
+  - **Решение:**
+    - В `process_sptps_udp()`, `receive_tcppacket_sptps()` и `req_key_ext_h()` добавлена проверка `!relay || relay == myself || relay == sender_hop || relay == from`, предотвращающая пинг-понг пакетов между транзитными релеями при расхождении графа.
+    - В `address_in_local_ipv4_subnet()` (`address_cache.c:67`) игнорируются split-tunnel маршруты `0.0.0.0/1` и `128.0.0.0/1` (`prefixlength <= 1`), а в `address_routes_via_vpn()` выставляется `SO_MARK` (`fwmark`).
+    - В `subnet_cache_flush()` (`subnet.c:177`) исправлена опечатка `subnet->net.ipv6.prefixlength == 128`.
+
+- [x] **6.2. Исправление критических багов в коде диагностики (`diag.c`, `DiagManager.kt`)**
+  - **Файлы:** `core/tincd/src/diag.c`, `platforms/android/app/src/main/java/org/pacien/tincapp/diagnostics/DiagManager.kt`
+  - **Решение:**
+    - В `diag_intercept_ipv4()` (`core/tincd/src/diag.c:892, 1004`) добавлена строгая проверка `memcmp(ip + 16, &my_ip, 4) == 0`, чтобы exit-нода (`0.0.0.0/0`) и LAN-роутер (`192.168.1.0/24`) никогда не перехватывали транзитный ICMP и TCP-трафик пользователей.
+    - В `DiagManager.kt` фоновый `samplerExec` запускается только при включённом диагностическом сервере (`serverEnabled`) и останавливается в `stopServer()`, а `ServerSocket` привязывается к `127.0.0.1` вместо `0.0.0.0`.

@@ -393,6 +393,10 @@ static bool receive_handshake(sptps_t *s, const uint8_t *data, uint16_t len) {
 	switch(s->state) {
 	case SPTPS_SECONDARY_KEX:
 
+		if(len == 0) {
+			return true;
+		}
+
 		// We receive a secondary KEX request, first respond by sending our own.
 		if(!send_kex(s)) {
 			return false;
@@ -583,7 +587,25 @@ static bool sptps_receive_data_datagram(sptps_t *s, const uint8_t *data, size_t 
 	size_t outlen;
 
 	if(!chacha_poly1305_decrypt(s->incipher, seqno, data, len, buffer, &outlen)) {
-		return error(s, EIO, "Failed to decrypt and verify packet");
+		if(s->state == SPTPS_ACK && s->key) {
+			chacha_poly1305_ctx_t *tmp = chacha_poly1305_init();
+			uint8_t *newkey = s->initiator ? s->key->key0 : s->key->key1;
+			bool ok = tmp && chacha_poly1305_set_key(tmp, newkey) &&
+			          chacha_poly1305_decrypt(tmp, seqno, data, len, buffer, &outlen);
+
+			if(tmp) {
+				chacha_poly1305_exit(tmp);
+			}
+
+			if(ok && receive_ack(s, NULL, 0)) {
+				s->receive_record(s->handle, SPTPS_HANDSHAKE, NULL, 0);
+				s->state = SPTPS_SECONDARY_KEX;
+			} else {
+				return error(s, EIO, "Failed to decrypt and verify packet");
+			}
+		} else {
+			return error(s, EIO, "Failed to decrypt and verify packet");
+		}
 	}
 
 	if(!sptps_check_seqno(s, seqno, true)) {

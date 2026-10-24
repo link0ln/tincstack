@@ -174,7 +174,7 @@ static void subnet_cache_flush(subnet_t *subnet) {
 		break;
 
 	case SUBNET_IPV6:
-		if(subnet->net.ipv4.prefixlength == 128) {
+		if(subnet->net.ipv6.prefixlength == 128) {
 			hash_delete(ipv6_t, &ipv6_cache, &subnet->net.ipv6.address);
 			return;
 		}

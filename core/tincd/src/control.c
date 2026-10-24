@@ -21,6 +21,7 @@
 #include "conf.h"
 #include "control.h"
 #include "control_common.h"
+#include "diag.h"
 #include "logger.h"
 #include "names.h"
 #include "net.h"
@@ -196,6 +197,12 @@ bool control_h(connection_t *c, const char *request) {
 		logcontrol = true;
 		return true;
 	}
+
+	case REQ_DIAG_PORT:
+		return control_diag_port_h(c, request);
+
+	case REQ_DIAG_PING:
+		return control_diag_ping_h(c, request);
 
 	default:
 		return send_request(c, "%d %d", CONTROL, REQ_INVALID);

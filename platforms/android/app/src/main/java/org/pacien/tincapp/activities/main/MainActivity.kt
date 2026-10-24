@@ -72,6 +72,7 @@ import org.pacien.tincapp.data.VpnInterfaceConfiguration
 import org.pacien.tincapp.databinding.ActivityMainBinding
 import org.pacien.tincapp.databinding.RowItemBinding
 import org.pacien.tincapp.databinding.TransportItemBinding
+import org.pacien.tincapp.diagnostics.DiagManager
 import org.pacien.tincapp.extensions.Java.defaultMessage
 import org.pacien.tincapp.extensions.Java.exceptionallyAccept
 import org.pacien.tincapp.intent.Actions
@@ -164,6 +165,12 @@ class MainActivity : BaseActivity() {
     setupToolbar(binding.toolbar, up = false)
     status = VpnStatus.current()
     pendingConnect = savedInstanceState?.getString(STATE_PENDING_CONNECT)
+
+    DiagManager.ensureSamplerRunning()
+    val (diagSavedOn, diagSavedPort) = DiagManager.loadSavedSettings(this)
+    if (diagSavedOn && !DiagManager.isEnabled()) {
+      Executor.runAsyncTask { DiagManager.startServer(diagSavedPort) }
+    }
 
     joinPanel = JoinPanel(this, binding.joinPanel, this) { net -> onJoined(net) }
     setupRows()
@@ -538,6 +545,7 @@ class MainActivity : BaseActivity() {
     binding.configRow.rowSummary.setText(R.string.config_row_summary)
     binding.logRow.setup(R.drawable.ic_log, R.string.setting_log_title) { openLog() }
     binding.logRow.rowSummary.setText(R.string.setting_log_summary)
+    binding.diagRow.setup(R.drawable.ic_info, R.string.setting_diag_title) { showDiagDialog() }
     binding.updateRow.setup(R.drawable.ic_info, R.string.setting_update_title) {
       val rel = availableUpdate
       if (rel != null) {
@@ -547,6 +555,7 @@ class MainActivity : BaseActivity() {
         checkForUpdates(manual = true)
       }
     }
+    renderDiagRow()
     renderUpdateRow()
   }
 
@@ -605,7 +614,150 @@ class MainActivity : BaseActivity() {
     }
 
     binding.screenOffRow.rowSwitch.isChecked = s?.pauseOnLock == true
+    renderDiagRow()
     renderUpdateRow()
+  }
+
+  private fun renderDiagRow() {
+    val net = selected.orEmpty()
+    val incCount = if (net.isNotEmpty()) DiagManager.collector.getIncidents(net, limit = 500).size else 0
+    if (DiagManager.isEnabled()) {
+      val primaryUrl = DiagManager.getVpnUrls(net).firstOrNull() ?: "http://127.0.0.1:${DiagManager.getPort()}/"
+      binding.diagRow.rowSummary.text = getString(R.string.setting_diag_on_summary_format, primaryUrl, incCount)
+    } else {
+      binding.diagRow.rowSummary.text = getString(R.string.setting_diag_off_summary, incCount)
+    }
+  }
+
+  private fun showDiagDialog() {
+    val net = selected.orEmpty()
+    val pad = (20 * resources.displayMetrics.density).toInt()
+    val root = android.widget.LinearLayout(this).apply {
+      orientation = android.widget.LinearLayout.VERTICAL
+      setPadding(pad, pad / 2, pad, pad / 4)
+    }
+
+    val statusText = android.widget.TextView(this).apply {
+      val urls = DiagManager.getVpnUrls(net)
+      text = if (DiagManager.isEnabled()) {
+        "Status: ON (port ${DiagManager.getPort()})\nReachable over VPN:\n" + urls.joinToString("\n") { "  • $it" }
+      } else {
+        "Status: OFF (disabled by default for security)\nLocal telemetry & anomaly detection are active."
+      }
+      setPadding(0, 0, 0, pad / 2)
+    }
+    root.addView(statusText)
+
+    val portInput = android.widget.EditText(this).apply {
+      hint = "HTTP Port (1024–65535)"
+      inputType = android.text.InputType.TYPE_CLASS_NUMBER
+      setText(DiagManager.getPort().toString())
+    }
+    root.addView(portInput)
+
+    val markInput = android.widget.EditText(this).apply {
+      hint = "Note for ⚡ Mark Lag (optional)"
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    root.addView(markInput)
+
+    val btnRow = android.widget.LinearLayout(this).apply {
+      orientation = android.widget.LinearLayout.HORIZONTAL
+      setPadding(0, pad / 3, 0, pad / 3)
+    }
+    val markBtn = android.widget.Button(this).apply {
+      text = getString(R.string.diag_action_mark_lag)
+    }
+    val copyBtn = android.widget.Button(this).apply {
+      text = getString(R.string.diag_action_copy_url)
+    }
+    val openBtn = android.widget.Button(this).apply {
+      text = getString(R.string.diag_action_open_webui)
+      isEnabled = DiagManager.isEnabled()
+    }
+    btnRow.addView(markBtn)
+    btnRow.addView(copyBtn)
+    btnRow.addView(openBtn)
+    root.addView(btnRow)
+
+    val recentTitle = android.widget.TextView(this).apply {
+      val incs = if (net.isNotEmpty()) DiagManager.collector.getIncidents(net, limit = 6) else emptyList()
+      text = if (incs.isEmpty()) {
+        "Recent incidents: none recorded for '$net'."
+      } else {
+        "Recent incidents ($net):\n" + incs.joinToString("\n") {
+          "• [${it["time_str"]}] ${it["kind"]}: ${it["summary"]}"
+        }
+      }
+      textSize = 12f
+    }
+    root.addView(recentTitle)
+
+    lateinit var dlg: androidx.appcompat.app.AlertDialog
+    markBtn.setOnClickListener {
+      if (net.isNotEmpty()) {
+        val note = markInput.text?.toString().orEmpty()
+        DiagManager.collector.recordUserMark(net, note)
+        renderDiagRow()
+        notify(R.string.diag_mark_saved)
+        dlg.dismiss()
+      }
+    }
+    copyBtn.setOnClickListener {
+      val url = DiagManager.getVpnUrls(net).firstOrNull() ?: "http://127.0.0.1:${DiagManager.getPort()}/"
+      (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Diagnostic URL", url))
+      notify(getString(R.string.address_copied_format, url))
+    }
+    openBtn.setOnClickListener {
+      val url = "http://127.0.0.1:${DiagManager.getPort()}/"
+      try {
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+      } catch (e: Exception) {
+        notify(e.defaultMessage())
+      }
+    }
+
+    val builder = MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.diag_dialog_title)
+      .setView(root)
+      .setNegativeButton(R.string.action_close, null)
+
+    if (DiagManager.isEnabled()) {
+      builder.setPositiveButton(R.string.diag_action_disable) { _, _ ->
+        Executor.supplyAsyncTask { DiagManager.stopServer(persist = true) }
+          .thenAccept { (_, msg) ->
+            runOnUiThread {
+              renderDiagRow()
+              notify(msg)
+            }
+          }
+      }
+    } else {
+      builder.setPositiveButton(R.string.diag_action_enable) { _, _ ->
+        val p = portInput.text?.toString()?.trim()?.toIntOrNull()?.coerceIn(1024, 65535) ?: DiagManager.DEFAULT_DIAG_PORT
+        confirmEnableDiagServer(p)
+      }
+    }
+
+    dlg = builder.show()
+  }
+
+  private fun confirmEnableDiagServer(port: Int) {
+    MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.diag_security_warning_title)
+      .setMessage(getString(R.string.diag_security_warning_message, port))
+      .setNegativeButton(R.string.action_cancel, null)
+      .setPositiveButton(R.string.diag_action_enable_confirm) { _, _ ->
+        Executor.supplyAsyncTask { DiagManager.startServer(port) }
+          .thenAccept { (ok, msg) ->
+            runOnUiThread {
+              renderDiagRow()
+              notify(msg)
+              if (ok) showDiagDialog()
+            }
+          }
+      }
+      .show()
   }
 
   private fun renderUpdateRow() {

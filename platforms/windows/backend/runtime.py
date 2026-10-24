@@ -278,6 +278,7 @@ class Runtime:
             # a daemon this process did not start (the manager restarted): it
             # still gets its full tunnel maintained
             self.full_tunnel_sync(net_name)
+            self._sync_diag_port(net_name)
             return True, "already running"
         # If a previous child process for this network is still alive (e.g. a
         # single control-socket poll timed out right before Start was clicked),
@@ -286,6 +287,7 @@ class Runtime:
         if self.has_live_process(net_name):
             if self.is_running(net_name):
                 self.full_tunnel_sync(net_name)
+                self._sync_diag_port(net_name)
                 return True, "already running"
             self.stop(net_name)
         else:
@@ -329,8 +331,22 @@ class Runtime:
                 self._full_tunnel_off(net_name)
                 return False, f"tincd exited rc={proc.returncode} (see {self.log_path(net_name)})"
             if self.is_running(net_name):
+                self._sync_diag_port(net_name)
                 return True, "started"
         return True, "started (control not yet responding)"
+
+    def _sync_diag_port(self, net_name: str) -> None:
+        def _bg() -> None:
+            try:
+                import diagnostics
+                cfg = diagnostics.load_diag_settings(self.base)
+                if cfg.get("enabled"):
+                    port = int(cfg.get("port") or diagnostics.DEFAULT_DIAG_PORT)
+                    self._tinc(net_name, "diag-port", str(port), timeout=3.0)
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg, name=f"diag-port-{net_name}", daemon=True).start()
 
     def _log_line(self, net_name: str, text: str) -> None:
         # own file (separate from the daemon's log)

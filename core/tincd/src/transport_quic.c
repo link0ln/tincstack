@@ -433,6 +433,10 @@ static bool stream_is_uni(int64_t id) {
 /* Append raw bytes to the meta stream's send queue. */
 static void tx_append(quic_session_t *s, const void *data, size_t len) {
 	quic_txq_append(&s->tx, data, len);
+
+	if(s->c) {
+		s->c->transport_outbuf_len = (size_t)quic_txq_unsent(&s->tx);
+	}
 }
 
 /* Append one DATA frame carrying `len' bytes of the tinc stream. */
@@ -1379,11 +1383,16 @@ static void quic_flush(quic_session_t *s) {
 	ngtcp2_pkt_info pi;
 	ngtcp2_tstamp ts = quic_now();
 	ngtcp2_path_storage_zero(&ps);
+	bool prefer_stream = false;
+	bool dgram_deferred = false;
 
 	for(;;) {
 		ngtcp2_ssize nwrite;
+		bool has_meta = s->stream_id >= 0 && !s->stream_blocked && quic_txq_unsent(&s->tx) > 0;
+		bool send_dgram = s->dgram_n > 0 && !dgram_deferred && (!has_meta || !prefer_stream);
 
-		if(s->dgram_n) {
+		if(send_dgram) {
+			prefer_stream = true;
 			ngtcp2_vec v = {s->dgram[s->dgram_head].data, s->dgram[s->dgram_head].len};
 			int accepted = 0;
 
@@ -1415,12 +1424,19 @@ static void quic_flush(quic_session_t *s) {
 			if(accepted || s->dgram[s->dgram_head].len > dgram_room(s)) {
 				s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
 				s->dgram_n--;
+			} else {
+				dgram_deferred = true;
 			}
 
 			if(nwrite == 0) {
+				if(has_meta) {
+					continue;
+				}
+
 				break;
 			}
 		} else {
+			prefer_stream = false;
 			/* One stream per packet, in this order: our unidirectional
 			   preambles, decoy answers, the meta stream; with none pending,
 			   sid -1 lets ngtcp2 send ACKs and control frames. The
@@ -1543,6 +1559,10 @@ static void quic_flush(quic_session_t *s) {
 		if(sendto(s->fd, (void *)buf, (size_t)nwrite, 0, to, tolen) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
 			logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: sendto %s failed: %s", s->c->hostname, sockstrerror(sockerrno));
 		}
+	}
+
+	if(s->c) {
+		s->c->transport_outbuf_len = (size_t)quic_txq_unsent(&s->tx);
 	}
 
 	ngtcp2_conn_update_pkt_tx_time(s->conn, ts);

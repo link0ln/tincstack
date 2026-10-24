@@ -64,7 +64,7 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 
 			subnet_t rsub = {0};
 
-			if(str2net(&rsub, route) && rsub.type == SUBNET_IPV4 && rsub.net.ipv4.prefixlength > 0) {
+			if(str2net(&rsub, route) && rsub.type == SUBNET_IPV4 && rsub.net.ipv4.prefixlength > 1) {
 				if(!maskcmp(dst, &rsub.net.ipv4.address, rsub.net.ipv4.prefixlength)) {
 					free(route);
 					return true;
@@ -95,7 +95,7 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 
 			subnet_t rsub = {0};
 
-			if(str2net(&rsub, route) && rsub.type == SUBNET_IPV6 && rsub.net.ipv6.prefixlength > 0) {
+			if(str2net(&rsub, route) && rsub.type == SUBNET_IPV6 && rsub.net.ipv6.prefixlength > 1) {
 				if(!maskcmp(dst, &rsub.net.ipv6.address, rsub.net.ipv6.prefixlength)) {
 					free(route);
 					return true;
@@ -119,6 +119,11 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 	int fd = socket(probe_sa.sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
 
 	if(fd >= 0) {
+#if defined(SO_MARK)
+		if(fwmark) {
+			setsockopt(fd, SOL_SOCKET, SO_MARK, (void *)&fwmark, sizeof(fwmark));
+		}
+#endif
 		sockaddr_t local = {0};
 		socklen_t addrlen = sizeof(local);
 		bool via_self = false;

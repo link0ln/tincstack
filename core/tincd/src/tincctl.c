@@ -1595,6 +1595,77 @@ static int cmd_pid(int argc, char *argv[]) {
 	return 0;
 }
 
+static int cmd_diag_port(int argc, char *argv[]) {
+	if(argc > 2) {
+		fprintf(stderr, "Usage: diag-port [port]\n");
+		return 1;
+	}
+
+	if(!connect_tincd(true)) {
+		return 1;
+	}
+
+	int port = argc > 1 ? atoi(argv[1]) : -1;
+	int active_port = 0;
+
+	sendline(fd, "%d %d %d", CONTROL, REQ_DIAG_PORT, port);
+
+	if(!recvline(fd, line, sizeof(line)) ||
+	                sscanf(line, "%d %d %d %d", &code, &req, &result, &active_port) != 4 ||
+	                code != CONTROL || req != REQ_DIAG_PORT || result != 0) {
+		fprintf(stderr, "Could not query/set diagnostic port.\n");
+		return 1;
+	}
+
+	printf("%d\n", active_port);
+	return 0;
+}
+
+static int cmd_diag_ping(int argc, char *argv[]) {
+	if(argc < 2 || argc > 6) {
+		fprintf(stderr, "Usage: diag-ping <dst_ip> [size] [ttl] [df] [timeout_ms]\n");
+		return 1;
+	}
+
+	if(!connect_tincd(true)) {
+		return 1;
+	}
+
+	const char *dst_ip = argv[1];
+	int size = argc > 2 ? atoi(argv[2]) : 56;
+	int ttl = argc > 3 ? atoi(argv[3]) : 64;
+	int df = argc > 4 ? atoi(argv[4]) : 0;
+	int timeout_ms = argc > 5 ? atoi(argv[5]) : 2000;
+
+	sendline(fd, "%d %d %s %d %d %d %d", CONTROL, REQ_DIAG_PING, dst_ip, size, ttl, df, timeout_ms);
+
+	char from_ip[64] = "-";
+	char node_name[128] = "-";
+	int icmp_type = -1, icmp_code = -1, reply_ttl = 0, next_mtu = 0;
+	long rtt_us = -1;
+
+	if(!recvline(fd, line, sizeof(line)) ||
+	                sscanf(line, "%d %d %d %63s %127s %d %d %ld %d %d",
+	                       &code, &req, &result, from_ip, node_name,
+	                       &icmp_type, &icmp_code, &rtt_us, &reply_ttl, &next_mtu) < 3 ||
+	                code != CONTROL || req != REQ_DIAG_PING) {
+		fprintf(stderr, "Could not run diagnostic ping.\n");
+		return 1;
+	}
+
+	if(result == 0) {
+		printf("OK from=%s node=%s type=%d code=%d rtt_ms=%.3f ttl=%d mtu=%d\n",
+		       from_ip, node_name, icmp_type, icmp_code, (double)rtt_us / 1000.0, reply_ttl, next_mtu);
+		return 0;
+	} else if(result == 1) {
+		printf("TIMEOUT dst=%s ttl=%d size=%d\n", dst_ip, ttl, size);
+		return 1;
+	} else {
+		fprintf(stderr, "Diagnostic ping failed (error %d).\n", result);
+		return 1;
+	}
+}
+
 size_t rstrip(char *value) {
 	size_t len = strlen(value);
 
@@ -1710,6 +1781,7 @@ const var_t variables[] = {
 	{"Device", VAR_SERVER},
 	{"DeviceStandby", VAR_SERVER},
 	{"DeviceType", VAR_SERVER},
+	{"DiagPort", VAR_SERVER},
 	{"WintunAddress", VAR_SERVER},
 	{"WintunInterface", VAR_SERVER},
 	{"DirectOnly", VAR_SERVER | VAR_SAFE},
@@ -3595,6 +3667,8 @@ static const struct {
 	{"pcap", cmd_pcap, false},
 	{"log", cmd_log, false},
 	{"pid", cmd_pid, false},
+	{"diag-port", cmd_diag_port, false},
+	{"diag-ping", cmd_diag_ping, false},
 	{"config", cmd_config, true},
 	{"add", cmd_config, false},
 	{"del", cmd_config, false},

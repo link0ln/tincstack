@@ -48,6 +48,7 @@ import org.pacien.tincapp.data.CidrAddress
 import org.pacien.tincapp.data.PeerStatus
 import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.data.VpnInterfaceConfiguration
+import org.pacien.tincapp.diagnostics.DiagManager
 import org.pacien.tincapp.extensions.Java.applyIgnoringException
 import org.pacien.tincapp.extensions.Java.defaultMessage
 import org.pacien.tincapp.extensions.VpnServiceBuilder.applyCfg
@@ -256,12 +257,15 @@ class TincVpnService : VpnService() {
       dispatch(Event.DaemonExited(run))
     }
 
-    return waitForDaemonStartup(process).whenComplete { _, _ ->
+    return waitForDaemonStartup(process).whenComplete { _, err ->
       try {
         serverSocket.close()
       } catch (_: Exception) {
       }
       if (fdServerSocket === serverSocket) fdServerSocket = null
+      if (err == null) {
+        Executor.runAsyncTask { DiagManager.onDaemonStarted(netName) }
+      }
     }
   }
 
@@ -571,6 +575,7 @@ class TincVpnService : VpnService() {
     // dialling, its view is empty), then quick polls while a fresh link brings
     // the graph in, then slow ones; a new set must be seen twice in a row
     private const val ROUTES_GRACE_MS = 4_000L
+    private const val ROUTES_DROP_GRACE_MS = 20_000L
     private const val ROUTES_FAST_POLL_MS = 3_000L
     private const val ROUTES_FAST_PHASE_MS = 60_000L
     private const val ROUTES_SLOW_POLL_MS = 15_000L
@@ -712,6 +717,13 @@ class TincVpnService : VpnService() {
       val routes = AnnouncedRoutes.select(subnets, self, reachable, base)
       if (routes == announcedRoutes || routes == refusedRoutes) {
         routeCandidate = null
+        return
+      }
+      val dropsExistingCoverage = announcedRoutes.any { old ->
+        routes.none { new -> AnnouncedRoutes.covers(new, old) }
+      }
+      if (dropsExistingCoverage && SystemClock.elapsedRealtime() - daemonLaunchedAt < ROUTES_DROP_GRACE_MS) {
+        routeCandidate = null // wait for slower peers/relays to finish handshaking before narrowing routes
         return
       }
       if (routes != routeCandidate) {

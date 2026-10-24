@@ -22,12 +22,14 @@
 
 #include "system.h"
 
+#include "address_cache.h"
 #include "autoconnect.h"
 #include "conf_net.h"
 #include "conf.h"
 #include "decoy.h"
 #include "connection.h"
 #include "crypto.h"
+#include "diag.h"
 #include "graph.h"
 #include "logger.h"
 #include "dnsrefresh.h"
@@ -203,7 +205,20 @@ void terminate_connection(connection_t *c, bool report) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "The dial was restarted by `tinc retry', not failed by the carrier: trying %s again",
 				       carrier);
 			} else {
-				transport_next_candidate(outgoing);
+				bool moved = transport_next_candidate(outgoing);
+
+				if(outgoing->node && outgoing->node->connection && outgoing->node->connection->edge &&
+				                (!moved || !transport_outranks_connection(outgoing, outgoing->node->connection))) {
+					if(!outgoing->node->connection->outgoing) {
+						outgoing->node->connection->outgoing = outgoing;
+					}
+
+					return;
+				}
+
+				if(moved && outgoing->node && outgoing->node->address_cache) {
+					reset_address_cache(outgoing->node->address_cache);
+				}
 			}
 		}
 
@@ -439,6 +454,7 @@ int reload_configuration(void) {
 
 	/* DNS names: re-read DnsRefreshInterval and rebuild the watch list. */
 	dnsrefresh_reload();
+	diag_reload();
 
 	/* If StrictSubnet is set, expire deleted Subnets and read new ones in */
 

@@ -49,6 +49,26 @@ object Tinc {
     Executor.call(newCommand(netName).withArguments("retry"))
       .thenApply { }
 
+  fun reload(netName: String): CompletableFuture<Unit> =
+    Executor.call(newCommand(netName).withArguments("reload"))
+      .thenApply { }
+
+  fun disconnectPeer(netName: String, node: String): CompletableFuture<Unit> =
+    Executor.call(newCommand(netName).withArguments("disconnect", node))
+      .thenApply { }
+
+  fun connectPeer(netName: String, node: String): CompletableFuture<Unit> =
+    Executor.call(newCommand(netName).withArguments("connect", node))
+      .thenApply { }
+
+  fun purge(netName: String): CompletableFuture<Unit> =
+    Executor.call(newCommand(netName).withArguments("purge"))
+      .thenApply { }
+
+  fun debug(netName: String, level: Int): CompletableFuture<String> =
+    Executor.call(newCommand(netName).withArguments("debug", level.coerceIn(0, 5).toString()))
+      .thenApply { it.joinToString("\n") }
+
   fun pid(netName: String): CompletableFuture<Int> =
     Executor.call(newCommand(netName).withArguments("pid"))
       .thenApply { Integer.parseInt(it.first()) }
@@ -58,6 +78,9 @@ object Tinc {
       if (reachable) newCommand(netName).withArguments("dump", "reachable", "nodes")
       else newCommand(netName).withArguments("dump", "nodes"))
 
+  fun dumpEdges(netName: String): CompletableFuture<List<String>> =
+    Executor.call(newCommand(netName).withArguments("dump", "edges"))
+
   fun dumpConnections(netName: String): CompletableFuture<List<String>> =
     Executor.call(newCommand(netName).withArguments("dump", "connections"))
 
@@ -65,9 +88,48 @@ object Tinc {
     Executor.call(
       newCommand(netName).withArguments("dump", "subnets"))
 
+  fun dumpRaw(netName: String, kind: String): CompletableFuture<String> {
+    val cmd = newCommand(netName).withArguments("dump")
+    kind.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.forEach { cmd.withArguments(it) }
+    return Executor.call(cmd).thenApply { it.joinToString("\n") }
+  }
+
   fun info(netName: String, node: String): CompletableFuture<String> =
     Executor.call(newCommand(netName).withArguments("info", node))
       .thenApply { it.joinToString("\n") }
+
+  fun fsck(netName: String): CompletableFuture<String> =
+    Executor.call(newCommand(netName).withArguments("fsck"))
+      .thenApply { it.joinToString("\n") }
+
+  fun invite(netName: String, node: String): CompletableFuture<String> =
+    Executor.call(newCommand(netName).withArguments("invite", node))
+      .thenApply { it.joinToString("\n").trim() }
+
+  fun diagPort(netName: String, port: Int? = null): CompletableFuture<Int> {
+    val cmd = newCommand(netName).withArguments("diag-port")
+    if (port != null) cmd.withArguments(port.coerceIn(0, 65535).toString())
+    return Executor.call(cmd).thenApply { it.lastOrNull()?.trim()?.toIntOrNull() ?: 0 }
+  }
+
+  fun diagPing(
+    netName: String,
+    dstIp: String,
+    size: Int = 56,
+    ttl: Int = 64,
+    df: Boolean = false,
+    timeoutMs: Int = 2000,
+  ): CompletableFuture<List<String>> =
+    Executor.call(
+      newCommand(netName).withArguments(
+        "diag-ping",
+        dstIp.trim(),
+        size.coerceIn(0, 1472).toString(),
+        ttl.coerceIn(1, 255).toString(),
+        if (df) "1" else "0",
+        timeoutMs.coerceIn(100, 15000).toString(),
+      )
+    )
 
   fun log(netName: String, level: Int? = null): Process =
     Executor.run(newCommand(netName)

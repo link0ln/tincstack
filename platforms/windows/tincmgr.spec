@@ -51,8 +51,10 @@ a = Analysis(
     datas=[],
     hiddenimports=[
         "paths", "yaml_config", "runtime", "tinc_control", "transports",
-        "management", "netmtu", "routes",
-        "gui", "gui.workers", "gui.dialogs", "gui.transports_panel", "gui.cert_dialog",
+        "management", "netmtu", "routes", "fulltunnel", "updates",
+        "diagnostics", "diag_webui",
+        "gui", "gui.workers", "gui.dialogs", "gui.transports_panel",
+        "gui.cert_dialog", "gui.diag_dialog",
         "pyqtgraph", "yaml",
     ],
     hookspath=[],

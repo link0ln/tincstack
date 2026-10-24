@@ -317,6 +317,10 @@
 								layout="@layout/row_item" />
 
 							<include
+								android:id="@+id/diag_row"
+								layout="@layout/row_item" />
+
+							<include
 								android:id="@+id/update_row"
 								layout="@layout/row_item" />
 						</LinearLayout>

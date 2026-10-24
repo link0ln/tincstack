@@ -25,6 +25,7 @@
 #include "cipher.h"
 #include "conf.h"
 #include "control_common.h"
+#include "diag.h"
 #include "logger.h"
 #include "names.h"
 #include "net.h"
@@ -170,6 +171,7 @@ void free_connection(connection_t *c) {
 	}
 
 	invitation_release(c, false);
+	diag_cleanup_connection(c);
 	free(c->name);
 	free(c->hostname);
 

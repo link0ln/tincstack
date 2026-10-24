@@ -184,4 +184,24 @@ class VpnServiceBuilderTest {
   fun mixedListsNeverReachTheBuilder() {
     builderFor("networks:\n  mynet:\n    options:\n      AllowApplication: a\n      DisallowApplication: b\n")
   }
+
+  @Test
+  fun fullTunnelIpv4AddsDefaultMtuAndIpv6SinkholeUnlessIpv6Configured() {
+    val cfg = config(builderFor("""
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      InterfaceAddress: 10.117.0.2/24
+      |      InterfaceRoute:
+      |        - 10.117.0.0/24
+      |        - 0.0.0.0/0
+      |""".trimMargin()))
+    assertEquals(VpnServiceBuilder.DEFAULT_TUN_MTU, field<Int>(cfg, "mtu"))
+    assertEquals(listOf("10.117.0.2/24", "fd00:7469:6e63:0:0:0:0:2/126"), strings(cfg, "addresses"))
+    assertEquals(
+      listOf("10.117.0.0/24", "0.0.0.0/0", "2000:0:0:0:0:0:0:0/3"),
+      strings(cfg, "routes").map { it.substringBefore(" ") }
+    )
+  }
 }

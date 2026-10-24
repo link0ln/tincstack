@@ -165,6 +165,7 @@ src_tincd = [
   'conf_net.c',
   'connection.c',
   'control.c',
+  'diag.c',
   'dnsrefresh.c',
   'dummy_device.c',
   'edge.c',

@@ -20,6 +20,7 @@
 package org.pacien.tincapp.extensions
 
 import android.net.VpnService
+import org.pacien.tincapp.data.AnnouncedRoutes
 import org.pacien.tincapp.data.CidrAddress
 import org.pacien.tincapp.data.VpnInterfaceConfiguration
 import org.pacien.tincapp.extensions.Java.applyIgnoringException
@@ -29,6 +30,7 @@ import java.net.InetAddress
  * @author euxane
  */
 object VpnServiceBuilder {
+  const val DEFAULT_TUN_MTU = 1280
   private val IPV4_LITERAL = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
 
   /**
@@ -58,7 +60,7 @@ object VpnServiceBuilder {
     if (allow) allowBypass() else this
 
   private fun VpnService.Builder.overrideMtu(mtu: Int?): VpnService.Builder =
-    if (mtu != null) setMtu(mtu) else this
+    setMtu(mtu ?: DEFAULT_TUN_MTU)
 
   private fun VpnService.Builder.addAddresses(cidrList: List<CidrAddress>): VpnService.Builder =
     cidrList.fold(this) { net, cidr -> net.addAddress(cidr) }
@@ -85,16 +87,30 @@ object VpnServiceBuilder {
    * [VpnInterfaceConfiguration] guarantees at most one of the two app lists is
    * non-empty (Android throws on mixing them, and [applyIgnoringException]
    * would otherwise hide that as a silently dropped list).
+   *
+   * When full-tunnel IPv4 routing is active without an explicit IPv6 address or
+   * route, a ULA IPv6 sinkhole address and `2000::/3` route are added so Android
+   * does not leak `AAAA` queries/connections (e.g. YouTube/GoogleVideo) over the
+   * uncensored/censored ISP IPv6 underlay; `tincd` immediately replies with
+   * `ICMP6_DST_UNREACH_NOROUTE`, triggering `<1 ms` Happy Eyeballs IPv4 fallback.
    */
-  fun VpnService.Builder.applyCfg(cfg: VpnInterfaceConfiguration): VpnService.Builder = this
-    .addAddresses(cfg.addresses)
-    .addRoutes(cfg.routes)
-    .addDnsServers(cfg.dnsServers)
-    .addSearchDomains(cfg.searchDomains)
-    .addAllowedApplications(cfg.allowedApplications)
-    .addDisallowedApplications(cfg.disallowedApplications)
-    .allowFamilies(cfg.allowedFamilies)
-    .allowBypass(cfg.allowBypass)
-    .setBlocking(cfg.blocking)
-    .overrideMtu(cfg.mtu)
+  fun VpnService.Builder.applyCfg(cfg: VpnInterfaceConfiguration): VpnService.Builder {
+    val sinkholeV6 = AnnouncedRoutes.isFullTunnelV4(cfg.routes) &&
+      cfg.addresses.none { it.address.contains(':') } &&
+      cfg.routes.none { it.address.contains(':') } &&
+      cfg.allowedFamilies.isEmpty()
+    val effectiveAddresses = if (sinkholeV6) cfg.addresses + AnnouncedRoutes.IPV6_SINKHOLE_ADDRESS else cfg.addresses
+    val effectiveRoutes = if (sinkholeV6) cfg.routes + AnnouncedRoutes.IPV6_SINKHOLE_ROUTE else cfg.routes
+    return this
+      .addAddresses(effectiveAddresses)
+      .addRoutes(effectiveRoutes)
+      .addDnsServers(cfg.dnsServers)
+      .addSearchDomains(cfg.searchDomains)
+      .addAllowedApplications(cfg.allowedApplications)
+      .addDisallowedApplications(cfg.disallowedApplications)
+      .allowFamilies(cfg.allowedFamilies)
+      .allowBypass(cfg.allowBypass)
+      .setBlocking(cfg.blocking)
+      .overrideMtu(cfg.mtu)
+  }
 }

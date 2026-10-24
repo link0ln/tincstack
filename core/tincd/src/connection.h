@@ -140,6 +140,7 @@ typedef struct connection_t {
 
 	const struct transport_t *transport; /* carrier this connection runs on (NULL = plain TCP / control) */
 	void *transport_data;           /* carrier-private state (e.g. the single-flow session) */
+	size_t transport_outbuf_len;    /* unsent meta stream bytes queued inside the carrier */
 
 	/* YAML mode only: fingerprint of the peer's host record as it stood when
 	   we last read it, so reload_configuration() can spot a real change

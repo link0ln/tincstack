@@ -41,6 +41,7 @@ import paths  # noqa: E402
 import routes  # noqa: E402
 import transports  # noqa: E402
 import updates  # noqa: E402
+import diagnostics  # noqa: E402
 import yaml_config  # noqa: E402
 from yaml_config import AppConfig, ConfigError, NetworkCfg, options_to_conf, conf_to_options  # noqa: E402
 from runtime import Runtime  # noqa: E402
@@ -53,6 +54,7 @@ import pyqtgraph as pg  # noqa: E402
 from gui.workers import WorkerPool  # noqa: E402
 from gui.dialogs import InviteDialog, JoinDialog, RawYamlDialog  # noqa: E402
 from gui.cert_dialog import CertDialog  # noqa: E402
+from gui.diag_dialog import DiagnosticsDialog  # noqa: E402
 from gui.transports_panel import TransportsPanel  # noqa: E402
 
 REFRESH_MS = 2500
@@ -118,6 +120,7 @@ KNOWN_OPTIONS = [
     ("PingInterval", "int", None, "Seconds between keepalive pings"),
     ("PingTimeout", "int", None, "Seconds before an unresponsive peer is considered down"),
     ("AddressDiscovery", "bool", None, "Allow tinc invite to query external address if Address is unset"),
+    ("DiagPort", "int", None, "In-tunnel TCP diagnostic bridge port (0 = disabled, e.g. 8655)"),
     # certificate issuance (tinc cert; see the Certificate… toolbar button)
     ("CertDomain", "str", None, "Public DNS name this node presents on https/quic, e.g. vpn.example.com"),
     ("CloudflareToken", "str", None, "Cloudflare API token with Zone:Read + Zone:DNS:Edit on that domain's zone"),
@@ -247,6 +250,8 @@ class PeersTab(QtWidgets.QWidget):
                 continue
             self._snaps[net] = snap
             running_map[net] = not snap.error
+            if self.ctx and hasattr(self.ctx, "diag_collector"):
+                self.ctx.diag_collector.record_snapshot(net, snap, now)
             if snap.error:
                 continue
             rx = sum(n.rx_bytes for n in snap.nodes.values() if not n.is_self)
@@ -1001,6 +1006,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.app = self._load(cfg_path)
         self.rt = Runtime(self.app)
         self.tc = TincControl(tinc_exe=self.rt.tinc, yaml_path=self.app.path, runner=runner)
+        self.diag_collector = diagnostics.TelemetryCollector(self.rt.base)
+        self.diag_prober = diagnostics.ActiveProber(self.tc, lambda: self.app, self.rt.base)
+        self.diag_server = diagnostics.DiagWebServer(
+            self.rt.base, self.tc, self.diag_collector, self.diag_prober, lambda: self.app, self.rt
+        )
 
         ver = management.current_version()
         ver_str = f" {ver}" if ver else ""
@@ -1119,6 +1129,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.net_menu = menu.addMenu("Networks")
         self.net_menu.aboutToShow.connect(self._rebuild_net_menu)
         menu.addSeparator()
+        menu.addAction("⚡ Mark Lag / Issue Now", self.mark_lag_quick)
+        menu.addAction("🩺 Diagnostics & Web Panel…", self.open_diagnostics)
         menu.addAction("Check for updates…", self.check_updates_manual)
         menu.addSeparator()
         menu.addAction("Exit", self._quit_app)
@@ -1247,6 +1259,12 @@ class MainWindow(QtWidgets.QMainWindow):
                                  "self-signed one with a real certificate for a domain, using a "
                                  "Cloudflare API token.")
         tb.addSeparator()
+        self.mark_act = tb.addAction("⚡ Mark Lag", self.mark_lag_quick)
+        self.mark_act.setToolTip("Record an instant anomaly/lag marker in the local diagnostic log "
+                                 "with current peer RTT, PMTU, and transport state.")
+        self.diag_act = tb.addAction("🩺 Diagnostics…", self.open_diagnostics)
+        self._sync_diag_action()
+        tb.addSeparator()
         self.startup_radio = QtWidgets.QRadioButton()
         self.startup_radio.setAutoExclusive(False)   # standalone on/off, not a group
         self.startup_radio.setToolTip("Green = enabled, red = disabled. Creates a logon "
@@ -1262,6 +1280,37 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.admin:
             tb.addSeparator()
             tb.addAction("🛡 Run as admin", self._elevate)
+
+    def _sync_diag_action(self) -> None:
+        if not hasattr(self, "diag_act"):
+            return
+        if hasattr(self, "diag_server") and self.diag_server.enabled:
+            self.diag_act.setText(f"🩺 Diag ON (:{self.diag_server.port})")
+            self.diag_act.setToolTip(
+                f"Remote Diagnostic Web Server is ENABLED on port {self.diag_server.port}.\n"
+                f"Click to open WebUI, view incidents, or disable the server."
+            )
+        else:
+            self.diag_act.setText("🩺 Diagnostics…")
+            self.diag_act.setToolTip(
+                "Open Diagnostics & Remote Web Panel (view detected tunnel anomalies, "
+                "enable/disable the in-VPN diagnostic web server)."
+            )
+
+    def mark_lag_quick(self) -> None:
+        net = self.cur_net()
+        if not net:
+            self.status("Select a network first to mark a lag event.")
+            return
+        ev = self.diag_collector.record_user_mark(net, "User clicked 'Mark Lag' in tincmgr")
+        self.status(f"⚡ Marked lag event for '{net}' at {ev.to_dict()['time_str']}")
+
+    def open_diagnostics(self) -> DiagnosticsDialog:
+        dlg = DiagnosticsDialog(self, self.diag_server, self.diag_collector, self.cur_net())
+        dlg.state_changed.connect(self._sync_diag_action)
+        dlg.exec()
+        self._sync_diag_action()
+        return dlg
 
     def _open_folder(self) -> None:
         if os.path.isdir(self.rt.base):
@@ -1743,6 +1792,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cert_timer.stop()
         if hasattr(self, "update_timer"):
             self.update_timer.stop()
+        if hasattr(self, "diag_server"):
+            try:
+                self.diag_server.stop()
+            except Exception:
+                pass
         if self.admin:
             try:
                 self.rt.stop_all()      # exit path: blocking is acceptable here

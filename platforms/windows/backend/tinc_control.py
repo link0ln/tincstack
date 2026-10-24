@@ -32,7 +32,8 @@ Runner = Callable[[list[str], float], tuple[int, str, str]]
 STATUS_BITS = [
     "unused_active", "validkey", "waitingforkey", "visited", "reachable",
     "indirect", "sptps", "udp_confirmed", "send_locally", "udppacket",
-    "validkey_in", "has_address", "ping_sent",
+    "validkey_in", "has_address", "ping_sent", "sptps_route_stale",
+    "udp_addr_confirmed",
 ]
 
 
@@ -394,8 +395,36 @@ class TincControl:
         rc, out, err = self._run(net, "disconnect", peer, timeout=timeout)
         return CommandResult(rc, out.strip(), err.strip())
 
+    def connect_peer(self, net: str, peer: str, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "connect", peer, timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
     def retry(self, net: str, timeout: float = 8.0) -> CommandResult:
         rc, out, err = self._run(net, "retry", timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def purge(self, net: str, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "purge", timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def set_debug(self, net: str, level: int, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "debug", str(max(0, min(5, int(level)))), timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def info(self, net: str, item: str, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "info", item, timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def dump_raw(self, net: str, kind: str, timeout: float = 8.0) -> CommandResult:
+        allowed = {"nodes", "edges", "subnets", "connections", "graph", "traffic", "reachable nodes"}
+        if kind not in allowed:
+            return CommandResult(1, "", f"unsupported dump kind: {kind}")
+        args = ["dump"] + kind.split()
+        rc, out, err = self._run(net, *args, timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def fsck(self, net: str, timeout: float = 15.0) -> CommandResult:
+        rc, out, err = self._run(net, "fsck", timeout=timeout)
         return CommandResult(rc, out.strip(), err.strip())
 
     def switch_peer_transport(self, net: str, peer: str) -> CommandResult:
@@ -405,6 +434,168 @@ class TincControl:
         self.disconnect(net, peer)
         r3 = self.retry(net)
         return r1 if not r1.ok else r3
+
+    # -- in-tunnel diagnostics (diag.c: diag-port / diag-ping) --
+
+    def diag_port(self, net: str, port: int | None = None, timeout: float = 5.0) -> tuple[bool, int]:
+        args = ["diag-port"] if port is None else ["diag-port", str(int(port))]
+        rc, out, _ = self._run(net, *args, timeout=timeout)
+        if rc != 0:
+            return False, 0
+        try:
+            return True, int(out.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return False, 0
+
+    def diag_ping(self, net: str, dst_ip: str, size: int = 56, ttl: int = 64,
+                  df: bool = False, timeout_ms: int = 2000) -> dict:
+        """Single in-tunnel ICMP Echo Request via `tinc diag-ping`."""
+        wait_s = max(3.0, (timeout_ms / 1000.0) + 2.0)
+        rc, out, err = self._run(
+            net, "diag-ping", str(dst_ip).strip(),
+            str(int(size)), str(int(ttl)), "1" if df else "0", str(int(timeout_ms)),
+            timeout=wait_s,
+        )
+        line = (out.strip().splitlines() or [""])[0]
+        if line.startswith("OK "):
+            kv = {}
+            for tok in line[3:].split():
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    kv[k] = v
+            icmp_type = int(kv.get("type", -1))
+            icmp_code = int(kv.get("code", -1))
+            return {
+                "ok": icmp_type == 0,
+                "replied": True,
+                "status": "echo_reply" if icmp_type == 0 else (
+                    "time_exceeded" if icmp_type == 11 else (
+                        "frag_needed" if (icmp_type == 3 and icmp_code == 4) else "unreachable"
+                    )
+                ),
+                "from_ip": kv.get("from", ""),
+                "node": kv.get("node", "-"),
+                "icmp_type": icmp_type,
+                "icmp_code": icmp_code,
+                "rtt_ms": float(kv.get("rtt_ms", 0.0)),
+                "ttl": int(kv.get("ttl", 0)),
+                "mtu": int(kv.get("mtu", 0)),
+                "raw": line,
+            }
+        if line.startswith("TIMEOUT"):
+            return {
+                "ok": False, "replied": False, "status": "timeout",
+                "from_ip": "", "node": "-", "icmp_type": -1, "icmp_code": -1,
+                "rtt_ms": None, "ttl": ttl, "mtu": 0, "raw": line,
+            }
+        return {
+            "ok": False, "replied": False, "status": "error",
+            "from_ip": "", "node": "-", "icmp_type": -1, "icmp_code": -1,
+            "rtt_ms": None, "ttl": ttl, "mtu": 0,
+            "raw": (err.strip() or out.strip() or f"rc={rc}"),
+        }
+
+    def in_tunnel_ping(self, net: str, dst_ip: str, count: int = 4,
+                       size: int = 56, df: bool = False, timeout_ms: int = 2000) -> dict:
+        count = max(1, min(20, int(count)))
+        samples = []
+        rtts = []
+        for seq in range(1, count + 1):
+            res = self.diag_ping(net, dst_ip, size=size, ttl=64, df=df, timeout_ms=timeout_ms)
+            res["seq"] = seq
+            samples.append(res)
+            if res.get("ok") and res.get("rtt_ms") is not None:
+                rtts.append(float(res["rtt_ms"]))
+        sent = len(samples)
+        received = len(rtts)
+        loss_pct = round(((sent - received) / sent) * 100.0, 1) if sent else 100.0
+        return {
+            "target": dst_ip,
+            "size": size,
+            "df": df,
+            "sent": sent,
+            "received": received,
+            "loss_pct": loss_pct,
+            "min_ms": round(min(rtts), 3) if rtts else None,
+            "avg_ms": round(sum(rtts) / len(rtts), 3) if rtts else None,
+            "max_ms": round(max(rtts), 3) if rtts else None,
+            "jitter_ms": round(max(rtts) - min(rtts), 3) if len(rtts) >= 2 else 0.0,
+            "samples": samples,
+        }
+
+    def in_tunnel_traceroute(self, net: str, dst_ip: str, max_hops: int = 16,
+                             timeout_ms: int = 1500) -> dict:
+        max_hops = max(1, min(32, int(max_hops)))
+        hops = []
+        reached = False
+        consecutive_timeouts = 0
+        for ttl in range(1, max_hops + 1):
+            res = self.diag_ping(net, dst_ip, size=40, ttl=ttl, df=False, timeout_ms=timeout_ms)
+            hop = {
+                "hop": ttl,
+                "status": res["status"],
+                "from_ip": res["from_ip"],
+                "node": res["node"],
+                "rtt_ms": res["rtt_ms"],
+                "icmp_type": res["icmp_type"],
+                "icmp_code": res["icmp_code"],
+            }
+            hops.append(hop)
+            if res["icmp_type"] == 0 or (res["from_ip"] and res["from_ip"] == dst_ip):
+                reached = True
+                break
+            if res["status"] in ("unreachable", "error"):
+                break
+            if not res.get("replied"):
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= 3:
+                    break
+            else:
+                consecutive_timeouts = 0
+        return {
+            "target": dst_ip,
+            "reached": reached,
+            "hops": hops,
+        }
+
+    def in_tunnel_pmtu_sweep(self, net: str, dst_ip: str, timeout_ms: int = 1500) -> dict:
+        """Probe DF=1 ICMP packets across increasing payload sizes inside the VPN
+        tunnel to find the exact effective PMTU and detect silent PMTU blackholes."""
+        payload_sizes = [500, 1000, 1200, 1280, 1340, 1372, 1400, 1420, 1450, 1472]
+        steps = []
+        max_ok_ip_mtu = 0
+        reported_frag_mtu = 0
+        consecutive_timeouts = 0
+        for sz in payload_sizes:
+            ip_mtu = sz + 28  # 20B IPv4 + 8B ICMP
+            res = self.diag_ping(net, dst_ip, size=sz, ttl=64, df=True, timeout_ms=timeout_ms)
+            if res.get("ok"):
+                max_ok_ip_mtu = ip_mtu
+                consecutive_timeouts = 0
+            elif res.get("replied"):
+                consecutive_timeouts = 0
+            else:
+                consecutive_timeouts += 1
+            if res.get("mtu", 0) > 0:
+                reported_frag_mtu = res["mtu"]
+            steps.append({
+                "payload_bytes": sz,
+                "ip_mtu": ip_mtu,
+                "ok": res.get("ok", False),
+                "status": res.get("status"),
+                "rtt_ms": res.get("rtt_ms"),
+                "reported_mtu": res.get("mtu", 0),
+                "from_ip": res.get("from_ip", ""),
+                "node": res.get("node", "-"),
+            })
+            if consecutive_timeouts >= 2:
+                break
+        return {
+            "target": dst_ip,
+            "max_working_ip_mtu": max_ok_ip_mtu,
+            "reported_frag_mtu": reported_frag_mtu,
+            "steps": steps,
+        }
 
     # -- invitations (M2 CLI contract) --
 

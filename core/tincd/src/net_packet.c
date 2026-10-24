@@ -539,7 +539,7 @@ static bool receive_udppacket(node_t *n, vpn_packet_t *inpkt) {
 			   (30s) because after a reset, stale UDP packets from the previous
 			   session keep arriving for a while; we want the TCP-relayed handshake
 			   to finish in peace before considering another reset. */
-			if(n->last_req_key < now.tv_sec - 30) {
+			if(n->sptps.state == SPTPS_SECONDARY_KEX && n->last_req_key < now.tv_sec - 30) {
 				logger(DEBUG_PROTOCOL, LOG_ERR, "Failed to decode raw UDP packet from %s (%s), restarting SPTPS", n->name, n->hostname);
 				send_req_key(n);
 			}
@@ -759,6 +759,14 @@ bool receive_tcppacket_sptps(connection_t *c, const char *data, size_t len) {
 	   (docs/nat.md §5.2, testing/nat-sim `matrix --transport https`). */
 
 	if(to != myself) {
+		size_t origlen = len > SPTPS_DATAGRAM_OVERHEAD ? len - SPTPS_DATAGRAM_OVERHEAD : 0;
+		node_t *relay = (to->via != myself && origlen <= to->via->minmtu) ? to->via : to->nexthop;
+
+		if(!relay || relay == myself || relay == c->node || relay == from) {
+			logger(DEBUG_TRAFFIC, LOG_ERR, "Routing loop relaying TCP SPTPS packet from %s to %s via %s!", from->name, to->name, relay ? relay->name : "(null)");
+			return true;
+		}
+
 		send_sptps_data(to, from, 0, data, len);
 		try_tx(to, true);
 		return true;
@@ -771,7 +779,7 @@ bool receive_tcppacket_sptps(connection_t *c, const char *data, size_t len) {
 		   so let's restart SPTPS in case that helps. But don't do that too often
 		   to prevent storms. Cooldown raised to 30s for the same reason as in
 		   receive_udppacket: give the in-progress handshake time to finish. */
-		if(from->last_req_key < now.tv_sec - 30) {
+		if(from->sptps.state == SPTPS_SECONDARY_KEX && from->last_req_key < now.tv_sec - 30) {
 			logger(DEBUG_PROTOCOL, LOG_ERR, "Failed to decode raw TCP packet from %s (%s), restarting SPTPS", from->name, from->hostname);
 			send_req_key(from);
 		}
@@ -1179,6 +1187,10 @@ static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void 
 		to->incompression = myself->incompression;
 		return send_request(to->nexthop->connection, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, from->name, to->name, buf, to->incompression);
 	} else {
+		if(random_early_drop(to->nexthop->connection)) {
+			return true;
+		}
+
 		return send_request(to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, from->name, to->name, SPTPS_PACKET, buf);
 	}
 }
@@ -1849,7 +1861,7 @@ static void try_udp(node_t *n) {
 	timersub(&now, &n->udp_ping_sent, &ping_tx_elapsed);
 
 	int interval = n->status.udp_confirmed
-	               ? udp_discovery_keepalive_interval
+	               ? (n->status.ping_sent ? udp_discovery_interval : udp_discovery_keepalive_interval)
 	               : udp_discovery_interval;
 
 	if(ping_tx_elapsed.tv_sec >= interval) {
@@ -2519,6 +2531,14 @@ skip_harder:
 		/* If we're not the final recipient, relay the packet. */
 
 		if(to != myself) {
+			size_t origlen = pkt->len > SPTPS_DATAGRAM_OVERHEAD ? pkt->len - SPTPS_DATAGRAM_OVERHEAD : 0;
+			node_t *relay = (to->via != myself && origlen <= to->via->minmtu) ? to->via : to->nexthop;
+
+			if(!relay || relay == myself || relay == n || relay == from) {
+				logger(DEBUG_TRAFFIC, LOG_ERR, "Routing loop relaying UDP SPTPS packet from %s to %s via %s!", from->name, to->name, relay ? relay->name : "(null)");
+				return;
+			}
+
 			send_sptps_data(to, from, 0, DATA(pkt), pkt->len);
 			try_tx(to, true);
 			return;

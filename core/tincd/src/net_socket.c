@@ -945,6 +945,10 @@ void setup_outgoing_connection(outgoing_t *outgoing, bool verbose) {
 	}
 
 	if(n->connection && !transport_outranks_connection(outgoing, n->connection)) {
+		if(!n->connection->outgoing) {
+			n->connection->outgoing = outgoing;
+		}
+
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "Already connected to %s", n->name);
 		return;
 	}

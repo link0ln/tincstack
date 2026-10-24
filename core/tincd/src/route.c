@@ -23,6 +23,7 @@
 #include "connection.h"
 #include "control_common.h"
 #include "crypto.h"
+#include "diag.h"
 #include "ethernet.h"
 #include "ipv4.h"
 #include "ipv6.h"
@@ -33,6 +34,9 @@
 #include "route.h"
 #include "subnet.h"
 #include "utils.h"
+
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
 
 rmode_t routing_mode = RMODE_ROUTER;
 fmode_t forwarding_mode = FMODE_INTERNAL;
@@ -126,7 +130,10 @@ static void route_ipv4_unreachable(node_t *source, vpn_packet_t *packet, length_
 	struct in_addr ip_dst;
 	uint32_t oldlen;
 
-	if(ratelimit(3)) {
+	bool is_diag = diag_is_probe_ipv4(packet);
+	bool is_pmtud = (type == ICMP_DEST_UNREACH && code == ICMP_FRAG_NEEDED);
+
+	if(!is_diag && !is_pmtud && source != myself && ratelimit(3)) {
 		return;
 	}
 
@@ -146,25 +153,31 @@ static void route_ipv4_unreachable(node_t *source, vpn_packet_t *packet, length_
 	/* Try to reply with an IP address assigned to the local machine */
 
 	if(type == ICMP_TIME_EXCEEDED && code == ICMP_EXC_TTL) {
-		int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+		ipv4_t my_vpn_ip;
 
-		if(sockfd != -1) {
-			struct sockaddr_in addr;
-			memset(&addr, 0, sizeof(addr));
-			addr.sin_family = AF_INET;
-			addr.sin_addr = ip.ip_src;
+		if(diag_my_ipv4(&my_vpn_ip)) {
+			memcpy(&ip_dst, &my_vpn_ip, sizeof(ip_dst));
+		} else {
+			int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 
-			if(!connect(sockfd, (const struct sockaddr *) &addr, sizeof(addr))) {
+			if(sockfd != -1) {
+				struct sockaddr_in addr;
 				memset(&addr, 0, sizeof(addr));
 				addr.sin_family = AF_INET;
-				socklen_t addrlen = sizeof(addr);
+				addr.sin_addr = ip.ip_src;
 
-				if(!getsockname(sockfd, (struct sockaddr *) &addr, &addrlen) && (size_t)addrlen <= sizeof(addr)) {
-					ip_dst = addr.sin_addr;
+				if(!connect(sockfd, (const struct sockaddr *) &addr, sizeof(addr))) {
+					memset(&addr, 0, sizeof(addr));
+					addr.sin_family = AF_INET;
+					socklen_t addrlen = sizeof(addr);
+
+					if(!getsockname(sockfd, (struct sockaddr *) &addr, &addrlen) && (size_t)addrlen <= sizeof(addr)) {
+						ip_dst = addr.sin_addr;
+					}
 				}
-			}
 
-			closesocket(sockfd);
+				closesocket(sockfd);
+			}
 		}
 	}
 
@@ -214,6 +227,10 @@ static void route_ipv4_unreachable(node_t *source, vpn_packet_t *packet, length_
 
 	packet->len = ether_size + ip_size + icmp_size + oldlen;
 
+	if(source == myself && diag_intercept_ipv4(myself, packet)) {
+		return;
+	}
+
 	send_packet(source, packet);
 }
 
@@ -231,7 +248,7 @@ static void route_ipv6_unreachable(node_t *source, vpn_packet_t *packet, length_
 		uint32_t next;
 	} pseudo;
 
-	if(ratelimit(3)) {
+	if(type != ICMP6_PACKET_TOO_BIG && source != myself && ratelimit(3)) {
 		return;
 	}
 
@@ -399,13 +416,31 @@ static uint16_t effective_node_mtu(const node_t *n) {
 
 	const node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
-	if(via && via != myself && via->mtu < mtu) {
-		mtu = via->mtu;
+	if(via && via != myself) {
+		if(via->mtu < mtu) {
+			mtu = via->mtu;
+		}
+
+		if(via->status.udp_confirmed && via->minmtu > 0 && via->minmtu < mtu) {
+			mtu = via->minmtu;
+		}
+
+		if(via->connection && via->connection->transport && via->connection->transport->send_datagram && mtu > 1119) {
+			mtu = 1119;
+		}
 	}
 
 	if(n->nexthop && n->nexthop != myself && (!via || !via->status.udp_confirmed || via->minmtu == 0)) {
 		if(n->nexthop->mtu < mtu) {
 			mtu = n->nexthop->mtu;
+		}
+
+		if(n->nexthop->status.udp_confirmed && n->nexthop->minmtu > 0 && n->nexthop->minmtu < mtu) {
+			mtu = n->nexthop->minmtu;
+		}
+
+		if(n->nexthop->connection && n->nexthop->connection->transport && n->nexthop->connection->transport->send_datagram && mtu > 1119) {
+			mtu = 1119;
 		}
 	}
 
@@ -422,6 +457,15 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 
 	if(dest_mtu < mtu) {
 		mtu = dest_mtu;
+	}
+
+	/* On TCP-only links (e.g. https) or while UDP PMTU discovery has not yet
+	   converged, n->mtu starts at 1518 (MSS 1464 >= 1460), which leaves 1500B
+	   TCP segments unclamped. Cap provisional/TCP-only MSS calculation at 1400
+	   (MSS 1346) so inner TCP segments always fit any tunnel carrier without
+	   forcing multi-hop relays onto the meta stream. */
+	if(mtu > 1400 && (!via || !via->status.udp_confirmed || via->mtuprobes >= 0)) {
+		mtu = 1400;
 	}
 
 	/* Find TCP header */
@@ -625,8 +669,19 @@ static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t et
 	offset = DATA(packet) + ether_size + ip_size;
 	maxlen = (MAX(path_mtu, 590) - ether_size - ip_size) & ~0x7;
 	ip_off = ntohs(ip.ip_off);
-	origf = ip_off & ~IP_OFFMASK;
+	origf = (ip_off & ~IP_OFFMASK) & ~IP_DF;
 	ip_off &= IP_OFFMASK;
+
+	if(ip.ip_id == 0) {
+		static uint16_t frag_id_seq = 1;
+		uint16_t next_id = ++frag_id_seq;
+
+		if(!next_id) {
+			next_id = ++frag_id_seq;
+		}
+
+		ip.ip_id = htons(next_id);
+	}
 
 	while(todo) {
 		size_t len = todo > maxlen ? maxlen : todo;
@@ -692,7 +747,7 @@ static void route_ipv4(node_t *source, vpn_packet_t *packet) {
 		return;
 	}
 
-	if(decrement_ttl && source != myself && subnet->owner != myself)
+	if((decrement_ttl || diag_is_probe_ipv4(packet)) && source != myself && subnet->owner != myself)
 		if(!do_decrement_ttl(source, packet)) {
 			return;
 		}
@@ -718,7 +773,16 @@ static void route_ipv4(node_t *source, vpn_packet_t *packet) {
 	if(via && packet->len > MAX(path_mtu, 590) && via != myself) {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, path_mtu);
 
-		if(DATA(packet)[20] & 0x40) {
+		/* RFC 9000 §14.1 requires QUIC Initial UDP datagrams to be at least
+		   1200 bytes (1228 B IPv4, 1242 B with Ethernet header) with DF=1.
+		   When a tunnel hop uses a carrier whose ceiling is below 1280 B
+		   inner IPv4 MTU (e.g. quic at 1119 B frame / 1105 B IPv4), returning
+		   ICMP_FRAG_NEEDED (mtu = 1105) deadlocks QUIC/HTTP3 (YouTube, Cronet).
+		   Transparently fragment user UDP packets across the tunnel when
+		   path_mtu < 1294 so the exit/peer kernel reassembles them cleanly. */
+		bool is_udp = (DATA(packet)[23] == IPPROTO_UDP) && !diag_is_probe_ipv4(packet);
+
+		if((DATA(packet)[20] & 0x40) && (!is_udp || path_mtu >= 1294)) {
 			packet->len = MAX(path_mtu, 590);
 			route_ipv4_unreachable(source, packet, ether_size, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED);
 		} else {
@@ -729,6 +793,10 @@ static void route_ipv4(node_t *source, vpn_packet_t *packet) {
 	}
 
 	clamp_mss(source, subnet->owner, via, packet);
+
+	if(subnet->owner == myself && diag_intercept_ipv4(source, packet)) {
+		return;
+	}
 
 	send_packet(subnet->owner, packet);
 }
