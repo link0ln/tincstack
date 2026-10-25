@@ -1162,13 +1162,22 @@ class DiagWebServer:
         nets = [specific_net] if specific_net else list(app.networks)
 
         def _do_sync() -> None:
-            for net in nets:
-                if not net:
-                    continue
-                try:
-                    self.tc.diag_port(net, active_port, timeout=2.5)
-                except Exception:
-                    pass
+            for attempt in range(6 if async_mode else 1):
+                all_ok = True
+                for net in nets:
+                    if not net:
+                        continue
+                    try:
+                        res = self.tc.diag_port(net, active_port, timeout=2.5)
+                        if not res.ok and active_port > 0:
+                            all_ok = False
+                    except Exception:
+                        if active_port > 0:
+                            all_ok = False
+                if all_ok:
+                    break
+                if async_mode and attempt < 5:
+                    time.sleep(1.0)
 
         if async_mode:
             threading.Thread(target=_do_sync, name="diag-bridge-sync", daemon=True).start()

@@ -1038,11 +1038,14 @@ class MainWindow(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget(); self.setCentralWidget(central)
         outer = QtWidgets.QVBoxLayout(central)
         self.banner = QtWidgets.QFrame()
-        self.banner.setStyleSheet("QFrame{background:#fce8e6;border:1px solid #d93025;border-radius:4px;}")
+        self.banner.setObjectName("errorBanner")
+        self.banner.setStyleSheet(
+            "QFrame#errorBanner{background:#3b1818;border:1px solid #d93025;border-radius:6px;}"
+        )
         bl = QtWidgets.QHBoxLayout(self.banner)
         self.banner_lbl = QtWidgets.QLabel("")
         self.banner_lbl.setWordWrap(True)
-        self.banner_lbl.setStyleSheet("color:#a50e0e;")
+        self.banner_lbl.setStyleSheet("color:#fad2cf;background:transparent;border:none;")
         bl.addWidget(self.banner_lbl, stretch=1)
         fix = QtWidgets.QPushButton("Open raw YAML…"); fix.clicked.connect(self.open_raw_yaml)
         retry = QtWidgets.QPushButton("Reload"); retry.clicked.connect(self.reload_config)
@@ -1560,18 +1563,37 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._update_banner is not None:
             self._update_banner.deleteLater()
         bar = QtWidgets.QFrame()
-        bar.setStyleSheet("QFrame{background:#e8f0fe;border:1px solid #1a73e8;border-radius:4px;}")
+        bar.setObjectName("updateBanner")
+        bar.setStyleSheet(
+            "QFrame#updateBanner{background:#16243a;border:1px solid #2b6cb0;border-radius:6px;}"
+        )
         bl = QtWidgets.QHBoxLayout(bar)
+        bl.setContentsMargins(12, 8, 12, 8)
         cur = management.current_version()
         cur_txt = f" (current: {cur})" if cur else ""
-        lbl = QtWidgets.QLabel(f"<b>A new version is available: {rel.version}{cur_txt}.</b> "
-                               f"The update is downloaded, verified against its SHA-256 checksum and installed "
-                               f"by the elevated installer, then tincmgr restarts automatically.")
+        lbl = QtWidgets.QLabel(f"<span style='color:#60a5fa;font-weight:bold;'>⬆ A new version is available: "
+                               f"{rel.version}{cur_txt}.</span> "
+                               f"<span style='color:#e2e8f0;'>The update is downloaded, verified against its "
+                               f"SHA-256 checksum and installed by the elevated installer, then tincmgr "
+                               f"restarts automatically.</span>")
+        lbl.setStyleSheet("color:#e2e8f0;background:transparent;border:none;")
         lbl.setWordWrap(True)
         bl.addWidget(lbl, stretch=1)
         go = QtWidgets.QPushButton("Update now")
+        go.setCursor(QtCore.Qt.PointingHandCursor)
+        go.setStyleSheet(
+            "QPushButton{background:#1a73e8;color:#ffffff;font-weight:bold;border:none;"
+            "border-radius:4px;padding:6px 14px;}"
+            "QPushButton:hover{background:#2563eb;}"
+        )
         go.clicked.connect(lambda: self._update_install(rel))
         later = QtWidgets.QPushButton("Later")
+        later.setCursor(QtCore.Qt.PointingHandCursor)
+        later.setStyleSheet(
+            "QPushButton{background:#28374d;color:#cbd5e1;border:1px solid #3e526d;"
+            "border-radius:4px;padding:6px 12px;}"
+            "QPushButton:hover{background:#334155;color:#ffffff;}"
+        )
         later.clicked.connect(bar.hide)
         bl.addWidget(go); bl.addWidget(later)
         self.outer_layout().insertWidget(1, bar)

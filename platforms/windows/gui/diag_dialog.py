@@ -63,8 +63,9 @@ class DiagnosticsDialog(QtWidgets.QDialog):
 
         # -- Security notice banner --
         warn_box = QtWidgets.QFrame()
+        warn_box.setObjectName("diagWarnBanner")
         warn_box.setStyleSheet(
-            "QFrame { background: #fff8e1; border: 1px solid #f9a825; border-radius: 5px; }"
+            "QFrame#diagWarnBanner { background: #2d2412; border: 1px solid #d97706; border-radius: 6px; }"
         )
         wl = QtWidgets.QVBoxLayout(warn_box)
         wlbl = QtWidgets.QLabel(
@@ -75,7 +76,7 @@ class DiagnosticsDialog(QtWidgets.QDialog):
             "enable it only while diagnosing network issues."
         )
         wlbl.setWordWrap(True)
-        wlbl.setStyleSheet("color: #5d4037; border: none;")
+        wlbl.setStyleSheet("color: #fef3c7; background: transparent; border: none;")
         wl.addWidget(wlbl)
         lay.addWidget(warn_box)
 
