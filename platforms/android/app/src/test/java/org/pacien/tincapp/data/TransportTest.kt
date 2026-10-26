@@ -49,13 +49,21 @@ class TransportTest {
 
   @Test
   fun offeredCarriersComeFromTheDialledNodesHostRecord() {
-    // node_a's record says "Transports = plain, sf"
-    assertEquals(setOf(Transport.PLAIN, Transport.SF), Transport.acceptedByPeers(joined(), "phonenet"))
+    // node_a's record says "Transports = plain, sf"; any plain listener also accepts sftcp
+    assertEquals(setOf(Transport.PLAIN, Transport.SF, Transport.SFTCP), Transport.acceptedByPeers(joined(), "phonenet"))
   }
 
   @Test
   fun unknownAcceptListMeansPlainOnly() {
     val y = TincYaml(tmp.newFile("bare.yaml").apply { writeText("networks:\n  n:\n    options:\n      ConnectTo: x\n") })
-    assertEquals(setOf(Transport.PLAIN), Transport.acceptedByPeers(y, "n"))
+    assertEquals(setOf(Transport.PLAIN, Transport.SFTCP), Transport.acceptedByPeers(y, "n"))
+  }
+
+  @Test
+  fun sftcpRoundTripsInPreferredTransports() {
+    val y = joined()
+    Transport.setPreferred(y, "phonenet", Transport.SFTCP)
+    assertEquals(Transport.SFTCP, Transport.preferred(y, "phonenet"))
+    assertEquals(listOf("sftcp"), y.optionValues("phonenet", Transport.KEY_PREFERRED))
   }
 }
