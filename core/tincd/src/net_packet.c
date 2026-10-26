@@ -1304,6 +1304,10 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, this is a relay packet that the other node cannot understand, or this packet is larger than the MTU. */
 
 	if(type == SPTPS_HANDSHAKE || tcponly || (!direct && !relay_supported) || (type != PKT_PROBE && origlen > relay->minmtu)) {
+		if(type == PKT_PROBE) {
+			return true;
+		}
+
 		return send_sptps_data_meta(to, from, type, data, len);
 	}
 
@@ -1486,8 +1490,8 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 
 	if(type == PKT_PROBE) {
 		if(!from->status.udppacket) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Got SPTPS PROBE packet from %s (%s) via TCP", from->name, from->hostname);
-			return false;
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "Ignoring SPTPS PROBE packet from %s (%s) received via TCP", from->name, from->hostname);
+			return true;
 		}
 
 		inpkt.len = len;
@@ -1671,7 +1675,7 @@ void maybe_send_carrier_beacon(node_t *n) {
 }
 
 static bool has_confirmed_udp_addr(const node_t *n) {
-	return n->status.udp_confirmed && (!carrier_datagram_path(n) || n->status.udp_addr_confirmed);
+	return n->status.udp_confirmed && (!carrier_datagram_path(n) || n->status.udp_addr_confirmed || (n->connection && n->connection->outgoing && n->has_config_address));
 }
 
 /* ---- coordinated hole punch (stream N2) ------------------------------------
@@ -1709,7 +1713,9 @@ static bool has_confirmed_udp_addr(const node_t *n) {
 #define PUNCH_MAX_DELAY_MS 1000
 
 static bool punch_coordinated(const node_t *n) {
-	return (n->dseal & DSEAL_KNOWN) && (n->dseal & DSEAL_PUNCH) && !n->connection &&
+	node_t *via = (n->via == myself) ? n->nexthop : n->via;
+	return via == n && !node_tcponly(n) &&
+	       (n->dseal & DSEAL_KNOWN) && (n->dseal & DSEAL_PUNCH) && !n->connection &&
 	       n->nexthop && n->nexthop != n && n->nexthop->connection;
 }
 
@@ -1729,7 +1735,9 @@ static void punch_timer_handler(void *data) {
 }
 
 static void punch_start(node_t *n, int delay_ms, const sockaddr_t *sa, const char *why) {
-	if(!n->status.reachable || n->status.udp_confirmed) {
+	node_t *via = (n->via == myself) ? n->nexthop : n->via;
+
+	if(!n->status.reachable || n->status.udp_confirmed || via != n || node_tcponly(n)) {
 		return;
 	}
 
@@ -1896,7 +1904,9 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 }
 
 static void try_udp(node_t *n, bool has_data) {
-	if(!udp_discovery || (n->connection && node_tcponly(n))) {
+	node_t *via = (n->via == myself) ? n->nexthop : n->via;
+
+	if(!udp_discovery || via != n || node_tcponly(n)) {
 		return;
 	}
 
