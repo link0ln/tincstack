@@ -231,6 +231,8 @@
 	<string name="transport_plain_desc">tinc\'s own protocol over TCP and UDP. The fastest; use it unless your network blocks it.</string>
 	<string name="transport_sf">Single UDP flow</string>
 	<string name="transport_sf_desc">All traffic in one UDP flow. Can help behind strict NATs and firewalls.</string>
+	<string name="transport_sftcp">Single TCP flow</string>
+	<string name="transport_sftcp_desc">All control and data traffic multiplexed in one TCP connection (no UDP).</string>
 	<string name="transport_obfs">Obfuscated</string>
 	<string name="transport_obfs_desc">Randomised packets without tinc\'s recognisable signature.</string>
 	<string name="transport_https">HTTPS</string>

@@ -26,6 +26,7 @@
 
 typedef enum transport_id_t {
 	TRANSPORT_PLAIN = 0,    /* upstream tinc shape: TCP meta connection + UDP data flow */
+	TRANSPORT_SFTCP,        /* single-flow TCP: meta and data share one TCP connection (TCPOnly) */
 	TRANSPORT_SF,           /* single-flow plain UDP: meta and data share one UDP flow */
 	TRANSPORT_OBFS,         /* obfuscated UDP (M5) */
 	TRANSPORT_HTTPS,        /* TLS front carrier (M5) */

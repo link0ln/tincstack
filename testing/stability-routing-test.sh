@@ -259,5 +259,62 @@ else
 	note "HTTPS link between rfast and hub stayed up with zero false PING timeouts"
 fi
 
+echo "===== Scenario 4: Separate SingleFlow TCP (sftcp) & SingleFlow UDP (sf) ====="
+# 4a: SingleFlow = tcp (sftcp) with all UDP blocked
+docker exec "$PFX-cl" iptables -I OUTPUT 1 -p udp -j DROP
+docker exec "$PFX-cl" iptables -I INPUT 1 -p udp -j DROP
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 del PreferredTransports || true
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set SingleFlow tcp
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 disconnect rfast || true
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 retry
+
+sftcp_ok=0
+for _ in $(seq 1 15); do
+	if docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections | grep -q "rfast.*transport sftcp" && \
+	   docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections | grep -q "client.*transport sftcp"; then
+		sftcp_ok=1
+		break
+	fi
+	sleep 1
+done
+
+if [ "$sftcp_ok" -eq 1 ] && docker exec "$PFX-cl" ping -c 4 -W 2 "$RFAST_VPN" >/dev/null 2>&1; then
+	note "SingleFlow = tcp (sftcp) established and carried data with 100% UDP blocked"
+else
+	miss "SingleFlow = tcp (sftcp) failed (sftcp_ok=$sftcp_ok)"
+	docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections || true
+	docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections || true
+fi
+
+# 4b: SingleFlow = udp (sf) with TCP blocked
+docker exec "$PFX-cl" iptables -D OUTPUT -p udp -j DROP
+docker exec "$PFX-cl" iptables -D INPUT -p udp -j DROP
+docker exec "$PFX-cl" iptables -I OUTPUT 1 -p tcp --dport 655 -j DROP
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set SingleFlow udp
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 disconnect rfast || true
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 retry
+
+sfudp_ok=0
+for _ in $(seq 1 15); do
+	if docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections | grep -q "rfast.*transport sf" && \
+	   docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections | grep -q "client.*transport sf"; then
+		sfudp_ok=1
+		break
+	fi
+	sleep 1
+done
+
+if [ "$sfudp_ok" -eq 1 ] && docker exec "$PFX-cl" ping -c 4 -W 2 "$RFAST_VPN" >/dev/null 2>&1; then
+	note "SingleFlow = udp (sf) established and carried data with TCP port 655 blocked"
+else
+	miss "SingleFlow = udp (sf) failed (sfudp_ok=$sfudp_ok)"
+	docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections || true
+	docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections || true
+fi
+
+docker exec "$PFX-cl" iptables -D OUTPUT -p tcp --dport 655 -j DROP
+
 echo "===== Summary: $pass_count passed, fail=$fail ====="
 exit "$fail"

@@ -43,7 +43,7 @@ class TransportsPanel(QtWidgets.QWidget):
         self.prefer = QtWidgets.QListWidget()
         self.prefer.setToolTip("Checked carriers are tried top to bottom; the first one in the peer's "
                                "accept list wins. Tick 'quic' and move it up to prefer QUIC.")
-        for c in tr.CARRIERS:
+        for c in tr.PREFER_CARRIERS:
             it = QtWidgets.QListWidgetItem(c)
             it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
             it.setCheckState(QtCore.Qt.Unchecked)
@@ -145,8 +145,8 @@ class TransportsPanel(QtWidgets.QWidget):
         the rest unchecked in canonical order."""
         self.prefer.blockSignals(True)
         self.prefer.clear()
-        for c in list(order) + [c for c in tr.CARRIERS if c not in order]:
-            if c not in tr.CARRIERS:
+        for c in list(order) + [c for c in tr.PREFER_CARRIERS if c not in order]:
+            if c not in tr.PREFER_CARRIERS:
                 continue
             it = QtWidgets.QListWidgetItem(c)
             it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)

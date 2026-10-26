@@ -715,7 +715,7 @@ bool https_send(connection_t *c) {
 		return false;
 	}
 
-	if(c->outbuf.len - c->outbuf.offset >= (size_t)maxoutbufsize / 4) {
+	if(c->outbuf.len - c->outbuf.offset >= (size_t)(4 * MTU)) {
 		https_flush(c);
 	} else if(c->outbuf.len > c->outbuf.offset) {
 		set_io(s, IO_READ | IO_WRITE);

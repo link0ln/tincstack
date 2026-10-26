@@ -77,6 +77,11 @@ def test_host_preferred_transport_read_and_write():
     updated2 = tr.set_host_preferred_transport(updated, "https")
     assert tr.host_preferred_transport(updated2) == "https"
     assert updated2.count("PreferredTransports") == 1
+    # Single-flow UDP (sf) and Single-flow TCP (sftcp)
+    for sf_mode in ("sf", "sftcp"):
+        u_sf = tr.set_host_preferred_transport(updated2, sf_mode)
+        assert tr.host_preferred_transport(u_sf) == sf_mode
+    assert tr.validate({"PreferredTransports": ["sf", "sftcp", "plain"]}) == []
     # Setting to "" / auto removes the line cleanly
     cleared = tr.set_host_preferred_transport(updated2, "")
     assert tr.host_preferred_transport(cleared) == ""

@@ -31,6 +31,7 @@ package org.pacien.tincapp.data
 enum class Transport(val id: String) {
   PLAIN("plain"),
   SF("sf"),
+  SFTCP("sftcp"),
   OBFS("obfs"),
   HTTPS("https"),
   QUIC("quic");
@@ -40,7 +41,11 @@ enum class Transport(val id: String) {
     private const val HOST_KEY_TRANSPORTS = "Transports"
     private const val OPTION_CONNECT_TO = "ConnectTo"
 
-    fun byId(id: String?): Transport? = values().firstOrNull { it.id.equals(id?.trim(), ignoreCase = true) }
+    fun byId(id: String?): Transport? = when (id?.trim()?.lowercase()) {
+      "sf-udp", "udp-sf" -> SF
+      "sf-tcp", "tcp-sf" -> SFTCP
+      else -> values().firstOrNull { it.id.equals(id?.trim(), ignoreCase = true) }
+    }
 
     /** The chosen carrier; null = automatic (the core's default). */
     fun preferred(yaml: TincYaml, net: String): Transport? =
@@ -64,7 +69,7 @@ enum class Transport(val id: String) {
           .mapNotNull(::byId)
           .toList()
       }.toSet()
-      return accepted + PLAIN
+      return accepted + PLAIN + SFTCP
     }
   }
 }

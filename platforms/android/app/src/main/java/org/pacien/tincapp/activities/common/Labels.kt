@@ -27,6 +27,7 @@ object Labels {
   fun transportName(t: Transport): Int = when (t) {
     Transport.PLAIN -> R.string.transport_plain
     Transport.SF -> R.string.transport_sf
+    Transport.SFTCP -> R.string.transport_sftcp
     Transport.OBFS -> R.string.transport_obfs
     Transport.HTTPS -> R.string.transport_https
     Transport.QUIC -> R.string.transport_quic
@@ -35,6 +36,7 @@ object Labels {
   fun transportDescription(t: Transport): Int = when (t) {
     Transport.PLAIN -> R.string.transport_plain_desc
     Transport.SF -> R.string.transport_sf_desc
+    Transport.SFTCP -> R.string.transport_sftcp_desc
     Transport.OBFS -> R.string.transport_obfs_desc
     Transport.HTTPS -> R.string.transport_https_desc
     Transport.QUIC -> R.string.transport_quic_desc

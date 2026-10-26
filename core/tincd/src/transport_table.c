@@ -31,6 +31,7 @@ static const struct {
 	bool compiled;
 } transport_table[TRANSPORT_MAX] = {
 	[TRANSPORT_PLAIN] = { "plain", true },
+	[TRANSPORT_SFTCP] = { "sftcp", true },
 	[TRANSPORT_SF]    = { "sf",    true },
 	[TRANSPORT_OBFS]  = { "obfs",  true },
 #ifdef HAVE_OPENSSL
@@ -70,6 +71,14 @@ transport_id_t transport_lookup(const char *name) {
 		}
 	}
 
+	if(!strcasecmp(name, "sf-tcp") || !strcasecmp(name, "tcp-sf")) {
+		return TRANSPORT_SFTCP;
+	}
+
+	if(!strcasecmp(name, "sf-udp") || !strcasecmp(name, "udp-sf")) {
+		return TRANSPORT_SF;
+	}
+
 	return TRANSPORT_MAX;
 }
 
@@ -81,6 +90,13 @@ uint32_t transport_compiled_mask(void) {
 	uint32_t mask = 0;
 
 	for(int i = 0; i < TRANSPORT_MAX; i++) {
+		/* sftcp rides the plain TCP listener (TCP_CLASS_TINC + OPTION_TCPONLY);
+		   omitting it from the wire accept mask preserves compatibility with
+		   peers that only know the listener carriers (plain,sf,obfs,https,quic). */
+		if(i == TRANSPORT_SFTCP) {
+			continue;
+		}
+
 		if(transport_table[i].compiled) {
 			mask |= TRANSPORT_BIT(i);
 		}

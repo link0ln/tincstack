@@ -70,7 +70,7 @@ LINK_LABEL = {
 }
 TRANSPORT_COLORS = {
     "quic": "#1e8e3e", "https": "#1a73e8", "obfs": "#9334e6",
-    "sf": "#e8710a", "plain": "#5f6368", "udp": "#1e8e3e",
+    "sf": "#e8710a", "sftcp": "#0284c7", "plain": "#5f6368", "udp": "#1e8e3e",
 }
 TRANSPORT_CHOICES = [
     ("auto", "Auto (network default)"),
@@ -78,6 +78,7 @@ TRANSPORT_CHOICES = [
     ("https", "https — HTTPS / TLS 1.3 (TCP)"),
     ("obfs", "obfs — Obfuscated UDP"),
     ("sf", "sf — Single-flow UDP"),
+    ("sftcp", "sftcp — Single-flow TCP"),
     ("plain", "plain — Plain tinc TCP/UDP"),
 ]
 
@@ -114,6 +115,7 @@ KNOWN_OPTIONS = [
     ("MTUInfoInterval", "int", None, "Seconds between MTU_INFO updates"),
     ("UDPInfoInterval", "int", None, "Seconds between UDP_INFO updates"),
     ("TCPOnly", "bool", None, "Tunnel only over TCP (forces relay; no UDP)"),
+    ("SingleFlow", "enum", ["no", "udp", "tcp", "both"], "Single-flow mode: 'udp' (sf), 'tcp' (sftcp), 'both', or 'no'"),
     ("IndirectData", "bool", None, "This node is only reachable via a relay"),
     ("PMTUDiscovery", "bool", None, "Discover the path MTU automatically"),
     ("Compression", "int", None, "Compression level 0-11 (0 = off)"),

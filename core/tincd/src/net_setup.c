@@ -1443,7 +1443,7 @@ bool setup_network(void) {
 	setup_ping_timers(false);
 
 	if(!get_config_int(lookup_config(&config_tree, "MaxOutputBufferSize"), &maxoutbufsize)) {
-		maxoutbufsize = 10 * MTU;
+		maxoutbufsize = 256 * MTU;
 	}
 
 	if(!setup_myself()) {

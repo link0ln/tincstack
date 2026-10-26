@@ -679,7 +679,7 @@ function renderIncidents() {
 function renderPeersTable(d) {
   const tbody = document.getElementById("peers-tbody");
   const nodes = d.nodes || [];
-  const choices = ["auto", "quic", "https", "obfs", "sf", "plain"];
+  const choices = ["auto", "quic", "https", "obfs", "sf", "sftcp", "plain"];
   tbody.innerHTML = nodes.map(n => {
     const linkBadge = n.is_self ? `<span class="badge info">★ this node</span>` :
       (n.link === "direct-udp" ? `<span class="badge ok">● direct UDP</span>` :

@@ -61,11 +61,21 @@ static bool test_dial(connection_t *c) {
 }
 #endif
 
+static bool transport_sftcp_dial(connection_t *c) {
+	c->options |= OPTION_TCPONLY | OPTION_INDIRECT;
+	return transport_plain_dial(c);
+}
+
 static const transport_t transports[TRANSPORT_MAX] = {
 	[TRANSPORT_PLAIN] = {
 		.id = TRANSPORT_PLAIN, .name = "plain",
 		.caps = TRANSPORT_CAP_META_TCP | TRANSPORT_CAP_DATA_UDP,
 		.dial = transport_plain_dial,
+	},
+	[TRANSPORT_SFTCP] = {
+		.id = TRANSPORT_SFTCP, .name = "sftcp",
+		.caps = TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_META_TCP,
+		.dial = transport_sftcp_dial,
 	},
 	[TRANSPORT_SF] = {
 		.id = TRANSPORT_SF, .name = "sf",
@@ -175,7 +185,41 @@ bool transport_read_config(void) {
 	uint32_t compiled = transport_compiled_mask();
 
 	single_flow = false;
-	get_config_bool(lookup_config(&config_tree, "SingleFlow"), &single_flow);
+	bool sf_udp = false;
+	bool sf_tcp = false;
+	bool sf_tcp_first = false;
+	char *sf_val = NULL;
+
+	if(get_config_string(lookup_config(&config_tree, "SingleFlow"), &sf_val) && sf_val) {
+		if(!strcasecmp(sf_val, "yes") || !strcasecmp(sf_val, "true") || !strcmp(sf_val, "1") ||
+		                !strcasecmp(sf_val, "udp") || !strcasecmp(sf_val, "sf") ||
+		                !strcasecmp(sf_val, "sf-udp") || !strcasecmp(sf_val, "udp-sf")) {
+			single_flow = true;
+			sf_udp = true;
+		} else if(!strcasecmp(sf_val, "tcp") || !strcasecmp(sf_val, "sftcp") ||
+		                !strcasecmp(sf_val, "sf-tcp") || !strcasecmp(sf_val, "tcp-sf")) {
+			single_flow = true;
+			sf_tcp = true;
+			sf_tcp_first = true;
+		} else if(!strcasecmp(sf_val, "both") || !strcasecmp(sf_val, "udp,tcp") || !strcasecmp(sf_val, "udp, tcp")) {
+			single_flow = true;
+			sf_udp = true;
+			sf_tcp = true;
+		} else if(!strcasecmp(sf_val, "tcp,udp") || !strcasecmp(sf_val, "tcp, udp")) {
+			single_flow = true;
+			sf_udp = true;
+			sf_tcp = true;
+			sf_tcp_first = true;
+		} else if(!strcasecmp(sf_val, "no") || !strcasecmp(sf_val, "false") || !strcmp(sf_val, "0")) {
+			single_flow = false;
+		} else {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Invalid SingleFlow value `%s' (expected no, yes, udp, tcp, or both)", sf_val);
+			free(sf_val);
+			return false;
+		}
+
+		free(sf_val);
+	}
 
 	/* AllowPlainMeta: may an inbound *cleartext* tinc meta connection be
 	   taken on the listening port? Default yes -- that is what every tinc
@@ -203,6 +247,10 @@ bool transport_read_config(void) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Invalid Transports: unknown carrier `%s'", bad);
 			free(list);
 			return false;
+		}
+
+		if(mask & TRANSPORT_BIT(TRANSPORT_SFTCP)) {
+			mask = (mask & ~TRANSPORT_BIT(TRANSPORT_SFTCP)) | TRANSPORT_MASK_PLAIN;
 		}
 
 		if(mask & ~compiled) {
@@ -281,11 +329,24 @@ bool transport_read_config(void) {
 
 	transport_pref_count = 0;
 
-	/* SingleFlow = yes means: dial the single-flow carrier first, whatever
-	   else is listed. It is sugar for putting `sf' at the head of
-	   PreferredTransports (documented in docs/transports.md). */
-	if(single_flow) {
-		transport_pref[transport_pref_count++] = TRANSPORT_SF;
+	/* SingleFlow = yes / udp / tcp / both means: dial the single-flow
+	   carrier(s) first, whatever else is listed. It is sugar for putting
+	   `sf' (UDP) and/or `sftcp' (TCP) at the head of PreferredTransports
+	   (documented in docs/transports.md). */
+	if(sf_tcp_first) {
+		if(sf_tcp) {
+			transport_pref[transport_pref_count++] = TRANSPORT_SFTCP;
+		}
+		if(sf_udp) {
+			transport_pref[transport_pref_count++] = TRANSPORT_SF;
+		}
+	} else {
+		if(sf_udp) {
+			transport_pref[transport_pref_count++] = TRANSPORT_SF;
+		}
+		if(sf_tcp) {
+			transport_pref[transport_pref_count++] = TRANSPORT_SFTCP;
+		}
 	}
 
 	for(int i = 0; i < count; i++) {
@@ -705,6 +766,9 @@ void transport_candidate_activated(outgoing_t *outgoing, const connection_t *c) 
 
 static void build_candidates(outgoing_t *outgoing) {
 	uint32_t peer = transport_node_mask(outgoing->node);
+	if(peer & TRANSPORT_MASK_PLAIN) {
+		peer |= TRANSPORT_BIT(TRANSPORT_SFTCP);
+	}
 	uint32_t added = 0;
 	outgoing->ncandidates = 0;
 	outgoing->transport_idx = 0;
@@ -736,7 +800,7 @@ static void build_candidates(outgoing_t *outgoing) {
 	   a working obfuscated/encrypted carrier. */
 	if(outgoing->node && outgoing->node->pref_transports_count > 0) {
 		static const transport_id_t fallback_order[] = {
-			TRANSPORT_QUIC, TRANSPORT_HTTPS, TRANSPORT_OBFS, TRANSPORT_SF
+			TRANSPORT_QUIC, TRANSPORT_HTTPS, TRANSPORT_OBFS, TRANSPORT_SF, TRANSPORT_SFTCP
 		};
 
 		for(size_t i = 0; i < sizeof(fallback_order) / sizeof(fallback_order[0]) && outgoing->ncandidates < TRANSPORT_MAX; i++) {

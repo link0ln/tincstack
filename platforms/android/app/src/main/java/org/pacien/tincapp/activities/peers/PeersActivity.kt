@@ -191,13 +191,14 @@ class PeersActivity : BaseActivity() {
       ?.takeIf { it.isNotBlank() }
       ?: "auto"
 
-    val codes = arrayOf("auto", "quic", "https", "obfs", "sf", "plain")
+    val codes = arrayOf("auto", "quic", "https", "obfs", "sf", "sftcp", "plain")
     val labels = arrayOf(
       getString(R.string.peer_transport_auto),
       getString(R.string.transport_quic),
       getString(R.string.transport_https),
       getString(R.string.transport_obfs),
       getString(R.string.transport_sf),
+      getString(R.string.transport_sftcp),
       getString(R.string.transport_plain),
     )
     val checked = codes.indexOf(currentPref).coerceAtLeast(0)

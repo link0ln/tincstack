@@ -1095,7 +1095,9 @@ bool send_ack(connection_t *c) {
 		c->options |= OPTION_DECLARED_INDIRECT;
 	}
 
-	if((get_config_bool(lookup_config(c->config_tree, "TCPOnly"), &choice) && choice) || myself->options & OPTION_TCPONLY) {
+	if((get_config_bool(lookup_config(c->config_tree, "TCPOnly"), &choice) && choice) ||
+	                (myself->options & OPTION_TCPONLY) ||
+	                (c->transport && c->transport->id == TRANSPORT_SFTCP)) {
 		c->options |= OPTION_TCPONLY | OPTION_INDIRECT;
 	}
 
@@ -1309,6 +1311,13 @@ bool ack_h(connection_t *c, const char *request) {
 	/* The live daemon's own word on the direct seal (obfs.h); no token is an
 	   older build. */
 	dseal_learn(n, *hisdseal ? hisdseal : NULL);
+
+	/* If the peer opened this TCP connection with OPTION_TCPONLY (e.g.
+	   dialling sftcp), tag the inbound connection as sftcp too. */
+	if(!we_dialled && ((c->options | options) & OPTION_TCPONLY) &&
+	                (!c->transport || c->transport->id == TRANSPORT_PLAIN)) {
+		c->transport = transport_get(TRANSPORT_SFTCP);
+	}
 
 	/* A carrier was negotiated successfully: remember it as the one that
 	   works for this peer and let the next reconnect start its preference

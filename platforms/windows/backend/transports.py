@@ -23,11 +23,13 @@ from dataclasses import dataclass
 from typing import Any
 
 CARRIERS: tuple[str, ...] = ("plain", "obfs", "https", "quic")
-VALID_CARRIERS: tuple[str, ...] = ("plain", "sf", "obfs", "https", "quic")
+PREFER_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "quic")
+VALID_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "quic")
 
 CARRIER_HELP = {
     "plain": "Plain tinc UDP/TCP (default, unchanged wire image)",
     "sf": "Single-flow UDP: control + data multiplexed on one UDP flow",
+    "sftcp": "Single-flow TCP: control + data multiplexed on one TCP connection (no UDP)",
     "obfs": "Obfuscated UDP: keyed junk around the handshake, header shaping",
     "https": "HTTPS-mimicking front: TLS session, probers see a decoy site",
     "quic": "QUIC carrier: SPTPS over datagrams + one stream, migration-friendly",
@@ -102,6 +104,14 @@ _MAGIC_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
 _UPSTREAM_RE = re.compile(r"^(https?://\S+|[A-Za-z0-9.\-\[\]:]+:\d{1,5})$")
 
 
+_CARRIER_ALIASES = {
+    "sf-udp": "sf",
+    "udp-sf": "sf",
+    "sf-tcp": "sftcp",
+    "tcp-sf": "sftcp",
+}
+
+
 def parse_carrier_list(value: Any) -> list[str]:
     """Accept a YAML list or a 'a, b c' string; returns lowercase names as given
     (validation reports unknown ones)."""
@@ -111,7 +121,12 @@ def parse_carrier_list(value: Any) -> list[str]:
         items = [str(x) for x in value]
     else:
         items = re.split(r"[,\s]+", str(value))
-    return [s.strip().lower() for s in items if s.strip()]
+    out: list[str] = []
+    for raw in items:
+        s = raw.strip().lower()
+        if s:
+            out.append(_CARRIER_ALIASES.get(s, s))
+    return out
 
 
 def default_for(name: str) -> Any:

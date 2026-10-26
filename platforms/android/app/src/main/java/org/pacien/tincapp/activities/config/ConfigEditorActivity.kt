@@ -1050,7 +1050,7 @@ class ConfigEditorActivity : BaseActivity() {
         name = "PreferredTransport",
         description = "Preferred transport when dialing this node",
         defaultSuggestion = "quic",
-        valuePresets = { listOf("auto", "quic", "https", "obfs", "sf", "plain") },
+        valuePresets = { listOf("auto", "quic", "https", "obfs", "sf", "sftcp", "plain") },
       ),
       KeySpec(
         name = "Subnet",
@@ -1097,8 +1097,14 @@ class ConfigEditorActivity : BaseActivity() {
       KeySpec(
         name = "PreferredTransports",
         description = "Global transport dial priority (comma-separated)",
-        defaultSuggestion = "quic, https, obfs, sf, plain",
-        valuePresets = { listOf("quic", "https", "obfs", "sf", "plain") },
+        defaultSuggestion = "quic, https, obfs, sf, sftcp, plain",
+        valuePresets = { listOf("quic", "https", "obfs", "sf", "sftcp", "plain") },
+      ),
+      KeySpec(
+        name = "SingleFlow",
+        description = "Single-flow mode: udp (sf), tcp (sftcp), both, or no",
+        defaultSuggestion = "no",
+        valuePresets = { listOf("no", "udp", "tcp", "both") },
       ),
       KeySpec(
         name = "Transports",

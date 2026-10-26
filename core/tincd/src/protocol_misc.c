@@ -303,7 +303,8 @@ static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
 		mtu = MIN(mtu, 1119);
 	}
 
-	if(n->nexthop && n->nexthop != myself && n->nexthop->connection && n->nexthop->connection->transport && n->nexthop->connection->transport->send_datagram) {
+	if(n->nexthop && n->nexthop != myself && (!via || via == myself || via == n->nexthop || !via->status.udp_confirmed || via->minmtu < MINMTU) &&
+	                n->nexthop->connection && n->nexthop->connection->transport && n->nexthop->connection->transport->send_datagram) {
 		mtu = MIN(mtu, 1119);
 	}
 
