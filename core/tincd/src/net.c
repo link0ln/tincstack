@@ -587,6 +587,9 @@ int reload_configuration(void) {
 
 			if(!present) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config of %s has been removed", c->name);
+				if(c->outgoing) {
+					c->outgoing->retry_requested = true;
+				}
 				terminate_connection(c, c->edge);
 				continue;
 			}
@@ -594,6 +597,9 @@ int reload_configuration(void) {
 			if(memcmp(c->host_digest, digest, sizeof(digest))) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config file of %s has been changed", c->name);
 				memcpy(c->host_digest, digest, sizeof(digest));
+				if(c->outgoing) {
+					c->outgoing->retry_requested = true;
+				}
 				terminate_connection(c, c->edge);
 			}
 
@@ -605,6 +611,9 @@ int reload_configuration(void) {
 
 		if(stat(fname, &s) || s.st_mtime > last_config_check) {
 			logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config file of %s has been changed", c->name);
+			if(c->outgoing) {
+				c->outgoing->retry_requested = true;
+			}
 			terminate_connection(c, c->edge);
 		}
 	}

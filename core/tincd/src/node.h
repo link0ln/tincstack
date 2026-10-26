@@ -98,6 +98,7 @@ typedef struct node_t {
 	struct timeval udp_reply_sent;          /* Last time a (gratuitous) UDP probe reply was sent */
 	struct timeval udp_ping_sent;           /* Last time a UDP probe was sent */
 	int udp_ping_rtt;                       /* Round trip time of UDP ping (in microseconds; or -1 if !status.udp_confirmed) */
+	int smoothed_rtt_ms;                    /* Smoothed UDP RTT in milliseconds for edge weight calibration */
 	timeout_t udp_ping_timeout;             /* Ping timeout event */
 
 	struct timeval mtu_ping_sent;           /* Last time a MTU probe was sent */

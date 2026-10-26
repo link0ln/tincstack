@@ -45,6 +45,7 @@
 #include "digest.h"
 #include "device.h"
 #include "ethernet.h"
+#include "graph.h"
 #include "ipv4.h"
 #include "ipv6.h"
 #include "logger.h"
@@ -81,8 +82,9 @@ static void *lz4_state = NULL;
 #endif // HAVE_LZ4
 
 static void send_udppacket(node_t *, vpn_packet_t *);
+static void try_udp(node_t *n, bool has_data);
 
-unsigned replaywin = 32;
+unsigned replaywin = 128;
 bool localdiscovery = true;
 bool udp_discovery = true;
 int udp_discovery_keepalive_interval = 10;
@@ -256,6 +258,11 @@ static void send_udp_probe_reply(node_t *n, vpn_packet_t *packet, length_t len) 
 static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 	if(!DATA(packet)[0]) {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got UDP probe request %d from %s (%s)", packet->len, n->name, n->hostname);
+
+		if(direct_seal_permits(n, false)) {
+			n->last_udp_rx = now.tv_sec;
+		}
+
 		send_udp_probe_reply(n, packet, len);
 		return;
 	}
@@ -282,6 +289,45 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 		n->udp_ping_rtt = (int)(rtt.tv_sec * 1000000 + rtt.tv_usec);
 		n->status.ping_sent = false;
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got type %d UDP probe reply %d from %s (%s) rtt=%d.%03d", DATA(packet)[0], len, n->name, n->hostname, n->udp_ping_rtt / 1000, n->udp_ping_rtt % 1000);
+
+		int rtt_ms = n->udp_ping_rtt / 1000;
+
+		if(rtt_ms < 1) {
+			rtt_ms = 1;
+		}
+
+		if(n->smoothed_rtt_ms <= 0 || rtt_ms < n->smoothed_rtt_ms) {
+			n->smoothed_rtt_ms = rtt_ms;
+		} else {
+			n->smoothed_rtt_ms = (n->smoothed_rtt_ms * 3 + rtt_ms) / 4;
+		}
+
+		if(n->connection && n->connection->edge && !n->connection->status.custom_weight) {
+			edge_t *e = n->connection->edge;
+			int new_weight = n->smoothed_rtt_ms;
+#ifdef __ANDROID__
+			new_weight += 1000;
+#endif
+			int diff = new_weight > e->weight ? new_weight - e->weight : e->weight - new_weight;
+			time_t cooldown = (new_weight < e->weight) ? 5 : 60;
+
+			if(diff >= 20 && diff * 2 >= e->weight &&
+			                (!e->weight_rtt_calibrated || now.tv_sec - e->last_weight_update >= cooldown)) {
+				logger(DEBUG_PROTOCOL, LOG_INFO, "Calibrating edge weight to %s from %d to %d (UDP RTT %d.%03d ms)",
+				       n->name, e->weight, new_weight, n->udp_ping_rtt / 1000, n->udp_ping_rtt % 1000);
+				splay_node_t *snode = splay_unlink(&edge_weight_tree, e);
+				e->weight = new_weight;
+				splay_insert_node(&edge_weight_tree, snode);
+				e->weight_rtt_calibrated = true;
+				e->last_weight_update = now.tv_sec;
+
+				if(!tunnelserver) {
+					send_add_edge(everyone, e);
+				}
+
+				graph();
+			}
+		}
 	} else {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got type %d UDP probe reply %d from %s (%s)", DATA(packet)[0], len, n->name, n->hostname);
 	}
@@ -720,6 +766,22 @@ void receive_tcppacket(connection_t *c, const char *buffer, size_t len) {
 		outpkt.priority = -1;
 	}
 
+	/* If a direct neighbour sends us a small packet (< MINMTU) over TCP
+	   while we still think its PMTU is >= len, and we have heard no UDP from
+	   it for at least udp_discovery_interval seconds, the neighbour has
+	   already demoted its own minmtu to 0 and fallen back to TCP. Reset our
+	   minmtu to 0 immediately so our replies also use TCP instead of going
+	   into a dead UDP blackhole, and arm try_mtu() to re-verify when UDP recovers. */
+	if(c->node && c->node->status.udp_confirmed && !carrier_datagram_path(c->node) &&
+	                len < MINMTU && c->node->minmtu >= (int)len &&
+	                now.tv_sec - c->node->last_udp_rx >= udp_discovery_interval) {
+		c->node->minmtu = 0;
+
+		if(c->node->mtuprobes < 0) {
+			c->node->mtuprobes = 0;
+		}
+	}
+
 	memcpy(DATA(&outpkt), buffer, len);
 
 	receive_packet(c->node, &outpkt);
@@ -815,8 +877,11 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 	uint8_t type = 0;
 	int offset = 0;
 
-	if((!(DATA(origpkt)[12] | DATA(origpkt)[13])) && (n->sptps.outstate))  {
-		sptps_send_record(&n->sptps, PKT_PROBE, DATA(origpkt), origpkt->len);
+	if(!(DATA(origpkt)[12] | DATA(origpkt)[13])) {
+		if(n->sptps.outstate) {
+			sptps_send_record(&n->sptps, PKT_PROBE, DATA(origpkt), origpkt->len);
+		}
+
 		return;
 	}
 
@@ -1401,6 +1466,10 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 			   (it is also visible in `dump nodes'). */
 			from->status.sptps_route_stale = false;
 			logger(DEBUG_META, LOG_INFO, "SPTPS key exchange with %s (%s) successful", from->name, from->hostname);
+
+			if(from->sptps.initiator && !(from->connection && node_tcponly(from))) {
+				try_udp(from, false);
+			}
 		}
 
 		return true;
@@ -1639,8 +1708,6 @@ static bool has_confirmed_udp_addr(const node_t *n) {
 #define PUNCH_MAX_UNANSWERED 5
 #define PUNCH_MAX_DELAY_MS 1000
 
-static void try_udp(node_t *n, bool has_data);
-
 static bool punch_coordinated(const node_t *n) {
 	return (n->dseal & DSEAL_KNOWN) && (n->dseal & DSEAL_PUNCH) && !n->connection &&
 	       n->nexthop && n->nexthop != n && n->nexthop->connection;
@@ -1829,7 +1896,11 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 }
 
 static void try_udp(node_t *n, bool has_data) {
-	if(!udp_discovery) {
+	if(!udp_discovery || (n->connection && node_tcponly(n))) {
+		return;
+	}
+
+	if(n->status.sptps && (!n->status.validkey || !n->sptps.outstate)) {
 		return;
 	}
 
@@ -2483,6 +2554,15 @@ static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t
 		n = NULL;        // Don't believe it if we don't have confirmation yet.
 	}
 
+	/* If this datagram was just unsealed and replay-checked by obfs_accept(),
+	   carrier_node is the authenticated sender node even when its NAT mapping
+	   just changed (so lookup_node_udp(addr) missed) and even when the inner
+	   record is a relayed packet (DSTID != 0, which sptps_verify_datagram
+	   cannot verify because it is encrypted end-to-end for the destination). */
+	if(!n && !via_carrier && carrier_node) {
+		n = carrier_node;
+	}
+
 	if(!n) {
 		// It might be from a 1.1 node, which might have a source ID in the packet.
 		pkt->offset = 2 * sizeof(node_id_t);
@@ -2575,6 +2655,16 @@ skip_harder:
 				return;
 			}
 
+			if(carrier_node && !via_carrier) {
+				n->sock = ls - listen_socket;
+
+				if(sockaddrcmp(addr, &n->address)) {
+					update_node_udp(n, addr);
+				}
+
+				n->status.udp_addr_confirmed = true;
+			}
+
 			send_sptps_data(to, from, 0, DATA(pkt), pkt->len);
 			try_tx(to, true);
 			return;
@@ -2622,7 +2712,7 @@ static void handle_incoming_vpn_packet(listen_socket_t *ls, vpn_packet_t *pkt, s
 
 /* Re-inject an inner SPTPS datagram that the obfs carrier just unsealed. It
    goes straight to the data path, bypassing carrier dispatch. */
-void handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr) {
+void handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr, node_t *from) {
 	if(len > MAXSIZE) {
 		return;
 	}
@@ -2634,7 +2724,7 @@ void handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t *buf, s
 	pkt.len = len;
 
 	sockaddr_t a = *addr;
-	process_sptps_udp(ls, &pkt, &a, false, NULL);
+	process_sptps_udp(ls, &pkt, &a, false, from);
 }
 
 /* A record a carrier delivered inside its own flow (quic's DATAGRAM frames):

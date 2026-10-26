@@ -28,7 +28,7 @@
 #include "random.h"
 #include "xalloc.h"
 
-unsigned int sptps_replaywin = 16;
+unsigned int sptps_replaywin = 128;
 
 /*
    Nonce MUST be exchanged first (done)
@@ -461,23 +461,14 @@ static bool sptps_check_seqno(sptps_t *s, uint32_t seqno, bool update_state) {
 	if(s->replaywin) {
 		if(seqno != s->inseqno) {
 			if(seqno >= s->inseqno + s->replaywin * 8) {
-				// Prevent packets that jump far ahead of the queue from causing many others to be dropped.
-				bool farfuture = s->farfuture < s->replaywin >> 2;
-
-				if(update_state) {
-					s->farfuture++;
-				}
-
-				if(farfuture) {
-					return update_state ? error(s, EIO, "Packet is %d seqs in the future, dropped (%u)\n", seqno - s->inseqno, s->farfuture) : false;
-				}
-
-				// Unless we have seen lots of them, in which case we consider the others lost.
+				/* In SPTPS, ChaCha20-Poly1305 AEAD authenticates seqno as the
+				   nonce before sptps_check_seqno(..., true) is called, so a
+				   jump ahead of the replay window is genuine packet loss on
+				   the wire rather than an unauthenticated bitflip. Accept it
+				   immediately instead of dropping the first replaywin/4 valid
+				   post-loss packets. */
 				if(update_state) {
 					warning(s, "Lost %d packets\n", seqno - s->inseqno);
-				}
-
-				if(update_state) {
 					// Mark all packets in the replay window as being late.
 					memset(s->late, 255, s->replaywin);
 				}
@@ -609,7 +600,13 @@ static bool sptps_receive_data_datagram(sptps_t *s, const uint8_t *data, size_t 
 	}
 
 	if(!sptps_check_seqno(s, seqno, true)) {
-		return false;
+		/* The packet passed ChaCha20-Poly1305 AEAD verification above, so the
+		   SPTPS session key is valid and in sync; this datagram is merely a
+		   duplicate or arrived older than the replay window. Ignore the
+		   packet without returning false, otherwise callers mistake a late
+		   reordered packet for a broken key and call send_req_key(), tearing
+		   down the active tunnel mid-stream. */
+		return true;
 	}
 
 	// Append a NULL byte for safety.

@@ -64,6 +64,7 @@ typedef union connection_status_t {
 		bool front_tls_only: 1;         /* 1 if it arrived on the HttpsPort listener: TLS or nothing */
 		bool web_front: 1;              /* answers like a web server: nginx timeouts, no tarpit */
 		bool udp_fallback: 1;           /* 1 if dialled via UdpMetaFallback onto a confirmed UDP flow */
+		bool custom_weight: 1;          /* 1 if Weight was explicitly configured in tinc.conf or hosts/ */
 	};
 	uint32_t value;
 } connection_status_t;

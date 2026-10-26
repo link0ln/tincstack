@@ -34,6 +34,8 @@ typedef struct edge_t {
 
 	uint32_t options;                       /* options turned on for this edge */
 	int weight;                             /* weight of this edge */
+	time_t last_weight_update;              /* last time weight was dynamically updated from UDP RTT */
+	bool weight_rtt_calibrated;             /* true once post-handshake RTT calibration has run */
 
 	struct connection_t *connection;        /* connection associated with this edge, if available */
 	struct edge_t *reverse;                 /* edge in the opposite direction, if available */

@@ -411,7 +411,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 
 		maybe_send_carrier_beacon(from);
 
-		if(from->sptps.label && from->sptps.initiator) {
+		if(from->status.waitingforkey && from->sptps.label && from->sptps.initiator) {
 			/* REQ_KEY glare (patch 5): both peers started an SPTPS session as
 			   initiator in the same instant, so each is about to tear its own
 			   session down here and restart as responder. If both do that,

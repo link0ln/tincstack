@@ -1110,8 +1110,15 @@ bool send_ack(connection_t *c) {
 		c->options |= OPTION_CLAMP_MSS;
 	}
 
-	if(!get_config_int(lookup_config(c->config_tree, "Weight"), &c->estimated_weight)) {
-		get_config_int(lookup_config(&config_tree, "Weight"), &c->estimated_weight);
+	if(get_config_int(lookup_config(c->config_tree, "Weight"), &c->estimated_weight) ||
+	                get_config_int(lookup_config(&config_tree, "Weight"), &c->estimated_weight)) {
+		c->status.custom_weight = true;
+	} else {
+#ifdef __ANDROID__
+		/* Mobile clients on Wi-Fi / cellular should not outrank wired routers
+		   as transit relays when hop counts are equal. */
+		c->estimated_weight += 1000;
+#endif
 	}
 
 	/* Advertise our transport accept list as a trailing token. An unmodified

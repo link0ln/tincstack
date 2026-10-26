@@ -216,6 +216,15 @@ bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 		return false;
 	}
 
+	/* If an activated connection is waiting for a PONG while actively
+	   delivering stream bytes (e.g. a heavy SPTPS_PACKET burst on https
+	   ahead of the peer's PONG in the same TCP stream), refresh the ping
+	   deadline so timeout_handler does not kill a live, actively-receiving
+	   link for head-of-line delay. */
+	if(inlen > 0 && c->edge && c->status.pinged) {
+		c->last_ping_time = now.tv_sec;
+	}
+
 	do {
 		/* Are we receiving a SPTPS packet? */
 

@@ -1331,7 +1331,7 @@ static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerl
 		return true;
 	}
 
-	handle_incoming_vpn_packet_decap(main_ls, inner, innerlen, addr);
+	handle_incoming_vpn_packet_decap(main_ls, inner, innerlen, addr, l ? l->node : NULL);
 	return true;
 }
 

@@ -620,6 +620,10 @@ static void handle_meta_write(connection_t *c) {
 
 	buffer_read(&c->outbuf, outlen);
 
+	if(c->edge && c->status.pinged && c->outbuf.len > c->outbuf.offset) {
+		c->last_ping_time = now.tv_sec;
+	}
+
 	if(!c->outbuf.len) {
 		io_set(&c->io, IO_READ);
 	}

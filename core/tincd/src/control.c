@@ -169,6 +169,10 @@ bool control_h(connection_t *c, const char *request) {
 				continue;
 			}
 
+			if(other->outgoing) {
+				other->outgoing->retry_requested = true;
+			}
+
 			logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Disconnecting %s (%s) on operator request", other->name, other->hostname);
 			terminate_connection(other, other->edge);
 			found = true;

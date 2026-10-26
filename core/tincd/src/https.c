@@ -733,6 +733,11 @@ static void https_flush(connection_t *c) {
 
 		if(n > 0) {
 			buffer_read(&c->outbuf, (uint32_t) n);
+
+			if(c->edge && c->status.pinged && c->outbuf.len > c->outbuf.offset) {
+				c->last_ping_time = now.tv_sec;
+			}
+
 			continue;
 		}
 
