@@ -1453,10 +1453,16 @@ class DiagWebServer:
                     total_tx += n.tx_bytes
                 pcfg = peer_configs.get(n.name, {})
                 sdict = n.status if n.status else decode_status(n.status_hex)
+                is_nd = bool(
+                    n.no_direct
+                    or sdict.get("no_direct")
+                    or (nc and transports.is_peer_no_direct(nc.options, nc.hosts.get(n.name, ""), n.name))
+                )
                 nodes_list.append({
                     "name": n.name,
                     "is_self": n.is_self,
                     "reachable": n.reachable,
+                    "no_direct": is_nd,
                     "link": n.link,
                     "transport": n.transport,
                     "preferred_transport": pcfg.get("preferred_transport", "auto"),
@@ -1716,6 +1722,33 @@ class DiagWebServer:
                 summary=f"Switched preferred transport for '{peer}' to '{carrier}' via Diagnostic WebUI",
             )
             return res.ok, f"Switched {peer} transport to {carrier}", {}
+        if action in ("set_peer_direct", "toggle_no_direct"):
+            peer = str(payload.get("peer") or "").strip()
+            if not nc or not peer:
+                return False, "Invalid network or peer", {}
+            if peer not in nc.hosts and os.path.exists(app.path):
+                try:
+                    yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                except Exception:
+                    pass
+            if "no_direct" in payload:
+                no_direct = bool(payload.get("no_direct"))
+            elif "direct" in payload:
+                no_direct = not bool(payload.get("direct"))
+            else:
+                no_direct = not transports.is_peer_no_direct(nc.options, nc.hosts.get(peer, ""), peer)
+            old_host = nc.hosts.get(peer, "")
+            new_host = transports.set_peer_no_direct(nc.options, old_host, peer, no_direct)
+            if peer in nc.hosts or new_host:
+                nc.hosts[peer] = new_host
+            yaml_config.save(app)
+            res = self.tc.reload(net)
+            mode_str = "Relay only (no direct connect)" if no_direct else "Direct connect allowed"
+            self.collector.add_incident(
+                net=net, kind="USER_ACTION", severity="info", peer=peer,
+                summary=f"Set '{peer}' direct connect policy to '{mode_str}' via Diagnostic WebUI",
+            )
+            return res.ok, f"{peer}: {mode_str}", {"no_direct": no_direct}
         if action == "toggle_route":
             if not nc:
                 return False, "Network not found", {}

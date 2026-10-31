@@ -100,3 +100,25 @@ def test_multipath_options_validation_and_defaults():
     assert "MultipathConnections: must be between 1 and 8" in joined
 
 
+def test_peer_no_direct_read_and_write():
+    opts = {"Name": "client", "ConnectTo": ["ruvds3", "euvds"]}
+    host_blob = "Address = 198.51.100.10\nSubnet = 10.200.240.3/32\nEd25519PublicKey = CCCC\n"
+    assert not tr.is_peer_no_direct(opts, host_blob, "euvds")
+
+    # Enable no_direct for euvds
+    updated_host = tr.set_peer_no_direct(opts, host_blob, "euvds", True)
+    assert tr.is_peer_no_direct(opts, updated_host, "euvds")
+    assert opts["NoDirectNodes"] == ["euvds"]
+    assert opts["ConnectTo"] == ["ruvds3"]
+    assert "DirectConnect = no" in updated_host
+    assert tr.host_no_direct(updated_host)
+
+    # Disable no_direct for euvds
+    cleared_host = tr.set_peer_no_direct(opts, updated_host, "euvds", False)
+    assert not tr.is_peer_no_direct(opts, cleared_host, "euvds")
+    assert "NoDirectNodes" not in opts
+    assert "DirectConnect" not in cleared_host
+    assert not tr.host_no_direct(cleared_host)
+
+
+

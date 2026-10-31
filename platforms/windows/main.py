@@ -101,6 +101,7 @@ KNOWN_OPTIONS = [
     ("InterfaceRoute", "str", None, "Route through the tunnel: '<prefix> [gateway]', e.g. 192.168.1.0/24 10.200.240.7. One per route; the Peers tab's Route buttons write these."),
     ("LocalDiscovery", "bool", None, "Find peers on the same LAN and connect directly"),
     ("DirectOnly", "bool", None, "Only send packets directly to peers, never via intermediate relays"),
+    ("NoDirectNodes", "str", None, "Peers to never connect to directly (force traffic via relay nodes, space/comma separated)"),
     ("Forwarding", "enum", ["internal", "kernel", "off"], "How packets are forwarded (default: internal)"),
     ("Broadcast", "enum", ["mst", "direct", "no"], "How broadcast packets are propagated"),
     ("ClampMSS", "bool", None, "Clamp TCP MSS of inner packets to path MTU (default: yes)"),
@@ -166,7 +167,7 @@ def _is_widget_alive(w: QtWidgets.QWidget | None) -> bool:
 
 
 class PeersTab(QtWidgets.QWidget):
-    COLS = ["Peer", "Link", "Transport", "Via", "Dist", "RTT ms", "PMTU", "RX", "TX", "Subnets", "Route here"]
+    COLS = ["Peer", "Link", "Direct", "Transport", "Via", "Dist", "RTT ms", "PMTU", "RX", "TX", "Subnets", "Route here"]
     FULL_TUNNEL_LABEL = "all traffic ({})"     # the Route here toggle for an announced default route
 
     def __init__(self, tc: TincControl, nets_fn: Callable[[], list[str]], pool: WorkerPool,
@@ -178,6 +179,7 @@ class PeersTab(QtWidgets.QWidget):
         # clicked. Rebuild a cell only when what it shows actually changed.
         self._route_cells: dict[str, tuple[tuple, QtWidgets.QWidget]] = {}
         self._transport_cells: dict[str, tuple[tuple, QtWidgets.QWidget]] = {}
+        self._direct_cells: dict[str, tuple[tuple, QtWidgets.QWidget]] = {}
         self._retired_widgets: deque[QtWidgets.QWidget] = deque(maxlen=64)
         self._menu_open_count: int = 0
         self._deferred_table_refresh: bool = False
@@ -240,6 +242,11 @@ class PeersTab(QtWidgets.QWidget):
         if old:
             self._retire_widget(old[1])
 
+    def _pop_direct_cell(self, peer_name: str) -> None:
+        old = self._direct_cells.pop(peer_name, None)
+        if old:
+            self._retire_widget(old[1])
+
     def _pop_route_cell(self, peer_name: str) -> None:
         old = self._route_cells.pop(peer_name, None)
         if old:
@@ -250,8 +257,11 @@ class PeersTab(QtWidgets.QWidget):
             self._retire_widget(w)
         for _, w in list(self._transport_cells.values()):
             self._retire_widget(w)
+        for _, w in list(self._direct_cells.values()):
+            self._retire_widget(w)
         self._route_cells.clear()
         self._transport_cells.clear()
+        self._direct_cells.clear()
 
     def _on_menu_show(self) -> None:
         self._menu_open_count += 1
@@ -330,31 +340,153 @@ class PeersTab(QtWidgets.QWidget):
             self._pop_route_cell(name)
         for name in [k for k in self._transport_cells if k not in live_names]:
             self._pop_transport_cell(name)
+        for name in [k for k in self._direct_cells if k not in live_names]:
+            self._pop_direct_cell(name)
         self.table.setRowCount(len(nodes))
         for r, n in enumerate(nodes):
             link = n.link
             via = "" if n.is_self or link.startswith("direct") else n.nexthop
             tr_text = "—" if n.is_self else (n.transport or "—")
-            cells = [n.name, LINK_LABEL.get(link, link), tr_text, via,
+            is_nd = False if n.is_self else self._is_peer_no_direct(n)
+            direct_text = "—" if n.is_self else ("🚫 Relay only" if is_nd else "✓ Direct")
+            cells = [n.name, LINK_LABEL.get(link, link), direct_text, tr_text, via,
                      "" if n.distance < 0 else str(n.distance),
                      f"{n.rtt:.0f}" if n.rtt > 0 else "",
                      str(n.pmtu) if n.pmtu else "",
                      human_bytes(n.rx_bytes), human_bytes(n.tx_bytes),
                      ", ".join(n.subnets), ""]
+            row_bg = QtGui.QColor(227, 116, 0, 35) if is_nd else None
             for c, val in enumerate(cells):
                 it = QtWidgets.QTableWidgetItem(val)
-                if c == 1:
+                if row_bg is not None:
+                    it.setBackground(row_bg)
+                if c == 0 and is_nd:
+                    it.setForeground(QtGui.QColor("#e37400"))
+                    f = it.font(); f.setBold(True); it.setFont(f)
+                elif c == 1:
                     it.setForeground(QtGui.QColor(LINK_COLORS.get(link, "#000")))
                     f = it.font(); f.setBold(True); it.setFont(f)
-                elif c == 2 and n.transport:
+                elif c == 2 and not n.is_self:
+                    it.setForeground(QtGui.QColor("#e37400" if is_nd else "#1e8e3e"))
+                    f = it.font(); f.setBold(True); it.setFont(f)
+                elif c == 3 and n.transport:
                     it.setForeground(QtGui.QColor(TRANSPORT_COLORS.get(n.transport, "#5f6368")))
                     f = it.font(); f.setBold(True); it.setFont(f)
                 self.table.setItem(r, c, it)
+            self._direct_cell(r, n)
             self._transport_cell(r, n)
             self._route_cell(r, n)
         self.table.resizeColumnsToContents()
 
-    # -- per-node transport display and quick-access protocol switcher ---------
+    # -- per-node direct connect (NoDirectNodes / DirectConnect) & transport ---
+
+    def _is_peer_no_direct(self, n) -> bool:
+        if getattr(n, "no_direct", False):
+            return True
+        nc = self.ctx.app.net(self.net) if (self.ctx and self.net) else None
+        if not nc:
+            return False
+        return transports.is_peer_no_direct(nc.options, nc.hosts.get(n.name, ""), n.name)
+
+    def _direct_cell(self, row: int, n) -> None:
+        col = 2
+        if n.is_self or self.ctx is None:
+            self._pop_direct_cell(n.name)
+            self.table.removeCellWidget(row, col)
+            return
+        is_nd = self._is_peer_no_direct(n)
+        sig = (is_nd,)
+        cached = self._direct_cells.get(n.name)
+        if cached and cached[0] == sig and _is_widget_alive(cached[1]):
+            if self.table.cellWidget(row, col) is cached[1]:
+                return
+            self._retire_widget(cached[1])
+        elif cached:
+            self._retire_widget(cached[1])
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QHBoxLayout(w)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(2)
+        btn = QtWidgets.QToolButton()
+        if is_nd:
+            btn.setText("🚫 Relay only")
+            btn.setStyleSheet(
+                "QToolButton { color: #e37400; background-color: rgba(227, 116, 0, 0.14); "
+                "border: 1px solid rgba(227, 116, 0, 0.45); border-radius: 4px; "
+                "font-weight: bold; padding: 1px 6px; }"
+            )
+            btn.setToolTip(
+                f"Direct connection to {n.name} is FORBIDDEN (NoDirectNodes / DirectConnect = no).\n"
+                f"All meta & data traffic to {n.name} is forced through intermediate relay nodes.\n\n"
+                f"Click to allow direct connections to {n.name}."
+            )
+        else:
+            btn.setText("✓ Direct")
+            btn.setStyleSheet("QToolButton { color: #1e8e3e; font-weight: bold; padding: 1px 6px; }")
+            btn.setToolTip(
+                f"Direct connection (TCP/UDP) to {n.name} is ALLOWED.\n\n"
+                f"Click to forbid direct connections to {n.name} and force relay-only mode."
+            )
+        btn.clicked.connect(
+            lambda _checked=False, p=n.name, target=(not is_nd): QtCore.QTimer.singleShot(
+                0, lambda: self._set_peer_no_direct(p, target)
+            )
+        )
+        lay.addWidget(btn)
+        lay.addStretch()
+        self._direct_cells[n.name] = (sig, w)
+        self.table.setCellWidget(row, col, w)
+
+    def _set_peer_no_direct(self, peer_name: str, no_direct: bool) -> None:
+        ctx, net = self.ctx, self.net
+        nc = ctx.app.net(net) if (ctx and net) else None
+        if nc is None:
+            return
+        mode_str = "relay-only (no direct connect)" if no_direct else "direct connect allowed"
+        diagnostics.log_app_event(f"Setting peer '{peer_name}' to {mode_str} on network '{net}'")
+        if peer_name not in nc.hosts and os.path.exists(ctx.app.path):
+            try:
+                yaml_config.refresh_in_place(ctx.app, yaml_config.read_document(ctx.app.path))
+            except Exception:
+                pass
+        old_host = nc.hosts.get(peer_name, "")
+        old_opts = dict(nc.options)
+        new_host = transports.set_peer_no_direct(nc.options, old_host, peer_name, no_direct)
+        if peer_name in nc.hosts or new_host:
+            nc.hosts[peer_name] = new_host
+        if not ctx.save_config():
+            nc.options = old_opts
+            if peer_name in nc.hosts:
+                nc.hosts[peer_name] = old_host
+            self._pop_direct_cell(peer_name)
+            if self._menu_open_count > 0:
+                self._deferred_table_refresh = True
+            else:
+                self._table(self._snaps.get(net))
+            return
+        if hasattr(ctx, "network"):
+            ctx.network.reload()
+        self._pop_direct_cell(peer_name)
+        self._pop_transport_cell(peer_name)
+        if self._menu_open_count > 0:
+            self._deferred_table_refresh = True
+        else:
+            self._table(self._snaps.get(net))
+        if hasattr(ctx, "diag_collector"):
+            ctx.diag_collector.add_incident(
+                net=net, kind="USER_ACTION", severity="info", peer=peer_name,
+                summary=f"Set '{peer_name}' direct connection policy to {mode_str}",
+            )
+        if not ctx._running.get(net, False):
+            ctx.status(f"{peer_name}: {mode_str} (will apply when '{net}' starts)")
+            return
+        ctx.status(f"{peer_name}: applying {mode_str}…")
+        ctx.pool.run(
+            self.tc.reload, net,
+            tag=f"reload-nd-{net}-{peer_name}",
+            on_done=lambda _r: (ctx.status(f"{peer_name}: {mode_str} applied"), self.sample_async()),
+            on_error=lambda m: ctx.status(f"{peer_name}: reload failed: {m}"),
+        )
 
     def _peer_preferred_transport(self, peer_name: str) -> str:
         nc = self.ctx.app.net(self.net) if (self.ctx and self.net) else None
@@ -384,6 +516,16 @@ class PeersTab(QtWidgets.QWidget):
             if code == "auto":
                 menu.addSeparator()
         menu.addSeparator()
+        is_nd = self._is_peer_no_direct(n)
+        nd_act = menu.addAction(f"🚫 Forbid direct connect to {n.name} (Relay only)")
+        nd_act.setCheckable(True)
+        nd_act.setChecked(is_nd)
+        nd_act.triggered.connect(
+            lambda _checked=False, p=n.name, target=(not is_nd): QtCore.QTimer.singleShot(
+                0, lambda: self._set_peer_no_direct(p, target)
+            )
+        )
+        menu.addSeparator()
         rec = menu.addAction(f"⟳ Reconnect {n.name} now")
         rec.triggered.connect(
             lambda _checked=False, p=n.name: QtCore.QTimer.singleShot(
@@ -393,7 +535,7 @@ class PeersTab(QtWidgets.QWidget):
         return menu
 
     def _transport_cell(self, row: int, n) -> None:
-        col = 2
+        col = 3
         if n.is_self or self.ctx is None:
             self._pop_transport_cell(n.name)
             self.table.removeCellWidget(row, col)
@@ -474,8 +616,10 @@ class PeersTab(QtWidgets.QWidget):
         old_host = nc.hosts.get(peer_name, "")
         nc.hosts[peer_name] = transports.set_host_preferred_transport(old_host, carrier)
         # If the user pinned a specific transport for a peer that has an Address
-        # in its host block, make sure ConnectTo includes it so tincd dials it directly.
-        if carrier != "auto" and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer_name], re.I | re.M):
+        # in its host block, make sure ConnectTo includes it so tincd dials it directly
+        # (unless direct connections to this peer are forbidden).
+        is_nd = transports.is_peer_no_direct(nc.options, nc.hosts[peer_name], peer_name)
+        if not is_nd and carrier != "auto" and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer_name], re.I | re.M):
             ct = nc.options.get("ConnectTo")
             if isinstance(ct, list):
                 if peer_name not in ct:

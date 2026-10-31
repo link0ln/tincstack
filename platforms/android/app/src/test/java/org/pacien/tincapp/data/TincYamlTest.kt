@@ -192,6 +192,30 @@ class TincYamlTest {
     assertEquals("8443", y.optionValue("mynet", "Port"))
   }
 
+  @Test
+  fun togglesPeerNoDirectAndUpdatesConnectTo() {
+    val f = yamlFile(DAEMON_DOC)
+    val y = TincYaml(f)
+    y.setHostMultiVars(
+      "mynet",
+      "hub",
+      mapOf("Address" to listOf("198.51.100.10"), "Subnet" to listOf("10.165.0.2/32")),
+      createIfMissing = true,
+    )
+    assertEquals(false, y.isPeerNoDirect("mynet", "hub"))
+
+    y.setPeerNoDirect("mynet", "hub", true)
+    assertTrue(y.isPeerNoDirect("mynet", "hub"))
+    assertEquals(listOf("hub"), y.optionValues("mynet", "NoDirectNodes"))
+    assertEquals(listOf("relay"), y.optionValues("mynet", "ConnectTo"))
+    assertTrue(PeerConfig("hub", y.hostText("mynet", "hub")!!).noDirect)
+
+    y.setPeerNoDirect("mynet", "hub", false)
+    assertEquals(false, y.isPeerNoDirect("mynet", "hub"))
+    assertEquals(emptyList<String>(), y.optionValues("mynet", "NoDirectNodes"))
+    assertEquals(false, PeerConfig("hub", y.hostText("mynet", "hub")!!).noDirect)
+  }
+
   companion object {
     /** What `tincd -c tinc.yaml -n mynet` materialises from `Name: nodeA` (keys shortened). */
     val DAEMON_DOC = """

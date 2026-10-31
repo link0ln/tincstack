@@ -58,6 +58,7 @@ class PeersActivity : BaseActivity() {
   // which read as "another tiny window", the owner's words, 2026-10-20.
   private val adapter = Adapter(
     onRowClick = { openConfigEditor(it.name) },
+    onToggleDirectClick = { togglePeerNoDirect(it) },
     onMenuClick = { peer, anchor -> showPeerMenu(peer, anchor) },
   )
   private val configEditLauncher = registerForActivityResult(
@@ -101,6 +102,7 @@ class PeersActivity : BaseActivity() {
         via = livePeer?.via,
         rttMs = livePeer?.rttMs,
         transport = livePeer?.transport,
+        noDirect = n != own && (livePeer?.noDirect == true || yaml.isPeerNoDirect(stanza, n)),
       )
     }
     adapter.submit(rows)
@@ -150,7 +152,16 @@ class PeersActivity : BaseActivity() {
     yaml.hostNames(stanza)
 
   private fun render(peers: List<PeerStatus>?) {
-    if (peers.isNullOrEmpty()) renderStatic() else adapter.submit(peers)
+    if (peers.isNullOrEmpty()) {
+      renderStatic()
+    } else {
+      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+      val stanza = yaml.resolveNetwork(netName)
+      val merged = peers.map { p ->
+        if (p.self || p.noDirect) p else p.copy(noDirect = yaml.isPeerNoDirect(stanza, p.name))
+      }
+      adapter.submit(merged)
+    }
     binding.peersPlaceholder.isVisible = peers == null && adapter.itemCount == 0
     if (peers == null && adapter.itemCount == 0) binding.peersPlaceholder.setText(R.string.peers_not_connected)
   }
@@ -162,19 +173,53 @@ class PeersActivity : BaseActivity() {
       openConfigEditor(peer.name)
       return
     }
+    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+    val stanza = yaml.resolveNetwork(netName)
+    val isNoDirect = peer.noDirect || yaml.isPeerNoDirect(stanza, peer.name)
     PopupMenu(this, anchor).apply {
       menu.add(0, MENU_EDIT, 0, R.string.peer_edit_action)
       menu.add(0, MENU_TRANSPORT, 1, R.string.peer_transport_action)
-      menu.add(0, MENU_INFO, 2, R.string.peer_info_action)
+      menu.add(
+        0,
+        MENU_TOGGLE_DIRECT,
+        2,
+        if (isNoDirect) R.string.peer_allow_direct_action else R.string.peer_forbid_direct_action,
+      )
+      menu.add(0, MENU_INFO, 3, R.string.peer_info_action)
       setOnMenuItemClickListener { item ->
         when (item.itemId) {
           MENU_EDIT -> openConfigEditor(peer.name)
           MENU_TRANSPORT -> showPeerTransportDialog(peer.name)
+          MENU_TOGGLE_DIRECT -> togglePeerNoDirect(peer)
           else -> fetchLivePeerInfo(peer.name)
         }
         true
       }
     }.show()
+  }
+
+  private fun togglePeerNoDirect(peer: PeerStatus) {
+    if (peer.self) return
+    try {
+      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+      val stanza = yaml.resolveNetwork(netName)
+      val currentlyNoDirect = peer.noDirect || yaml.isPeerNoDirect(stanza, peer.name)
+      val nextNoDirect = !currentlyNoDirect
+      yaml.setPeerNoDirect(stanza, peer.name, nextNoDirect)
+      val updated = adapter.current.map {
+        if (it.name == peer.name) it.copy(noDirect = nextNoDirect) else it
+      }
+      adapter.submit(updated)
+      if (org.pacien.tincapp.service.TincVpnService.isDaemonRunning()) {
+        Tinc.reload(netName).exceptionallyAccept {
+          org.pacien.tincapp.service.TincVpnService.connect(netName)
+        }
+      }
+      val msgRes = if (nextNoDirect) R.string.peer_no_direct_enabled_format else R.string.peer_no_direct_disabled_format
+      notify(getString(msgRes, peer.name))
+    } catch (e: Exception) {
+      notify(e.cause?.defaultMessage() ?: e.defaultMessage())
+    }
   }
 
   private fun fetchLivePeerInfo(peerName: String) {
@@ -245,6 +290,7 @@ class PeersActivity : BaseActivity() {
 
   private inner class Adapter(
     private val onRowClick: (PeerStatus) -> Unit,
+    private val onToggleDirectClick: (PeerStatus) -> Unit,
     private val onMenuClick: (PeerStatus, View) -> Unit,
   ) : RecyclerView.Adapter<Holder>() {
     private var items: List<PeerStatus> = emptyList()
@@ -265,26 +311,66 @@ class PeersActivity : BaseActivity() {
       val peer = items[position]
       val b = holder.binding
       val context = b.root.context
-      b.peerName.text = peer.name
-      b.peerAvatar.text = peer.name.take(1).uppercase(Locale.ROOT)
-      val (bg, fg) = when {
-        peer.self -> com.google.android.material.R.attr.colorPrimaryContainer to
-          com.google.android.material.R.attr.colorOnPrimaryContainer
-
-        peer.reachable -> 0 to 0
-        else -> com.google.android.material.R.attr.colorSurfaceContainerHighest to
-          com.google.android.material.R.attr.colorOnSurfaceVariant
-      }
-      if (bg == 0) {
-        b.peerAvatar.backgroundTintList = ColorStateList.valueOf(context.getColor(R.color.state_on_container))
-        b.peerAvatar.setTextColor(context.getColor(R.color.state_on_on_container))
-      } else {
-        b.peerAvatar.backgroundTintList = ColorStateList.valueOf(MaterialColors.getColor(b.root, bg))
-        b.peerAvatar.setTextColor(MaterialColors.getColor(b.root, fg))
-      }
-      b.peerStatus.text = status(context, peer)
       val yaml = TincYaml(AppPaths.tincYamlFile(netName))
       val stanza = yaml.resolveNetwork(netName)
+      val isNoDirect = !peer.self && (peer.noDirect || yaml.isPeerNoDirect(stanza, peer.name))
+
+      b.peerName.text = peer.name
+      if (isNoDirect) {
+        b.peerName.setTextColor(context.getColor(R.color.state_relay_only_text))
+        b.peerRow.setBackgroundColor(context.getColor(R.color.state_relay_only_row_bg))
+      } else {
+        b.peerName.setTextColor(MaterialColors.getColor(b.root, com.google.android.material.R.attr.colorOnSurface))
+        val outValue = android.util.TypedValue()
+        context.theme.resolveAttribute(android.R.attr.selectableItemBackground, outValue, true)
+        b.peerRow.setBackgroundResource(outValue.resourceId)
+      }
+
+      b.peerAvatar.text = peer.name.take(1).uppercase(Locale.ROOT)
+      when {
+        peer.self -> {
+          b.peerAvatar.backgroundTintList = ColorStateList.valueOf(
+            MaterialColors.getColor(b.root, com.google.android.material.R.attr.colorPrimaryContainer)
+          )
+          b.peerAvatar.setTextColor(
+            MaterialColors.getColor(b.root, com.google.android.material.R.attr.colorOnPrimaryContainer)
+          )
+        }
+        isNoDirect -> {
+          b.peerAvatar.backgroundTintList = ColorStateList.valueOf(context.getColor(R.color.state_relay_only_container))
+          b.peerAvatar.setTextColor(context.getColor(R.color.state_relay_only_on_container))
+        }
+        peer.reachable -> {
+          b.peerAvatar.backgroundTintList = ColorStateList.valueOf(context.getColor(R.color.state_on_container))
+          b.peerAvatar.setTextColor(context.getColor(R.color.state_on_on_container))
+        }
+        else -> {
+          b.peerAvatar.backgroundTintList = ColorStateList.valueOf(
+            MaterialColors.getColor(b.root, com.google.android.material.R.attr.colorSurfaceContainerHighest)
+          )
+          b.peerAvatar.setTextColor(
+            MaterialColors.getColor(b.root, com.google.android.material.R.attr.colorOnSurfaceVariant)
+          )
+        }
+      }
+
+      if (peer.self) {
+        b.peerDirectToggle.isVisible = false
+      } else {
+        b.peerDirectToggle.isVisible = true
+        if (isNoDirect) {
+          b.peerDirectToggle.setText(R.string.peer_no_direct_badge)
+          b.peerDirectToggle.backgroundTintList = ColorStateList.valueOf(context.getColor(R.color.state_relay_only_container))
+          b.peerDirectToggle.setTextColor(context.getColor(R.color.state_relay_only_on_container))
+        } else {
+          b.peerDirectToggle.setText(R.string.peer_direct_allowed_badge)
+          b.peerDirectToggle.backgroundTintList = ColorStateList.valueOf(context.getColor(R.color.state_on_container))
+          b.peerDirectToggle.setTextColor(context.getColor(R.color.state_on_on_container))
+        }
+        b.peerDirectToggle.setOnClickListener { onToggleDirectClick(peer) }
+      }
+
+      b.peerStatus.text = status(context, peer, isNoDirect)
       val addrText = staticAddressSummary(yaml, stanza, peer.name, peer)
       b.peerAddress.text = addrText.orEmpty()
       b.peerAddress.isVisible = !addrText.isNullOrBlank()
@@ -293,9 +379,12 @@ class PeersActivity : BaseActivity() {
       menu.setOnClickListener { onMenuClick(peer, menu) }
     }
 
-    private fun status(context: Context, peer: PeerStatus): String = when {
+    private fun status(context: Context, peer: PeerStatus, isNoDirect: Boolean): String = when {
       peer.self -> context.getString(R.string.peer_this_device)
-      !peer.reachable -> context.getString(R.string.peer_unreachable)
+      !peer.reachable -> listOfNotNull(
+        context.getString(R.string.peer_unreachable),
+        if (isNoDirect) context.getString(R.string.peer_no_direct_badge) else null,
+      ).joinToString("  ·  ")
       else -> listOfNotNull(
         if (peer.via != null) context.getString(R.string.peer_via_format, peer.via) else context.getString(R.string.peer_direct),
         Labels.transportName(context, peer.transport),
@@ -309,6 +398,7 @@ class PeersActivity : BaseActivity() {
     private const val MENU_EDIT = 1
     private const val MENU_TRANSPORT = 2
     private const val MENU_INFO = 3
+    private const val MENU_TOGGLE_DIRECT = 4
 
     fun intent(context: Context, netName: String): Intent =
       Intent(context, PeersActivity::class.java).putExtra(EXTRA_NET_NAME, netName)

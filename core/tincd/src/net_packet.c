@@ -258,6 +258,10 @@ static void send_udp_probe_reply(node_t *n, vpn_packet_t *packet, length_t len) 
 }
 
 static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
+	if(n->status.no_direct || node_is_no_direct(n->name)) {
+		return;
+	}
+
 	if(!DATA(packet)[0]) {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got UDP probe request %d from %s (%s)", packet->len, n->name, n->hostname);
 
@@ -1824,6 +1828,10 @@ static bool has_confirmed_udp_addr(const node_t *n) {
 #define PUNCH_MAX_DELAY_MS 1000
 
 static bool punch_coordinated(const node_t *n) {
+	if(n->status.no_direct) {
+		return false;
+	}
+
 	node_t *via = (n->via == myself) ? n->nexthop : n->via;
 	return via == n && !node_tcponly(n) &&
 	       (n->dseal & DSEAL_KNOWN) && (n->dseal & DSEAL_PUNCH) && !n->connection &&
@@ -1834,7 +1842,7 @@ static void punch_timer_handler(void *data) {
 	node_t *n = data;
 	timeout_del(&n->punch_timer);
 
-	if(!n->status.reachable || n->status.udp_confirmed) {
+	if(!n->status.reachable || n->status.udp_confirmed || n->status.no_direct) {
 		return;
 	}
 
@@ -1848,7 +1856,7 @@ static void punch_timer_handler(void *data) {
 static void punch_start(node_t *n, int delay_ms, const sockaddr_t *sa, const char *why) {
 	node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
-	if(!n->status.reachable || n->status.udp_confirmed || via != n || node_tcponly(n)) {
+	if(!n->status.reachable || n->status.udp_confirmed || via != n || node_tcponly(n) || n->status.no_direct) {
 		return;
 	}
 
@@ -1985,6 +1993,10 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 	}
 
 	if(!punch_coordinated(from)) {
+		if(from->status.no_direct) {
+			return true;
+		}
+
 		/* Not a peer we coordinate with (a meta neighbour now, or its token
 		   changed): it asked, so still answer, and probe as usual. */
 		if(flag == 0) {
@@ -2017,7 +2029,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 static void try_udp(node_t *n, bool has_data) {
 	node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
-	if(!udp_discovery || via != n || node_tcponly(n)) {
+	if(!udp_discovery || via != n || node_tcponly(n) || n->status.no_direct) {
 		return;
 	}
 
@@ -2699,7 +2711,7 @@ static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t
 		if(pkt->len >= pkt->offset) {
 			from = lookup_node_id(SRCID(pkt));
 
-			if(from && from->status.sptps && !memcmp(DSTID(pkt), &nullid, sizeof(nullid))) {
+			if(from && from->status.sptps && !from->status.no_direct && !memcmp(DSTID(pkt), &nullid, sizeof(nullid))) {
 				if(sptps_verify_datagram(&from->sptps, DATA(pkt), pkt->len - 2 * sizeof(node_id_t))) {
 					n = from;
 				} else {
@@ -2743,6 +2755,10 @@ skip_harder:
 		}
 
 		if(!relay_enabled || !memcmp(DSTID(pkt), &nullid, sizeof(nullid))) {
+			if(n->status.no_direct) {
+				return;
+			}
+
 			direct = true;
 			from = n;
 			to = myself;

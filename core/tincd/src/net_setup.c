@@ -227,11 +227,26 @@ static void load_one_node(const char *name) {
 
 	transport_node_read_config(n, &config);
 
+	if(n != myself) {
+		bool direct_connect = true;
+
+		if(get_config_bool(lookup_config(&config, "DirectConnect"), &direct_connect) && !direct_connect) {
+			n->status.no_direct = true;
+		}
+
+		bool indirect_data = false;
+
+		if(get_config_bool(lookup_config(&config, "IndirectData"), &indirect_data) && indirect_data) {
+			n->status.no_direct = true;
+		}
+	}
+
 	splay_empty_tree(&config);
 }
 
 void load_all_nodes(void) {
 	setup_blocked_nodes();
+	setup_no_direct_nodes();
 
 	// YAML mode: there is no hosts/ directory; enumerate nodes from the YAML.
 	if(yamlconf_global && netname) {
@@ -245,6 +260,7 @@ void load_all_nodes(void) {
 			free(names);
 		}
 
+		setup_no_direct_nodes();
 		return;
 	}
 
@@ -265,6 +281,7 @@ void load_all_nodes(void) {
 	}
 
 	closedir(dir);
+	setup_no_direct_nodes();
 }
 
 char *get_name(void) {
@@ -302,6 +319,7 @@ static void read_interpreter(void) {
 bool setup_myself_reloadable(void) {
 	read_interpreter();
 	setup_blocked_nodes();
+	setup_no_direct_nodes();
 
 	free(scriptextension);
 

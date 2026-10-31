@@ -63,6 +63,25 @@
 			tools:text="10.47.31.10 port 655" />
 	</LinearLayout>
 
+	<TextView
+		android:id="@+id/peer_direct_toggle"
+		android:layout_width="wrap_content"
+		android:layout_height="wrap_content"
+		android:layout_marginStart="6dp"
+		android:background="@drawable/bg_avatar"
+		android:clickable="true"
+		android:focusable="true"
+		android:gravity="center"
+		android:paddingStart="10dp"
+		android:paddingTop="4dp"
+		android:paddingEnd="10dp"
+		android:paddingBottom="4dp"
+		android:textAppearance="?attr/textAppearanceLabelMedium"
+		android:textStyle="bold"
+		android:visibility="gone"
+		tools:text="✓ Direct"
+		tools:visibility="visible" />
+
 	<ImageView
 		android:id="@+id/peer_menu"
 		android:layout_width="24dp"

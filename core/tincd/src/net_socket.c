@@ -898,6 +898,11 @@ void setup_outgoing_connection(outgoing_t *outgoing, bool verbose) {
 
 	node_t *n = outgoing->node;
 
+	if(n->status.no_direct || node_is_no_direct(n->name)) {
+		list_delete(&outgoing_list, outgoing);
+		return;
+	}
+
 	if(!n->address_cache) {
 		n->address_cache = open_address_cache(n);
 	}
@@ -1161,7 +1166,7 @@ void try_outgoing_connections(void) {
 			continue;
 		}
 
-		if(!strcmp(name, myself->name) || node_is_blocked(name)) {
+		if(!strcmp(name, myself->name) || node_is_blocked(name) || node_is_no_direct(name)) {
 			free(name);
 			continue;
 		}

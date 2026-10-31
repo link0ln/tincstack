@@ -301,3 +301,102 @@ def set_host_preferred_transport(host_text: str, carrier: str) -> str:
         kept.append(f"PreferredTransports = {c}")
     return "\n".join(kept).strip()
 
+
+_HOST_DIRECT_RE = re.compile(r"^[ \t]*DirectConnect[ \t]*=[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE)
+_HOST_INDIRECT_RE = re.compile(r"^[ \t]*IndirectData[ \t]*=[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_node_list(value: Any) -> list[str]:
+    """Parse a space/comma/semicolon-separated node list or YAML list into unique node names."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        items = [str(x) for x in value]
+    else:
+        items = re.split(r"[\s,;]+", str(value))
+    out: list[str] = []
+    for raw in items:
+        s = raw.strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def host_no_direct(host_text: str) -> bool:
+    """Return True if `DirectConnect = no` or `IndirectData = yes` is set in `host_text`."""
+    if not host_text:
+        return False
+    for m in _HOST_DIRECT_RE.finditer(host_text):
+        b = _as_bool(m.group(1))
+        if b is not None:
+            return not b
+    for m in _HOST_INDIRECT_RE.finditer(host_text):
+        b = _as_bool(m.group(1))
+        if b is not None:
+            return b
+    return False
+
+
+def set_host_no_direct(host_text: str, no_direct: bool) -> str:
+    """Set `DirectConnect = no` (when no_direct is True) or remove DirectConnect
+    from `host_text` while preserving all other lines."""
+    if not host_text and not no_direct:
+        return ""
+    kept = [
+        ln for ln in (host_text or "").splitlines()
+        if not _HOST_DIRECT_RE.match(ln)
+    ]
+    if no_direct:
+        kept.append("DirectConnect = no")
+    return "\n".join(kept).strip()
+
+
+def is_peer_no_direct(options: dict | None, host_text: str, peer_name: str) -> bool:
+    """Return True if direct connections to `peer_name` are forbidden via
+    `options['NoDirectNodes']` or `DirectConnect = no` in `host_text`."""
+    if not peer_name:
+        return False
+    if options:
+        nd_list = [n.lower() for n in parse_node_list(options.get("NoDirectNodes"))]
+        if peer_name.strip().lower() in nd_list:
+            return True
+    return host_no_direct(host_text)
+
+
+def set_peer_no_direct(options: dict, host_text: str, peer_name: str, no_direct: bool) -> str:
+    """Enable or disable `no_direct` (relay-only mode) for `peer_name`.
+    Updates `options['NoDirectNodes']` (and removes `peer_name` from `ConnectTo`
+    when enabling `no_direct`), and returns the updated `host_text`."""
+    peer = (peer_name or "").strip()
+    if not peer:
+        return host_text
+    nd_list = parse_node_list(options.get("NoDirectNodes"))
+    if no_direct:
+        if not any(x.lower() == peer.lower() for x in nd_list):
+            nd_list.append(peer)
+        # Also remove from ConnectTo so tinc doesn't try to dial it directly
+        ct = options.get("ConnectTo")
+        if isinstance(ct, list):
+            new_ct = [c for c in ct if str(c).strip().lower() != peer.lower()]
+            if new_ct:
+                options["ConnectTo"] = new_ct
+            else:
+                options.pop("ConnectTo", None)
+        elif isinstance(ct, str) and ct.strip():
+            parts = [c for c in parse_node_list(ct) if c.lower() != peer.lower()]
+            if parts:
+                options["ConnectTo"] = parts[0] if len(parts) == 1 else parts
+            else:
+                options.pop("ConnectTo", None)
+    else:
+        nd_list = [x for x in nd_list if x.lower() != peer.lower()]
+
+    if nd_list:
+        options["NoDirectNodes"] = nd_list
+    else:
+        options.pop("NoDirectNodes", None)
+
+    if host_text or _HOST_DIRECT_RE.search(host_text or ""):
+        return set_host_no_direct(host_text, no_direct)
+    return host_text
+

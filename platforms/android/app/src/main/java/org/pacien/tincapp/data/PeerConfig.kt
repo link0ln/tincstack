@@ -55,7 +55,20 @@ data class PeerConfig(
   val httpsPort: String? get() = first("HttpsPort")
   val quicPort: String? get() = first("QuicPort")
   val obfsPort: String? get() = first("ObfsPort")
-  val preferredTransport: String? get() = first("PreferredTransport")
+  val preferredTransport: String? get() = first("PreferredTransport") ?: first("PreferredTransports")
+
+  /** True if DirectConnect = no or IndirectData = yes is set in this peer's host block. */
+  val noDirect: Boolean
+    get() {
+      first("DirectConnect")?.trim()?.lowercase()?.let {
+        if (it in setOf("no", "false", "0", "off")) return true
+        if (it in setOf("yes", "true", "1", "on")) return false
+      }
+      first("IndirectData")?.trim()?.lowercase()?.let {
+        if (it in setOf("yes", "true", "1", "on")) return true
+      }
+      return false
+    }
 
   val ed25519PublicKey: String? get() = first("Ed25519PublicKey")
   val subnet: List<String> get() = vars.filter { it.first.equals("Subnet", ignoreCase = true) }.map { it.second }

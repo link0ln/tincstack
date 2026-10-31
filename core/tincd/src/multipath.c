@@ -1134,7 +1134,7 @@ void multipath_update_udp_rtt(node_t *n, const sockaddr_t *addr, uint32_t rtt_us
 }
 
 void multipath_probe_node_paths(node_t *n, const void *probe_pkt, size_t len) {
-	if(!n || !probe_pkt || !len || multipath_mode == MULTIPATH_OFF || multipath_uplink_count <= 0) {
+	if(!n || n->status.no_direct || !probe_pkt || !len || multipath_mode == MULTIPATH_OFF || multipath_uplink_count <= 0) {
 		return;
 	}
 
@@ -1386,7 +1386,7 @@ int multipath_select_udp_paths(node_t *n, const vpn_packet_t *pkt, node_path_t *
 	out[0] = NULL;
 	out[1] = NULL;
 
-	if(!n || multipath_mode == MULTIPATH_OFF) {
+	if(!n || n->status.no_direct || multipath_mode == MULTIPATH_OFF) {
 		return 0;
 	}
 
@@ -1605,7 +1605,7 @@ void multipath_maintain(void) {
 		for list_each(outgoing_t, outgoing, &outgoing_list) {
 			node_t *n = outgoing->node;
 
-			if(!n || !n->connection || !n->status.reachable) {
+			if(!n || !n->connection || !n->status.reachable || n->status.no_direct || node_is_no_direct(n->name)) {
 				continue;
 			}
 

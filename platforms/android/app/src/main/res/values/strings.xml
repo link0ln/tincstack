@@ -183,6 +183,12 @@
 	<string name="peer_transport_action">Preferred transport…</string>
 	<string name="peer_transport_auto">Automatic (use global order)</string>
 	<string name="peer_info_action">Connection info (live)</string>
+	<string name="peer_no_direct_badge">🚫 Relay only</string>
+	<string name="peer_direct_allowed_badge">✓ Direct</string>
+	<string name="peer_forbid_direct_action">🚫 Forbid direct connect (Relay only)</string>
+	<string name="peer_allow_direct_action">✓ Allow direct connect</string>
+	<string name="peer_no_direct_enabled_format">%1$s: direct connect forbidden (Relay only)</string>
+	<string name="peer_no_direct_disabled_format">%1$s: direct connect allowed</string>
 
 	<!-- whole-config & per-node editor -->
 	<string name="config_editor_title">Configuration</string>

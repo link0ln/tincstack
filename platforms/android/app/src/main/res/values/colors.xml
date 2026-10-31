@@ -59,6 +59,10 @@
 	<color name="state_on_content">#FFFFFF</color>
 	<color name="state_on_container">#B8F0C5</color>
 	<color name="state_on_on_container">#00210B</color>
+	<color name="state_relay_only_container">#FFE0B2</color>
+	<color name="state_relay_only_on_container">#4E2600</color>
+	<color name="state_relay_only_row_bg">#1FE65100</color>
+	<color name="state_relay_only_text">#E65100</color>
 
 	<!-- launcher icon background -->
 	<color name="icon_background_start">#283593</color>

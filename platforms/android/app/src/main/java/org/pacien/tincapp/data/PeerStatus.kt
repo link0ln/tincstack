@@ -40,10 +40,13 @@ data class PeerStatus(
   val rttMs: Double?,
   /** The carrier of our meta connection to it, when we have one. */
   val transport: String?,
+  /** Direct connection to this peer is forbidden (relay-only mode via NoDirectNodes / DirectConnect=no). */
+  val noDirect: Boolean = false,
 ) {
   companion object {
     private const val STATUS_REACHABLE = 0x10
     private const val STATUS_UDP_CONFIRMED = 0x80
+    private const val STATUS_NO_DIRECT = 0x8000
 
     private fun fields(line: String): List<String> = line.trim().split(Regex("\\s+"))
 
@@ -77,6 +80,7 @@ data class PeerStatus(
         via = if (reachable && !self) relay else null,
         rttMs = f.after("rtt")?.toDoubleOrNull(),
         transport = connections[name],
+        noDirect = !self && (status and STATUS_NO_DIRECT != 0),
       )
     }
 

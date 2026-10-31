@@ -24,6 +24,7 @@
 #include "conf.h"
 #include "control_common.h"
 #include "edge.h"
+#include "graph.h"
 #include "logger.h"
 #include "names.h"
 #include "net.h"
@@ -33,6 +34,7 @@
 #include "splay_tree.h"
 #include "utils.h"
 #include "xalloc.h"
+#include "yamlconf.h"
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
@@ -78,7 +80,13 @@ static splay_tree_t blocked_node_tree = {
 	.delete = (splay_action_t) free,
 };
 
+static splay_tree_t no_direct_node_tree = {
+	.compare = (splay_compare_t) strcmp,
+	.delete = (splay_action_t) free,
+};
+
 void exit_nodes(void) {
+	splay_empty_tree(&no_direct_node_tree);
 	splay_empty_tree(&blocked_node_tree);
 	splay_empty_tree(&node_udp_tree);
 	splay_empty_tree(&node_id_tree);
@@ -179,6 +187,165 @@ void setup_blocked_nodes(void) {
 	}
 }
 
+bool node_is_no_direct(const char *name) {
+	if(!name || !*name) {
+		return false;
+	}
+
+	if(myself && myself->name && !strcmp(name, myself->name)) {
+		return false;
+	}
+
+	return splay_search(&no_direct_node_tree, name) != NULL;
+}
+
+static void insert_no_direct_node(const char *name) {
+	if(!name || !check_id(name)) {
+		return;
+	}
+
+	if(myself && myself->name && !strcmp(name, myself->name)) {
+		return;
+	}
+
+	if(!splay_search(&no_direct_node_tree, name)) {
+		splay_insert(&no_direct_node_tree, xstrdup(name));
+	}
+}
+
+static void check_host_no_direct_config(const char *name) {
+	if(!name || !check_id(name) || (myself && myself->name && !strcmp(name, myself->name))) {
+		return;
+	}
+
+	splay_tree_t hcfg;
+	init_configuration(&hcfg);
+
+	if(read_host_config(&hcfg, name, false)) {
+		bool direct_connect = true;
+
+		if(get_config_bool(lookup_config(&hcfg, "DirectConnect"), &direct_connect) && !direct_connect) {
+			insert_no_direct_node(name);
+		}
+
+		bool indirect_data = false;
+
+		if(get_config_bool(lookup_config(&hcfg, "IndirectData"), &indirect_data) && indirect_data) {
+			insert_no_direct_node(name);
+		}
+	}
+
+	splay_empty_tree(&hcfg);
+}
+
+void setup_no_direct_nodes(void) {
+	splay_empty_tree(&no_direct_node_tree);
+
+	for(config_t *cfg = lookup_config(&config_tree, "NoDirectNodes"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
+		if(!cfg->value) {
+			continue;
+		}
+
+		char *copy = xstrdup(cfg->value);
+		char *saveptr = NULL;
+
+		for(char *tok = strtok_r(copy, " \t,;", &saveptr); tok; tok = strtok_r(NULL, " \t,;", &saveptr)) {
+			insert_no_direct_node(tok);
+		}
+
+		free(copy);
+	}
+
+	if(yamlconf_global && netname) {
+		const char **names = yamlconf_host_names(yamlconf_global, netname);
+
+		if(names) {
+			for(size_t i = 0; names[i]; i++) {
+				check_host_no_direct_config(names[i]);
+			}
+
+			free(names);
+		}
+	}
+
+	for splay_each(node_t, n, &node_tree) {
+		if(n != myself) {
+			check_host_no_direct_config(n->name);
+		}
+	}
+
+	bool changed = false;
+
+	for splay_each(node_t, n, &node_tree) {
+		if(n == myself) {
+			continue;
+		}
+
+		if(node_is_no_direct(n->name)) {
+			list_empty_list(&n->connections);
+		}
+	}
+
+	for list_each(connection_t, c, &connection_list) {
+		if(c->status.control || !c->name) {
+			continue;
+		}
+
+		if(node_is_no_direct(c->name)) {
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "Closing direct connection with relay-only (NoDirect) node %s (%s)", c->name, c->hostname);
+
+			if(c->outgoing) {
+				list_delete(&outgoing_list, c->outgoing);
+				c->outgoing = NULL;
+			}
+
+			terminate_connection(c, c->edge);
+			changed = true;
+		}
+	}
+
+	for list_each(outgoing_t, outgoing, &outgoing_list) {
+		if(outgoing->node && node_is_no_direct(outgoing->node->name)) {
+			list_delete_node(&outgoing_list, node);
+		}
+	}
+
+	for splay_each(node_t, n, &node_tree) {
+		if(n == myself) {
+			continue;
+		}
+
+		bool nd = node_is_no_direct(n->name);
+
+		if(n->status.no_direct != nd) {
+			n->status.no_direct = nd;
+			changed = true;
+		}
+
+		if(nd) {
+			if(n->status.udp_confirmed || n->status.udp_addr_confirmed) {
+				n->status.udp_confirmed = false;
+				n->status.udp_addr_confirmed = false;
+				n->udp_ping_rtt = -1;
+				n->maxrecentlen = 0;
+				n->mtuprobes = 0;
+				n->minmtu = 0;
+				n->maxmtu = MTU;
+				timeout_del(&n->udp_ping_timeout);
+				changed = true;
+			}
+
+			timeout_del(&n->punch_timer);
+			n->punch_go = (struct timeval) {0, 0};
+			memset(n->paths, 0, sizeof(n->paths));
+		}
+	}
+
+	if(changed && myself) {
+		graph();
+	}
+}
+
 node_t *new_node(const char *name) {
 	node_t *n = xzalloc(sizeof(*n));
 
@@ -193,6 +360,7 @@ node_t *new_node(const char *name) {
 	n->maxmtu = MTU;
 	n->udp_ping_rtt = -1;
 	n->name = xstrdup(name);
+	n->status.no_direct = node_is_no_direct(name);
 
 	return n;
 }

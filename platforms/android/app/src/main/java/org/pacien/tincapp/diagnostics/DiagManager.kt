@@ -88,6 +88,7 @@ object DiagManager {
     0x0080 to "udp_confirmed",
     0x0100 to "send_info",
     0x0200 to " validkey_in",
+    0x8000 to "no_direct",
   )
 
   fun decodeStatus(statusHex: String): Map<String, Boolean> {
@@ -1700,6 +1701,7 @@ object DiagManager {
     }
 
     val peerConfigs = LinkedHashMap<String, Map<String, Any?>>()
+    val configNoDirectPeers = HashSet<String>()
     var selfNode = ""
     var myVpnIp = ""
     if (targetNet.isNotEmpty()) {
@@ -1711,7 +1713,15 @@ object DiagManager {
           selfNode = yaml.optionValue(stanza, "Name").orEmpty()
           val hostsMap = (yaml.networkMapPublic(stanza)["hosts"] as? Map<*, *>).orEmpty()
           for ((k, v) in hostsMap) {
-            peerConfigs[k.toString()] = parseHostEndpoints(v?.toString())
+            val hName = k.toString()
+            peerConfigs[hName] = parseHostEndpoints(v?.toString())
+            if (yaml.isPeerNoDirect(stanza, hName)) {
+              configNoDirectPeers.add(hName.lowercase(Locale.ROOT))
+            }
+          }
+          for (nd in yaml.optionValues(stanza, "NoDirectNodes").flatMap { it.split(Regex("[\\s,;]+")) }) {
+            val clean = nd.trim().lowercase(Locale.ROOT)
+            if (clean.isNotEmpty()) configNoDirectPeers.add(clean)
           }
           val summary = Networks.summary(targetNet)
           myVpnIp = summary.address?.substringBefore('/').orEmpty()
@@ -1734,11 +1744,13 @@ object DiagManager {
           totalTx += n.txBytes
         }
         val pcfg = peerConfigs[n.name].orEmpty()
+        val isNoDirect = !n.isSelf && (n.status["no_direct"] == true || n.name.lowercase(Locale.ROOT) in configNoDirectPeers)
         nodesList.add(
           mapOf(
             "name" to n.name,
             "is_self" to n.isSelf,
             "reachable" to n.reachable,
+            "no_direct" to isNoDirect,
             "link" to n.link,
             "transport" to n.transport,
             "preferred_transport" to (pcfg["preferred_transport"] ?: "auto"),
@@ -1990,6 +2002,30 @@ object DiagManager {
             summary = "Switched preferred transport for '$peer' to '$carrier' via Diagnostic WebUI",
           )
           true to mapOf("ok" to true, "message" to "Switched $peer transport to $carrier")
+        }
+        "set_peer_direct", "toggle_no_direct" -> {
+          val peer = (payload["peer"]?.toString() ?: "").trim()
+          if (targetNet.isEmpty() || peer.isEmpty()) {
+            return false to mapOf("ok" to false, "message" to "Invalid network or peer")
+          }
+          val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
+          val stanza = yaml.resolveNetwork(targetNet)
+          val noDirect = when {
+            payload.containsKey("no_direct") -> payload["no_direct"] as? Boolean ?: payload["no_direct"]?.toString().toBoolean()
+            payload.containsKey("direct") -> !(payload["direct"] as? Boolean ?: payload["direct"]?.toString().toBoolean())
+            else -> !yaml.isPeerNoDirect(stanza, peer)
+          }
+          yaml.setPeerNoDirect(stanza, peer, noDirect)
+          runTincCli(targetNet, 3500L, "reload")
+          val modeStr = if (noDirect) "Relay only (no direct connect)" else "Direct connect allowed"
+          collector.addIncident(
+            net = targetNet,
+            kind = "USER_ACTION",
+            severity = "info",
+            peer = peer,
+            summary = "Set '$peer' direct connect policy to '$modeStr' via Diagnostic WebUI",
+          )
+          true to mapOf("ok" to true, "message" to "$peer: $modeStr", "no_direct" to noDirect)
         }
         "save_host", "peer_save_host" -> {
           val host = (payload["host"] ?: payload["peer"] ?: "").toString().trim()

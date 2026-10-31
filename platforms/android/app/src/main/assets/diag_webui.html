@@ -296,6 +296,7 @@ textarea.code-editor {
               <th>VPN IP</th>
               <th>Внешний адрес</th>
               <th>Канал (Data path)</th>
+              <th>Прямой коннект</th>
               <th>Активный транспорт</th>
               <th>Выбор протокола</th>
               <th>Via / Nexthop</th>
@@ -698,6 +699,11 @@ function renderPeersTable(d) {
       ${choices.map(c => `<option value="${c}" ${c===pref?'selected':''}>${c === 'auto' ? 'auto' : '📌 ' + c}</option>`).join("")}
     </select>`;
 
+    const isNoDirect = Boolean(n.no_direct || (n.status && n.status.no_direct));
+    const directCell = n.is_self ? "—" : (isNoDirect
+      ? `<button class="sm warn-btn" onclick="togglePeerDirect('${n.name}', false)" title="Прямой коннект к ${n.name} запрещён (NoDirectNodes). Трафик идёт только в обход через релей. Нажмите, чтобы разрешить прямой коннект.">🚫 Только релей</button>`
+      : `<button class="sm" style="border-color:rgba(34,197,94,0.4);color:#4ade80;" onclick="togglePeerDirect('${n.name}', true)" title="Прямой коннект к ${n.name} разрешён. Нажмите, чтобы запретить прямой коннект и пустить трафик через релей.">✓ Разрешён</button>`);
+
     const flags = [];
     if (n.status) {
       if (n.status.validkey) flags.push("🔑key");
@@ -706,6 +712,7 @@ function renderPeersTable(d) {
       if (n.status.ping_sent) flags.push("📡ping");
       if (n.status.sptps_route_stale) flags.push("⚠️stale");
     }
+    if (isNoDirect) flags.push("🚫no_direct");
 
     const actions = n.is_self ? `<button class="sm" onclick="editPeerHost('${n.name}')">✏️ Host</button>` : `
       <button class="sm" onclick="showPeerInfo('${n.name}')" title="tinc info">ℹ️ Info</button>
@@ -714,11 +721,15 @@ function renderPeersTable(d) {
       <button class="sm" onclick="quickPingPeer('${n.vpn_address}', '${n.name}')" title="Ping внутри VPN">📡 Ping</button>
     `;
 
-    return `<tr>
-      <td><b>${n.name}</b></td>
+    const rowStyle = (!n.is_self && isNoDirect) ? ` style="background:rgba(245,158,11,0.10);"` : "";
+    const nameHtml = (!n.is_self && isNoDirect) ? `<b style="color:#fbbf24;">${n.name}</b>` : `<b>${n.name}</b>`;
+
+    return `<tr${rowStyle}>
+      <td>${nameHtml}</td>
       <td><code>${n.vpn_address || "—"}</code></td>
       <td><code>${n.address && n.address !== "MYSELF" ? (n.address + ":" + (n.port||"655")) : "—"}</code></td>
       <td>${linkBadge}</td>
+      <td>${directCell}</td>
       <td>${trBadge}</td>
       <td>${selHtml}</td>
       <td>${n.via && n.via !== n.name ? `via <b>${n.via}</b>` : (n.nexthop || "—")}</td>
@@ -834,6 +845,16 @@ async function setPeerTransport(peer, transport) {
   try {
     const res = await apiPost("/api/action", {net: STATE.net, action: "peer_transport", peer, transport});
     showToast(res.message || `Транспорт для ${peer} → ${transport}`, !res.ok);
+    setTimeout(refreshAll, 600);
+  } catch (e) {
+    showToast("Ошибка: " + e.message, true);
+  }
+}
+
+async function togglePeerDirect(peer, noDirect) {
+  try {
+    const res = await apiPost("/api/action", {net: STATE.net, action: "set_peer_direct", peer, no_direct: noDirect});
+    showToast(res.message || `${peer}: ${noDirect ? "только релей" : "прямой коннект разрешён"}`, !res.ok);
     setTimeout(refreshAll, 600);
   } catch (e) {
     showToast("Ошибка: " + e.message, true);

@@ -170,6 +170,10 @@ bool sptps_tcppacket_h(connection_t *c, const char *request) {
 /* Transmitting UDP information */
 
 bool send_udp_info(node_t *from, node_t *to) {
+	if(from->status.no_direct || to->status.no_direct) {
+		return true;
+	}
+
 	/* If there's a static relay in the path, there's no point in sending the message
 	   farther than the static relay. */
 	to = (to->via == myself) ? to->nexthop : to->via;
@@ -251,6 +255,10 @@ bool udp_info_h(connection_t *c, const char *request) {
 
 	if(!from) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got %s from %s (%s) origin %s which does not exist in our connection list", "UDP_INFO", c->name, c->hostname, from_name);
+		return true;
+	}
+
+	if(from->status.no_direct) {
 		return true;
 	}
 

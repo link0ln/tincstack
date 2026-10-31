@@ -82,4 +82,15 @@ class PeerStatusTest {
     val names = PeerStatus.parse(listOf(down, relayed, direct, self, "garbage"), connections).map { it.name }
     assertEquals(listOf("phone", "node_a", "node_b", "node_c"), names)
   }
+
+  @Test
+  fun noDirectStatusFlagIsDecoded() {
+    val relayOnlyLine = "euvds id 04 at 198.51.100.10 port 655 cipher 0 digest 0 maclength 0 compression 0 options 700000c " +
+      "status 8032 nexthop ruvds3 via ruvds3 distance 2 pmtu 1400 (min 0 max 1400) rx 5 500 tx 5 500 transports plain"
+    val p = PeerStatus.parseNode(relayOnlyLine)!!
+    assertTrue(p.reachable)
+    assertTrue(p.noDirect)
+    assertFalse(p.directUdp)
+    assertEquals("ruvds3", p.via)
+  }
 }

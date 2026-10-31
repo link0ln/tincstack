@@ -113,6 +113,50 @@ class TincYaml(val file: File) {
     return listOfNotNull(own?.takeIf { it in names }) + names.filter { it != own }
   }
 
+  /** True if direct connections to [peerName] are forbidden via `NoDirectNodes` or `DirectConnect = no`. */
+  fun isPeerNoDirect(net: String, peerName: String): Boolean {
+    val peer = peerName.trim()
+    if (peer.isEmpty()) return false
+    val ndList = optionValues(net, "NoDirectNodes")
+      .flatMap { it.split(Regex("[\\s,;]+")) }
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+    if (ndList.any { it.equals(peer, ignoreCase = true) }) return true
+    val hText = hostText(net, peer) ?: return false
+    return PeerConfig(peer, hText).noDirect
+  }
+
+  /** Enable or disable relay-only mode (`NoDirectNodes` / `DirectConnect = no`) for [peerName]. */
+  fun setPeerNoDirect(net: String, peerName: String, noDirect: Boolean) {
+    val peer = peerName.trim()
+    if (peer.isEmpty()) return
+    val ndList = optionValues(net, "NoDirectNodes")
+      .flatMap { it.split(Regex("[\\s,;]+")) }
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+      .toMutableList()
+    val optChanges = LinkedHashMap<String, List<String>?>()
+    if (noDirect) {
+      if (ndList.none { it.equals(peer, ignoreCase = true) }) {
+        ndList.add(peer)
+      }
+      val ctList = optionValues(net, "ConnectTo")
+        .flatMap { it.split(Regex("[\\s,;]+")) }
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.equals(peer, ignoreCase = true) }
+      if (ctList != optionValues(net, "ConnectTo")) {
+        optChanges["ConnectTo"] = ctList.ifEmpty { null }
+      }
+    } else {
+      ndList.removeAll { it.equals(peer, ignoreCase = true) }
+    }
+    optChanges["NoDirectNodes"] = ndList.ifEmpty { null }
+    setOptions(net, optChanges)
+    if (hostText(net, peer) != null) {
+      setHostVars(net, peer, mapOf("DirectConnect" to if (noDirect) "no" else null))
+    }
+  }
+
   /** Raw text of `tinc.yaml`, or empty string if absent. */
   fun readRawText(): String = if (file.exists()) file.readText() else ""
 

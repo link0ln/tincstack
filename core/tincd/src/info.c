@@ -157,6 +157,10 @@ static int info_node(int fd, const char *item) {
 		printf(" udp_confirmed");
 	}
 
+	if(status.no_direct) {
+		printf(" no_direct");
+	}
+
 	printf("\n");
 
 	printf("Options:     ");

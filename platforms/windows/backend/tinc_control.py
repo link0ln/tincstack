@@ -33,7 +33,7 @@ STATUS_BITS = [
     "unused_active", "validkey", "waitingforkey", "visited", "reachable",
     "indirect", "sptps", "udp_confirmed", "send_locally", "udppacket",
     "validkey_in", "has_address", "ping_sent", "sptps_route_stale",
-    "udp_addr_confirmed",
+    "udp_addr_confirmed", "no_direct",
 ]
 
 
@@ -75,6 +75,10 @@ class Node:
     @property
     def reachable(self) -> bool:
         return bool(self.status.get("reachable"))
+
+    @property
+    def no_direct(self) -> bool:
+        return bool(self.status.get("no_direct"))
 
     @property
     def vpn_address(self) -> str:

@@ -1081,7 +1081,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 		   moved the pair to the relay for seconds -- 8.6 % of packets at
 		   KeyExpire 20 s in the lab (docs/nat.md §7.6). udp_info_h() has
 		   always had this rule. */
-		if(from->status.validkey && *address && *port) {
+		if(from->status.validkey && !from->status.no_direct && *address && *port) {
 			if(from->status.udp_confirmed) {
 				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Not using reflexive UDP address from %s (%s port %s): the direct path is confirmed", from->name, address, port);
 			} else {
@@ -1156,7 +1156,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 	from->status.sptps_route_stale = false;   /* the exchange completed; see receive_sptps_record */
 	from->sent_seqno = 0;
 
-	if(*address && *port && !from->status.udp_confirmed) {
+	if(*address && *port && !from->status.udp_confirmed && !from->status.no_direct) {
 		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 		sockaddr_t sa = str2sockaddr(address, port);
 		update_node_udp(from, &sa);

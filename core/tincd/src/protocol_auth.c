@@ -580,6 +580,11 @@ bool id_h(connection_t *c, const char *request) {
 		return false;
 	}
 
+	if(node_is_no_direct(name)) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Refusing direct connection with relay-only (NoDirect) node %s (%s)", name, c->hostname);
+		return false;
+	}
+
 	/* If this is an outgoing connection, make sure we are connected to the right host */
 
 	if(c->outgoing) {

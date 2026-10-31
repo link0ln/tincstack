@@ -164,6 +164,10 @@ void sssp_bfs(void) {
 				continue;
 			}
 
+			if(n == myself && e->to->status.no_direct) {
+				continue;
+			}
+
 			/* Situation:
 
 			           /
@@ -181,7 +185,7 @@ void sssp_bfs(void) {
 			     of nodes behind it.
 			 */
 
-			bool indirect = n->status.indirect || e->options & OPTION_INDIRECT;
+			bool indirect = n->status.indirect || (e->options & OPTION_INDIRECT) || e->to->status.no_direct;
 
 			/* A direct neighbour (visited at distance 1 from myself) already has its
 			   authoritative edge with us. A 2-hop edge through another node must never

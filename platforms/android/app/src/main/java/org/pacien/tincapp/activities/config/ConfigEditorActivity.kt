@@ -959,6 +959,7 @@ class ConfigEditorActivity : BaseActivity() {
       presets: List<String>,
     ) {
       val multiValueKey = row.key().equals("ConnectTo", ignoreCase = true) ||
+        row.key().equals("NoDirectNodes", ignoreCase = true) ||
         row.key().equals("Transports", ignoreCase = true) ||
         row.key().equals("PreferredTransports", ignoreCase = true)
 
@@ -1063,6 +1064,12 @@ class ConfigEditorActivity : BaseActivity() {
         defaultSuggestion = "",
       ),
       KeySpec(
+        name = "DirectConnect",
+        description = "Allow direct connections (TCP/UDP) to this node (no = force relay only)",
+        defaultSuggestion = "no",
+        valuePresets = BOOL_PRESETS,
+      ),
+      KeySpec(
         name = "IndirectData",
         description = "Relay data packets through hub instead of direct UDP",
         defaultSuggestion = "yes",
@@ -1091,6 +1098,12 @@ class ConfigEditorActivity : BaseActivity() {
       KeySpec(
         name = "ConnectTo",
         description = "Peer nodes to dial on startup (tap a peer chip to toggle)",
+        defaultSuggestion = "",
+        valuePresets = { peers -> peers },
+      ),
+      KeySpec(
+        name = "NoDirectNodes",
+        description = "Peers to never connect to directly — force traffic via relay nodes (tap a peer chip to toggle)",
         defaultSuggestion = "",
         valuePresets = { peers -> peers },
       ),

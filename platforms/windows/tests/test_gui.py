@@ -671,6 +671,8 @@ def test_startup_state_query_runs_off_the_qt_thread(window, monkeypatch):
 
 def test_peer_transport_column_and_quick_switcher(window_with_peer):
     w = window_with_peer
+    direct_col = tincmgr.PeersTab.COLS.index("Direct")
+    tr_col = tincmgr.PeersTab.COLS.index("Transport")
     # Find row for 'gw'
     gw_row = None
     for r in range(w.peers.table.rowCount()):
@@ -679,7 +681,22 @@ def test_peer_transport_column_and_quick_switcher(window_with_peer):
             gw_row = r
             break
     assert gw_row is not None
-    cell = w.peers.table.cellWidget(gw_row, 2)
+
+    # Verify Direct column toggle button ('✓ Direct' -> '🚫 Relay only')
+    d_cell = w.peers.table.cellWidget(gw_row, direct_col)
+    assert d_cell is not None
+    d_btn = d_cell.findChildren(QtWidgets.QToolButton)[0]
+    assert d_btn.text() == "✓ Direct"
+    w.peers._set_peer_no_direct("gw", True)
+    assert yc.load(w.app.path).net("demo").options.get("NoDirectNodes") == ["gw"]
+    w.peers._table(w.peers._snaps.get("demo"))
+    d_cell2 = w.peers.table.cellWidget(gw_row, direct_col)
+    assert d_cell2.findChildren(QtWidgets.QToolButton)[0].text() == "🚫 Relay only"
+    w.peers._set_peer_no_direct("gw", False)
+    assert "NoDirectNodes" not in yc.load(w.app.path).net("demo").options
+    w.peers._table(w.peers._snaps.get("demo"))
+
+    cell = w.peers.table.cellWidget(gw_row, tr_col)
     assert cell is not None
     btns = cell.findChildren(QtWidgets.QToolButton)
     assert len(btns) == 1
@@ -697,7 +714,7 @@ def test_peer_transport_column_and_quick_switcher(window_with_peer):
 
     # Rebuild table and check button reflects active 'quic' with preferred 'https'
     w.peers._table(w.peers._snaps.get("demo"))
-    cell2 = w.peers.table.cellWidget(gw_row, 2)
+    cell2 = w.peers.table.cellWidget(gw_row, tr_col)
     btn2 = cell2.findChildren(QtWidgets.QToolButton)[0]
     assert btn2.text() == "quic (📌 https) ▾"
 
@@ -710,7 +727,7 @@ def test_peer_transport_column_and_quick_switcher(window_with_peer):
     for _ in range(5):
         w.peers._table(w.peers._snaps.get("demo"))
         QtWidgets.QApplication.processEvents()
-    cell3 = w.peers.table.cellWidget(gw_row, 2)
+    cell3 = w.peers.table.cellWidget(gw_row, tr_col)
     assert cell3 is not None and tincmgr._is_widget_alive(cell3)
 
     # Triggering a QMenu action while _menu_open_count > 0 defers table replacement safely

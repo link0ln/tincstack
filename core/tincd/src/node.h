@@ -48,6 +48,7 @@ typedef union node_status_t {
 		bool ping_sent: 1;              /* 1 if we sent a UDP probe but haven't received the reply yet */
 		bool sptps_route_stale: 1;      /* 1 if the route changed under a pending key exchange (graph.c) */
 		bool udp_addr_confirmed: 1;     /* 1 if n->address was confirmed by a raw UDP packet (!via_carrier) */
+		bool no_direct: 1;              /* 1 if direct connections and direct UDP to this node are forbidden */
 	};
 	uint32_t value;
 } node_status_t;
@@ -174,5 +175,7 @@ extern bool dump_traffic(struct connection_t *c);
 extern void update_node_udp(node_t *n, const sockaddr_t *sa);
 extern bool node_is_blocked(const char *name);
 extern void setup_blocked_nodes(void);
+extern bool node_is_no_direct(const char *name);
+extern void setup_no_direct_nodes(void);
 
 #endif

@@ -346,5 +346,30 @@ else
 	docker exec "$PFX-cl" tail -n 40 /var/log/tinc.log || true
 fi
 
+echo "===== Scenario 6: Application-Level NoDirectNodes / DirectConnect = no (Relay-Only Enforcement) ====="
+# Without any iptables rules between client and hub, forbid direct connections to hub on client
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set NoDirectNodes hub
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+sleep 2
+
+# Send traffic to hub; it must flow via rfast/rslow relay and NEVER establish direct UDP or direct meta connection
+if docker exec "$PFX-cl" ping -c 5 -W 2 "$HUB_VPN" >/dev/null 2>&1; then
+	HUB_NODE_LINE=$(docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump nodes | grep "^hub ")
+	HUB_STATUS_HEX=$(echo "$HUB_NODE_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="status") print $(i+1)}')
+	HUB_VIA=$(echo "$HUB_NODE_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}')
+	HUB_STATUS_VAL=$((16#${HUB_STATUS_HEX:-0}))
+	NO_DIRECT_BIT=$(( (HUB_STATUS_VAL & 0x8000) != 0 ? 1 : 0 ))
+	UDP_CONF_BIT=$(( (HUB_STATUS_VAL & 0x0080) != 0 ? 1 : 0 ))
+	DIRECT_CONN=$(docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump connections | grep -c "^hub " || true)
+
+	if [ "$NO_DIRECT_BIT" -eq 1 ] && [ "$UDP_CONF_BIT" -eq 0 ] && [ "$DIRECT_CONN" -eq 0 ] && [ "$HUB_VIA" != "hub" ]; then
+		note "NoDirectNodes enforced relay-only path to hub (via=$HUB_VIA, status=0x$HUB_STATUS_HEX, udp_confirmed=0, direct_conn=0) without iptables"
+	else
+		miss "NoDirectNodes check failed: line='$HUB_NODE_LINE' no_direct=$NO_DIRECT_BIT udp_confirmed=$UDP_CONF_BIT direct_conn=$DIRECT_CONN via=$HUB_VIA"
+	fi
+else
+	miss "Ping to hub failed when NoDirectNodes=hub was set"
+fi
+
 echo "===== Summary: $pass_count passed, fail=$fail ====="
 exit "$fail"

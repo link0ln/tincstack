@@ -624,6 +624,7 @@ int reload_configuration(void) {
 	}
 
 	setup_blocked_nodes();
+	setup_no_direct_nodes();
 
 	for splay_each(node_t, n, &node_tree) {
 		if(n != myself && !n->in_config && !n->status.reachable && !n->edge_tree.head) {
