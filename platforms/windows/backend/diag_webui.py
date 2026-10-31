@@ -499,10 +499,12 @@ textarea.code-editor {
           <select id="log-source" onchange="refreshLogs()">
             <option value="tincd">Лог демона (tincd.log)</option>
             <option value="app">Лог приложения (tincmgr / logcat)</option>
+            <option value="crash">💥 Стектрейсы и сбои (Crash / Stacktraces)</option>
             <option value="events">Сырой JSONL инцидентов</option>
           </select>
           <input type="text" id="log-filter" placeholder="Поиск в логах (напр. ERROR, SPTPS, QUIC)..." oninput="renderLogText()">
           <button class="sm" onclick="refreshLogs()">🔄 Обновить лог</button>
+          <button class="sm" onclick="clearCrashLog()" title="Очистить журнал стектрейсов и сбоев">🧹 Очистить Crash Log</button>
         </div>
       </h3>
       <pre id="log-console" class="console" style="max-height:500px;">Загрузка логов...</pre>
@@ -683,12 +685,15 @@ function renderIncidents() {
   );
   document.getElementById("all-incidents-body").innerHTML = incs.map(inc => {
     const bcls = inc.severity === "error" ? "err" : (inc.severity === "warn" ? "warn" : "info");
+    const tb = (inc.details && inc.details.traceback)
+      ? `<details style="margin-top:6px;"><summary style="cursor:pointer;color:var(--accent);">Показать стектрейс</summary><pre class="console" style="margin-top:4px;max-height:220px;">${String(inc.details.traceback).replace(/</g, "&lt;")}</pre></details>`
+      : "";
     return `<tr>
       <td>${fmtTime(inc.ts)}</td>
       <td><span class="badge ${bcls}">${inc.severity}</span></td>
       <td><code>${inc.kind}</code></td>
       <td><b>${inc.peer || "—"}</b></td>
-      <td style="white-space:normal;">${inc.message || ""}</td>
+      <td style="white-space:normal;">${inc.message || ""}${tb}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="5" style="color:var(--muted);">Нет записей</td></tr>`;
 }
@@ -1000,6 +1005,11 @@ async function generateInvite() {
   out.textContent = "⏳ Генерация приглашения...";
   const res = await apiPost("/api/action", {net: STATE.net, action: "invite", peer: name});
   out.textContent = res.output || res.message || "Ошибка";
+}
+
+async function clearCrashLog() {
+  await runAction("clear_crash_log", {});
+  refreshLogs();
 }
 
 async function refreshLogs() {

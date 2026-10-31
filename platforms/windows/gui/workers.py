@@ -10,6 +10,7 @@ through WorkerPool.run().
 
 from __future__ import annotations
 
+import traceback
 from typing import Any, Callable
 
 from PySide6 import QtCore
@@ -30,6 +31,17 @@ class Worker(QtCore.QThread):
         try:
             self.done.emit(self._fn(*self._args, **self._kwargs))
         except Exception as e:  # surfaced to the GUI, never lost in a thread
+            tb = traceback.format_exc()
+            try:
+                import diagnostics
+                fn_name = getattr(self._fn, "__qualname__", getattr(self._fn, "__name__", repr(self._fn)))
+                diagnostics.record_crash_trace(
+                    f"Worker exception in {fn_name}: {type(e).__name__}: {e}",
+                    tb,
+                    kind="WORKER_EXCEPTION",
+                )
+            except Exception:
+                pass
             self.failed.emit(f"{type(e).__name__}: {e}")
 
 

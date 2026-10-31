@@ -1832,8 +1832,12 @@ object DiagManager {
     val tText = tailFile(tincdLog, lines)
     val aText = tailFile(appLog, lines)
     val eText = tailFile(evLog, lines)
+    val cText = aText.lines().filter {
+      it.contains("ERROR") || it.contains("Exception") || it.contains("Fatal") || it.trimStart().startsWith("at ") || it.trimStart().startsWith("Caused by:")
+    }.takeLast(lines).joinToString("\n")
     val selected = when (source) {
       "tincd" -> tText
+      "crash" -> cText.ifEmpty { "(Сбоев и стектрейсов не зафиксировано)" }
       "events" -> eText
       else -> aText
     }
@@ -1844,6 +1848,8 @@ object DiagManager {
       "text" to selected,
       "tincd_log" to tText,
       "tincmgr_log" to aText,
+      "crash_log" to cText,
+      "has_crashes" to cText.isNotEmpty(),
     )
   }
 
@@ -1940,6 +1946,10 @@ object DiagManager {
         "clear_incidents" -> {
           collector.clearIncidents(targetNet)
           true to mapOf("ok" to true, "message" to "Журнал инцидентов очищен")
+        }
+        "clear_crash_log" -> {
+          try { AppPaths.crashFlagFile().delete() } catch (_: Exception) {}
+          true to mapOf("ok" to true, "message" to "Флаг сбоя очищен")
         }
         "peer_info" -> {
           val peer = (payload["peer"]?.toString() ?: "").trim()

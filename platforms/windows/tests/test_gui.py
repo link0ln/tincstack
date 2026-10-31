@@ -706,6 +706,24 @@ def test_peer_transport_column_and_quick_switcher(window_with_peer):
     host_blob2 = yc.load(w.app.path).net("demo").hosts.get("gw", "")
     assert "PreferredTransports" not in host_blob2
 
+    # Repeated _table() ticks with unchanged signature must NOT delete cached widgets
+    for _ in range(5):
+        w.peers._table(w.peers._snaps.get("demo"))
+        QtWidgets.QApplication.processEvents()
+    cell3 = w.peers.table.cellWidget(gw_row, 2)
+    assert cell3 is not None and tincmgr._is_widget_alive(cell3)
+
+    # Triggering a QMenu action while _menu_open_count > 0 defers table replacement safely
+    btn3 = cell3.findChildren(QtWidgets.QToolButton)[0]
+    menu = btn3.menu()
+    w.peers._on_menu_show()
+    for act in menu.actions():
+        if "obfs" in act.text():
+            act.trigger()
+            break
+    w.peers._on_menu_hide()
+    assert wait_until(lambda: "PreferredTransports = obfs" in yc.load(w.app.path).net("demo").hosts.get("gw", ""))
+
 
 def test_manual_update_check_shows_banner_and_updates_toolbar(window, monkeypatch):
     import management

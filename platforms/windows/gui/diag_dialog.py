@@ -129,7 +129,12 @@ class DiagnosticsDialog(QtWidgets.QDialog):
         mlay.addWidget(self.mark_btn)
         lay.addWidget(mark_group)
 
-        # -- Recent incidents list --
+        # -- Tabs for Incidents and Stacktraces / Logs --
+        self.diag_tabs = QtWidgets.QTabWidget()
+
+        # Tab 1: Recent incidents list
+        inc_page = QtWidgets.QWidget()
+        inc_lay = QtWidgets.QVBoxLayout(inc_page)
         inc_head = QtWidgets.QHBoxLayout()
         inc_head.addWidget(QtWidgets.QLabel(
             f"<b>Recent Detected Anomalies &amp; Marks ({self.net or 'no network'})</b>"
@@ -138,7 +143,7 @@ class DiagnosticsDialog(QtWidgets.QDialog):
         ref_btn = QtWidgets.QPushButton("↻ Refresh")
         ref_btn.clicked.connect(self.refresh_incidents)
         inc_head.addWidget(ref_btn)
-        lay.addLayout(inc_head)
+        inc_lay.addLayout(inc_head)
 
         self.inc_table = QtWidgets.QTableWidget(0, 4)
         self.inc_table.setHorizontalHeaderLabels(["Time", "Type", "Peer", "Summary"])
@@ -147,7 +152,42 @@ class DiagnosticsDialog(QtWidgets.QDialog):
         self.inc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.inc_table.horizontalHeader().setStretchLastSection(True)
         self.inc_table.setAlternatingRowColors(True)
-        lay.addWidget(self.inc_table, stretch=1)
+        inc_lay.addWidget(self.inc_table, stretch=1)
+        self.diag_tabs.addTab(inc_page, "⚠️ Incidents & Anomalies")
+
+        # Tab 2: Stacktraces & Logs viewer
+        log_page = QtWidgets.QWidget()
+        log_lay = QtWidgets.QVBoxLayout(log_page)
+        log_bar = QtWidgets.QHBoxLayout()
+        log_bar.addWidget(QtWidgets.QLabel("Log source:"))
+        self.log_source_combo = QtWidgets.QComboBox()
+        self.log_source_combo.addItem("💥 Crash & Stacktraces (tincmgr-crash.log)", "crash")
+        self.log_source_combo.addItem("📋 Application Log (tincmgr.log)", "app")
+        self.log_source_combo.addItem("🖧 Daemon Log (tincd.log)", "tincd")
+        self.log_source_combo.addItem("⚡ Incident Events (JSONL)", "events")
+        self.log_source_combo.currentIndexChanged.connect(self.refresh_logs)
+        log_bar.addWidget(self.log_source_combo, stretch=1)
+
+        self.ref_log_btn = QtWidgets.QPushButton("↻ Refresh")
+        self.ref_log_btn.clicked.connect(self.refresh_logs)
+        log_bar.addWidget(self.ref_log_btn)
+
+        self.copy_log_btn = QtWidgets.QPushButton("📋 Copy")
+        self.copy_log_btn.clicked.connect(self.copy_logs)
+        log_bar.addWidget(self.copy_log_btn)
+
+        self.clear_crash_btn = QtWidgets.QPushButton("🧹 Clear Crash Log")
+        self.clear_crash_btn.clicked.connect(self.clear_crashes)
+        log_bar.addWidget(self.clear_crash_btn)
+        log_lay.addLayout(log_bar)
+
+        self.log_view = QtWidgets.QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFont(_MONO)
+        log_lay.addWidget(self.log_view, stretch=1)
+        self.diag_tabs.addTab(log_page, "💥 Stacktraces & Logs")
+
+        lay.addWidget(self.diag_tabs, stretch=1)
 
         bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
         bb.rejected.connect(self.reject)
@@ -155,6 +195,7 @@ class DiagnosticsDialog(QtWidgets.QDialog):
 
         self.refresh_ui()
         self.refresh_incidents()
+        self.refresh_logs()
 
     def confirm_enable(self) -> bool:
         if self.skip_confirm:
@@ -244,3 +285,15 @@ class DiagnosticsDialog(QtWidgets.QDialog):
             self.inc_table.setItem(r, 2, p_it)
             self.inc_table.setItem(r, 3, s_it)
         self.inc_table.resizeColumnsToContents()
+
+    def refresh_logs(self) -> None:
+        src = str(self.log_source_combo.currentData() or "crash")
+        res = self.server.build_logs(self.net, source=src, lines=350)
+        self.log_view.setPlainText(res.get("text") or "(empty)")
+
+    def copy_logs(self) -> None:
+        QtWidgets.QApplication.clipboard().setText(self.log_view.toPlainText())
+
+    def clear_crashes(self) -> None:
+        diagnostics.clear_crash_log(self.server.base_dir)
+        self.refresh_logs()

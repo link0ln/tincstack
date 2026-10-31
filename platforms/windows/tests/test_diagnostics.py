@@ -285,7 +285,43 @@ def test_diag_web_server_http_api(tmp_path):
             assert ares["ok"] is True
             assert "PreferredTransports = obfs" in app_cfg.net("vpn1").hosts["ruvds"]
 
-        # 6. GET /api/export returns full diagnostic bundle with redacted secrets
+        # 6. Crash & app logging endpoints (/api/logs?source=crash, /api/logs?source=app, clear_crash_log)
+        diagnostics.log_app_event("Test app log entry", base_dir=str(tmp_path))
+        diagnostics.record_crash_trace(
+            "Simulated protocol switch exception",
+            "Traceback (most recent call last):\n  File 'main.py', line 400, in _set_peer_transport\nRuntimeError: test crash",
+            base_dir=str(tmp_path),
+            net="vpn1",
+            collector=col,
+            kind="GUI_EXCEPTION",
+        )
+        with opener.open(f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=crash", timeout=3.0) as resp:
+            clogs = json.loads(resp.read().decode("utf-8"))
+            assert clogs["ok"] is True
+            assert clogs["has_crashes"] is True
+            assert "Simulated protocol switch exception" in clogs["text"]
+            assert "RuntimeError: test crash" in clogs["text"]
+
+        with opener.open(f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=app", timeout=3.0) as resp:
+            alogs = json.loads(resp.read().decode("utf-8"))
+            assert alogs["ok"] is True
+            assert "Test app log entry" in alogs["text"]
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/action",
+            data=json.dumps({"net": "vpn1", "action": "clear_crash_log"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with opener.open(req, timeout=3.0) as resp:
+            cres = json.loads(resp.read().decode("utf-8"))
+            assert cres["ok"] is True
+
+        with opener.open(f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=crash", timeout=3.0) as resp:
+            clogs2 = json.loads(resp.read().decode("utf-8"))
+            assert clogs2["has_crashes"] is False
+
+        # 7. GET /api/export returns full diagnostic bundle with redacted secrets
         with opener.open(f"http://127.0.0.1:{port}/api/export?net=vpn1", timeout=3.0) as resp:
             bundle = json.loads(resp.read().decode("utf-8"))
             assert "overview" in bundle

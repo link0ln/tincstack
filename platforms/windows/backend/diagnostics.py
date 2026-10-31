@@ -13,6 +13,7 @@ UID routing.
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import platform
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -42,6 +44,174 @@ DEFAULT_DIAG_PORT = 8655
 SERIES_MAX_POINTS = 3600       # ~2.5 hours at 2.5s interval
 INCIDENTS_MAX = 500
 EVENTS_FILE_MAX_BYTES = 2 * 1024 * 1024
+APP_LOG_FILE = "tincmgr.log"
+CRASH_LOG_FILE = "tincmgr-crash.log"
+LOG_MAX_BYTES = 2 * 1024 * 1024
+
+_log_lock = threading.Lock()
+_crash_fd: Any = None
+_default_base_dir: str = ""
+_default_collector: "TelemetryCollector | None" = None
+_default_net_fn: Callable[[], str] | None = None
+
+
+def app_log_path(base_dir: str = "") -> str:
+    b = base_dir or _default_base_dir
+    return os.path.join(b, APP_LOG_FILE) if b else ""
+
+
+def crash_log_path(base_dir: str = "") -> str:
+    b = base_dir or _default_base_dir
+    return os.path.join(b, CRASH_LOG_FILE) if b else ""
+
+
+def _append_rotated(path: str, text: str, max_bytes: int = LOG_MAX_BYTES) -> None:
+    if not path:
+        return
+    with _log_lock:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.isfile(path) and os.path.getsize(path) > max_bytes:
+                with open(path, "rb") as rf:
+                    rf.seek(-max_bytes // 2, os.SEEK_END)
+                    tail = rf.read()
+                nl = tail.find(b"\n")
+                if nl >= 0:
+                    tail = tail[nl + 1:]
+                with open(path, "wb") as wf:
+                    wf.write(tail)
+            with open(path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(text)
+                f.flush()
+        except OSError:
+            pass
+
+
+def log_app_event(message: str, level: str = "INFO", base_dir: str = "") -> None:
+    """Append a timestamped event line to persistent tincmgr.log."""
+    path = app_log_path(base_dir)
+    if not path:
+        return
+    ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    tname = threading.current_thread().name
+    line = f"{ts_str} [{level.upper()}] [pid={os.getpid()}:{tname}] {message.rstrip()}\n"
+    _append_rotated(path, line)
+
+
+def record_crash_trace(
+    title: str,
+    trace_text: str,
+    base_dir: str = "",
+    net: str = "",
+    collector: "TelemetryCollector | None" = None,
+    kind: str = "CRASH_TRACE",
+) -> None:
+    """Persist a full stacktrace / crash report to tincmgr-crash.log, tincmgr.log,
+    and the active network's incident log."""
+    bdir = base_dir or _default_base_dir
+    col = collector or _default_collector
+    target_net = net
+    if not target_net and _default_net_fn is not None:
+        try:
+            target_net = _default_net_fn() or ""
+        except Exception:
+            target_net = ""
+    if not target_net and col is not None:
+        with col._lock:
+            if col._latest_snap:
+                target_net = next(iter(col._latest_snap))
+            elif col._incidents:
+                target_net = next(iter(col._incidents))
+
+    ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    ver = management.current_version() or "dev"
+    tname = threading.current_thread().name
+    clean_trace = (trace_text or "").strip() or "(no traceback available)"
+    block = (
+        f"========================================================================\n"
+        f"[{ts_str}] {kind}: {title}\n"
+        f"Version: {ver} | OS: {platform.system()} {platform.release()} | "
+        f"PID: {os.getpid()} | Thread: {tname} | Net: {target_net or 'none'}\n"
+        f"------------------------------------------------------------------------\n"
+        f"{clean_trace}\n"
+        f"========================================================================\n\n"
+    )
+    if bdir:
+        _append_rotated(crash_log_path(bdir), block)
+        log_app_event(f"{kind}: {title}\n{clean_trace}", level="ERROR", base_dir=bdir)
+
+    if col is not None and target_net:
+        try:
+            col.add_incident(
+                net=target_net,
+                kind=kind,
+                severity="error",
+                summary=f"{title}",
+                details={"traceback": clean_trace, "thread": tname},
+            )
+        except Exception:
+            pass
+
+
+def clear_crash_log(base_dir: str = "") -> bool:
+    path = crash_log_path(base_dir)
+    if not path:
+        return False
+    with _log_lock:
+        try:
+            if os.path.isfile(path):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("")
+            return True
+        except OSError:
+            return False
+
+
+def install_crash_handlers(
+    base_dir: str,
+    collector: "TelemetryCollector | None" = None,
+    net_fn: Callable[[], str] | None = None,
+) -> None:
+    """Install faulthandler, sys.excepthook, and threading.excepthook so both
+    native C++/Qt segfaults and unhandled Python/worker exceptions are saved to
+    tincmgr-crash.log and tincmgr.log."""
+    global _crash_fd, _default_base_dir, _default_collector, _default_net_fn
+    _default_base_dir = base_dir
+    if collector is not None:
+        _default_collector = collector
+    if net_fn is not None:
+        _default_net_fn = net_fn
+
+    if base_dir:
+        try:
+            os.makedirs(base_dir, exist_ok=True)
+            cpath = crash_log_path(base_dir)
+            if _crash_fd is None:
+                _crash_fd = open(cpath, "a", encoding="utf-8", errors="replace")
+                faulthandler.enable(file=_crash_fd, all_threads=True)
+        except Exception:
+            pass
+
+    def _sys_excepthook(exc_type: Any, exc_value: Any, exc_tb: Any) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        tb_str = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        title = f"Unhandled exception ({ getattr(exc_type, '__name__', str(exc_type)) }): {exc_value}"
+        record_crash_trace(title, tb_str, kind="GUI_EXCEPTION")
+
+    def _thread_excepthook(args: Any) -> None:
+        tb_str = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+        tname = getattr(args.thread, "name", "thread")
+        title = f"Unhandled thread exception in '{tname}' ({getattr(args.exc_type, '__name__', '')}): {args.exc_value}"
+        record_crash_trace(title, tb_str, kind="THREAD_EXCEPTION")
+
+    sys.excepthook = _sys_excepthook
+    if hasattr(threading, "excepthook"):
+        threading.excepthook = _thread_excepthook
+
+    ver = management.current_version() or "dev"
+    log_app_event(f"tincmgr {ver} started (base_dir={base_dir})", level="INFO", base_dir=base_dir)
 
 
 @dataclass
@@ -1168,8 +1338,8 @@ class DiagWebServer:
                     if not net:
                         continue
                     try:
-                        res = self.tc.diag_port(net, active_port, timeout=2.5)
-                        if not res.ok and active_port > 0:
+                        ok_bridge, _ = self.tc.diag_port(net, active_port, timeout=2.5)
+                        if not ok_bridge and active_port > 0:
                             all_ok = False
                     except Exception:
                         if active_port > 0:
@@ -1330,6 +1500,9 @@ class DiagWebServer:
         last_pt = series[-1] if series else {"rx_bps": 0.0, "tx_bps": 0.0}
         ver = management.current_version() or "dev"
 
+        c_path = crash_log_path(self.base_dir)
+        has_crashes = bool(c_path and os.path.isfile(c_path) and os.path.getsize(c_path) > 0)
+
         return {
             "ok": True,
             "platform": "windows" if sys.platform == "win32" else sys.platform,
@@ -1345,6 +1518,7 @@ class DiagWebServer:
             "self_node": self_node,
             "self_vpn_ip": my_vpn_ip,
             "my_vpn_ip": my_vpn_ip,
+            "has_crashes": has_crashes,
             "current_bw": {
                 "rx_bps": last_pt.get("rx_bps", 0.0),
                 "tx_bps": last_pt.get("tx_bps", 0.0),
@@ -1363,6 +1537,7 @@ class DiagWebServer:
                 "Wintun MTU": str(nc.wintun_mtu if nc else 1400),
                 "Full Tunnel": f"{ft_exit} ({ft_state})" if ft_exit else "off",
                 "Diag Bridge Port": str(self.port),
+                "Crash Log": f"present ({os.path.getsize(c_path)} B)" if has_crashes else "clean",
             },
             "active_routes": active_routes,
             "nodes": nodes_list,
@@ -1376,12 +1551,27 @@ class DiagWebServer:
     def build_logs(self, net: str = "", source: str = "tincd", lines: int = 250) -> dict[str, Any]:
         target_net = net or self._default_net()
         tincd_log = os.path.join(self.base_dir, f"{target_net}-tincd.log") if target_net else ""
-        mgr_log = os.path.join(self.base_dir, f"{target_net}-tincmgr.log") if target_net else ""
+        global_mgr_log = app_log_path(self.base_dir)
+        net_mgr_log = os.path.join(self.base_dir, f"{target_net}-tincmgr.log") if target_net else ""
+        crash_log = crash_log_path(self.base_dir)
         ev_log = os.path.join(self.base_dir, f"{target_net}-diag-events.jsonl") if target_net else ""
+
         t_text = tail_file(tincd_log, max_lines=lines)
-        m_text = tail_file(mgr_log, max_lines=lines)
+        m_global = tail_file(global_mgr_log, max_lines=lines)
+        m_net = tail_file(net_mgr_log, max_lines=lines) if net_mgr_log else ""
+        m_text = "\n".join(x for x in (m_net, m_global) if x).strip()
+        c_text = tail_file(crash_log, max_lines=lines)
         e_text = tail_file(ev_log, max_lines=lines)
-        selected = t_text if source == "tincd" else (e_text if source == "events" else m_text)
+
+        if source == "tincd":
+            selected = t_text
+        elif source == "crash":
+            selected = c_text or "(Сбоев и стектрейсов не зафиксировано — tincmgr-crash.log пуст)"
+        elif source == "events":
+            selected = e_text
+        else:
+            selected = m_text
+
         return {
             "ok": True,
             "net": target_net,
@@ -1389,6 +1579,8 @@ class DiagWebServer:
             "text": selected,
             "tincd_log": t_text,
             "tincmgr_log": m_text,
+            "crash_log": c_text,
+            "has_crashes": bool(c_text.strip()),
         }
 
     def build_config(self, net: str = "") -> dict[str, Any]:
@@ -1481,6 +1673,10 @@ class DiagWebServer:
         if action == "clear_incidents":
             self.collector.clear_incidents(net)
             return True, "Журнал инцидентов очищен", {}
+        if action == "clear_crash_log":
+            clear_crash_log(self.base_dir)
+            log_app_event("Crash log cleared via Diagnostic WebUI", base_dir=self.base_dir)
+            return True, "Журнал стектрейсов и сбоев очищен", {}
         if action == "peer_info":
             peer = str(payload.get("peer") or "").strip()
             res = self.tc.info(net, peer)
