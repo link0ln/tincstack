@@ -234,6 +234,7 @@ class PeersTab(QtWidgets.QWidget):
         """Keep the Python wrapper alive in _retired_widgets and schedule deferred
         C++ deletion so an active QMenu/QToolButton event never loses `this` on the stack."""
         if _is_widget_alive(w):
+            w.hide()
             self._retired_widgets.append(w)
             QtCore.QTimer.singleShot(0, w.deleteLater)
 
@@ -346,9 +347,10 @@ class PeersTab(QtWidgets.QWidget):
         for r, n in enumerate(nodes):
             link = n.link
             via = "" if n.is_self or link.startswith("direct") else n.nexthop
-            tr_text = "—" if n.is_self else (n.transport or "—")
+            has_widgets = (not n.is_self) and (self.ctx is not None)
+            tr_text = "—" if n.is_self else ("" if has_widgets else (n.transport or "—"))
             is_nd = False if n.is_self else self._is_peer_no_direct(n)
-            direct_text = "—" if n.is_self else ("🚫 Relay only" if is_nd else "✓ Direct")
+            direct_text = "—" if n.is_self else ("" if has_widgets else ("🚫 Relay only" if is_nd else "✓ Direct"))
             cells = [n.name, LINK_LABEL.get(link, link), direct_text, tr_text, via,
                      "" if n.distance < 0 else str(n.distance),
                      f"{n.rtt:.0f}" if n.rtt > 0 else "",
@@ -366,10 +368,10 @@ class PeersTab(QtWidgets.QWidget):
                 elif c == 1:
                     it.setForeground(QtGui.QColor(LINK_COLORS.get(link, "#000")))
                     f = it.font(); f.setBold(True); it.setFont(f)
-                elif c == 2 and not n.is_self:
+                elif c == 2 and not n.is_self and not has_widgets:
                     it.setForeground(QtGui.QColor("#e37400" if is_nd else "#1e8e3e"))
                     f = it.font(); f.setBold(True); it.setFont(f)
-                elif c == 3 and n.transport:
+                elif c == 3 and n.transport and not has_widgets:
                     it.setForeground(QtGui.QColor(TRANSPORT_COLORS.get(n.transport, "#5f6368")))
                     f = it.font(); f.setBold(True); it.setFont(f)
                 self.table.setItem(r, c, it)
@@ -381,12 +383,10 @@ class PeersTab(QtWidgets.QWidget):
     # -- per-node direct connect (NoDirectNodes / DirectConnect) & transport ---
 
     def _is_peer_no_direct(self, n) -> bool:
-        if getattr(n, "no_direct", False):
-            return True
         nc = self.ctx.app.net(self.net) if (self.ctx and self.net) else None
-        if not nc:
-            return False
-        return transports.is_peer_no_direct(nc.options, nc.hosts.get(n.name, ""), n.name)
+        if nc is not None:
+            return transports.is_peer_no_direct(nc.options, nc.hosts.get(n.name, ""), n.name)
+        return bool(getattr(n, "no_direct", False))
 
     def _direct_cell(self, row: int, n) -> None:
         col = 2
@@ -399,6 +399,9 @@ class PeersTab(QtWidgets.QWidget):
         cached = self._direct_cells.get(n.name)
         if cached and cached[0] == sig and _is_widget_alive(cached[1]):
             if self.table.cellWidget(row, col) is cached[1]:
+                it = self.table.item(row, col)
+                if it is not None:
+                    it.setSizeHint(cached[1].sizeHint())
                 return
             self._retire_widget(cached[1])
         elif cached:
@@ -434,6 +437,11 @@ class PeersTab(QtWidgets.QWidget):
         )
         lay.addWidget(btn)
         lay.addStretch()
+        btn.ensurePolished()
+        lay.activate()
+        it = self.table.item(row, col)
+        if it is not None:
+            it.setSizeHint(w.sizeHint())
         self._direct_cells[n.name] = (sig, w)
         self.table.setCellWidget(row, col, w)
 
@@ -464,6 +472,9 @@ class PeersTab(QtWidgets.QWidget):
             else:
                 self._table(self._snaps.get(net))
             return
+        snap = self._snaps.get(net)
+        if snap and peer_name in snap.nodes:
+            snap.nodes[peer_name].no_direct = no_direct
         if hasattr(ctx, "network"):
             ctx.network.reload()
         self._pop_direct_cell(peer_name)
@@ -549,6 +560,9 @@ class PeersTab(QtWidgets.QWidget):
             if self.table.cellWidget(row, col) is cached[1]:
                 # Never call setCellWidget(row, col, same_widget) — Qt6 calls
                 # oldWidget->deleteLater() even when oldWidget == newWidget!
+                it = self.table.item(row, col)
+                if it is not None:
+                    it.setSizeHint(cached[1].sizeHint())
                 return
             self._retire_widget(cached[1])
         elif cached:
@@ -582,6 +596,11 @@ class PeersTab(QtWidgets.QWidget):
         btn.setMenu(self._build_transport_menu(btn, n))
         lay.addWidget(btn)
         lay.addStretch()
+        btn.ensurePolished()
+        lay.activate()
+        it = self.table.item(row, col)
+        if it is not None:
+            it.setSizeHint(w.sizeHint())
         self._transport_cells[n.name] = (sig, w)
         self.table.setCellWidget(row, col, w)
 

@@ -685,16 +685,23 @@ def test_peer_transport_column_and_quick_switcher(window_with_peer):
     # Verify Direct column toggle button ('✓ Direct' -> '🚫 Relay only')
     d_cell = w.peers.table.cellWidget(gw_row, direct_col)
     assert d_cell is not None
+    assert w.peers.table.item(gw_row, direct_col).text() == ""
+    assert w.peers.table.item(gw_row, tr_col).text() == ""
     d_btn = d_cell.findChildren(QtWidgets.QToolButton)[0]
     assert d_btn.text() == "✓ Direct"
     w.peers._set_peer_no_direct("gw", True)
     assert yc.load(w.app.path).net("demo").options.get("NoDirectNodes") == ["gw"]
+    assert not d_cell.isVisible()
     w.peers._table(w.peers._snaps.get("demo"))
     d_cell2 = w.peers.table.cellWidget(gw_row, direct_col)
     assert d_cell2.findChildren(QtWidgets.QToolButton)[0].text() == "🚫 Relay only"
+    assert w.peers.table.item(gw_row, direct_col).text() == ""
     w.peers._set_peer_no_direct("gw", False)
     assert "NoDirectNodes" not in yc.load(w.app.path).net("demo").options
+    assert not d_cell2.isVisible()
     w.peers._table(w.peers._snaps.get("demo"))
+    d_cell3 = w.peers.table.cellWidget(gw_row, direct_col)
+    assert d_cell3.findChildren(QtWidgets.QToolButton)[0].text() == "✓ Direct"
 
     cell = w.peers.table.cellWidget(gw_row, tr_col)
     assert cell is not None
