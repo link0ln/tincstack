@@ -169,6 +169,7 @@ extern unsigned replaywin;
 extern bool localdiscovery;
 
 extern bool udp_discovery;
+extern bool node_tcponly(const struct node_t *n);
 extern int udp_discovery_keepalive_interval;
 extern int udp_discovery_interval;
 extern int udp_discovery_timeout;

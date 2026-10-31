@@ -948,7 +948,7 @@ static void adapt_socket(const sockaddr_t *sa, size_t *sock) {
 	}
 }
 
-static bool node_tcponly(const node_t *n) {
+bool node_tcponly(const node_t *n) {
 	return ((myself->options | n->options | (n->connection ? n->connection->options : 0)) & OPTION_TCPONLY) != 0;
 }
 

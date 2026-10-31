@@ -8,7 +8,7 @@
 #      data frames are actively arriving)
 set -e
 
-IMG=${1:-tincstack/core:ws-f}
+IMG=${1:-tincstack/core:dev}
 PFX=tsstab
 NET=${PFX}net
 SUBNET=10.42.98
@@ -315,6 +315,36 @@ else
 fi
 
 docker exec "$PFX-cl" iptables -D OUTPUT -p tcp --dport 655 -j DROP
+
+echo "===== Scenario 5: Quorum-Based Automatic Ed25519 Key Rotation ====="
+# Inject a stale/wrong Ed25519PublicKey for hub on client (simulating phone having an old key for gw),
+# while rfast and rslow hold hub's real Ed25519PublicKey.
+REAL_HUB_KEY=$(docker exec "$PFX-hub" tinc -c /etc/tincstack/tinc.yaml -n wsg1 get hub.Ed25519PublicKey)
+STALE_KEY="z1eh4bB1mFAt540jbd0+B2fBtiR8+bd3v8/5t2W74hB"
+docker rm -f "$PFX-cl" >/dev/null 2>&1 || true
+sed -i "s|$REAL_HUB_KEY|$STALE_KEY|g" "$BASE-cl/tinc.yaml"
+start_node cl "$CL_IP" "$BASE-cl" "$CL_VPN"
+sleep 3
+
+# Trigger traffic from client to hub; first handshake fails SIG verification with STALE_KEY,
+# triggers REQ_PUBKEY refresh + KEY_QUORUM_REQ to rfast & rslow, replaces key, and heals SPTPS!
+quorum_healed=0
+for _ in $(seq 1 15); do
+	if docker exec "$PFX-cl" ping -c 2 -W 1 "$HUB_VPN" >/dev/null 2>&1; then
+		quorum_healed=1
+		break
+	fi
+	sleep 1
+done
+
+UPDATED_HUB_KEY=$(docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 get hub.Ed25519PublicKey)
+if [ "$quorum_healed" -eq 1 ] && [ "$UPDATED_HUB_KEY" = "$REAL_HUB_KEY" ] && \
+   docker exec "$PFX-cl" grep -q "Quorum confirmed updated Ed25519 public key for hub" /var/log/tinc.log; then
+	note "Quorum automatically verified and replaced stale Ed25519PublicKey for hub and restored SPTPS connectivity"
+else
+	miss "Quorum key rotation failed (quorum_healed=$quorum_healed, key=$UPDATED_HUB_KEY vs expected $REAL_HUB_KEY)"
+	docker exec "$PFX-cl" tail -n 40 /var/log/tinc.log || true
+fi
 
 echo "===== Summary: $pass_count passed, fail=$fail ====="
 exit "$fail"

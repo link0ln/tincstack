@@ -36,6 +36,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "obfs.h"
 
 #include "ed25519/sha512.h"
 
@@ -218,11 +219,13 @@ void free_node(node_t *n) {
 
 	timeout_del(&n->udp_ping_timeout);
 	timeout_del(&n->punch_timer);
+	obfs_link_drop_node(n);
 
 	free(n->hostname);
 	free(n->name);
 	free(n->late);
 	free(n->tls_fingerprint);
+	free(n->pending_pubkey);
 
 	if(n->address_cache) {
 		close_address_cache(n->address_cache);

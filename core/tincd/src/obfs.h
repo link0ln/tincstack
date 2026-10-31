@@ -180,6 +180,8 @@ bool obfs_link_has_session(node_t *n);
 /* Restore a node's link to its freshly-created state (bootstrap key only).
    Test-only helper (see fuzz_obfs.c). */
 void obfs_link_reset_for_test(node_t *n);
+void obfs_link_rekey_node(node_t *n);
+void obfs_link_drop_node(node_t *n);
 
 /* Frame version this link currently seals with (OBFS_FRAME_V2 or _V3), and a
    test-only override that makes it seal as a v2-only (older) peer would. */

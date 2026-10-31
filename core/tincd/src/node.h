@@ -141,6 +141,15 @@ typedef struct node_t {
 	bool has_config_address;                /* true if Address is explicitly configured in the host record */
 	int udp_ping_unanswered;                /* consecutive unanswered UDP probes while udp_confirmed */
 	time_t last_udp_rx;                     /* timestamp of last received UDP packet or probe reply */
+	char *pending_pubkey;                   /* candidate Ed25519 pubkey (base64) awaiting mesh quorum */
+	time_t pending_pubkey_time;             /* timestamp when quorum round started */
+	uint32_t quorum_asked_peers;            /* number of reachable peers queried in current round */
+	uint32_t quorum_votes_new;              /* peers confirming pending_pubkey */
+	uint32_t quorum_votes_old;              /* peers reporting a different key */
+	uint32_t quorum_direct_new;             /* direct graph neighbors of this node confirming pending_pubkey */
+	uint32_t quorum_verified_old;           /* peers with active verified edge/SPTPS under old key */
+	struct node_t *quorum_voted_for;        /* target node this peer last cast a quorum vote for */
+	time_t quorum_voted_at;                 /* round timestamp of that vote (deduplication) */
 } node_t;
 
 extern struct node_t *myself;

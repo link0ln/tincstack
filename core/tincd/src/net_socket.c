@@ -944,7 +944,9 @@ void setup_outgoing_connection(outgoing_t *outgoing, bool verbose) {
 	   round. testing/transports/singleflow-test.sh PART 2 (sever a fresh
 	   A<->B link, require the relayed path within ~40 s) went from 3/3 to 1/3
 	   because of it. */
-	if(udp_meta_fallback && outgoing->failures && n->status.reachable && !n->status.udp_confirmed) {
+	node_t *via = (n->via == myself) ? n->nexthop : n->via;
+
+	if(udp_meta_fallback && udp_discovery && outgoing->failures && n->status.reachable && !n->status.udp_confirmed && via == n && !node_tcponly(n)) {
 		try_tx(n, true);
 	}
 

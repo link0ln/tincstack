@@ -336,6 +336,14 @@ bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 				bool result = receive_request(c, request);
 
 				if(!result) {
+					if(!c->status.invitation && !c->edge && c->name) {
+						node_t *peer = lookup_node(c->name);
+
+						if(peer && peer != myself && peer->status.reachable) {
+							send_req_pubkey_refresh(peer);
+						}
+					}
+
 					return false;
 				}
 

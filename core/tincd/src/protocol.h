@@ -122,6 +122,7 @@ extern bool send_del_edge(struct connection_t *c, const struct edge_t *e);
 extern void send_key_changed(void);
 extern bool send_req_key(struct node_t *to);
 extern bool send_req_pubkey(struct node_t *to);
+extern bool send_req_pubkey_refresh(struct node_t *to);
 extern bool send_req_transports(struct node_t *to);
 extern bool send_req_dseal(struct node_t *to);
 extern bool send_ans_key(struct node_t *to);

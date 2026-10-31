@@ -137,12 +137,22 @@ static bool send_initial_sptps_data(void *handle, uint8_t type, const void *data
    to avoid waiting for. */
 #define SPTPS_GLARE_WINDOW 5
 
-bool send_req_pubkey(node_t *to) {
-	if(node_read_ecdsa_public_key(to)) {
-		return true;
-	}
+/* Mesh quorum verification for automatic Ed25519 public key rotation.
+   When a node advertises an Ed25519PublicKey that differs from our cached
+   record, we query reachable mesh peers (KEY_QUORUM_REQ) before replacing the
+   key. Each peer replies (KEY_QUORUM_ANS) with the key it holds for the target
+   and whether it has an active authenticated direct edge or SPTPS session. */
+#define KEY_QUORUM_REQ      100
+#define KEY_QUORUM_ANS      101
+#define KEY_QUORUM_INTERVAL 10
+#define KEY_QUORUM_WINDOW   30
 
-	if(!to->status.reachable || !to->nexthop || !to->nexthop->connection || to == myself) {
+#define KEY_QUORUM_FLAG_HAS_KEY     0x01
+#define KEY_QUORUM_FLAG_DIRECT_EDGE 0x02
+#define KEY_QUORUM_FLAG_VALID_SPTPS 0x04
+
+bool send_req_pubkey_refresh(node_t *to) {
+	if(!to || !to->status.reachable || !to->nexthop || !to->nexthop->connection || to == myself) {
 		return false;
 	}
 
@@ -151,8 +161,130 @@ bool send_req_pubkey(node_t *to) {
 	}
 
 	to->last_req_pubkey = now.tv_sec;
-	logger(DEBUG_PROTOCOL, LOG_DEBUG, "Requesting Ed25519 key for %s (%s) over the meta graph", to->name, to->hostname);
+	logger(DEBUG_PROTOCOL, LOG_DEBUG, "Refreshing Ed25519 key for %s (%s) over the meta graph", to->name, to->hostname);
 	return send_request(to->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, to->name, REQ_PUBKEY);
+}
+
+static void start_key_quorum(node_t *target, const char *candidate_pubkey) {
+	if(!target || target == myself || !candidate_pubkey || !*candidate_pubkey) {
+		return;
+	}
+
+	if(target->pending_pubkey && !strcmp(target->pending_pubkey, candidate_pubkey) &&
+	                now.tv_sec - target->pending_pubkey_time < KEY_QUORUM_INTERVAL) {
+		return;
+	}
+
+	free(target->pending_pubkey);
+	target->pending_pubkey = xstrdup(candidate_pubkey);
+	target->pending_pubkey_time = now.tv_sec;
+	target->quorum_asked_peers = 0;
+	target->quorum_votes_new = 0;
+	target->quorum_votes_old = 0;
+	target->quorum_direct_new = 0;
+	target->quorum_verified_old = 0;
+
+	for splay_each(node_t, v, &node_tree) {
+		if(v == myself || v == target || !v->status.reachable || !v->nexthop || !v->nexthop->connection) {
+			continue;
+		}
+
+		if(v->quorum_voted_for == target) {
+			v->quorum_voted_for = NULL;
+			v->quorum_voted_at = 0;
+		}
+
+		send_request(v->nexthop->connection, "%d %s %s %d %s",
+		             REQ_KEY, myself->name, v->name, KEY_QUORUM_REQ, target->name);
+		target->quorum_asked_peers++;
+	}
+
+	logger(DEBUG_ALWAYS, LOG_INFO,
+	       "Node %s (%s) advertised a new Ed25519 public key; querying %u reachable mesh peer(s) for quorum verification",
+	       target->name, target->hostname, target->quorum_asked_peers);
+}
+
+static void evaluate_key_quorum(node_t *target) {
+	if(!target || !target->pending_pubkey) {
+		return;
+	}
+
+	/* Safety veto: if any peer in the mesh holds an active, cryptographically
+	   verified session (direct meta edge or verified SPTPS session) with
+	   `target' under a DIFFERENT key, do not replace our cached key. */
+	if(target->quorum_verified_old > 0) {
+		logger(DEBUG_ALWAYS, LOG_WARNING,
+		       "Quorum rejected Ed25519 key update for %s: %u peer(s) still hold an active verified session under the existing key",
+		       target->name, target->quorum_verified_old);
+		free(target->pending_pubkey);
+		target->pending_pubkey = NULL;
+		return;
+	}
+
+	uint32_t total_votes = target->quorum_votes_new + target->quorum_votes_old;
+	bool approved = false;
+
+	if(target->quorum_direct_new >= 1) {
+		/* At least one direct graph neighbor of `target' (which authenticated
+		   `target' on its meta edge) confirmed the new key, and no peer in the
+		   mesh holds a verified session under the old key. */
+		approved = true;
+	} else if(target->quorum_asked_peers > 0 &&
+	                target->quorum_votes_new * 2 > target->quorum_asked_peers &&
+	                target->quorum_votes_new > target->quorum_votes_old) {
+		/* Strict majority of all queried reachable peers confirmed the new key. */
+		approved = true;
+	} else if(target->quorum_asked_peers > 0 &&
+	                total_votes >= target->quorum_asked_peers &&
+	                target->quorum_votes_new > target->quorum_votes_old) {
+		/* All queried peers with a key responded and the majority confirmed it. */
+		approved = true;
+	} else if(target->quorum_votes_new >= 2 && target->quorum_votes_old == 0) {
+		/* At least two independent mesh peers unanimously confirmed the new key. */
+		approved = true;
+	}
+
+	if(!approved) {
+		return;
+	}
+
+	ecdsa_t *new_key = ecdsa_set_base64_public_key(target->pending_pubkey);
+
+	if(!new_key) {
+		free(target->pending_pubkey);
+		target->pending_pubkey = NULL;
+		return;
+	}
+
+	logger(DEBUG_ALWAYS, LOG_NOTICE,
+	       "Quorum confirmed updated Ed25519 public key for %s (new_votes=%u, old_votes=%u, direct_neighbors=%u); updating cached key",
+	       target->name, target->quorum_votes_new, target->quorum_votes_old, target->quorum_direct_new);
+
+	ecdsa_free(target->ecdsa);
+	target->ecdsa = new_key;
+	replace_config_file(target->name, "Ed25519PublicKey", target->pending_pubkey);
+	target->in_config = true;
+
+	free(target->pending_pubkey);
+	target->pending_pubkey = NULL;
+
+	obfs_link_rekey_node(target);
+	sptps_stop(&target->sptps);
+	target->status.validkey = false;
+	target->status.waitingforkey = false;
+	target->last_req_key = 0;
+
+	if(target->status.reachable && !(target->connection && node_tcponly(target))) {
+		send_req_key(target);
+	}
+}
+
+bool send_req_pubkey(node_t *to) {
+	if(node_read_ecdsa_public_key(to)) {
+		return true;
+	}
+
+	return send_req_pubkey_refresh(to);
 }
 
 /* Defect E, point 3. Stream AC made a node's accept list travel as an extra
@@ -378,7 +510,24 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 				replace_config_file(from->name, "Transports", histransports);
 			}
 
-			logger(DEBUG_PROTOCOL, LOG_WARNING, "Got ANS_PUBKEY from %s (%s) even though we already have his pubkey", from->name, from->hostname);
+			char *knownkey = ecdsa_get_base64_public_key(from->ecdsa);
+			bool same = knownkey && fields >= 1 && !strcmp(knownkey, pubkey);
+			free(knownkey);
+
+			if(same) {
+				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Got ANS_PUBKEY from %s (%s) matching our cached Ed25519 key", from->name, from->hostname);
+				return true;
+			}
+
+			ecdsa_t *cand = (fields >= 1) ? ecdsa_set_base64_public_key(pubkey) : NULL;
+
+			if(!cand) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ANS_PUBKEY", from->name, from->hostname, "invalid candidate pubkey");
+				return true;
+			}
+
+			ecdsa_free(cand);
+			start_key_quorum(from, pubkey);
 			return true;
 		}
 
@@ -467,6 +616,19 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			}
 		} else if(from->sptps.label) {
 			logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while we already started a SPTPS session!", from->name);
+			/* If the peer keeps restarting SPTPS after we already completed
+			   our side, either its key or ours may have rotated: refresh its
+			   key and proactively send our ANS_PUBKEY so it can run a quorum
+			   check if its cached key for us is stale. */
+			if(send_req_pubkey_refresh(from) && myself->connection && myself->connection->ecdsa) {
+				char *pubkey = ecdsa_get_base64_public_key(myself->connection->ecdsa);
+				char acceptlist[TRANSPORT_LIST_MAX];
+				char dseal[32];
+				send_request(from->nexthop->connection, "%d %s %s %d %s %s %s",
+				             REQ_KEY, myself->name, from->name, ANS_PUBKEY,
+				             pubkey, transport_accept_string(acceptlist), dseal_token(dseal, sizeof(dseal)));
+				free(pubkey);
+			}
 		}
 
 		char buf[MAX_STRING_SIZE];
@@ -497,6 +659,108 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 
 	case DSEAL_KEX_REQ:
 		return dseal_kex_h(from, request);
+
+	case KEY_QUORUM_REQ: {
+		char target_name[MAX_STRING_SIZE];
+
+		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING, target_name) != 1 || !check_id(target_name)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "KEY_QUORUM_REQ", from->name, from->hostname);
+			return true;
+		}
+
+		if(node_is_blocked(target_name)) {
+			return true;
+		}
+
+		node_t *target = lookup_node(target_name);
+
+		if(!target || target == myself) {
+			return true;
+		}
+
+		int flags = 0;
+		char *pk = NULL;
+
+		if(node_read_ecdsa_public_key(target)) {
+			pk = ecdsa_get_base64_public_key(target->ecdsa);
+
+			if(pk && *pk) {
+				flags |= KEY_QUORUM_FLAG_HAS_KEY;
+			}
+		}
+
+		if(target->connection && target->connection->edge) {
+			flags |= KEY_QUORUM_FLAG_DIRECT_EDGE;
+		}
+
+		if(target->status.validkey) {
+			flags |= KEY_QUORUM_FLAG_VALID_SPTPS;
+		}
+
+		if(!(flags & (KEY_QUORUM_FLAG_DIRECT_EDGE | KEY_QUORUM_FLAG_VALID_SPTPS)) && target->status.reachable) {
+			send_req_pubkey_refresh(target);
+		}
+
+		send_request(from->nexthop->connection, "%d %s %s %d %s %s %d",
+		             REQ_KEY, myself->name, from->name, KEY_QUORUM_ANS,
+		             target->name, (pk && *pk) ? pk : "-", flags);
+		free(pk);
+		return true;
+	}
+
+	case KEY_QUORUM_ANS: {
+		char target_name[MAX_STRING_SIZE];
+		char voted_pubkey[MAX_STRING_SIZE];
+		int flags = 0;
+
+		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING " %d", target_name, voted_pubkey, &flags) != 3 || !check_id(target_name)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "KEY_QUORUM_ANS", from->name, from->hostname);
+			return true;
+		}
+
+		node_t *target = lookup_node(target_name);
+
+		if(!target || target == myself || from == myself || from == target || !from->status.reachable) {
+			return true;
+		}
+
+		if(!target->pending_pubkey || now.tv_sec - target->pending_pubkey_time > KEY_QUORUM_WINDOW) {
+			return true;
+		}
+
+		if(from->quorum_voted_for == target && from->quorum_voted_at == target->pending_pubkey_time) {
+			return true;
+		}
+
+		from->quorum_voted_for = target;
+		from->quorum_voted_at = target->pending_pubkey_time;
+
+		if(!(flags & KEY_QUORUM_FLAG_HAS_KEY) || !strcmp(voted_pubkey, "-")) {
+			if(target->quorum_asked_peers > 0) {
+				target->quorum_asked_peers--;
+			}
+		} else {
+			bool is_direct = (flags & KEY_QUORUM_FLAG_DIRECT_EDGE) || lookup_edge(from, target) || lookup_edge(target, from);
+			bool is_verified = (flags & (KEY_QUORUM_FLAG_DIRECT_EDGE | KEY_QUORUM_FLAG_VALID_SPTPS)) != 0;
+
+			if(!strcmp(voted_pubkey, target->pending_pubkey)) {
+				target->quorum_votes_new++;
+
+				if(is_direct) {
+					target->quorum_direct_new++;
+				}
+			} else {
+				target->quorum_votes_old++;
+
+				if(is_verified) {
+					target->quorum_verified_old++;
+				}
+			}
+		}
+
+		evaluate_key_quorum(target);
+		return true;
+	}
 
 	default:
 		logger(DEBUG_ALWAYS, LOG_ERR, "Unknown extended REQ_KEY request from %s (%s): %s", from->name, from->hostname, request);
@@ -791,6 +1055,11 @@ bool ans_key_h(connection_t *c, const char *request) {
 		size_t len = b64decode_tinc(key, buf, buflen);
 
 		if(!len || !sptps_receive_data(&from->sptps, buf, len)) {
+			/* If the handshake record failed verification (e.g. a rotated
+			   Ed25519 key on `from'), ask `from' for its current ANS_PUBKEY
+			   over the graph so quorum key verification can run. */
+			send_req_pubkey_refresh(from);
+
 			/* Uh-oh. It might be that the tunnel is stuck in some corrupted state,
 			   so let's restart SPTPS in case that helps. But don't do that too often
 			   to prevent storms.

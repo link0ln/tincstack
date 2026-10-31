@@ -468,6 +468,57 @@ void obfs_link_reset_for_test(node_t *n) {
 	}
 }
 
+void obfs_link_rekey_node(node_t *n) {
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(l->node == n) {
+			uint8_t base[64];
+			bool i_am_lo;
+
+			if(!obfs_derive_base(n, base, &i_am_lo)) {
+				return;
+			}
+
+			keyset_free(&l->boot);
+			keyset_free(&l->sess);
+			keyset_free(&l->next);
+			keyset_free(&l->prev);
+
+			if(l->dk_ecdh) {
+				ecdh_free(l->dk_ecdh);
+				l->dk_ecdh = NULL;
+			}
+
+			l->i_am_lo = i_am_lo;
+			memcpy(l->base, base, sizeof(l->base));
+			memset(base, 0, sizeof(base));
+			keyset_build(&l->boot, l->base, "tincstack-obfs-key", "tincstack-obfs-iv", "tincstack-obfs-hp", i_am_lo);
+
+			uint64_t low;
+			randomize(&low, sizeof(low));
+			l->boot.ctr_tx = ((uint64_t)time(NULL) << 20) | (low & 0xfffff);
+
+			l->dseal_used = false;
+			l->sess_tx_ready = false;
+			l->ack_sent = false;
+			l->have_peer_seed = false;
+			l->have_local_seed = false;
+			l->need_selfheal = false;
+			l->last_selfheal = 0;
+			l->rx_since_dial = false;
+			return;
+		}
+	}
+}
+
+void obfs_link_drop_node(node_t *n) {
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(l->node == n) {
+			list_delete_node(&obfs_links, node);
+			return;
+		}
+	}
+}
+
 int obfs_link_frame_version(const obfs_link_t *l) {
 	return l->peer_v2 ? OBFS_FRAME_V2 : OBFS_FRAME_V3;
 }
