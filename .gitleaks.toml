@@ -33,6 +33,7 @@ id = "generic-api-key"
 paths = [
   # `Sec-WebSocket-Key` is a per-handshake base64 nonce, not a credential.
   '''testing/transports/(https-carrier|tls-front)-test\.sh''',
+  '''testing/stability-routing-test\.sh''',
 ]
 regexes = [
   # the synthetic invitation token of the Android unit test (with TEST-NET-3

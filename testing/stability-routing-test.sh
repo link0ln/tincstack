@@ -320,7 +320,7 @@ echo "===== Scenario 5: Quorum-Based Automatic Ed25519 Key Rotation ====="
 # Inject a stale/wrong Ed25519PublicKey for hub on client (simulating phone having an old key for gw),
 # while rfast and rslow hold hub's real Ed25519PublicKey.
 REAL_HUB_KEY=$(docker exec "$PFX-hub" tinc -c /etc/tincstack/tinc.yaml -n wsg1 get hub.Ed25519PublicKey)
-STALE_KEY="z1eh4bB1mFAt540jbd0+B2fBtiR8+bd3v8/5t2W74hB"
+STALE_KEY="$(printf 'A%.0s' $(seq 1 43))"
 docker rm -f "$PFX-cl" >/dev/null 2>&1 || true
 sed -i "s|$REAL_HUB_KEY|$STALE_KEY|g" "$BASE-cl/tinc.yaml"
 start_node cl "$CL_IP" "$BASE-cl" "$CL_VPN"
