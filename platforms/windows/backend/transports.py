@@ -25,6 +25,7 @@ from typing import Any
 CARRIERS: tuple[str, ...] = ("plain", "obfs", "https", "quic")
 PREFER_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "quic")
 VALID_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "quic")
+MULTIPATH_MODES: tuple[str, ...] = ("off", "failover", "flowhash", "redundant", "split")
 
 CARRIER_HELP = {
     "plain": "Plain tinc UDP/TCP (default, unchanged wire image)",
@@ -59,6 +60,12 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
                "Accept plain meta connections on the listen port (default: yes)", "negotiation"),
     OptionSpec("UdpMetaFallback", "bool", True,
                "Fall back to UDP meta when TCP is blocked (default: yes)", "negotiation"),
+    OptionSpec("MultipathMode", "str", "off",
+               "Application multipath mode: off, failover, flowhash, redundant, split", "negotiation"),
+    OptionSpec("MultipathConnections", "int", 1,
+               "Number of parallel connections per peer for multipath (1-8, default: 1)", "negotiation", 1, 8),
+    OptionSpec("MultipathInterface", "str", "",
+               "Multipath uplink specification (iface[:ip[:weight[:backup[:mark]]]])", "negotiation"),
     OptionSpec("ObfsPort", "front_port", 0,
                "UDP port for the obfuscated carrier; 0 = tinc UDP port (default)", "obfs"),
     OptionSpec("ObfsPortPublic", "front_port", 0,
@@ -207,6 +214,8 @@ def validate(options: dict) -> list[str]:
         elif spec.kind == "str":
             if spec.name == "HttpsDecoyUpstream" and v and not _UPSTREAM_RE.match(str(v).strip()):
                 errors.append(f"{spec.name}: expected host:port or http(s)://…, got {v!r}")
+            elif spec.name == "MultipathMode" and str(v).strip().lower() not in MULTIPATH_MODES:
+                errors.append(f"{spec.name}: must be one of {', '.join(MULTIPATH_MODES)}, got {v!r}")
     lo = _as_int(options.get("ObfsJunkPacketMinSize", 40))
     hi = _as_int(options.get("ObfsJunkPacketMaxSize", 200))
     if lo is not None and hi is not None and lo > hi:

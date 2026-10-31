@@ -84,7 +84,9 @@ static void *lz4_state = NULL;
 static void send_udppacket(node_t *, vpn_packet_t *);
 static void try_udp(node_t *n, bool has_data);
 
-unsigned replaywin = 128;
+unsigned replaywin = 1024;
+int multipath_current_rx_uplink = -1;
+static const vpn_packet_t *multipath_current_tx_pkt = NULL;
 bool localdiscovery = true;
 bool udp_discovery = true;
 int udp_discovery_keepalive_interval = 10;
@@ -288,6 +290,7 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 		timersub(&now, &n->udp_ping_sent, &rtt);
 		n->udp_ping_rtt = (int)(rtt.tv_sec * 1000000 + rtt.tv_usec);
 		n->status.ping_sent = false;
+		multipath_update_udp_rtt(n, &n->address, (uint32_t)MAX(n->udp_ping_rtt, 1));
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got type %d UDP probe reply %d from %s (%s) rtt=%d.%03d", DATA(packet)[0], len, n->name, n->hostname, n->udp_ping_rtt / 1000, n->udp_ping_rtt % 1000);
 
 		int rtt_ms = n->udp_ping_rtt / 1000;
@@ -928,11 +931,19 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 	/* If we have a direct metaconnection to n, and we can't use UDP, then
 	   don't bother with SPTPS and just use a "plaintext" PACKET message.
 	   We don't really care about end-to-end security since we're not
-	   sending the message through any intermediate nodes. */
-	if(n->connection && origpkt->len > n->minmtu) {
-		send_tcppacket(n->connection, origpkt);
+	   sending the message through any intermediate nodes.
+	   Exception: in MULTIPATH_REDUNDANT mode with multiple connections and
+	   a valid SPTPS key, use SPTPS records so the receiver deduplicates copies
+	   by SPTPS sequence number. */
+	if(n->connection && origpkt->len > n->minmtu &&
+	   !(multipath_mode == MULTIPATH_REDUNDANT && n->status.validkey && n->connections.count > 1)) {
+		connection_t *conns[2] = {NULL, NULL};
+		int nconns = multipath_select_connections(n, origpkt, conns);
+		send_tcppacket(nconns > 0 ? conns[0] : n->connection, origpkt);
 	} else {
+		multipath_current_tx_pkt = origpkt;
 		sptps_send_record(&n->sptps, type, DATA(origpkt) + offset, origpkt->len - offset);
+		multipath_current_tx_pkt = NULL;
 	}
 }
 
@@ -1245,6 +1256,14 @@ end:
    hop inside the meta connection (SPTPS_PACKET, or REQ_KEY/ANS_KEY for older
    hops and handshakes). */
 static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void *data, size_t len) {
+	connection_t *conns[2] = {NULL, NULL};
+	int nconns = (type == SPTPS_HANDSHAKE) ? 0 : multipath_select_connections(to->nexthop, multipath_current_tx_pkt, conns);
+
+	if(nconns <= 0) {
+		conns[0] = to->nexthop->connection;
+		nconns = conns[0] ? 1 : 0;
+	}
+
 	if(type != SPTPS_HANDSHAKE && (to->nexthop->connection->options >> 24) >= 7) {
 		const size_t buflen = len + sizeof(to->id) + sizeof(from->id);
 		uint8_t *buf = alloca(buflen);
@@ -1255,7 +1274,15 @@ static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void 
 		buf_ptr += sizeof(from->id);
 		memcpy(buf_ptr, data, len);
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Sending packet from %s (%s) to %s (%s) via %s (%s) (TCP)", from->name, from->hostname, to->name, to->hostname, to->nexthop->name, to->nexthop->hostname);
-		return send_sptps_tcppacket(to->nexthop->connection, buf, buflen);
+		bool ok = false;
+
+		for(int i = 0; i < nconns; i++) {
+			if(conns[i] && send_sptps_tcppacket(conns[i], buf, buflen)) {
+				ok = true;
+			}
+		}
+
+		return ok;
 	}
 
 	char *buf = alloca(B64_SIZE(len));
@@ -1268,11 +1295,24 @@ static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void 
 		to->incompression = myself->incompression;
 		return send_request(to->nexthop->connection, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, from->name, to->name, buf, to->incompression);
 	} else {
-		if(random_early_drop(to->nexthop->connection)) {
-			return true;
+		bool ok = false;
+
+		for(int i = 0; i < nconns; i++) {
+			if(!conns[i]) {
+				continue;
+			}
+
+			if(random_early_drop(conns[i])) {
+				ok = true;
+				continue;
+			}
+
+			if(send_request(conns[i], "%d %s %s %d %s", REQ_KEY, from->name, to->name, SPTPS_PACKET, buf)) {
+				ok = true;
+			}
 		}
 
-		return send_request(to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, from->name, to->name, SPTPS_PACKET, buf);
+		return ok;
 	}
 }
 
@@ -1369,13 +1409,31 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	   treated exactly like EMSGSIZE so tinc's MTU discovery converges. With
 	   plain/sf/obfs the hook is NULL and this is byte-identical to before. */
 	if(!carrier_beacon_raw && relay->connection && relay->connection->transport && relay->connection->transport->send_datagram) {
-		size_t excess = 0;
+		connection_t *conns[2] = {NULL, NULL};
+		int nconns = multipath_select_connections(relay, multipath_current_tx_pkt, conns);
 
-		if(!relay->connection->transport->send_datagram(relay->connection, buf, (size_t)(buf_ptr - buf), &excess)) {
-			reduce_mtu(relay, (int)origlen - (int)(excess ? excess : 1));
+		if(nconns <= 0) {
+			conns[0] = relay->connection;
+			nconns = 1;
+		}
+
+		for(int i = 0; i < nconns; i++) {
+			connection_t * target_c = conns[i];
+
+			if(target_c && target_c->transport && target_c->transport->send_datagram) {
+				size_t excess = 0;
+
+				if(!target_c->transport->send_datagram(target_c, buf, (size_t)(buf_ptr - buf), &excess)) {
+					reduce_mtu(relay, (int)origlen - (int)(excess ? excess : 1));
+				}
+			}
 		}
 
 		return true;
+	}
+
+	if(type == PKT_PROBE) {
+		multipath_probe_node_paths(relay, buf, (size_t)(buf_ptr - buf));
 	}
 
 	/* DirectSeal (obfs.h) decides for every obfs link but the obfs carrier's
@@ -1401,6 +1459,59 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 
 	if(!obfs_carrier && (dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK)) {
 		return send_sptps_data_held(relay, dv, to, from, type, data, len);
+	}
+
+	/* Multipath UDP scheduler: if multiple confirmed UDP paths or bound uplinks
+	   are active for `relay`, dispatch across the selected path(s) (1 for
+	   failover/flowhash/split, 2 for redundant). */
+	node_path_t *mp_paths[2] = {NULL, NULL};
+	int npaths = (type != PKT_PROBE && !relay->status.send_locally) ?
+	             multipath_select_udp_paths(relay, multipath_current_tx_pkt, mp_paths) : 0;
+
+	if(npaths > 0) {
+		size_t pkt_bytes = (size_t)(buf_ptr - buf);
+
+		for(int i = 0; i < npaths; i++) {
+			node_path_t *p = mp_paths[i];
+			const sockaddr_t *psa = &p->addr;
+			size_t psock = (p->sock_idx >= 0 && p->sock_idx < listen_sockets) ? (size_t)p->sock_idx : sock;
+			int pfd = multipath_get_udp_fd(p->uplink_idx, psa->sa.sa_family, (int)psock);
+
+			p->last_tx = now.tv_sec;
+			p->tx_packets++;
+			p->tx_bytes += pkt_bytes;
+
+			if(p->uplink_idx >= 0 && p->uplink_idx < MAX_UPLINKS) {
+				multipath_uplinks[p->uplink_idx].tx_packets++;
+				multipath_uplinks[p->uplink_idx].tx_bytes += pkt_bytes;
+			}
+
+			size_t mp_excess = 0;
+			obfs_send_t mp_wrapped = obfs_carrier ? obfs_wrap_send_fd(pfd, psock, psa, buf, pkt_bytes, relay, &mp_excess) : OBFS_SEND_PLAIN;
+
+			if(mp_wrapped == OBFS_SEND_OK) {
+				continue;
+			} else if(mp_wrapped == OBFS_SEND_TOOBIG) {
+				reduce_mtu(relay, (int)origlen - (int)(mp_excess ? mp_excess : 1));
+				continue;
+			}
+
+			if(dv == DSEAL_SEND_SEAL) {
+				if(obfs_seal_send_fd(pfd, psock, psa, buf, pkt_bytes, relay, &mp_excess) == OBFS_SEND_TOOBIG) {
+					reduce_mtu(relay, (int)origlen - (int)(mp_excess ? mp_excess : 1));
+				}
+
+				continue;
+			}
+
+			if(sendto(pfd, buf, pkt_bytes, 0, &psa->sa, SALEN(psa->sa)) < 0 && !sockwouldblock(sockerrno)) {
+				if(sockmsgsize(sockerrno)) {
+					reduce_mtu(relay, (int)origlen - 1);
+				}
+			}
+		}
+
+		return true;
 	}
 
 	/* obfs carrier: if the next hop is an obfs link, seal this SPTPS datagram
@@ -2244,6 +2355,10 @@ static void try_tx_sptps(node_t *n, bool mtu) {
 	   messages anyway, so there's no need for SPTPS at all. */
 
 	if(n->connection && node_tcponly(n)) {
+		if(multipath_mode == MULTIPATH_REDUNDANT && n->connections.count > 1) {
+			try_sptps(n);
+		}
+
 		return;
 	}
 
@@ -2369,8 +2484,12 @@ void send_packet(node_t *n, vpn_packet_t *packet) {
 	// Try to send via UDP, unless TCP is forced.
 
 	if(packet->priority == -1 || node_tcponly(via)) {
-		if(!send_tcppacket(via->connection, packet)) {
-			terminate_connection(via->connection, true);
+		connection_t *conns[2] = {NULL, NULL};
+		int nconns = multipath_select_connections(via, packet, conns);
+		connection_t *target_c = nconns > 0 ? conns[0] : via->connection;
+
+		if(!send_tcppacket(target_c, packet)) {
+			terminate_connection(target_c, true);
 		}
 
 		return;
@@ -2691,8 +2810,15 @@ skip_harder:
 	n->sock = ls - listen_socket;
 
 	if(direct && !via_carrier) {
+		multipath_record_udp_rx(n, multipath_current_rx_uplink, (int)(ls - listen_socket), addr, pkt->len);
+
 		if(sockaddrcmp(addr, &n->address)) {
-			update_node_udp(n, addr);
+			/* In multipath mode, if the primary UDP path is already confirmed and
+			   actively receiving, do not reset n->status.udp_confirmed or PMTU
+			   when a packet arrives on a secondary path! */
+			if(multipath_mode == MULTIPATH_OFF || !n->status.udp_confirmed || (now.tv_sec - n->last_udp_rx > pinginterval)) {
+				update_node_udp(n, addr);
+			}
 		}
 
 		n->status.udp_addr_confirmed = true;
@@ -2718,6 +2844,13 @@ static void handle_incoming_vpn_packet(listen_socket_t *ls, vpn_packet_t *pkt, s
 	}
 
 	process_sptps_udp(ls, pkt, addr, false, NULL);
+}
+
+void handle_incoming_vpn_packet_uplink(int uplink_idx, listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr) {
+	int prev = multipath_current_rx_uplink;
+	multipath_current_rx_uplink = uplink_idx;
+	handle_incoming_vpn_packet(ls, pkt, addr);
+	multipath_current_rx_uplink = prev;
 }
 
 /* Re-inject an inner SPTPS datagram that the obfs carrier just unsealed. It

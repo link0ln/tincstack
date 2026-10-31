@@ -33,6 +33,7 @@
 #include "graph.h"
 #include "logger.h"
 #include "dnsrefresh.h"
+#include "multipath.h"
 #include "meta.h"
 #include "names.h"
 #include "net.h"
@@ -148,13 +149,15 @@ void terminate_connection(connection_t *c, bool report) {
 	/* Remember whether this connection was ever activated (had an edge)
 	   BEFORE the edge is torn down below: the carrier fallback decision
 	   further down depends on it. */
-	bool activated = c->edge != NULL;
+	bool activated = c->edge != NULL || c->status.active;
 	/* The carrier's name outlives c (a static transport_t); c does not. */
 	const char *carrier = c->transport ? c->transport->name : "plain";
 
 	if(c->node) {
-		if(c->node->connection == c) {
-			c->node->connection = NULL;
+		if(!multipath_promote_survivor(c->node, c)) {
+			if(c->node->connection == c) {
+				c->node->connection = NULL;
+			}
 		}
 
 		if(c->edge) {
@@ -320,7 +323,7 @@ static void timeout_handler(void *data) {
 		   a client that has not sent a request in 60 s, with a plain close.
 		   pingtimeout and the tarpit (a socket that never closes) would
 		   both be tells (testing/transports/decoy-conformance-test.sh). */
-		if(c->status.web_front && !c->edge) {
+		if(c->status.web_front && !c->edge && !c->status.active) {
 			if(c->last_ping_time + DECOY_HEADER_TIMEOUT <= now.tv_sec) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "Web front: %s idle for %d s; closing", c->hostname, DECOY_HEADER_TIMEOUT);
 				c->status.tarpit = false;
@@ -336,7 +339,7 @@ static void timeout_handler(void *data) {
 		}
 
 		// timeout during connection establishing
-		if(!c->edge) {
+		if(!c->edge && !c->status.active) {
 			if(c->status.connecting) {
 				logger(DEBUG_CONNECTIONS, LOG_WARNING, "Timeout while connecting to %s (%s)", c->name, c->hostname);
 			} else {
@@ -474,6 +477,8 @@ int reload_configuration(void) {
 	/* DNS names: re-read DnsRefreshInterval and rebuild the watch list. */
 	dnsrefresh_reload();
 	diag_reload();
+	multipath_read_config();
+	multipath_maintain();
 
 	/* If StrictSubnet is set, expire deleted Subnets and read new ones in */
 

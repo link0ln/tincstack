@@ -694,7 +694,9 @@ bool id_h(connection_t *c, const char *request) {
 
 	c->allow_request = METAKEY;
 
-	if(!c->outgoing) {
+	const bool is_initiator = (c->outgoing != NULL || c->status.multipath_sub);
+
+	if(!is_initiator) {
 		send_id(c);
 	}
 
@@ -704,13 +706,13 @@ bool id_h(connection_t *c, const char *request) {
 		const size_t labellen = 25 + strlen(myself->name) + strlen(c->name);
 		char *label = alloca(labellen);
 
-		if(c->outgoing) {
+		if(is_initiator) {
 			snprintf(label, labellen, "tinc TCP key expansion %s %s", myself->name, c->name);
 		} else {
 			snprintf(label, labellen, "tinc TCP key expansion %s %s", c->name, myself->name);
 		}
 
-		return sptps_start(&c->sptps, c, c->outgoing, false, myself->connection->ecdsa, c->ecdsa, label, labellen, send_meta_sptps, receive_meta_sptps);
+		return sptps_start(&c->sptps, c, is_initiator, false, myself->connection->ecdsa, c->ecdsa, label, labellen, send_meta_sptps, receive_meta_sptps);
 	} else {
 		return send_metakey(c);
 	}
@@ -1152,7 +1154,7 @@ bool send_ack(connection_t *c) {
 		}
 	}
 
-	return send_request(c, "%d %s %d %x %s %s", ACK, ack_port, c->estimated_weight, (c->options & 0xffffff) | (experimental ? (PROT_MINOR << 24) : 0), transport_accept_string(transports), dseal_token(dseal, sizeof(dseal)));
+	return send_request(c, "%d %s %d %x %s %s%s", ACK, ack_port, c->estimated_weight, (c->options & 0xffffff) | (experimental ? (PROT_MINOR << 24) : 0), transport_accept_string(transports), dseal_token(dseal, sizeof(dseal)), c->status.multipath_sub ? " mp" : "");
 }
 
 static void send_everything(connection_t *c) {
@@ -1241,51 +1243,73 @@ bool ack_h(connection_t *c, const char *request) {
 	char hisport[MAX_STRING_SIZE];
 	char histransports[MAX_STRING_SIZE] = "";
 	char hisdseal[MAX_STRING_SIZE] = "";
+	char hismp[MAX_STRING_SIZE] = "";
 	int weight, mtu;
 	uint32_t options;
 	node_t *n;
 	bool choice;
 
-	if(sscanf(request, "%*d " MAX_STRING " %d %x " MAX_STRING " " MAX_STRING, hisport, &weight, &options, histransports, hisdseal) < 3) {
+	if(sscanf(request, "%*d " MAX_STRING " %d %x " MAX_STRING " " MAX_STRING " " MAX_STRING, hisport, &weight, &options, histransports, hisdseal, hismp) < 3) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "ACK", c->name,
 		       c->hostname);
 		return false;
 	}
 
+	if(!strcasecmp(hismp, "mp")) {
+		c->status.multipath_sub = true;
+	}
+
 	/* Did *we* dial this link? The dedup below may hand us an outgoing_t that
 	   belongs to a link the peer opened, which is a different thing. */
-	const bool we_dialled = c->outgoing;
+	const bool we_dialled = (c->outgoing != NULL || (c->status.multipath_sub && *hismp == '\0'));
 
 	/* Check if we already have a node_t for him */
+
+	bool is_secondary_mp = false;
 
 	n = lookup_node(c->name);
 
 	if(!n) {
 		n = new_node(c->name);
 		node_add(n);
+		n->connection = c;
+		c->node = n;
+		multipath_node_add_connection(n, c);
 	} else {
 		if(n->connection) {
-			/* Oh dear, we already have a connection to this node. */
-			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Established a second connection with %s (%s), closing old connection", n->connection->name, n->connection->hostname);
+			bool carrier_upgrade = c->outgoing && transport_outranks_connection(c->outgoing, n->connection);
 
-			if(n->connection->outgoing) {
-				if(c->outgoing) {
-					logger(DEBUG_ALWAYS, LOG_WARNING, "Two outgoing connections to the same node!");
-				} else {
-					c->outgoing = n->connection->outgoing;
+			if(!carrier_upgrade && c->status.multipath_sub && multipath_accept_secondary(n, c)) {
+				is_secondary_mp = (n->connection != c);
+			} else {
+				c->status.multipath_sub = false;
+				/* Oh dear, we already have a connection to this node. */
+				logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Established a second connection with %s (%s), closing old connection", n->connection->name, n->connection->hostname);
+
+				if(n->connection->outgoing) {
+					if(c->outgoing) {
+						logger(DEBUG_ALWAYS, LOG_WARNING, "Two outgoing connections to the same node!");
+					} else {
+						c->outgoing = n->connection->outgoing;
+					}
+
+					n->connection->outgoing = NULL;
 				}
 
-				n->connection->outgoing = NULL;
+				multipath_node_del_connection(n, n->connection);
+				terminate_connection(n->connection, false);
+				/* Run graph algorithm to purge key and make sure up/down scripts are rerun with new IP addresses and stuff */
+				graph();
+				n->connection = c;
+				c->node = n;
+				multipath_node_add_connection(n, c);
 			}
-
-			terminate_connection(n->connection, false);
-			/* Run graph algorithm to purge key and make sure up/down scripts are rerun with new IP addresses and stuff */
-			graph();
+		} else {
+			n->connection = c;
+			c->node = n;
+			multipath_node_add_connection(n, c);
 		}
 	}
-
-	n->connection = c;
-	c->node = n;
 
 	/* Learn the peer's transport accept list from the ACK (falls back to what
 	   its host record said, else plain). */
@@ -1369,10 +1393,16 @@ bool ack_h(connection_t *c, const char *request) {
 
 	/* Activate this connection */
 
+	c->status.active = true;
 	c->allow_request = ALL;
 
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Connection with %s (%s) activated", c->name,
 	       c->hostname);
+
+	if(is_secondary_mp || c->edge) {
+		obfs_session_start(c);
+		return true;
+	}
 
 	/* Send him everything we know */
 
@@ -1431,6 +1461,8 @@ bool ack_h(connection_t *c, const char *request) {
 	/* Run MST and SSSP algorithms */
 
 	graph();
+
+	multipath_maintain();
 
 	return true;
 }

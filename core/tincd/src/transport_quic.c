@@ -391,7 +391,7 @@ static int cb_remove_connection_id(ngtcp2_conn *conn, const ngtcp2_cid *cid, voi
    handshake proved the peer's Ed25519 identity), so the certificate this
    session was dialled through is the peer's: pin it, replacing any old pin. */
 static void learn_pin(quic_session_t *s) {
-	if(!s->pin_pending || s->is_server || !s->c->edge) {
+	if(!s->pin_pending || s->is_server || (!s->c->edge && !s->c->status.active)) {
 		return;
 	}
 
@@ -1105,7 +1105,7 @@ static int cb_recv_datagram(ngtcp2_conn *conn, uint32_t flags, const uint8_t *da
 	   The sender is the node of the session's connection (NULL until the
 	   connection is authenticated -- it has an edge: dropped then). */
 	handle_incoming_carrier_datagram(&listen_socket[s->sock], data, datalen, &s->peer,
-	                                 (s->c && s->c->edge) ? s->c->node : NULL);
+	                                 (s->c && (s->c->edge || s->c->status.active)) ? s->c->node : NULL);
 	return 0;
 }
 
@@ -1688,7 +1688,7 @@ static bool quic_front_full(void) {
 		if(s->dead || !s->is_server || !s->c) {
 			continue;
 		}
-		if(s->c->status.web_front && !s->c->edge) {
+		if(s->c->status.web_front && !s->c->edge && !s->c->status.active) {
 			n++;
 			if(!s->authenticated && (!s->conn || !ngtcp2_conn_get_handshake_completed(s->conn)) && !oldest_unest) {
 				oldest_unest = s;
@@ -2080,6 +2080,14 @@ bool quic_dial(connection_t *c) {
 	   so BindToAddress still decides the interface. */
 	sockaddr_t local = listen_socket[sock].sa;
 
+	if(c->uplink_idx >= 0 && c->uplink_idx < MAX_UPLINKS && multipath_uplinks[c->uplink_idx].in_use) {
+		if(peer.sa.sa_family == AF_INET && multipath_uplinks[c->uplink_idx].have_v4) {
+			local = multipath_uplinks[c->uplink_idx].local_v4;
+		} else if(peer.sa.sa_family == AF_INET6 && multipath_uplinks[c->uplink_idx].have_v6) {
+			local = multipath_uplinks[c->uplink_idx].local_v6;
+		}
+	}
+
 	if(local.sa.sa_family == AF_INET) {
 		local.in.sin_port = 0;
 	} else if(local.sa.sa_family == AF_INET6) {
@@ -2093,6 +2101,10 @@ bool quic_dial(connection_t *c) {
 		free(alpn);
 		free(sni);
 		return false;
+	}
+
+	if(c->uplink_idx >= 0) {
+		multipath_bind_socket(fd, 0, c->uplink_idx);
 	}
 
 	socklen_t locallen = sizeof(local);

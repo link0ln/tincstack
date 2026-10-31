@@ -204,6 +204,7 @@ void free_node(node_t *n) {
 
 	splay_empty_tree(&n->subnet_tree);
 	splay_empty_tree(&n->edge_tree);
+	list_empty_list(&n->connections);
 
 	sockaddrfree(&n->address);
 
@@ -273,7 +274,27 @@ node_t *lookup_node_id(const node_id_t *id) {
 
 node_t *lookup_node_udp(const sockaddr_t *sa) {
 	node_t tmp = {.address = *sa};
-	return splay_search(&node_udp_tree, &tmp);
+	node_t *found = splay_search(&node_udp_tree, &tmp);
+
+	if(found) {
+		return found;
+	}
+
+	if(multipath_mode != MULTIPATH_OFF) {
+		for splay_each(node_t, n, &node_tree) {
+			if(n == myself || !n->status.udp_confirmed) {
+				continue;
+			}
+
+			for(int i = 0; i < MAX_NODE_PATHS; i++) {
+				if(n->paths[i].active && n->paths[i].confirmed && !sockaddrcmp(sa, &n->paths[i].addr)) {
+					return n;
+				}
+			}
+		}
+	}
+
+	return NULL;
 }
 
 void update_node_udp(node_t *n, const sockaddr_t *sa) {

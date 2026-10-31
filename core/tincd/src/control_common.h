@@ -43,6 +43,7 @@ enum request_type {
 	REQ_LOG,
 	REQ_DIAG_PORT,
 	REQ_DIAG_PING,
+	REQ_MULTIPATH,
 };
 
 #define TINC_CTL_VERSION_CURRENT 0

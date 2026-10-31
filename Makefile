@@ -62,6 +62,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  testing/transports/obfs-restart-test.sh \
                  testing/transports/obfs-confirmed-peer-test.sh \
                  testing/transports/same-nat-meta-test.sh \
+                 testing/transports/multipath-test.sh \
                  testing/perf/bench.sh testing/perf/bench-inner.sh testing/perf/relay-burst-test.sh \
                  testing/perf/junk-cost-test.sh \
                  testing/config/ping-interval-test.sh \

@@ -1666,6 +1666,106 @@ static int cmd_diag_ping(int argc, char *argv[]) {
 	}
 }
 
+static int cmd_multipath(int argc, char *argv[]) {
+	if(!connect_tincd(true)) {
+		return 1;
+	}
+
+	const char *subcmd = argc > 1 ? argv[1] : "status";
+
+	if(!strcasecmp(subcmd, "status")) {
+		sendline(fd, "%d %d status", CONTROL, REQ_MULTIPATH);
+
+		while(recvline(fd, line, sizeof(line))) {
+			int rcode = 0, rreq = 0, rres = -1;
+			int offset = 0;
+
+			if(sscanf(line, "%d %d %d%n", &rcode, &rreq, &rres, &offset) < 3 ||
+			                rcode != CONTROL || rreq != REQ_MULTIPATH) {
+				fprintf(stderr, "Unexpected response from tincd.\n");
+				return 1;
+			}
+
+			if(rres == 2) {
+				return 0;
+			}
+
+			if(rres < 0) {
+				fprintf(stderr, "Multipath status query failed.\n");
+				return 1;
+			}
+
+			const char *rest = line + offset;
+
+			while(*rest == ' ') {
+				rest++;
+			}
+
+			printf("%s\n", rest);
+		}
+
+		return 1;
+	}
+
+	if(!strcasecmp(subcmd, "mode")) {
+		if(argc < 3 || argc > 4) {
+			fprintf(stderr, "Usage: multipath mode <off|failover|flowhash|redundant|split> [connections]\n");
+			return 1;
+		}
+
+		if(argc == 4) {
+			sendline(fd, "%d %d mode %s %s", CONTROL, REQ_MULTIPATH, argv[2], argv[3]);
+		} else {
+			sendline(fd, "%d %d mode %s", CONTROL, REQ_MULTIPATH, argv[2]);
+		}
+
+		if(!recvline(fd, line, sizeof(line)) ||
+		                sscanf(line, "%d %d %d", &code, &req, &result) != 3 ||
+		                code != CONTROL || req != REQ_MULTIPATH || result != 0) {
+			fprintf(stderr, "Could not set multipath mode.\n");
+			return 1;
+		}
+
+		return 0;
+	}
+
+	if(!strcasecmp(subcmd, "uplink")) {
+		if(argc < 4) {
+			fprintf(stderr, "Usage: multipath uplink add <name> [ip|-] [weight] [backup:0|1] [mark] [net_handle] [up:0|1]\n"
+			                "       multipath uplink del <name>\n");
+			return 1;
+		}
+
+		const char *action = argv[2];
+		const char *uname = argv[3];
+
+		if(!strcasecmp(action, "del") || !strcasecmp(action, "remove")) {
+			sendline(fd, "%d %d uplink del %s", CONTROL, REQ_MULTIPATH, uname);
+		} else {
+			const char *ip = argc > 4 ? argv[4] : "-";
+			const char *weight = argc > 5 ? argv[5] : "100";
+			const char *backup = argc > 6 ? argv[6] : "0";
+			const char *mark = argc > 7 ? argv[7] : "0";
+			const char *handle = argc > 8 ? argv[8] : "0";
+			const char *up = argc > 9 ? argv[9] : "1";
+			sendline(fd, "%d %d uplink %s %s %s %s %s %s %s %s",
+			         CONTROL, REQ_MULTIPATH, action, uname, ip, weight, backup, mark, handle, up);
+		}
+
+		if(!recvline(fd, line, sizeof(line)) ||
+		                sscanf(line, "%d %d %d", &code, &req, &result) != 3 ||
+		                code != CONTROL || req != REQ_MULTIPATH || result != 0) {
+			fprintf(stderr, "Could not update multipath uplink.\n");
+			return 1;
+		}
+
+		return 0;
+	}
+
+	fprintf(stderr, "Usage: multipath [status | mode <mode> [conns] | uplink add|del ...]\n");
+	return 1;
+}
+
 size_t rstrip(char *value) {
 	size_t len = strlen(value);
 
@@ -1820,6 +1920,9 @@ const var_t variables[] = {
 	{"ScriptsExtension", VAR_SERVER},
 	{"ScriptsInterpreter", VAR_SERVER},
 	{"SingleFlow", VAR_SERVER | VAR_SAFE},
+	{"MultipathMode", VAR_SERVER | VAR_SAFE},
+	{"MultipathConnections", VAR_SERVER | VAR_SAFE},
+	{"MultipathInterface", VAR_SERVER | VAR_MULTIPLE},
 	{"ObfsJunkPacketCount", VAR_SERVER | VAR_SAFE},
 	{"ObfsJunkPacketMinSize", VAR_SERVER | VAR_SAFE},
 	{"ObfsJunkPacketMaxSize", VAR_SERVER | VAR_SAFE},
@@ -3670,6 +3773,7 @@ static const struct {
 	{"pid", cmd_pid, false},
 	{"diag-port", cmd_diag_port, false},
 	{"diag-ping", cmd_diag_ping, false},
+	{"multipath", cmd_multipath, false},
 	{"config", cmd_config, true},
 	{"add", cmd_config, false},
 	{"del", cmd_config, false},

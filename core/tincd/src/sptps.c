@@ -28,7 +28,7 @@
 #include "random.h"
 #include "xalloc.h"
 
-unsigned int sptps_replaywin = 128;
+unsigned int sptps_replaywin = 1024;
 
 /*
    Nonce MUST be exchanged first (done)

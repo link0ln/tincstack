@@ -26,6 +26,8 @@
 #include "connection.h"
 #include "digest.h"
 #include "event.h"
+#include "list.h"
+#include "multipath.h"
 #include "subnet.h"
 #include "compression.h"
 
@@ -87,7 +89,11 @@ typedef struct node_t {
 
 	splay_tree_t edge_tree;                 /* Edges with this node as one of the endpoints */
 
-	struct connection_t *connection;        /* Connection associated with this node (if a direct connection exists) */
+	struct connection_t *connection;        /* Primary connection associated with this node (if a direct connection exists) */
+	list_t connections;                     /* All active parallel connections to this node (multipath.c) */
+	node_path_t paths[MAX_NODE_PATHS];      /* Confirmed / candidate UDP paths to this node (multipath.c) */
+	uint32_t mp_rr_cursor;                  /* Round-robin / burst cursor for multipath scheduling */
+	uint32_t mp_burst_pkts;                 /* Current burst packet count in MULTIPATH_SPLIT mode */
 
 	uint32_t sent_seqno;                    /* Sequence number last sent to this node */
 	uint32_t received_seqno;                /* Sequence number last received from this node */

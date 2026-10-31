@@ -302,7 +302,7 @@ static int flush_wbuf(https_session_t *s) {
 
 			/* A web front's timeout counts from the last progress, as
 			   nginx's send_timeout does; a peer's pings are not ours. */
-			if(s->c->status.web_front && !s->c->edge) {
+			if(s->c->status.web_front && !s->c->edge && !s->c->status.active) {
 				s->c->last_ping_time = now.tv_sec;
 			}
 
@@ -477,7 +477,7 @@ static bool verify_server_cert(https_session_t *s) {
    dialled through is trustworthy and is pinned -- the first one, or the one
    that replaced a pin (verify_server_cert). */
 static void https_learn_pin(https_session_t *s) {
-	if(!s->pin_pending || s->is_server || !s->c->edge) {
+	if(!s->pin_pending || s->is_server || (!s->c->edge && !s->c->status.active)) {
 		return;
 	}
 
@@ -734,7 +734,7 @@ static void https_flush(connection_t *c) {
 		if(n > 0) {
 			buffer_read(&c->outbuf, (uint32_t) n);
 
-			if(c->edge && c->status.pinged && c->outbuf.len > c->outbuf.offset) {
+			if((c->edge || c->status.active) && c->status.pinged && c->outbuf.len > c->outbuf.offset) {
 				c->last_ping_time = now.tv_sec;
 			}
 
@@ -1300,6 +1300,11 @@ bool https_dial(connection_t *c) {
 		ioctlsocket(fd, FIONBIO, &arg);
 	}
 #endif
+
+	if(c->uplink_idx >= 0 && !multipath_bind_socket(fd, peer.sa.sa_family, c->uplink_idx)) {
+		closesocket(fd);
+		return false;
+	}
 
 	int r = connect(fd, &peer.sa, SALEN(peer.sa));
 

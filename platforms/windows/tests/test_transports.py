@@ -87,3 +87,16 @@ def test_host_preferred_transport_read_and_write():
     assert tr.host_preferred_transport(cleared) == ""
     assert "PreferredTransports" not in cleared
 
+
+def test_multipath_options_validation_and_defaults():
+    eff = tr.effective({})
+    assert eff["MultipathMode"] == "off"
+    assert eff["MultipathConnections"] == 1
+    assert tr.validate({"MultipathMode": "flowhash", "MultipathConnections": 4,
+                        "MultipathInterface": "eth0:192.168.10.2:100:0"}) == []
+    errs = tr.validate({"MultipathMode": "invalid_mode", "MultipathConnections": 99})
+    joined = "\n".join(errs)
+    assert "MultipathMode: must be one of" in joined
+    assert "MultipathConnections: must be between 1 and 8" in joined
+
+

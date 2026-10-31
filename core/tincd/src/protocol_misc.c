@@ -25,6 +25,7 @@
 #include "crypto.h"
 #include "logger.h"
 #include "meta.h"
+#include "multipath.h"
 #include "net.h"
 #include "netutl.h"
 #include "protocol.h"
@@ -55,7 +56,12 @@ bool send_ping(connection_t *c) {
 }
 
 bool ping_h(connection_t *c, const char *request) {
-	(void)request;
+	char arg[32] = "";
+
+	if(request && sscanf(request, "%*d %31s", arg) == 1 && !strcasecmp(arg, "solo")) {
+		multipath_peer_promoted_solo(c);
+	}
+
 	return send_pong(c);
 }
 

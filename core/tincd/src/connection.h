@@ -45,7 +45,7 @@
 typedef union connection_status_t {
 	struct {
 		bool pinged: 1;                 /* sent ping */
-		bool unused_active: 1;
+		bool active: 1;                 /* 1 if authentication completed (ACK exchanged) */
 		bool connecting: 1;             /* 1 if we are waiting for a non-blocking connect() to finish */
 		bool unused_termreq: 1;         /* the termination of this connection was requested */
 		bool remove_unused: 1;          /* Set to 1 if you want this connection removed */
@@ -65,6 +65,7 @@ typedef union connection_status_t {
 		bool web_front: 1;              /* answers like a web server: nginx timeouts, no tarpit */
 		bool udp_fallback: 1;           /* 1 if dialled via UdpMetaFallback onto a confirmed UDP flow */
 		bool custom_weight: 1;          /* 1 if Weight was explicitly configured in tinc.conf or hosts/ */
+		bool multipath_sub: 1;          /* 1 if secondary parallel connection in node_t->connections */
 	};
 	uint32_t value;
 } connection_status_t;
@@ -142,6 +143,7 @@ typedef struct connection_t {
 	const struct transport_t *transport; /* carrier this connection runs on (NULL = plain TCP / control) */
 	void *transport_data;           /* carrier-private state (e.g. the single-flow session) */
 	size_t transport_outbuf_len;    /* unsent meta stream bytes queued inside the carrier */
+	int uplink_idx;                 /* multipath uplink index (-1 = OS default route) */
 
 	/* YAML mode only: fingerprint of the peer's host record as it stood when
 	   we last read it, so reload_configuration() can spot a real change

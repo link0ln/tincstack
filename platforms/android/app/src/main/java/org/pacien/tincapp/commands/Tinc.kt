@@ -131,6 +131,44 @@ object Tinc {
       )
     )
 
+  fun multipathStatus(netName: String): CompletableFuture<List<String>> =
+    Executor.call(newCommand(netName).withArguments("multipath", "status"))
+
+  fun multipathMode(netName: String, mode: String, connections: Int? = null): CompletableFuture<Unit> {
+    val cmd = newCommand(netName).withArguments("multipath", "mode", mode.trim().lowercase())
+    if (connections != null) cmd.withArguments(connections.coerceIn(1, 8).toString())
+    return Executor.call(cmd).thenApply { }
+  }
+
+  fun multipathUplinkAdd(
+    netName: String,
+    name: String,
+    ip: String = "-",
+    weight: Int = 100,
+    backup: Boolean = false,
+    mark: Int = 0,
+    netHandle: Long = 0L,
+    up: Boolean = true,
+  ): CompletableFuture<Unit> =
+    Executor.call(
+      newCommand(netName).withArguments(
+        "multipath",
+        "uplink",
+        "add",
+        name.trim(),
+        ip.trim().ifEmpty { "-" },
+        weight.coerceIn(1, 1000).toString(),
+        if (backup) "1" else "0",
+        mark.toString(),
+        java.lang.Long.toUnsignedString(netHandle),
+        if (up) "1" else "0",
+      )
+    ).thenApply { }
+
+  fun multipathUplinkDel(netName: String, name: String): CompletableFuture<Unit> =
+    Executor.call(newCommand(netName).withArguments("multipath", "uplink", "del", name.trim()))
+      .thenApply { }
+
   fun log(netName: String, level: Int? = null): Process =
     Executor.run(newCommand(netName)
       .withArguments("log")

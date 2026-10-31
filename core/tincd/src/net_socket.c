@@ -620,7 +620,7 @@ static void handle_meta_write(connection_t *c) {
 
 	buffer_read(&c->outbuf, outlen);
 
-	if(c->edge && c->status.pinged && c->outbuf.len > c->outbuf.offset) {
+	if((c->edge || c->status.active) && c->status.pinged && c->outbuf.len > c->outbuf.offset) {
 		c->last_ping_time = now.tv_sec;
 	}
 
@@ -746,7 +746,11 @@ bool transport_plain_dial(connection_t *c) {
 #endif
 
 		bind_to_interface(c->socket);
-		bind_to_address(c);
+		if(c->uplink_idx >= 0) {
+			multipath_bind_socket(c->socket, c->address.sa.sa_family, c->uplink_idx);
+		} else {
+			bind_to_address(c);
+		}
 	}
 
 	/* Connect */
@@ -863,6 +867,7 @@ begin:
 	c->outmaclength = myself->connection->outmaclength;
 	c->last_ping_time = now.tv_sec;
 	c->transport = t;
+	c->uplink_idx = multipath_pick_next_uplink(outgoing->node);
 
 	if(fallback) {
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "No address of %s accepts a meta connection, but its UDP data path is direct: dialling %s (%s) via %s", outgoing->node->name, outgoing->node->name, c->hostname, t->name);

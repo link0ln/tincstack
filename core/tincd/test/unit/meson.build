@@ -84,6 +84,9 @@ tests = {
   'traffic_shape': {
     'code': 'test_traffic_shape.c',
   },
+  'multipath': {
+    'code': 'test_multipath.c',
+  },
 }
 
 # httpc.c is compiled only with OpenSSL (it is the ACME client's transport).

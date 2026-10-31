@@ -221,7 +221,7 @@ bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 	   ahead of the peer's PONG in the same TCP stream), refresh the ping
 	   deadline so timeout_handler does not kill a live, actively-receiving
 	   link for head-of-line delay. */
-	if(inlen > 0 && c->edge && c->status.pinged) {
+	if(inlen > 0 && (c->edge || c->status.active) && c->status.pinged) {
 		c->last_ping_time = now.tv_sec;
 	}
 
@@ -253,6 +253,14 @@ bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 			size_t len = sptps_receive_data(&c->sptps, bufp, inlen);
 
 			if(!len) {
+				if(!c->status.invitation && !c->edge && !c->status.active && c->name) {
+					node_t *n = lookup_node(c->name);
+
+					if(n && n->status.reachable) {
+						send_req_pubkey_refresh(n);
+					}
+				}
+
 				return false;
 			}
 
@@ -336,7 +344,7 @@ bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 				bool result = receive_request(c, request);
 
 				if(!result) {
-					if(!c->status.invitation && !c->edge && c->name) {
+					if(!c->status.invitation && !c->edge && !c->status.active && c->name) {
 						node_t *peer = lookup_node(c->name);
 
 						if(peer && peer != myself && peer->status.reachable) {

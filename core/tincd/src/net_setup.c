@@ -1350,6 +1350,9 @@ static bool setup_myself(void) {
 		return false;
 	}
 
+	multipath_read_config();
+	multipath_init();
+
 #ifdef HAVE_OPENSSL
 
 	/* Expose our own TLS certificate fingerprint via `tinc info'/dump. */
@@ -1506,6 +1509,7 @@ void close_network_connections(void) {
 		closesocket(listen_socket[i].udp.fd);
 	}
 
+	multipath_exit();
 	transport_exit();
 
 	dnsrefresh_exit();

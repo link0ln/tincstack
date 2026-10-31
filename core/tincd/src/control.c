@@ -22,6 +22,7 @@
 #include "control.h"
 #include "control_common.h"
 #include "diag.h"
+#include "multipath.h"
 #include "logger.h"
 #include "names.h"
 #include "net.h"
@@ -207,6 +208,9 @@ bool control_h(connection_t *c, const char *request) {
 
 	case REQ_DIAG_PING:
 		return control_diag_ping_h(c, request);
+
+	case REQ_MULTIPATH:
+		return control_multipath_h(c, request);
 
 	default:
 		return send_request(c, "%d %d", CONTROL, REQ_INVALID);

@@ -69,8 +69,12 @@ uint32_t obfs_transport_magic = 0;
 #define OBFS_SCAN_PER_SEC 25
 #define OBFS_SCAN_MAX     512
 
-/* Replay window width (bits) over the per-direction counter. */
-#define OBFS_REPLAY_BITS 64
+/* Replay window width (bits) over the per-direction counter.
+   512 bits (8 x 64-bit words) tolerates large inter-path RTT variance when
+   multipath stripes or duplicates datagrams across heterogeneous uplinks. */
+#define OBFS_REPLAY_BITS  512
+#define OBFS_REPLAY_WORDS (OBFS_REPLAY_BITS / 64)
+#define OBFS_ALT_ADDRS    3
 
 /* A peer that restarts derives the same bootstrap key (it comes from the two
    public keys) but picks a FRESH RANDOM 48-bit send counter, which lands below
@@ -88,8 +92,8 @@ uint32_t obfs_transport_magic = 0;
 /* ---- keyed direction-separated keysets ----------------------------------- */
 
 typedef struct obfs_replay_t {
-	uint64_t max;      /* highest counter accepted so far */
-	uint64_t bits;     /* bitmap of the last OBFS_REPLAY_BITS counters */
+	uint64_t max;                        /* highest counter accepted so far */
+	uint64_t bits[OBFS_REPLAY_WORDS];    /* bitmap of the last OBFS_REPLAY_BITS counters */
 	bool started;
 } obfs_replay_t;
 
@@ -153,6 +157,9 @@ struct obfs_link_t {
 	bool active;               /* an obfs flow to this node is up */
 	sockaddr_t addr;           /* last verified peer UDP address (fast-path match) */
 	bool have_addr;
+	sockaddr_t alt_addrs[OBFS_ALT_ADDRS]; /* secondary multipath peer UDP addresses */
+	bool have_alt_addr[OBFS_ALT_ADDRS];
+	int alt_addr_next;
 	int rx_fd;                 /* UDP socket fd this link's flow arrived on / dials from */
 
 	/* Fast self-heal: the send path flags a link that is still sealing under
@@ -443,6 +450,8 @@ void obfs_link_reset_for_test(node_t *n) {
 		if(l->node == n) {
 			l->active = false;
 			l->have_addr = false;
+			memset(l->have_alt_addr, 0, sizeof(l->have_alt_addr));
+			l->alt_addr_next = 0;
 			l->rx_fd = -1;
 			keyset_free(&l->sess);
 			keyset_free(&l->next);
@@ -532,12 +541,34 @@ void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr) {
 	l->active = true;
 
 	if(addr) {
-		if(!l->have_addr || sockaddrcmp(addr, &l->addr)) {
+		sockaddr_t clean = *addr;
+		sockaddrunmap(&clean);
+
+		if(l->have_addr && sockaddrcmp(&clean, &l->addr)) {
+			/* Remember the previous address in alt_addrs so concurrent multipath
+			   flows from two NATs/interfaces both stay on the fast path. */
+			bool found = false;
+
+			for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
+				if(l->have_alt_addr[i] && !sockaddrcmp(&l->addr, &l->alt_addrs[i])) {
+					found = true;
+					break;
+				}
+			}
+
+			if(!found) {
+				int slot = l->alt_addr_next % OBFS_ALT_ADDRS;
+				l->alt_addrs[slot] = l->addr;
+				l->have_alt_addr[slot] = true;
+				l->alt_addr_next = (slot + 1) % OBFS_ALT_ADDRS;
+			}
+
 			l->have_budget = false;   /* new peer address: the cached budget is stale */
+		} else if(!l->have_addr) {
+			l->have_budget = false;
 		}
 
-		l->addr = *addr;
-		sockaddrunmap(&l->addr);
+		l->addr = clean;
 		l->have_addr = true;
 	}
 }
@@ -1132,20 +1163,47 @@ static ssize_t obfs_open(obfs_link_t *l, const uint8_t *buf, size_t len, uint8_t
 	return -1;
 }
 
-/* Sliding-window replay check on a per-direction counter. Returns true and
-   records the counter when it is fresh; false for a replay or a too-old one. */
+/* Sliding-window replay check on a per-direction counter (512-bit window).
+   Returns true and records the counter when it is fresh; false for a replay
+   or a too-old one. */
 static bool obfs_replay_ok(obfs_replay_t *w, uint64_t seq) {
 	if(!w->started) {
 		w->started = true;
 		w->max = seq;
-		w->bits = 1;
+		memset(w->bits, 0, sizeof(w->bits));
+		w->bits[0] = 1;
 		return true;
 	}
 
 	if(seq > w->max) {
 		uint64_t shift = seq - w->max;
-		w->bits = (shift >= OBFS_REPLAY_BITS) ? 0 : (w->bits << shift);
-		w->bits |= 1;
+
+		if(shift >= OBFS_REPLAY_BITS) {
+			memset(w->bits, 0, sizeof(w->bits));
+		} else {
+			unsigned int wshift = (unsigned int)(shift / 64);
+			unsigned int bshift = (unsigned int)(shift % 64);
+
+			if(wshift > 0) {
+				for(int i = OBFS_REPLAY_WORDS - 1; i >= (int)wshift; i--) {
+					w->bits[i] = w->bits[i - wshift];
+				}
+
+				for(unsigned int i = 0; i < wshift; i++) {
+					w->bits[i] = 0;
+				}
+			}
+
+			if(bshift > 0) {
+				for(int i = OBFS_REPLAY_WORDS - 1; i > 0; i--) {
+					w->bits[i] = (w->bits[i] << bshift) | (w->bits[i - 1] >> (64 - bshift));
+				}
+
+				w->bits[0] <<= bshift;
+			}
+		}
+
+		w->bits[0] |= 1;
 		w->max = seq;
 		return true;
 	}
@@ -1156,13 +1214,14 @@ static bool obfs_replay_ok(obfs_replay_t *w, uint64_t seq) {
 		return false;   /* too old to prove non-replay */
 	}
 
-	uint64_t bit = (uint64_t)1 << diff;
+	unsigned int word = (unsigned int)(diff / 64);
+	uint64_t bit = (uint64_t)1 << (diff % 64);
 
-	if(w->bits & bit) {
+	if(w->bits[word] & bit) {
 		return false;   /* already seen: replay */
 	}
 
-	w->bits |= bit;
+	w->bits[word] |= bit;
 	return true;
 }
 
@@ -1185,9 +1244,9 @@ static void obfs_log_toobig(obfs_link_t *l, size_t size, size_t budget) {
 	       (unsigned long)size, l->node ? l->node->name : "?", l->node ? l->node->hostname : "?", (unsigned long)budget);
 }
 
-static obfs_send_t obfs_link_send(obfs_link_t *l, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
+static obfs_send_t obfs_link_send(obfs_link_t *l, int override_fd, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
 
-obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
+obfs_send_t obfs_wrap_send_fd(int override_fd, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
 	if(excess) {
 		*excess = 0;
 	}
@@ -1209,10 +1268,14 @@ obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, s
 		return OBFS_SEND_PLAIN; /* not an obfs link: caller sends the datagram unchanged */
 	}
 
-	return obfs_link_send(l, sock, sa, buf, len, to, excess);
+	return obfs_link_send(l, override_fd, sock, sa, buf, len, to, excess);
 }
 
-static obfs_send_t obfs_link_send(obfs_link_t *l, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
+obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
+	return obfs_wrap_send_fd(-1, sock, sa, buf, len, to, excess);
+}
+
+static obfs_send_t obfs_link_send(obfs_link_t *l, int override_fd, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
 	if(!l->have_addr && sa && sa->sa.sa_family) {
 		l->addr = *sa;
 		sockaddrunmap(&l->addr);
@@ -1247,7 +1310,7 @@ static obfs_send_t obfs_link_send(obfs_link_t *l, size_t sock, const sockaddr_t 
 		return OBFS_SEND_OK; /* it is an obfs link; dropping the datagram beats leaking it in the clear */
 	}
 
-	int send_fd = obfs_pick_socket(sa);
+	int send_fd = override_fd >= 0 ? override_fd : obfs_pick_socket(sa);
 
 	if(send_fd < 0) {
 		send_fd = listen_socket[sock].udp.fd;
@@ -1453,7 +1516,8 @@ static bool obfs_epoch_restart(obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, 
 	l->last_epoch = now.tv_sec;
 	ks->rw.started = true;
 	ks->rw.max = seq;
-	ks->rw.bits = 1;
+	memset(ks->rw.bits, 0, sizeof(ks->rw.bits));
+	ks->rw.bits[0] = 1;
 
 	logger(DEBUG_CONNECTIONS, LOG_INFO, "Restarting the obfs replay window for %s at counter %llu: %s under the bootstrap key, so the peer has restarted",
 	       l->node ? l->node->name : "(unknown)", (unsigned long long)seq,
@@ -1520,9 +1584,24 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 	uint64_t seq = 0;
 	int ver = 0;
 
-	/* Fast path: a link that is already up for this source address. */
+	/* Fast path: a link that is already up for this source address (primary or multipath alt). */
 	for list_each(obfs_link_t, l, &obfs_links) {
-		if(l->active && l->have_addr && !sockaddrcmp(&addr, &l->addr)) {
+		if(!l->active || !l->have_addr) {
+			continue;
+		}
+
+		bool match = !sockaddrcmp(&addr, &l->addr);
+
+		if(!match) {
+			for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
+				if(l->have_alt_addr[i] && !sockaddrcmp(&addr, &l->alt_addrs[i])) {
+					match = true;
+					break;
+				}
+			}
+		}
+
+		if(match) {
 			ssize_t n = obfs_open(l, buf, len, inner, sizeof(inner), &ks, &seq, &ver);
 
 			if(n >= 0) {
@@ -2288,7 +2367,7 @@ void dseal_log_hold(node_t *n, dseal_verdict_t v) {
 
 #define DSEAL_UNREAD_NOTE 30
 
-obfs_send_t obfs_seal_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
+obfs_send_t obfs_seal_send_fd(int override_fd, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
 	if(excess) {
 		*excess = 0;
 	}
@@ -2319,7 +2398,11 @@ obfs_send_t obfs_seal_send(size_t sock, const sockaddr_t *sa, const void *buf, s
 		}
 	}
 
-	return obfs_link_send(l, sock, sa, buf, len, to, excess);
+	return obfs_link_send(l, override_fd, sock, sa, buf, len, to, excess);
+}
+
+obfs_send_t obfs_seal_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess) {
+	return obfs_seal_send_fd(-1, sock, sa, buf, len, to, excess);
 }
 
 /* An older peer announces nothing, so whether it reads frame v3 is only

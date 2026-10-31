@@ -227,6 +227,7 @@ typedef enum obfs_send_t {
 } obfs_send_t;
 
 obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
+obfs_send_t obfs_wrap_send_fd(int override_fd, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
 
 /* ---- inbound ------------------------------------------------------------- */
 
@@ -325,6 +326,7 @@ bool obfs_link_is_active(const node_t *n);
    never returns OBFS_SEND_PLAIN: a datagram that cannot be sealed is dropped,
    never sent in the clear. */
 obfs_send_t obfs_seal_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
+obfs_send_t obfs_seal_send_fd(int override_fd, size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);
 
 /* One probe round to an unconfirmed peer: log once when an older peer
    (no capability token) never answers sealed datagrams. */

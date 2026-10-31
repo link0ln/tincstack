@@ -80,7 +80,9 @@ void exit_connections(void) {
 }
 
 connection_t *new_connection(void) {
-	return xzalloc(sizeof(connection_t));
+	connection_t *c = xzalloc(sizeof(connection_t));
+	c->uplink_idx = -1;
+	return c;
 }
 
 #ifndef DISABLE_LEGACY
