@@ -95,7 +95,7 @@ class FakeTinc:
             return 0, "gw at 203.0.113.9 port 443 options c socket -1 status 002a outbuf 0/0/0 transport quic supported plain,obfs,https,quic\n", ""
         if sub[0] == "dump":
             return 0, "", ""
-        if sub[0] in ("reload", "disconnect", "retry"):
+        if sub[0] in ("reload", "disconnect", "retry", "multipath"):
             return 0, "OK\n", ""
         if sub[0] == "invite":
             return 0, f"203.0.113.9:655/INV_{sub[1]}\n", "Warning: using local address 203.0.113.9\n"
@@ -296,6 +296,34 @@ def test_transports_tab_validation_blocks_save(window):
     assert opts["Transports"] == ["https"]
     assert opts["TlsCert"] == "C:/certs/fullchain.pem" and opts["TlsKey"] == "C:/certs/privkey.pem"
     assert "HttpsPort" not in opts and "QuicPort" not in opts and "ObfsJunkPacketCount" not in opts
+
+
+def test_transports_tab_multipath_widgets_save_and_live_mode(window):
+    w = window
+    assert wait_until(lambda: w._running.get("demo") is True)
+    panel = w.transports.panel
+    assert panel.multipath_mode.currentText() == "off"
+    assert panel.multipath_conns.value() == 1
+    assert panel.multipath_iface.text() == ""
+    panel.multipath_mode.setCurrentText("failover")
+    panel.multipath_conns.setValue(2)
+    panel.multipath_iface.setText("Ethernet:192.168.1.2:100:0")
+    assert "Hot Standby" in panel.multipath_desc.text()
+    assert panel.changes() == {
+        "MultipathMode": "failover",
+        "MultipathConnections": 2,
+        "MultipathInterface": "Ethernet:192.168.1.2:100:0",
+    }
+    assert w.transports.save()
+    opts = yc.load(w.app.path).net("demo").options
+    assert opts["MultipathMode"] == "failover"
+    assert opts["MultipathConnections"] == 2
+    assert opts["MultipathInterface"] == "Ethernet:192.168.1.2:100:0"
+    assert wait_until(lambda: any(c[-3:] == ["multipath", "mode", "failover"] for c in w.fake.calls))
+    w.reload_config()
+    assert w.transports.panel.multipath_mode.currentText() == "failover"
+    assert w.transports.panel.multipath_conns.value() == 2
+    assert w.transports.panel.multipath_iface.text() == "Ethernet:192.168.1.2:100:0"
 
 
 def test_start_stop_do_not_block_qt_thread(window):

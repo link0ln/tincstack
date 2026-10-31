@@ -27,6 +27,14 @@ PREFER_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "qu
 VALID_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "quic")
 MULTIPATH_MODES: tuple[str, ...] = ("off", "failover", "flowhash", "redundant", "split")
 
+MULTIPATH_MODE_HELP = {
+    "off": "Disabled: standard single-path connection",
+    "failover": "Hot Standby (0-ms Failover): active primary link + warm backup links for seamless switching",
+    "flowhash": "Flow Hash (ECMP): balance inner TCP/UDP 5-tuple flows across active links without packet reordering",
+    "redundant": "Redundant (1+1): duplicate packets across active links for zero loss (SPTPS deduplicates on arrival)",
+    "split": "Weighted Split: distribute packets across active links proportionally to uplink weights and RTT",
+}
+
 CARRIER_HELP = {
     "plain": "Plain tinc UDP/TCP (default, unchanged wire image)",
     "sf": "Single-flow UDP: control + data multiplexed on one UDP flow",

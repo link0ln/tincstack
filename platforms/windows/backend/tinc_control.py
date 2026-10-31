@@ -638,6 +638,16 @@ class TincControl:
         rc, out, err = self._run(net, "join", invitation.strip(), timeout=timeout)
         return CommandResult(rc, out.strip(), err.strip())
 
+    # -- multipath runtime control --
+
+    def multipath_status(self, net: str, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "multipath", "status", timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def multipath_mode(self, net: str, mode: str, timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "multipath", "mode", mode.strip(), timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
 
 if __name__ == "__main__":
     import sys

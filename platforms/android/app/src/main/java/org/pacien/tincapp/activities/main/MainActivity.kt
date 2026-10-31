@@ -44,6 +44,8 @@ import androidx.annotation.ColorInt
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.pacien.tincapp.BuildConfig
@@ -60,6 +62,7 @@ import org.pacien.tincapp.activities.log.LogActivity
 import org.pacien.tincapp.activities.peers.PeersActivity
 import org.pacien.tincapp.commands.Executor
 import org.pacien.tincapp.commands.Join
+import org.pacien.tincapp.commands.Tinc
 import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.context.CrashRecorder
 import org.pacien.tincapp.data.Networks
@@ -154,6 +157,8 @@ class MainActivity : BaseActivity() {
     val summary: Networks.Summary,
     val transport: Transport?,
     val accepted: Set<Transport>,
+    val multipathMode: String,
+    val multipathConnections: Int,
     val routing: SplitRouting?,
     val pauseOnLock: Boolean,
   )
@@ -533,6 +538,7 @@ class MainActivity : BaseActivity() {
       selected?.let { startActivity(PeersActivity.intent(this, it)) }
     }
     binding.transportRow.setup(R.drawable.ic_transport, R.string.setting_transport_title) { showTransportDialog() }
+    binding.multipathRow.setup(R.drawable.ic_transport, R.string.setting_multipath_title) { showMultipathDialog() }
     binding.appsRow.setup(R.drawable.ic_apps, R.string.setting_apps_title) {
       selected?.let { appPicker.launch(AppPickerActivity.intent(this, it)) }
     }
@@ -571,10 +577,16 @@ class MainActivity : BaseActivity() {
     summary = try {
       val yaml = TincYaml(AppPaths.tincYamlFile(net))
       val s = Networks.summary(net)
+      val mpMode = yaml.optionValue(s.stanza, "MultipathMode")?.trim()?.lowercase()
+        ?.takeIf { it in MULTIPATH_MODES } ?: "off"
+      val mpConns = yaml.optionValue(s.stanza, "MultipathConnections")?.trim()?.toIntOrNull()
+        ?.coerceIn(1, 8) ?: 1
       NetworkSettings(
         summary = s,
         transport = Transport.preferred(yaml, s.stanza),
         accepted = Transport.acceptedByPeers(yaml, s.stanza),
+        multipathMode = mpMode,
+        multipathConnections = mpConns,
         routing = try {
           SplitRouting.read(yaml, s.stanza)
         } catch (e: Exception) {
@@ -603,6 +615,15 @@ class MainActivity : BaseActivity() {
     }
 
     binding.transportRow.rowSummary.setText(Labels.transportName(s?.transport ?: Transport.PLAIN))
+
+    val mpMode = s?.multipathMode ?: "off"
+    val mpConns = s?.multipathConnections ?: 1
+    val mpTitle = getString(multipathModeTitle(mpMode))
+    binding.multipathRow.rowSummary.text = if (mpMode == "off") {
+      mpTitle
+    } else {
+      getString(R.string.multipath_summary_flows_format, mpTitle, mpConns)
+    }
 
     val routing = s?.routing
     binding.appsRow.rowSummary.text = when {
@@ -839,6 +860,122 @@ class MainActivity : BaseActivity() {
       .show()
   }
 
+  private fun multipathModeTitle(mode: String): Int = when (mode.lowercase()) {
+    "failover" -> R.string.multipath_mode_failover
+    "flowhash" -> R.string.multipath_mode_flowhash
+    "redundant" -> R.string.multipath_mode_redundant
+    "split" -> R.string.multipath_mode_split
+    else -> R.string.multipath_mode_off
+  }
+
+  private fun multipathModeDesc(mode: String): Int = when (mode.lowercase()) {
+    "failover" -> R.string.multipath_mode_failover_desc
+    "flowhash" -> R.string.multipath_mode_flowhash_desc
+    "redundant" -> R.string.multipath_mode_redundant_desc
+    "split" -> R.string.multipath_mode_split_desc
+    else -> R.string.multipath_mode_off_desc
+  }
+
+  private fun showMultipathDialog() {
+    val s = summary ?: return
+    val net = selected ?: return
+    var chosenMode = s.multipathMode
+    var chosenConns = s.multipathConnections.coerceIn(1, 8)
+    val content = layoutInflater.inflate(R.layout.dialog_transport, null) as android.view.ViewGroup
+    val list = content.findViewById<android.widget.LinearLayout>(R.id.transport_list)
+    val noteView = content.findViewById<android.widget.TextView>(R.id.transport_note)
+    noteView.setText(R.string.multipath_note)
+
+    val radios = mutableMapOf<String, android.widget.RadioButton>()
+    val chips = mutableMapOf<Int, Chip>()
+
+    fun syncSelection() {
+      radios.forEach { (m, rb) -> rb.isChecked = (m == chosenMode) }
+      chips.forEach { (n, chip) -> chip.isChecked = (n == chosenConns) }
+    }
+
+    MULTIPATH_MODES.forEach { mode ->
+      val item = TransportItemBinding.inflate(layoutInflater, list, false)
+      item.transportRadio.isChecked = mode == chosenMode
+      item.transportName.setText(multipathModeTitle(mode))
+      item.transportDesc.setText(multipathModeDesc(mode))
+      radios[mode] = item.transportRadio
+      item.root.setOnClickListener {
+        chosenMode = mode
+        if (mode != "off" && chosenConns < 2) chosenConns = 2
+        if (mode == "off") chosenConns = 1
+        syncSelection()
+      }
+      list.addView(item.root)
+    }
+
+    val padH = (24 * resources.displayMetrics.density).toInt()
+    val padV = (8 * resources.displayMetrics.density).toInt()
+    val flowsLabel = android.widget.TextView(this).apply {
+      setText(R.string.multipath_connections_label)
+      setPadding(padH, padV, padH, padV / 2)
+      setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_LabelLarge)
+    }
+    list.addView(flowsLabel)
+
+    val chipGroup = ChipGroup(this).apply {
+      isSingleSelection = true
+      isSelectionRequired = true
+      setPadding(padH, 0, padH, padV)
+    }
+    listOf(1, 2, 3, 4).forEach { n ->
+      val chip = Chip(this).apply {
+        text = n.toString()
+        isCheckable = true
+        isChecked = (n == chosenConns)
+        setOnClickListener {
+          chosenConns = n
+          syncSelection()
+        }
+      }
+      chips[n] = chip
+      chipGroup.addView(chip)
+    }
+    list.addView(chipGroup)
+
+    MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.setting_multipath_title)
+      .setView(content)
+      .setNegativeButton(R.string.action_cancel, null)
+      .setPositiveButton(R.string.action_save) { _, _ ->
+        val modeChanged = chosenMode != s.multipathMode
+        val connsChanged = chosenConns != s.multipathConnections
+        if (modeChanged || connsChanged) {
+          val stanza = s.summary.stanza
+          Executor.runAsyncTask {
+            val yaml = TincYaml(AppPaths.tincYamlFile(net))
+            yaml.setOptions(
+              stanza,
+              mapOf(
+                "MultipathMode" to if (chosenMode == "off") null else listOf(chosenMode),
+                "MultipathConnections" to if (chosenConns <= 1) null else listOf(chosenConns.toString()),
+              ),
+            )
+            if (status.active && status.netName == net) {
+              try {
+                Tinc.multipathMode(net, chosenMode, chosenConns).get()
+              } catch (_: Exception) {
+              }
+            }
+          }.thenAccept {
+            runOnUiThread {
+              loadSettings()
+              val msg = getString(R.string.multipath_set_format, getString(multipathModeTitle(chosenMode)), chosenConns)
+              if (connsChanged) notifyApplies(msg) else notify(msg)
+            }
+          }.exceptionallyAccept { e ->
+            runOnUiThread { notify(getString(R.string.apps_error_write_format, e.cause?.defaultMessage() ?: e.defaultMessage())) }
+          }
+        }
+      }
+      .show()
+  }
+
   private fun openLog() {
     startActivity(LogActivity.intent(this, selected))
   }
@@ -1002,5 +1139,6 @@ class MainActivity : BaseActivity() {
     private const val PREF_ASKED_NOTIFICATIONS = "asked_notifications"
     private const val PREF_LAST_UPDATE_CHECK = "last_update_check_ms"
     private const val STATE_PENDING_CONNECT = "pending_connect"
+    private val MULTIPATH_MODES = listOf("off", "failover", "flowhash", "redundant", "split")
   }
 }

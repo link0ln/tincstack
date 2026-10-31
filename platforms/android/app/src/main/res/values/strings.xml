@@ -243,6 +243,23 @@
 	<string name="transport_set_format">Connection type: %1$s.</string>
 	<string name="transport_fallback_note">If the chosen type can\'t connect, tincstack falls back to Standard.</string>
 
+	<!-- multipath -->
+	<string name="setting_multipath_title">Multipath (Wi-Fi + Cellular)</string>
+	<string name="multipath_mode_off">Off</string>
+	<string name="multipath_mode_off_desc">Standard single-path connection over the active default network.</string>
+	<string name="multipath_mode_failover">Hot Standby (0-ms Failover)</string>
+	<string name="multipath_mode_failover_desc">Active primary link + warm backup link. Instant switchover between Wi-Fi and Cellular without dropping VPN.</string>
+	<string name="multipath_mode_flowhash">Flow Hash (ECMP Load Balance)</string>
+	<string name="multipath_mode_flowhash_desc">Balances separate TCP/UDP connections across active links without packet reordering.</string>
+	<string name="multipath_mode_redundant">Redundant (1+1 Zero-Loss)</string>
+	<string name="multipath_mode_redundant_desc">Sends packets over active links simultaneously; the fastest copy arrives first.</string>
+	<string name="multipath_mode_split">Weighted Split</string>
+	<string name="multipath_mode_split_desc">Distributes packets across active links proportionally to uplink weights and RTT.</string>
+	<string name="multipath_connections_label">Parallel flows per peer:</string>
+	<string name="multipath_summary_flows_format">%1$s · %2$d flows</string>
+	<string name="multipath_set_format">Multipath: %1$s (%2$d flows).</string>
+	<string name="multipath_note">Wi-Fi and Cellular uplinks are tracked automatically. Scheduler mode changes apply live; flow count changes apply on reconnect.</string>
+
 	<!-- apps -->
 	<string name="apps_mode_all">All apps use the VPN</string>
 	<string name="apps_mode_all_hint">Every app\'s traffic to the network goes through the VPN.</string>

@@ -63,6 +63,35 @@ class TransportsPanel(QtWidgets.QWidget):
         ng.addLayout(pbox, 1, 1)
         root.addWidget(neg)
 
+        # -- multipath / multi-WAN --
+        mp = QtWidgets.QGroupBox("Multipath && Multi-WAN (application-level multi-flow / multi-interface)")
+        mf = QtWidgets.QFormLayout(mp)
+        mp_row = QtWidgets.QHBoxLayout()
+        self.multipath_mode = QtWidgets.QComboBox()
+        self.multipath_mode.setToolTip(tr.SPEC_BY_NAME["MultipathMode"].help)
+        for m in tr.MULTIPATH_MODES:
+            self.multipath_mode.addItem(m)
+        self.multipath_desc = QtWidgets.QLabel("")
+        self.multipath_desc.setStyleSheet("color:#9aa0a6;")
+        self.multipath_mode.currentTextChanged.connect(self._on_multipath_mode_changed)
+        mp_row.addWidget(self.multipath_mode)
+        mp_row.addWidget(self.multipath_desc, stretch=1)
+        mf.addRow("MultipathMode:", mp_row)
+
+        mp_conn_spec = tr.SPEC_BY_NAME["MultipathConnections"]
+        self.multipath_conns = QtWidgets.QSpinBox()
+        self.multipath_conns.setRange(mp_conn_spec.minimum, mp_conn_spec.maximum)
+        self.multipath_conns.setToolTip(mp_conn_spec.help)
+        self.multipath_conns.valueChanged.connect(self.changed)
+        mf.addRow("MultipathConnections:", self.multipath_conns)
+
+        self.multipath_iface = QtWidgets.QLineEdit()
+        self.multipath_iface.setPlaceholderText("iface[:ip[:weight[:backup[:mark]]]]  (e.g. Ethernet:192.168.1.2:100:0)")
+        self.multipath_iface.setToolTip(tr.SPEC_BY_NAME["MultipathInterface"].help)
+        self.multipath_iface.textChanged.connect(self.changed)
+        mf.addRow("MultipathInterface:", self.multipath_iface)
+        root.addWidget(mp)
+
         # -- obfs --
         obfs = QtWidgets.QGroupBox("Obfuscated UDP (carrier 'obfs')")
         of = QtWidgets.QFormLayout(obfs)
@@ -125,6 +154,11 @@ class TransportsPanel(QtWidgets.QWidget):
         self.load({})
 
     # -- helpers --
+    def _on_multipath_mode_changed(self, mode: str) -> None:
+        m = (mode or "off").strip().lower()
+        self.multipath_desc.setText(tr.MULTIPATH_MODE_HELP.get(m, ""))
+        self.changed.emit()
+
     def _browse(self, name: str) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, name) if name != "HttpsDecoyRoot" \
             else (QtWidgets.QFileDialog.getExistingDirectory(self, name), "")
@@ -163,6 +197,13 @@ class TransportsPanel(QtWidgets.QWidget):
         for c, cb in self.accept.items():
             cb.setChecked(c in eff["Transports"])
         self._set_prefer(eff["PreferredTransports"])
+        mp_mode = str(eff.get("MultipathMode", "off") or "off").strip().lower()
+        idx = self.multipath_mode.findText(mp_mode)
+        self.multipath_mode.setCurrentIndex(idx if idx >= 0 else 0)
+        self.multipath_desc.setText(tr.MULTIPATH_MODE_HELP.get(self.multipath_mode.currentText(), ""))
+        mp_conns = eff.get("MultipathConnections", 1)
+        self.multipath_conns.setValue(int(mp_conns) if str(mp_conns).lstrip("-").isdigit() else 1)
+        self.multipath_iface.setText(str(eff.get("MultipathInterface") or ""))
         for name, sb in self.spins.items():
             v = eff[name]
             sb.setValue(int(v) if str(v).lstrip("-").isdigit() else sb.minimum())
@@ -198,6 +239,9 @@ class TransportsPanel(QtWidgets.QWidget):
         out: dict[str, Any] = {
             "Transports": [c for c in tr.CARRIERS if self.accept[c].isChecked()],
             "PreferredTransports": self.preferred(),
+            "MultipathMode": self.multipath_mode.currentText().strip().lower() or "off",
+            "MultipathConnections": self.multipath_conns.value(),
+            "MultipathInterface": self.multipath_iface.text().strip(),
             "ObfsInitMagicHeader": self.magic.text().strip() or "0",
             "HttpsPort": self.https_port.value(),
             "HttpsDecoyUpstream": self.decoy_upstream.text().strip(),

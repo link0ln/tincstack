@@ -1007,6 +1007,10 @@ class TransportsTab(QtWidgets.QWidget):
             return True
         transports.apply_changes(nc.options, delta)
         self.ctx.save_config("transports saved: " + ", ".join(delta) + " (restart network to apply)")
+        net = self.ctx.cur_net()
+        if net and "MultipathMode" in delta and self.ctx._running.get(net):
+            mp_mode = str(delta["MultipathMode"] or "off")
+            self.ctx.pool.run(self.ctx.tc.multipath_mode, net, mp_mode, tag=f"mp-mode-{net}")
         self.reload()
         return True
 

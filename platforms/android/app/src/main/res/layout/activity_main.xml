@@ -285,6 +285,10 @@
 								layout="@layout/row_item" />
 
 							<include
+								android:id="@+id/multipath_row"
+								layout="@layout/row_item" />
+
+							<include
 								android:id="@+id/apps_row"
 								layout="@layout/row_item" />
 

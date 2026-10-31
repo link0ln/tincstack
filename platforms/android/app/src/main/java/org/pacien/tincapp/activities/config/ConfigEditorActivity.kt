@@ -1107,6 +1107,24 @@ class ConfigEditorActivity : BaseActivity() {
         valuePresets = { listOf("no", "udp", "tcp", "both") },
       ),
       KeySpec(
+        name = "MultipathMode",
+        description = "Application-level multipath & multi-WAN scheduler mode",
+        defaultSuggestion = "failover",
+        valuePresets = { listOf("off", "failover", "flowhash", "redundant", "split") },
+      ),
+      KeySpec(
+        name = "MultipathConnections",
+        description = "Number of parallel connections per peer for multipath (1–8)",
+        defaultSuggestion = "2",
+        valuePresets = { listOf("1", "2", "3", "4", "8") },
+      ),
+      KeySpec(
+        name = "MultipathInterface",
+        description = "Explicit uplink binding: iface[:ip[:weight[:backup[:mark]]]] (automatic on Android)",
+        defaultSuggestion = "wlan0::100:0",
+        valuePresets = { listOf("wlan0::100:0", "rmnet_data0::50:1") },
+      ),
+      KeySpec(
         name = "Transports",
         description = "Enabled transports on this device (comma-separated)",
         defaultSuggestion = "plain, sf, obfs, https, quic",
