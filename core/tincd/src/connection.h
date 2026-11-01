@@ -150,6 +150,8 @@ typedef struct connection_t {
 	   (see connection_snapshot_host_config()). */
 	uint8_t host_digest[YAMLCONF_DIGEST_LEN];
 	bool host_digest_valid;
+	time_t activated_at;            /* timestamp when ACK activated this connection */
+	bool post_activate_verified;    /* true once post-ACK traffic arrived (guards against DPI post-handshake freeze) */
 } connection_t;
 
 extern list_t connection_list;

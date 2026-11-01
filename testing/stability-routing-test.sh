@@ -455,5 +455,35 @@ else
 	miss "LocalDiscovery failed to establish direct LAN UDP path: line='$HUB_LAN_LINE'"
 fi
 
+echo "===== Scenario 8: Idle Roaming LocalDiscovery Wakeup & Zero-Traffic PMTU Convergence ====="
+# Tear down direct UDP via NoDirectNodes, then re-enable and trigger `tinc retry` with ZERO data traffic (no ping)
+# after >75s of node uptime, verifying that `last_lan_change` wakes up LocalDiscovery and PMTU converges to >=1400 on its own.
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set NoDirectNodes hub
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+sleep 2
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 del NoDirectNodes
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 retry
+
+idle_pmtu_ok=0
+for _ in $(seq 1 15); do
+	HUB_IDLE_LINE=$(docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump nodes | grep "^hub ")
+	HUB_IDLE_VIA=$(echo "$HUB_IDLE_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}')
+	HUB_IDLE_MINMTU=$(echo "$HUB_IDLE_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="pmtu") print $(i+1)}')
+	HUB_IDLE_STATUS=$(echo "$HUB_IDLE_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="status") print $(i+1)}')
+	HUB_IDLE_UDP=$(( (16#${HUB_IDLE_STATUS:-0} & 0x0080) != 0 ? 1 : 0 ))
+	if [ "$HUB_IDLE_VIA" = "hub" ] && [ "$HUB_IDLE_UDP" -eq 1 ] && [ "${HUB_IDLE_MINMTU:-0}" -ge 1400 ]; then
+		idle_pmtu_ok=1
+		break
+	fi
+	sleep 1
+done
+
+if [ "$idle_pmtu_ok" -eq 1 ]; then
+	note "Idle roaming LocalDiscovery wakeup & zero-traffic PMTU convergence succeeded (via=hub, udp_confirmed=1, minmtu=$HUB_IDLE_MINMTU)"
+else
+	miss "Idle roaming LocalDiscovery / PMTU convergence failed: line='$HUB_IDLE_LINE'"
+fi
+
 echo "===== Summary: $pass_count passed, fail=$fail ====="
 exit "$fail"

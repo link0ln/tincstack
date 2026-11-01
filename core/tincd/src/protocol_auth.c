@@ -1407,6 +1407,8 @@ bool ack_h(connection_t *c, const char *request) {
 	/* Activate this connection */
 
 	c->status.active = true;
+	c->activated_at = now.tv_sec;
+	c->post_activate_verified = false;
 	c->allow_request = ALL;
 
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Connection with %s (%s) activated", c->name,
@@ -1447,6 +1449,7 @@ bool ack_h(connection_t *c, const char *request) {
 		}
 
 		c->edge->local_address = local_sa;
+		myself->last_lan_change = now.tv_sec;
 	}
 
 	c->edge->weight = (weight + c->estimated_weight) / 2;

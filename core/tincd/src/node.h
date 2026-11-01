@@ -160,6 +160,11 @@ typedef struct node_t {
 	bool remote_no_direct;                  /* true if peer signaled that direct connections with it are forbidden */
 	time_t last_no_direct_sent;             /* rate limit for PUNCH_NO_DIRECT notifications to this peer */
 	time_t last_lan_udp_rx;                 /* timestamp of last direct UDP packet received from a private LAN address */
+	time_t last_lan_change;                 /* timestamp of last edge/local address change or retry (roaming LocalDiscovery) */
+	time_t last_large_udp_rx;               /* timestamp of last direct UDP packet/probe >= MINMTU received */
+	uint16_t punch_base_port;               /* reflexive UDP port reported by relay during hole punch */
+	int16_t nat_port_delta;                 /* learned sequential port allocation stride across NAT mappings */
+	uint8_t udp_probe_seq;                  /* per-node unconfirmed UDP address rotation counter */
 } node_t;
 
 extern struct node_t *myself;

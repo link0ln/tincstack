@@ -150,6 +150,7 @@ void terminate_connection(connection_t *c, bool report) {
 	   BEFORE the edge is torn down below: the carrier fallback decision
 	   further down depends on it. */
 	bool activated = c->edge != NULL || c->status.active;
+	bool post_activate_freeze = activated && !c->post_activate_verified && c->status.pinged;
 	/* The carrier's name outlives c (a static transport_t); c does not. */
 	const char *carrier = c->transport ? c->transport->name : "plain";
 
@@ -220,11 +221,17 @@ void terminate_connection(connection_t *c, bool report) {
 		   candidate. An activated connection that drops is a normal reconnect:
 		   the walk starts again from the first preference, never from a
 		   fallback (review L-2). */
-		if(!activated) {
+		if(!activated || post_activate_freeze) {
 			if(outgoing->retry_requested) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "The dial was restarted by `tinc retry', not failed by the carrier: trying %s again",
 				       carrier);
 			} else {
+				if(post_activate_freeze) {
+					logger(DEBUG_CONNECTIONS, LOG_WARNING, "Connection to %s via %s froze immediately after handshake without post-ACK traffic; rotating carrier",
+					       outgoing->node ? outgoing->node->name : "peer", carrier);
+					outgoing->last_ok_mask = 0;
+				}
+
 				bool moved = transport_next_candidate(outgoing);
 
 				if(outgoing->node && outgoing->node->connection && outgoing->node->connection->edge &&
@@ -351,8 +358,8 @@ static void timeout_handler(void *data) {
 			continue;
 		}
 
-		// helps in UDP holepunching
-		try_tx(c->node, false);
+		// helps in UDP holepunching and initial PMTU convergence
+		try_tx(c->node, c->node && c->node->status.udp_confirmed && c->node->mtuprobes >= 0);
 
 		// timeout during ping
 		if(c->status.pinged) {
@@ -361,8 +368,9 @@ static void timeout_handler(void *data) {
 			continue;
 		}
 
-		// check whether we need to send a new ping
-		if(c->last_ping_time + pinginterval <= now.tv_sec) {
+		// check whether we need to send a new ping (or an early post-activate verification ping)
+		if(c->last_ping_time + pinginterval <= now.tv_sec ||
+		                (!c->post_activate_verified && now.tv_sec - c->activated_at >= pingtimeout)) {
 			send_ping(c);
 		}
 	}
@@ -377,12 +385,14 @@ static void timeout_handler(void *data) {
 				continue;
 			}
 
+			time_t lan_ref = MAX(n->last_state_change, MAX(n->last_lan_change, myself->last_lan_change));
+
 			if(n->status.udp_confirmed) {
 				try_tx(n, n->mtuprobes >= 0);
 			} else if(localdiscovery &&
 			                now.tv_sec - myself->last_state_change >= 15 &&
 			                now.tv_sec - n->last_state_change >= 15 &&
-			                now.tv_sec - n->last_state_change <= 75 &&
+			                now.tv_sec - lan_ref <= 75 &&
 			                node_shares_local_lan(n)) {
 				try_tx(n, false);
 			}
@@ -697,6 +707,15 @@ void retry(void) {
 			c->last_ping_time = 0;
 			c->outgoing->retry_requested = true;
 		}
+	}
+
+	/* Re-open the LocalDiscovery window and clear hole-punch backoff on explicit retry */
+	if(myself) {
+		myself->last_lan_change = now.tv_sec;
+	}
+
+	for splay_each(node_t, n, &node_tree) {
+		n->punch_backoff_until = 0;
 	}
 
 	/* Kick the ping timeout handler */

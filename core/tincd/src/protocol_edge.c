@@ -169,6 +169,9 @@ bool add_edge_h(connection_t *c, const char *request) {
 		if(new_address) {
 			sockaddrfree(&e->address);
 			e->address = address;
+			from->last_lan_change = now.tv_sec;
+			to->last_lan_change = now.tv_sec;
+			from->punch_backoff_until = 0;
 		} else {
 			sockaddrfree(&address);
 		}
@@ -176,6 +179,9 @@ bool add_edge_h(connection_t *c, const char *request) {
 		if(new_local_address) {
 			sockaddrfree(&e->local_address);
 			e->local_address = local_address;
+			from->last_lan_change = now.tv_sec;
+			to->last_lan_change = now.tv_sec;
+			from->punch_backoff_until = 0;
 		} else {
 			sockaddrfree(&local_address);
 		}
@@ -206,6 +212,11 @@ bool add_edge_h(connection_t *c, const char *request) {
 		e->options = options;
 		e->weight = weight;
 		edge_add(e);
+
+		if(local_address.sa.sa_family && local_address.sa.sa_family != AF_UNKNOWN) {
+			from->last_lan_change = now.tv_sec;
+			to->last_lan_change = now.tv_sec;
+		}
 	}
 
 	/* Persist learned external listening endpoints (non-ephemeral ports) of

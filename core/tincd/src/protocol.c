@@ -178,6 +178,10 @@ bool receive_request(connection_t *c, const char *request) {
 			return false;
 		}
 
+		if(c->status.active) {
+			c->post_activate_verified = true;
+		}
+
 		if(!entry->handler(c, request)) {
 			/* Something went wrong. Probably scriptkiddies. Terminate. */
 
