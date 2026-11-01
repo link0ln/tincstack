@@ -59,7 +59,14 @@ object SessionStateMachine {
       override fun toString() = "Idle"
     }
 
-    data class Connected(val netName: String, val run: DaemonRun, val suspendOnScreenOff: Boolean) : State()
+    data class Connected(
+      val netName: String,
+      val run: DaemonRun,
+      val suspendOnScreenOff: Boolean,
+      val screenLocked: Boolean = false,
+      val mediaPlaying: Boolean = false,
+    ) : State()
+
     data class Suspended(val netName: String, val lastRun: DaemonRun) : State()
   }
 
@@ -74,6 +81,12 @@ object SessionStateMachine {
 
     /** ACTION_USER_PRESENT: the keyguard is gone. */
     object UserPresent : Event()
+
+    /** Active audio/media playback started on the device. */
+    object MediaStarted : Event()
+
+    /** Active audio/media playback stopped (after grace period). */
+    object MediaStopped : Event()
 
     /** The user asked to disconnect (UI, notification action, intent API). */
     object UserDisconnect : Event()
@@ -120,15 +133,40 @@ object SessionStateMachine {
 
     Event.ScreenOff -> when (state) {
       is State.Connected ->
-        if (state.suspendOnScreenOff)
-          Transition(State.Suspended(state.netName, state.run), listOf(Action.StopDaemon(state.netName)))
-        else Transition(state)
+        if (!state.suspendOnScreenOff) Transition(state)
+        else if (state.mediaPlaying) Transition(state.copy(screenLocked = true))
+        else Transition(State.Suspended(state.netName, state.run), listOf(Action.StopDaemon(state.netName)))
 
       else -> Transition(state)
     }
 
     Event.UserPresent -> resume(state)
     is Event.ScreenOn -> if (event.keyguardLocked) Transition(state) else resume(state)
+
+    Event.MediaStarted -> when (state) {
+      is State.Connected ->
+        if (state.mediaPlaying) Transition(state)
+        else Transition(state.copy(mediaPlaying = true))
+
+      is State.Suspended -> state.lastRun.next().let { run ->
+        Transition(
+          State.Connected(state.netName, run, suspendOnScreenOff = true, screenLocked = true, mediaPlaying = true),
+          listOf(Action.StartDaemon(state.netName, run)))
+      }
+
+      else -> Transition(state)
+    }
+
+    Event.MediaStopped -> when (state) {
+      is State.Connected ->
+        if (state.suspendOnScreenOff && state.screenLocked)
+          Transition(State.Suspended(state.netName, state.run), listOf(Action.StopDaemon(state.netName)))
+        else if (state.mediaPlaying)
+          Transition(state.copy(mediaPlaying = false))
+        else Transition(state)
+
+      else -> Transition(state)
+    }
 
     is Event.DaemonExited ->
       if (state is State.Connected && state.run == event.run)
@@ -162,6 +200,10 @@ object SessionStateMachine {
         State.Connected(state.netName, run, suspendOnScreenOff = true),
         listOf(Action.StartDaemon(state.netName, run)))
     }
+
+    is State.Connected ->
+      if (state.screenLocked) Transition(state.copy(screenLocked = false))
+      else Transition(state)
 
     else -> Transition(state)
   }

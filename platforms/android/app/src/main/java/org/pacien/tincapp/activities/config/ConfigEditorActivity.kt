@@ -1180,6 +1180,12 @@ class ConfigEditorActivity : BaseActivity() {
         valuePresets = BOOL_PRESETS,
       ),
       KeySpec(
+        name = "LowPowerMode",
+        description = "Battery saver leaf mode: fewer background mesh links/keepalives, +1000 routing weight (no transit relaying)",
+        defaultSuggestion = "yes",
+        valuePresets = BOOL_PRESETS,
+      ),
+      KeySpec(
         name = "PingInterval",
         description = "Heartbeat ping interval in seconds",
         defaultSuggestion = "10",

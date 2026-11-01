@@ -50,7 +50,8 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
                                      val blocking: Boolean = false,
                                      val mtu: Int? = null,
                                      val reconnectOnNetworkChange: Boolean = true,
-                                     val disconnectOnScreenOff: Boolean = false) {
+                                     val disconnectOnScreenOff: Boolean = false,
+                                     val lowPowerMode: Boolean = false) {
   companion object {
     const val KEY_ADDRESSES = "InterfaceAddress"
     const val KEY_ROUTES = "InterfaceRoute"
@@ -64,6 +65,7 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
     const val KEY_MTU = "MTU"
     const val KEY_RECONNECT_ON_NETWORK_CHANGE = "ReconnectOnNetworkChange"
     const val KEY_DISCONNECT_ON_SCREEN_OFF = "DisconnectOnScreenOff"
+    const val KEY_LOW_POWER_MODE = "LowPowerMode"
 
     private const val KEY_ADDRESS_POOL = "AddressPool"
     private const val HOST_KEY_SUBNET = "Subnet"
@@ -71,7 +73,8 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
     /** The keys this class reads; everything else in `options:` belongs to the daemon. */
     val KEYS = listOf(KEY_ADDRESSES, KEY_ROUTES, KEY_DNS_SERVERS, KEY_SEARCH_DOMAINS,
       KEY_ALLOWED_APPLICATIONS, KEY_DISALLOWED_APPLICATIONS, KEY_ALLOWED_FAMILIES,
-      KEY_ALLOW_BYPASS, KEY_BLOCKING, KEY_MTU, KEY_RECONNECT_ON_NETWORK_CHANGE, KEY_DISCONNECT_ON_SCREEN_OFF)
+      KEY_ALLOW_BYPASS, KEY_BLOCKING, KEY_MTU, KEY_RECONNECT_ON_NETWORK_CHANGE,
+      KEY_DISCONNECT_ON_SCREEN_OFF, KEY_LOW_POWER_MODE)
 
     /** From the network's `tinc.yaml`; [netName] is the network directory name (stanza resolved as the daemon does). */
     fun fromTincYaml(f: File, netName: String): VpnInterfaceConfiguration =
@@ -110,7 +113,8 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
         TincYaml.asTincBoolean(yaml.optionValue(net, KEY_BLOCKING), false),
         yaml.optionValue(net, KEY_MTU)?.trim()?.toInt(),
         TincYaml.asTincBoolean(yaml.optionValue(net, KEY_RECONNECT_ON_NETWORK_CHANGE), true),
-        TincYaml.asTincBoolean(yaml.optionValue(net, KEY_DISCONNECT_ON_SCREEN_OFF), false))
+        TincYaml.asTincBoolean(yaml.optionValue(net, KEY_DISCONNECT_ON_SCREEN_OFF), false),
+        TincYaml.asTincBoolean(yaml.optionValue(net, KEY_LOW_POWER_MODE), false))
     }
 
     /** Own `Subnet` host lines (`10.1.0.2/32`) become interface addresses with the pool's prefix length. */

@@ -1873,6 +1873,9 @@ object DiagManager {
     var hostsMap = emptyMap<String, String>()
     var prefVal = ""
     var trVal = ""
+    var reconnectOnNet = true
+    var disconnectScreenOff = false
+    var lowPower = false
     if (targetNet.isNotEmpty()) {
       try {
         val f = AppPaths.tincYamlFile(targetNet)
@@ -1885,6 +1888,9 @@ object DiagManager {
           hostsMap = rawHosts.entries.associate { it.key.toString() to it.value?.toString().orEmpty() }
           prefVal = yaml.optionValues(stanza, "PreferredTransports").joinToString(", ")
           trVal = yaml.optionValues(stanza, "Transports").joinToString(", ")
+          reconnectOnNet = TincYaml.asTincBoolean(yaml.optionValue(stanza, "ReconnectOnNetworkChange"), true)
+          disconnectScreenOff = TincYaml.asTincBoolean(yaml.optionValue(stanza, "DisconnectOnScreenOff"), false)
+          lowPower = TincYaml.asTincBoolean(yaml.optionValue(stanza, "LowPowerMode"), false)
         }
       } catch (_: Exception) {
       }
@@ -1894,6 +1900,9 @@ object DiagManager {
       "net" to targetNet,
       "transports" to trVal,
       "preferred_transports" to prefVal,
+      "reconnect_on_net_change" to reconnectOnNet,
+      "disconnect_on_screen_off" to disconnectScreenOff,
+      "low_power_mode" to lowPower,
       "options" to optionsMap,
       "hosts" to hostsMap,
       "raw_yaml" to rawYaml,
@@ -2064,9 +2073,25 @@ object DiagManager {
           val prefStr = (payload["preferred_transports"]?.toString() ?: "").trim()
           val trList = trStr.split(',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
           val prefList = prefStr.split(',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
-          yaml.setOptions(stanza, mapOf("Transports" to trList, "PreferredTransports" to prefList))
+          val updates = mutableMapOf<String, List<String>?>(
+            "Transports" to trList,
+            "PreferredTransports" to prefList,
+          )
+          if (payload.containsKey("reconnect_on_net_change")) {
+            val reconn = payload["reconnect_on_net_change"]?.toString()?.toBooleanStrictOrNull() ?: true
+            updates["ReconnectOnNetworkChange"] = if (reconn) null else listOf("no")
+          }
+          if (payload.containsKey("disconnect_on_screen_off")) {
+            val pauseLock = payload["disconnect_on_screen_off"]?.toString()?.toBooleanStrictOrNull() ?: false
+            updates["DisconnectOnScreenOff"] = if (pauseLock) listOf("yes") else null
+          }
+          if (payload.containsKey("low_power_mode")) {
+            val lowPwr = payload["low_power_mode"]?.toString()?.toBooleanStrictOrNull() ?: false
+            updates["LowPowerMode"] = if (lowPwr) listOf("yes") else null
+          }
+          yaml.setOptions(stanza, updates)
           runTincCli(targetNet, 3500L, "reload")
-          true to mapOf("ok" to true, "message" to "Saved transport settings")
+          true to mapOf("ok" to true, "message" to "Saved network settings")
         }
         "save_raw_yaml" -> {
           val rawText = payload["raw_yaml"]?.toString().orEmpty()

@@ -264,7 +264,7 @@ class PeersActivity : BaseActivity() {
           )
           if (org.pacien.tincapp.service.TincVpnService.isDaemonRunning()) {
             Tinc.reload(netName)
-              .thenCompose { Tinc.disconnectNode(netName, peerName).exceptionally { "" } }
+              .thenCompose { Tinc.disconnectPeer(netName, peerName).exceptionally { } }
               .thenCompose { Tinc.retry(netName) }
               .exceptionallyAccept { org.pacien.tincapp.service.TincVpnService.connect(netName) }
           }

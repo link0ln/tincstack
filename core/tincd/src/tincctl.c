@@ -1901,6 +1901,7 @@ const var_t variables[] = {
 	{"KeyExpire", VAR_SERVER | VAR_SAFE},
 	{"ListenAddress", VAR_SERVER | VAR_MULTIPLE},
 	{"LocalDiscovery", VAR_SERVER | VAR_SAFE},
+	{"LowPowerMode", VAR_SERVER | VAR_SAFE},
 	{"LogLevel", VAR_SERVER},
 	{"MACExpire", VAR_SERVER | VAR_SAFE},
 	{"MaxConnectionBurst", VAR_SERVER | VAR_SAFE},

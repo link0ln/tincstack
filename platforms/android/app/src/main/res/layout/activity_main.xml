@@ -297,6 +297,10 @@
 								layout="@layout/row_item" />
 
 							<include
+								android:id="@+id/low_power_row"
+								layout="@layout/row_item" />
+
+							<include
 								android:id="@+id/config_row"
 								layout="@layout/row_item" />
 							</LinearLayout>

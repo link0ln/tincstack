@@ -437,7 +437,8 @@ textarea.code-editor {
         </div>
         <div class="row" id="android-extra-settings" style="display:none;">
           <label><input type="checkbox" id="cfg-reconnect-net"> Переподключать при смене сети (Wi-Fi/LTE)</label>
-          <label><input type="checkbox" id="cfg-pause-lock"> Пауза при выключении экрана</label>
+          <label><input type="checkbox" id="cfg-pause-lock"> Пауза при выключении экрана (кроме воспроизведения аудио)</label>
+          <label><input type="checkbox" id="cfg-low-power"> Экономия батареи (Leaf-режим без транзитного релея)</label>
         </div>
         <div class="row">
           <button class="primary" onclick="saveTransportSettings()">💾 Сохранить и применить настройки</button>
@@ -979,6 +980,7 @@ async function loadConfigTab() {
     androidBox.style.display = "flex";
     document.getElementById("cfg-reconnect-net").checked = !!cfg.reconnect_on_net_change;
     document.getElementById("cfg-pause-lock").checked = !!cfg.disconnect_on_screen_off;
+    document.getElementById("cfg-low-power").checked = !!cfg.low_power_mode;
   } else {
     androidBox.style.display = "none";
   }
@@ -992,7 +994,8 @@ async function saveTransportSettings() {
     preferred_transports: document.getElementById("cfg-pref-transports").value.trim(),
     full_tunnel: document.getElementById("cfg-full-tunnel").value,
     reconnect_on_net_change: document.getElementById("cfg-reconnect-net").checked,
-    disconnect_on_screen_off: document.getElementById("cfg-pause-lock").checked
+    disconnect_on_screen_off: document.getElementById("cfg-pause-lock").checked,
+    low_power_mode: document.getElementById("cfg-low-power").checked
   };
   const res = await apiPost("/api/action", body);
   showToast(res.message || "Настройки сохранены", !res.ok);

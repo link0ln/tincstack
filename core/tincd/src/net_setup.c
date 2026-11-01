@@ -502,6 +502,42 @@ bool setup_myself_reloadable(void) {
 	get_config_bool(lookup_config(&config_tree, "DirectOnly"), &directonly);
 	get_config_bool(lookup_config(&config_tree, "LocalDiscovery"), &localdiscovery);
 
+	bool prev_low_power = low_power_mode;
+	low_power_mode = false;
+	get_config_bool(lookup_config(&config_tree, "LowPowerMode"), &low_power_mode);
+
+	if(prev_low_power != low_power_mode && myself && myself->edge_tree.count > 0) {
+		bool changed_edges = false;
+
+		for splay_each(edge_t, e, &myself->edge_tree) {
+			if(e->connection && !e->connection->status.custom_weight) {
+				int new_w = e->weight;
+
+				if(low_power_mode && new_w < 1000) {
+					new_w += 1000;
+				} else if(!low_power_mode && new_w >= 1000) {
+					new_w = MAX(new_w - 1000, 1);
+				}
+
+				if(new_w != e->weight) {
+					splay_node_t *snode = splay_unlink(&edge_weight_tree, e);
+					e->weight = new_w;
+					splay_insert_node(&edge_weight_tree, snode);
+
+					if(!tunnelserver) {
+						send_add_edge(everyone, e);
+					}
+
+					changed_edges = true;
+				}
+			}
+		}
+
+		if(changed_edges) {
+			graph();
+		}
+	}
+
 	char *rmode = NULL;
 
 	if(get_config_string(lookup_config(&config_tree, "Mode"), &rmode)) {

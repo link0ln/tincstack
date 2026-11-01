@@ -388,8 +388,10 @@ static void timeout_handler(void *data) {
 			time_t lan_ref = MAX(n->last_state_change, MAX(n->last_lan_change, myself->last_lan_change));
 
 			if(n->status.udp_confirmed) {
-				try_tx(n, n->mtuprobes >= 0);
-			} else if(localdiscovery &&
+				if(!low_power_mode || n->mtuprobes >= 0) {
+					try_tx(n, n->mtuprobes >= 0);
+				}
+			} else if(localdiscovery && !low_power_mode &&
 			                now.tv_sec - myself->last_state_change >= 15 &&
 			                now.tv_sec - n->last_state_change >= 15 &&
 			                now.tv_sec - lan_ref <= 75 &&
@@ -431,9 +433,9 @@ static void periodic_handler(void *data) {
 
 	/* If AutoConnect is set, check if we need to make or break connections. */
 
-	if(autoconnect && node_tree.count > 1) {
+	if(autoconnect && !low_power_mode && node_tree.count > 1) {
 		do_autoconnect();
-	} else if(!autoconnect && node_tree.count > 1) {
+	} else if((!autoconnect || low_power_mode) && node_tree.count > 1) {
 		do_fallback_autoconnect();
 	}
 

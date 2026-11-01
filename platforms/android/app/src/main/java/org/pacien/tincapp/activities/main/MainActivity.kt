@@ -161,6 +161,7 @@ class MainActivity : BaseActivity() {
     val multipathConnections: Int,
     val routing: SplitRouting?,
     val pauseOnLock: Boolean,
+    val lowPowerMode: Boolean,
   )
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -545,6 +546,9 @@ class MainActivity : BaseActivity() {
     binding.screenOffRow.setup(R.drawable.ic_lock, R.string.setting_screen_off_title, chevron = false) { togglePauseOnLock() }
     binding.screenOffRow.rowSwitch.isVisible = true
     binding.screenOffRow.rowSummary.setText(R.string.setting_screen_off_summary)
+    binding.lowPowerRow.setup(R.drawable.ic_lock, R.string.setting_low_power_title, chevron = false) { toggleLowPowerMode() }
+    binding.lowPowerRow.rowSwitch.isVisible = true
+    binding.lowPowerRow.rowSummary.setText(R.string.setting_low_power_summary)
     binding.configRow.setup(R.drawable.ic_yaml, R.string.config_row_label) {
       selected?.let { configEditor.launch(ConfigEditorActivity.intent(this, it)) }
     }
@@ -593,6 +597,7 @@ class MainActivity : BaseActivity() {
           null
         },
         pauseOnLock = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF), false),
+        lowPowerMode = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_LOW_POWER_MODE), false),
       )
     } catch (e: Exception) {
       log.warn("Could not read the settings of {}: {}", net, e.defaultMessage())
@@ -635,6 +640,7 @@ class MainActivity : BaseActivity() {
     }
 
     binding.screenOffRow.rowSwitch.isChecked = s?.pauseOnLock == true
+    binding.lowPowerRow.rowSwitch.isChecked = s?.lowPowerMode == true
     renderDiagRow()
     renderUpdateRow()
   }
@@ -825,6 +831,30 @@ class MainActivity : BaseActivity() {
       // absent means off: the key is written only when on
       yaml.setOptions(stanza, mapOf(VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF to if (on) listOf("yes") else null))
     }, getString(R.string.apps_saved))
+  }
+
+  private fun toggleLowPowerMode() {
+    val net = selected ?: return
+    val stanza = summary?.summary?.stanza ?: return
+    val on = summary?.lowPowerMode != true
+    binding.lowPowerRow.rowSwitch.isChecked = on
+    Executor.runAsyncTask {
+      val yaml = TincYaml(AppPaths.tincYamlFile(net))
+      yaml.setOptions(stanza, mapOf(VpnInterfaceConfiguration.KEY_LOW_POWER_MODE to if (on) listOf("yes") else null))
+      if (status.active && status.netName == net && TincVpnService.isDaemonRunning()) {
+        try {
+          Tinc.reload(net).get()
+        } catch (_: Exception) {
+        }
+      }
+    }.thenAccept {
+      runOnUiThread {
+        loadSettings()
+        notify(R.string.apps_saved)
+      }
+    }.exceptionallyAccept { e ->
+      runOnUiThread { notify(getString(R.string.apps_error_write_format, e.cause?.defaultMessage() ?: e.defaultMessage())) }
+    }
   }
 
   private fun showTransportDialog() {

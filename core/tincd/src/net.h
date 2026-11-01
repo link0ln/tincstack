@@ -167,6 +167,7 @@ extern int seconds_till_retry;
 extern int addressfamily;
 extern unsigned replaywin;
 extern bool localdiscovery;
+extern bool low_power_mode;
 
 extern bool udp_discovery;
 extern bool node_tcponly(const struct node_t *n);

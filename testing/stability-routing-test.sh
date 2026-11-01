@@ -485,5 +485,20 @@ else
 	miss "Idle roaming LocalDiscovery / PMTU convergence failed: line='$HUB_IDLE_LINE'"
 fi
 
+echo "===== Scenario 9: LowPowerMode Live Toggle (Leaf-Only +1000 Weight vs Full Mesh Relay) ====="
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set LowPowerMode yes
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+sleep 1
+LP_ON_W=$(docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump edges | awk '/^client to rfast /{for(i=1;i<=NF;i++) if($i=="weight") print $(i+1)}')
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set LowPowerMode no
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+sleep 1
+LP_OFF_W=$(docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump edges | awk '/^client to rfast /{for(i=1;i<=NF;i++) if($i=="weight") print $(i+1)}')
+if [ "${LP_ON_W:-0}" -ge 1000 ] && [ "${LP_OFF_W:-9999}" -lt 500 ]; then
+	note "LowPowerMode live reload toggled edge weight dynamically (LowPowerMode=yes weight=$LP_ON_W, LowPowerMode=no weight=$LP_OFF_W)"
+else
+	miss "LowPowerMode live reload weight check failed (on=$LP_ON_W, off=$LP_OFF_W)"
+fi
+
 echo "===== Summary: $pass_count passed, fail=$fail ====="
 exit "$fail"

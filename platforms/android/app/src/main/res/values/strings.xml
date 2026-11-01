@@ -65,7 +65,9 @@
 	<string name="setting_transport_title">Connection type</string>
 	<string name="setting_apps_title">Apps using the VPN</string>
 	<string name="setting_screen_off_title">Pause while the screen is locked</string>
-	<string name="setting_screen_off_summary">Saves battery. Nothing leaves outside the VPN while paused.</string>
+	<string name="setting_screen_off_summary">Saves battery. Stays active while audio is playing; nothing leaks while paused.</string>
+	<string name="setting_low_power_title">Battery saver mode</string>
+	<string name="setting_low_power_summary">Leaf-only mode: fewer background links and keepalives, no transit relaying. Turn off on charger to relay for peers.</string>
 	<string name="setting_log_title">Log</string>
 	<string name="setting_log_summary">What tinc did, step by step</string>
 	<string name="setting_diag_title">Diagnostic Panel &amp; Telemetry</string>

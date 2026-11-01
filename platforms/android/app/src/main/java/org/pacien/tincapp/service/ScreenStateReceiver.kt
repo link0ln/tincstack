@@ -23,36 +23,82 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import java8.util.concurrent.CompletableFuture
 import org.pacien.tincapp.service.SessionStateMachine.Event
 
 /**
- * Screen and keyguard broadcasts as [SessionStateMachine] events.
+ * Screen, keyguard, and active audio/media playback signals as [SessionStateMachine] events.
  *
  * SCREEN_OFF / SCREEN_ON / USER_PRESENT reach only receivers registered at
  * runtime, so the service registers one instance for the life of a session
  * that has `DisconnectOnScreenOff` and unregisters it when the session ends.
- * (The old tincapp registered a process-wide object and let `onDestroy` wipe
- * it; once the system stopped the idle service, nothing was left to hear the
- * unlock.)
  *
- * USER_PRESENT is the unlock signal. It is not sent in every configuration, so
- * SCREEN_ON also resumes when the keyguard is not locked at that moment (no
- * lock screen, or the screen came back before the lock timeout); with a locked
- * keyguard SCREEN_ON is ignored and USER_PRESENT follows the unlock.
+ * While audio/media is actively playing (e.g. YouTube Music, Spotify, podcasts,
+ * voice calls), screen lock does not suspend `tincd` until playback stops and
+ * a grace period ([mediaStopGraceMs]) elapses without new playback starting.
+ * Conversely, if audio playback starts while the session is already suspended
+ * on a locked screen, [Event.MediaStarted] wakes `tincd` automatically.
  */
 class ScreenStateReceiver(
+  private val mediaStopGraceMs: Long = DEFAULT_MEDIA_STOP_GRACE_MS,
   private val dispatch: (Event) -> CompletableFuture<Unit>,
 ) : BroadcastReceiver() {
   private var registered = false
+  private var appContext: Context? = null
+  private var lastAudioActive = false
+  private val handler = Handler(Looper.getMainLooper())
+
+  private val mediaStopRunnable = Runnable {
+    val ctx = appContext ?: return@Runnable
+    if (!registered) return@Runnable
+    if (!isAudioActive(ctx)) {
+      lastAudioActive = false
+      dispatch(Event.MediaStopped)
+    }
+  }
+
+  private val audioCallback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    object : AudioManager.AudioPlaybackCallback() {
+      override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+        val ctx = appContext ?: return
+        handleAudioStateChanged(ctx, configs)
+      }
+    }
+  } else null
 
   override fun onReceive(context: Context, intent: Intent) {
     val event = eventFor(intent, isKeyguardLocked(context)) ?: return
+    if (event is Event.ScreenOff && isAudioActive(context)) {
+      handler.removeCallbacks(mediaStopRunnable)
+      lastAudioActive = true
+      dispatch(Event.MediaStarted)
+    }
     // SCREEN_OFF may be followed by a CPU suspend as soon as onReceive returns:
     // hold the broadcast (and its wake lock) until the daemon is stopped.
     val pending = goAsyncOrNull()
     dispatch(event).whenComplete { _, _ -> pending?.finish() }
+  }
+
+  fun handleAudioStateChanged(context: Context, configs: List<AudioPlaybackConfiguration>? = null) {
+    if (!registered) return
+    val active = isAudioActive(context, configs)
+    if (active) {
+      handler.removeCallbacks(mediaStopRunnable)
+      if (!lastAudioActive) {
+        lastAudioActive = true
+        dispatch(Event.MediaStarted)
+      }
+    } else if (lastAudioActive) {
+      handler.removeCallbacks(mediaStopRunnable)
+      handler.postDelayed(mediaStopRunnable, mediaStopGraceMs)
+    }
   }
 
   private fun goAsyncOrNull(): PendingResult? = try {
@@ -63,6 +109,7 @@ class ScreenStateReceiver(
 
   fun register(context: Context) = synchronized(this) {
     if (registered) return
+    appContext = context.applicationContext ?: context
     val filter = IntentFilter().apply {
       addAction(Intent.ACTION_SCREEN_OFF)
       addAction(Intent.ACTION_SCREEN_ON)
@@ -73,22 +120,45 @@ class ScreenStateReceiver(
     // on API 34: SCREEN_OFF/ON arrived, the PIN unlock's USER_PRESENT did not).
     // All three actions are protected broadcasts: no app can forge them.
     ContextCompat.registerReceiver(context, this, filter, ContextCompat.RECEIVER_EXPORTED)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioCallback != null) {
+      try {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager?
+        audioManager?.registerAudioPlaybackCallback(audioCallback, handler)
+      } catch (_: Exception) {
+      }
+    }
     registered = true
+    if (isAudioActive(context)) {
+      lastAudioActive = true
+      dispatch(Event.MediaStarted)
+    }
   }
 
   fun unregister(context: Context) = synchronized(this) {
     if (!registered) return
+    handler.removeCallbacks(mediaStopRunnable)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioCallback != null) {
+      try {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager?
+        audioManager?.unregisterAudioPlaybackCallback(audioCallback)
+      } catch (_: Exception) {
+      }
+    }
     try {
       context.unregisterReceiver(this)
     } catch (e: IllegalArgumentException) {
       // already gone
     }
+    lastAudioActive = false
+    appContext = null
     registered = false
   }
 
   fun isRegistered() = registered
 
   companion object {
+    const val DEFAULT_MEDIA_STOP_GRACE_MS = 30_000L
+
     fun eventFor(intent: Intent, keyguardLocked: Boolean): Event? = when (intent.action) {
       Intent.ACTION_SCREEN_OFF -> Event.ScreenOff
       Intent.ACTION_SCREEN_ON -> Event.ScreenOn(keyguardLocked)
@@ -98,5 +168,31 @@ class ScreenStateReceiver(
 
     private fun isKeyguardLocked(context: Context): Boolean =
       (context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager?)?.isKeyguardLocked ?: true
+
+    fun isAudioActive(context: Context, configs: List<AudioPlaybackConfiguration>? = null): Boolean {
+      val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager? ?: return false
+      if (audioManager.isMusicActive) return true
+      val mode = audioManager.mode
+      if (mode == AudioManager.MODE_IN_COMMUNICATION || mode == AudioManager.MODE_IN_CALL) return true
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val activeConfigs = configs ?: try {
+          audioManager.activePlaybackConfigurations
+        } catch (_: Exception) {
+          emptyList()
+        }
+        // Note: For non-system apps, AOSP AudioService filters getActivePlaybackConfigurations()
+        // to only return configurations currently in PLAYER_STATE_STARTED.
+        if (activeConfigs.any { cfg ->
+            val usage = cfg.audioAttributes?.usage ?: AudioAttributes.USAGE_UNKNOWN
+            usage == AudioAttributes.USAGE_MEDIA ||
+              usage == AudioAttributes.USAGE_GAME ||
+              usage == AudioAttributes.USAGE_VOICE_COMMUNICATION ||
+              usage == AudioAttributes.USAGE_UNKNOWN
+          }) {
+          return true
+        }
+      }
+      return false
+    }
   }
 }

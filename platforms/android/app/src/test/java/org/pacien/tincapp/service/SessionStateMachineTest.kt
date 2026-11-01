@@ -213,4 +213,49 @@ class SessionStateMachineTest {
     assertEquals(State.Idle, idle)
     assertTrue(a2.isEmpty())
   }
+
+  @Test
+  fun screenOffWhileMediaPlayingKeepsDaemonRunningUntilMediaStops() {
+    val (lockedPlaying, a1) = play(State.Idle, started(), Event.MediaStarted, Event.ScreenOff)
+    assertEquals(State.Connected("net", run0, suspendOnScreenOff = true, screenLocked = true, mediaPlaying = true), lockedPlaying)
+    assertTrue(a1.isEmpty())
+
+    val (afterMediaStop, a2) = play(lockedPlaying, Event.MediaStopped)
+    assertEquals(State.Suspended("net", run0), afterMediaStop)
+    assertEquals(listOf(Action.StopDaemon("net")), a2)
+  }
+
+  @Test
+  fun mediaStartedWhileSuspendedWakesDaemonAndSuspendsAgainWhenMediaStops() {
+    val (state, actions) = play(
+      State.Idle,
+      started(),
+      Event.ScreenOff,
+      Event.MediaStarted,
+      Event.MediaStopped,
+    )
+    assertEquals(State.Suspended("net", DaemonRun(7, 1)), state)
+    assertEquals(
+      listOf(
+        Action.StopDaemon("net"),
+        Action.StartDaemon("net", DaemonRun(7, 1)),
+        Action.StopDaemon("net"),
+      ),
+      actions,
+    )
+  }
+
+  @Test
+  fun unlockWhileMediaPlayingClearsScreenLockedSoStoppingMediaDoesNotSuspend() {
+    val (state, actions) = play(
+      State.Idle,
+      started(),
+      Event.MediaStarted,
+      Event.ScreenOff,
+      Event.UserPresent,
+      Event.MediaStopped,
+    )
+    assertEquals(State.Connected("net", run0, suspendOnScreenOff = true, screenLocked = false, mediaPlaying = false), state)
+    assertTrue(actions.isEmpty())
+  }
 }

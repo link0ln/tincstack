@@ -98,6 +98,7 @@ static int current_probe_reply_sock = -1;
 static const node_t *current_probe_reply_node = NULL;
 static bool force_node_address = false;
 bool localdiscovery = true;
+bool low_power_mode = false;
 bool udp_discovery = true;
 int udp_discovery_keepalive_interval = 10;
 int udp_discovery_interval = 2;
@@ -336,9 +337,11 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 		if(n->connection && n->connection->edge && !n->connection->status.custom_weight) {
 			edge_t *e = n->connection->edge;
 			int new_weight = n->smoothed_rtt_ms;
-#ifdef __ANDROID__
-			new_weight += 1000;
-#endif
+
+			if(low_power_mode) {
+				new_weight += 1000;
+			}
+
 			int diff = new_weight > e->weight ? new_weight - e->weight : e->weight - new_weight;
 			time_t cooldown = (new_weight < e->weight) ? 5 : 60;
 
@@ -2414,7 +2417,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 	if(to != myself) {
 		/* The rendezvous: both ends are our meta neighbours, so both hear
 		   "go" from us at the same instant. */
-		if(flag == 0 && !from->status.no_direct && !to->status.no_direct && !from->remote_no_direct && !to->remote_no_direct &&
+		if(flag == 0 && !low_power_mode && !from->status.no_direct && !to->status.no_direct && !from->remote_no_direct && !to->remote_no_direct &&
 		                from->connection && to->connection && from->connection->edge && to->connection->edge) {
 			/* Only with both ends' real UDP addresses: a GO without them
 			   sends each end at its edge guess (the TCP address, port 655),
@@ -2617,8 +2620,9 @@ static void try_udp(node_t *n, bool has_data) {
 	timersub(&now, &n->udp_ping_sent, &ping_tx_elapsed);
 
 	bool rx_silent = has_data && (now.tv_sec - n->last_udp_rx >= udp_discovery_interval);
+	int keepalive_interval = low_power_mode ? MAX(udp_discovery_keepalive_interval, 25) : udp_discovery_keepalive_interval;
 	int interval = n->status.udp_confirmed
-	               ? ((n->status.ping_sent || rx_silent) ? udp_discovery_interval : udp_discovery_keepalive_interval)
+	               ? ((n->status.ping_sent || rx_silent) ? udp_discovery_interval : keepalive_interval)
 	               : udp_discovery_interval;
 
 	if(ping_tx_elapsed.tv_sec >= interval) {

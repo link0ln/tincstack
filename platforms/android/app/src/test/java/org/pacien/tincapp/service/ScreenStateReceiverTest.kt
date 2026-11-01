@@ -22,9 +22,11 @@ import android.app.Application
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import java8.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -48,10 +50,11 @@ import org.robolectric.annotation.Config
 class ScreenStateReceiverTest {
   private val context: Context = ApplicationProvider.getApplicationContext()
   private val keyguard = shadowOf(context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager)
+  private val audio = shadowOf(context.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
 
   private var state: State = State.Idle
   private val actions = mutableListOf<Action>()
-  private val receiver = ScreenStateReceiver { event ->
+  private val receiver = ScreenStateReceiver(mediaStopGraceMs = 5_000L) { event ->
     SessionStateMachine.next(state, event).let { state = it.state; actions += it.actions }
     CompletableFuture.completedFuture(Unit)
   }
@@ -117,5 +120,43 @@ class ScreenStateReceiverTest {
   fun unrelatedIntentsAreNotEvents() {
     assertEquals(null, ScreenStateReceiver.eventFor(Intent(Intent.ACTION_BATTERY_LOW), false))
     assertEquals(Event.ScreenOn(true), ScreenStateReceiver.eventFor(Intent(Intent.ACTION_SCREEN_ON), true))
+  }
+
+  @Test
+  fun activeAudioDefersSuspendUntilGracePeriodElapses() {
+    audio.setIsMusicActive(true)
+    connect()
+    keyguard.setKeyguardLocked(true)
+
+    broadcast(Intent.ACTION_SCREEN_OFF)
+    assertEquals(State.Connected("net", DaemonRun(1, 0), suspendOnScreenOff = true, screenLocked = true, mediaPlaying = true), state)
+    assertTrue(actions.isEmpty())
+
+    // Audio stops while screen is still off -> grace timer starts
+    audio.setIsMusicActive(false)
+    receiver.handleAudioStateChanged(context)
+    shadowOf(Looper.getMainLooper()).idleFor(2, TimeUnit.SECONDS)
+    assertTrue(state is State.Connected)
+
+    // After grace period expires without audio resuming -> daemon suspends
+    shadowOf(Looper.getMainLooper()).idleFor(4, TimeUnit.SECONDS)
+    assertEquals(State.Suspended("net", DaemonRun(1, 0)), state)
+    assertEquals(listOf(Action.StopDaemon("net")), actions)
+  }
+
+  @Test
+  fun audioStartingWhileSuspendedWakesUpSession() {
+    audio.setIsMusicActive(false)
+    connect()
+    keyguard.setKeyguardLocked(true)
+
+    broadcast(Intent.ACTION_SCREEN_OFF)
+    assertEquals(State.Suspended("net", DaemonRun(1, 0)), state)
+
+    // Audio playback starts while screen is locked
+    audio.setIsMusicActive(true)
+    receiver.handleAudioStateChanged(context)
+    assertEquals(State.Connected("net", DaemonRun(1, 1), suspendOnScreenOff = true, screenLocked = true, mediaPlaying = true), state)
+    assertEquals(listOf(Action.StopDaemon("net"), Action.StartDaemon("net", DaemonRun(1, 1))), actions)
   }
 }

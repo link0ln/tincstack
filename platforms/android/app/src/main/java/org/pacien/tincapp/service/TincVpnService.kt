@@ -284,6 +284,7 @@ class TincVpnService : VpnService() {
 
   /** Screen off: stop tincd, keep the tun (worker thread). */
   private fun suspendSession(netName: String) {
+    stopRouteWatcher()
     connectivityChangeReceiver.unregisterWatcher(this)
     stopDaemon(netName)
     updateNotification(netName, suspended = true)
@@ -306,6 +307,7 @@ class TincVpnService : VpnService() {
       dispatch(Event.ResumeFailed(run))
       return
     }
+    startRouteWatcher(netName, run.session)
     if (cfg?.reconnectOnNetworkChange == true) connectivityChangeReceiver.registerWatcher(this)
     updateNotification(netName, suspended = false)
     VpnStatus.set(ConnectionState.Connected(netName))
