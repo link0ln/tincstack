@@ -224,6 +224,8 @@ typedef enum obfs_send_t {
 	OBFS_SEND_OK,
 	/* Does not fit the path; the caller treats it exactly like EMSGSIZE. */
 	OBFS_SEND_TOOBIG,
+	/* Kernel refused the datagram (e.g. EPERM / ENETUNREACH). */
+	OBFS_SEND_ERR,
 } obfs_send_t;
 
 obfs_send_t obfs_wrap_send(size_t sock, const sockaddr_t *sa, const void *buf, size_t len, node_t *to, size_t *excess);

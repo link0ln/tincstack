@@ -1343,6 +1343,7 @@ static obfs_send_t obfs_link_send(obfs_link_t *l, int override_fd, size_t sock, 
 		}
 
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Error sending obfs datagram to %s (%s): %s", to->name, to->hostname, sockstrerror(sockerrno));
+		return OBFS_SEND_ERR;
 	}
 
 	return OBFS_SEND_OK;

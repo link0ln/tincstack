@@ -49,6 +49,87 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 		if(s && s->net.ipv4.prefixlength == 32) {
 			return true;
 		}
+	} else if(sa->sa.sa_family == AF_INET6) {
+		const ipv6_t *dst = (const ipv6_t *)&sa->in6.sin6_addr;
+		subnet_t *s = lookup_subnet_ipv6(dst);
+
+		if(s && s->net.ipv6.prefixlength == 128) {
+			return true;
+		}
+	} else {
+		return false;
+	}
+
+	sockaddr_t probe_sa = *sa;
+
+	if(probe_sa.sa.sa_family == AF_INET && !probe_sa.in.sin_port) {
+		probe_sa.in.sin_port = htons(655);
+	} else if(probe_sa.sa.sa_family == AF_INET6 && !probe_sa.in6.sin6_port) {
+		probe_sa.in6.sin6_port = htons(655);
+	}
+
+	int fd = socket(probe_sa.sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
+
+	if(fd >= 0) {
+#if defined(SO_MARK)
+		if(fwmark) {
+			setsockopt(fd, SOL_SOCKET, SO_MARK, (void *)&fwmark, sizeof(fwmark));
+		}
+#endif
+		sockaddr_t local = {0};
+		socklen_t addrlen = sizeof(local);
+		bool via_self = false;
+		bool got_local = false;
+
+		if(!connect(fd, &probe_sa.sa, SALEN(probe_sa.sa)) && !getsockname(fd, &local.sa, &addrlen)) {
+			sockaddrunmap(&local);
+			got_local = true;
+
+			for splay_each(subnet_t, s, &myself->subnet_tree) {
+				if(local.sa.sa_family == AF_INET && s->type == SUBNET_IPV4 && s->net.ipv4.prefixlength == 32) {
+					if(!memcmp(&local.in.sin_addr, &s->net.ipv4.address, sizeof(ipv4_t))) {
+						via_self = true;
+						break;
+					}
+				} else if(local.sa.sa_family == AF_INET6 && s->type == SUBNET_IPV6 && s->net.ipv6.prefixlength == 128) {
+					if(!memcmp(&local.in6.sin6_addr, &s->net.ipv6.address, sizeof(ipv6_t))) {
+						via_self = true;
+						break;
+					}
+				}
+			}
+		}
+
+		closesocket(fd);
+
+		if(via_self) {
+			return true;
+		}
+
+		/* If the kernel routes `sa' out of a physical interface (not our VPN
+		   tunnel) whose IP is on the same /24 (IPv4) or /64 (IPv6) local LAN
+		   as `sa', `sa' is directly on-link on our local network even if a
+		   broad InterfaceRoute covering that LAN prefix exists in tinc.yaml. */
+		if(got_local) {
+			if(local.sa.sa_family == AF_INET && sa->sa.sa_family == AF_INET) {
+				uint32_t lip = ntohl(local.in.sin_addr.s_addr);
+				uint32_t dip = ntohl(sa->in.sin_addr.s_addr);
+
+				if(lip != 0 && (lip >> 24) != 127 && (lip & 0xffffff00u) == (dip & 0xffffff00u)) {
+					return false;
+				}
+			} else if(local.sa.sa_family == AF_INET6 && sa->sa.sa_family == AF_INET6) {
+				if(!IN6_IS_ADDR_UNSPECIFIED(&local.in6.sin6_addr) &&
+				                !IN6_IS_ADDR_LOOPBACK(&local.in6.sin6_addr) &&
+				                !memcmp(&local.in6.sin6_addr, &sa->in6.sin6_addr, 8)) {
+					return false;
+				}
+			}
+		}
+	}
+
+	if(sa->sa.sa_family == AF_INET) {
+		const ipv4_t *dst = (const ipv4_t *)&sa->in.sin_addr;
 
 		for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
 			if(!cfg->value) {
@@ -75,11 +156,6 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 		}
 	} else if(sa->sa.sa_family == AF_INET6) {
 		const ipv6_t *dst = (const ipv6_t *)&sa->in6.sin6_addr;
-		subnet_t *s = lookup_subnet_ipv6(dst);
-
-		if(s && s->net.ipv6.prefixlength == 128) {
-			return true;
-		}
 
 		for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
 			if(!cfg->value) {
@@ -103,53 +179,6 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 			}
 
 			free(route);
-		}
-	} else {
-		return false;
-	}
-
-	sockaddr_t probe_sa = *sa;
-
-	if(probe_sa.sa.sa_family == AF_INET && !probe_sa.in.sin_port) {
-		probe_sa.in.sin_port = htons(655);
-	} else if(probe_sa.sa.sa_family == AF_INET6 && !probe_sa.in6.sin6_port) {
-		probe_sa.in6.sin6_port = htons(655);
-	}
-
-	int fd = socket(probe_sa.sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
-
-	if(fd >= 0) {
-#if defined(SO_MARK)
-		if(fwmark) {
-			setsockopt(fd, SOL_SOCKET, SO_MARK, (void *)&fwmark, sizeof(fwmark));
-		}
-#endif
-		sockaddr_t local = {0};
-		socklen_t addrlen = sizeof(local);
-		bool via_self = false;
-
-		if(!connect(fd, &probe_sa.sa, SALEN(probe_sa.sa)) && !getsockname(fd, &local.sa, &addrlen)) {
-			sockaddrunmap(&local);
-
-			for splay_each(subnet_t, s, &myself->subnet_tree) {
-				if(local.sa.sa_family == AF_INET && s->type == SUBNET_IPV4 && s->net.ipv4.prefixlength == 32) {
-					if(!memcmp(&local.in.sin_addr, &s->net.ipv4.address, sizeof(ipv4_t))) {
-						via_self = true;
-						break;
-					}
-				} else if(local.sa.sa_family == AF_INET6 && s->type == SUBNET_IPV6 && s->net.ipv6.prefixlength == 128) {
-					if(!memcmp(&local.in6.sin6_addr, &s->net.ipv6.address, sizeof(ipv6_t))) {
-						via_self = true;
-						break;
-					}
-				}
-			}
-		}
-
-		closesocket(fd);
-
-		if(via_self) {
-			return true;
 		}
 	}
 

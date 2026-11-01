@@ -233,6 +233,41 @@ void sssp_bfs(void) {
 
 	list_free(todo_list);
 
+	/* If LocalDiscovery is enabled and a reachable non-neighbour node shares a
+	   local LAN with us, do not let an intermediate HTTPS/SFTCP relay edge's
+	   per-hop OPTION_INDIRECT | OPTION_TCPONLY bits prevent local LAN UDP
+	   discovery -- unless either node explicitly configured IndirectData /
+	   TCPOnly / NoDirectNodes, or the peer accepts no UDP carriers at all. */
+	if(localdiscovery && !(myself->options & (OPTION_DECLARED_INDIRECT | OPTION_TCPONLY))) {
+		for splay_each(node_t, n, &node_tree) {
+			if(n == myself || !n->status.visited || n->connection ||
+			                n->status.no_direct || n->remote_no_direct) {
+				continue;
+			}
+
+			bool declared_ind = false;
+
+			for splay_each(edge_t, e, &n->edge_tree) {
+				if(e->options & OPTION_DECLARED_INDIRECT) {
+					declared_ind = true;
+					break;
+				}
+			}
+
+			if(declared_ind || !node_shares_local_lan(n)) {
+				continue;
+			}
+
+			n->status.indirect = false;
+			n->via = n;
+			n->options &= ~(OPTION_INDIRECT | OPTION_TCPONLY);
+
+			if(myself->options & OPTION_PMTU_DISCOVERY) {
+				n->options |= OPTION_PMTU_DISCOVERY;
+			}
+		}
+	}
+
 	/* An SPTPS key exchange is carried by the meta channel, so it travels over
 	   whatever `nexthop' was when we started it. If that route has just changed
 	   -- the direct meta connection we were using went away and the peer is now

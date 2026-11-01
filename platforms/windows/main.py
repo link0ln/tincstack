@@ -351,8 +351,9 @@ class PeersTab(QtWidgets.QWidget):
             tr_text = "—" if n.is_self else ("" if has_widgets else (n.transport or "—"))
             is_nd = False if n.is_self else self._is_peer_no_direct(n)
             direct_text = "—" if n.is_self else ("" if has_widgets else ("🚫 Relay only" if is_nd else "✓ Direct"))
+            hops_text = "0" if n.is_self else ("1" if link.startswith("direct") else ("" if n.distance < 0 else str(n.distance)))
             cells = [n.name, LINK_LABEL.get(link, link), direct_text, tr_text, via,
-                     "" if n.distance < 0 else str(n.distance),
+                     hops_text,
                      f"{n.rtt:.0f}" if n.rtt > 0 else "",
                      str(n.pmtu) if n.pmtu else "",
                      human_bytes(n.rx_bytes), human_bytes(n.tx_bytes),
@@ -374,6 +375,8 @@ class PeersTab(QtWidgets.QWidget):
                 elif c == 3 and n.transport and not has_widgets:
                     it.setForeground(QtGui.QColor(TRANSPORT_COLORS.get(n.transport, "#5f6368")))
                     f = it.font(); f.setBold(True); it.setFont(f)
+                elif c == 5 and link.startswith("direct") and n.distance > 1:
+                    it.setToolTip(f"Data path: 1 hop ({LINK_LABEL.get(link, link)})\nMeta/control graph distance: {n.distance} hops via {n.nexthop}")
                 self.table.setItem(r, c, it)
             self._direct_cell(r, n)
             self._transport_cell(r, n)

@@ -976,12 +976,62 @@ void transport_connection_close(connection_t *c) {
 }
 
 bool transport_local_address(connection_t *c, sockaddr_t *sa) {
+	bool ok;
+
 	if(c->transport && c->transport->local_address) {
-		return c->transport->local_address(c, sa);
+		ok = c->transport->local_address(c, sa);
+	} else {
+		socklen_t salen = sizeof(*sa);
+		ok = getsockname(c->socket, &sa->sa, &salen) >= 0;
 	}
 
-	socklen_t salen = sizeof(*sa);
-	return getsockname(c->socket, &sa->sa, &salen) >= 0;
+	if(!ok) {
+		return false;
+	}
+
+	sockaddrunmap(sa);
+
+	/* Unconnected UDP sockets (e.g. QUIC / single-flow bound to 0.0.0.0 or ::)
+	   report a wildcard IP in getsockname(), which breaks LocalDiscovery when
+	   advertised in ADD_EDGE. Resolve the kernel's outgoing interface IP toward
+	   the peer while preserving the local socket port. */
+	bool is_wildcard_v4 = (sa->sa.sa_family == AF_INET && sa->in.sin_addr.s_addr == INADDR_ANY);
+	bool is_wildcard_v6 = (sa->sa.sa_family == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED(&sa->in6.sin6_addr));
+
+	if((is_wildcard_v4 || is_wildcard_v6) &&
+	                (c->address.sa.sa_family == AF_INET || c->address.sa.sa_family == AF_INET6)) {
+		sockaddr_t probe = c->address;
+		sockaddrunmap(&probe);
+
+		if(probe.sa.sa_family == AF_INET && !probe.in.sin_port) {
+			probe.in.sin_port = htons(655);
+		} else if(probe.sa.sa_family == AF_INET6 && !probe.in6.sin6_port) {
+			probe.in6.sin6_port = htons(655);
+		}
+
+		int fd = socket(probe.sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
+
+		if(fd >= 0) {
+			sockaddr_t resolved = {0};
+			socklen_t rlen = sizeof(resolved);
+
+			if(!connect(fd, &probe.sa, SALEN(probe.sa)) && !getsockname(fd, &resolved.sa, &rlen)) {
+				sockaddrunmap(&resolved);
+
+				if(resolved.sa.sa_family == AF_INET && sa->sa.sa_family == AF_INET &&
+				                resolved.in.sin_addr.s_addr != INADDR_ANY) {
+					sa->in.sin_addr = resolved.in.sin_addr;
+				} else if(resolved.sa.sa_family == AF_INET6 && sa->sa.sa_family == AF_INET6 &&
+				                !IN6_IS_ADDR_UNSPECIFIED(&resolved.in6.sin6_addr)) {
+					sa->in6.sin6_addr = resolved.in6.sin6_addr;
+				}
+			}
+
+			closesocket(fd);
+		}
+	}
+
+	return true;
 }
 
 /* ---- inbound TCP front --------------------------------------------------- */

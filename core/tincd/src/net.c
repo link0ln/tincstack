@@ -367,6 +367,27 @@ static void timeout_handler(void *data) {
 		}
 	}
 
+	/* Keep confirmed direct UDP paths to non-neighbor nodes alive across idle
+	   periods, and proactively discover direct LAN UDP paths for nodes that
+	   share our local /24 (or /64) LAN even when AutoConnect is off. */
+	if(!close_all_connections && myself) {
+		for splay_each(node_t, n, &node_tree) {
+			if(n == myself || !n->status.reachable || n->connection ||
+			                n->status.no_direct || n->remote_no_direct) {
+				continue;
+			}
+
+			if(n->status.udp_confirmed) {
+				try_tx(n, n->mtuprobes >= 0);
+			} else if(localdiscovery &&
+			                now.tv_sec - myself->last_state_change >= 15 &&
+			                now.tv_sec - n->last_state_change >= 15 &&
+			                node_shares_local_lan(n)) {
+				try_tx(n, false);
+			}
+		}
+	}
+
 	timeout_set(data, &(struct timeval) {
 		1, jitter()
 	});

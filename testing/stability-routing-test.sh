@@ -421,5 +421,39 @@ else
 	miss "Ping to hub failed when NoDirectNodes=hub was set"
 fi
 
+echo "===== Scenario 7: LocalDiscovery Direct LAN Path Across Indirect (HTTPS/SF) Relay & Broad InterfaceRoute ====="
+# Configure rfast <-> hub back to https (OPTION_INDIRECT) and add a broad InterfaceRoute 10.42.0.0/16 on client & hub
+# (matching a real-world setup where two nodes on the same /24 LAN reach each other via an indirect relay).
+docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set PreferredTransports https
+docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 disconnect hub || true
+docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 retry
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 add InterfaceRoute 10.42.0.0/16
+docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+docker exec "$PFX-hub" tinc -c /etc/tincstack/tinc.yaml -n wsg1 add InterfaceRoute 10.42.0.0/16
+docker exec "$PFX-hub" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+sleep 2
+
+lan_direct_ok=0
+for _ in $(seq 1 15); do
+	docker exec "$PFX-cl" ping -c 2 -W 1 "$HUB_VPN" >/dev/null 2>&1 || true
+	HUB_LAN_LINE=$(docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump nodes | grep "^hub ")
+	HUB_LAN_VIA=$(echo "$HUB_LAN_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}')
+	HUB_LAN_ADDR=$(echo "$HUB_LAN_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="at") print $(i+1)}')
+	HUB_LAN_STATUS=$(echo "$HUB_LAN_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="status") print $(i+1)}')
+	HUB_LAN_UDP=$(( (16#${HUB_LAN_STATUS:-0} & 0x0080) != 0 ? 1 : 0 ))
+	if [ "$HUB_LAN_VIA" = "hub" ] && [ "$HUB_LAN_UDP" -eq 1 ] && [ "$HUB_LAN_ADDR" = "$HUB_IP" ]; then
+		lan_direct_ok=1
+		break
+	fi
+	sleep 1
+done
+
+if [ "$lan_direct_ok" -eq 1 ]; then
+	note "LocalDiscovery established direct LAN UDP path (via=hub, at=$HUB_IP, udp_confirmed=1) across indirect HTTPS/SF relay and broad InterfaceRoute"
+else
+	miss "LocalDiscovery failed to establish direct LAN UDP path: line='$HUB_LAN_LINE'"
+fi
+
 echo "===== Summary: $pass_count passed, fail=$fail ====="
 exit "$fail"

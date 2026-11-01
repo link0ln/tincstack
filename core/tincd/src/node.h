@@ -159,6 +159,7 @@ typedef struct node_t {
 	time_t quorum_voted_at;                 /* round timestamp of that vote (deduplication) */
 	bool remote_no_direct;                  /* true if peer signaled that direct connections with it are forbidden */
 	time_t last_no_direct_sent;             /* rate limit for PUNCH_NO_DIRECT notifications to this peer */
+	time_t last_lan_udp_rx;                 /* timestamp of last direct UDP packet received from a private LAN address */
 } node_t;
 
 extern struct node_t *myself;

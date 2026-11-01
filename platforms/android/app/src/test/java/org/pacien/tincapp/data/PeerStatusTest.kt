@@ -93,4 +93,15 @@ class PeerStatusTest {
     assertFalse(p.directUdp)
     assertEquals("ruvds3", p.via)
   }
+
+  @Test
+  fun directUdpConfirmedAcrossMultiHopControlGraph() {
+    val lanDirectLine = "gw id 05 at 192.168.1.200 port 6552 cipher 0 digest 0 maclength 0 compression 0 options 700000c " +
+      "status 48da nexthop ruvds3 via gw distance 3 pmtu 1451 (min 1451 max 1451) rx 10 1000 tx 10 1000 transports plain,quic rtt 0.450"
+    val p = PeerStatus.parseNode(lanDirectLine)!!
+    assertTrue(p.reachable)
+    assertTrue(p.directUdp)
+    assertNull(p.via)
+    assertEquals(0.450, p.rttMs!!, 1e-9)
+  }
 }

@@ -345,6 +345,7 @@ void setup_no_direct_nodes(void) {
 
 			timeout_del(&n->punch_timer);
 			n->punch_go = (struct timeval) {0, 0};
+			n->last_lan_udp_rx = 0;
 			memset(n->paths, 0, sizeof(n->paths));
 		}
 	}
@@ -485,6 +486,10 @@ node_t *lookup_node_udp(const sockaddr_t *sa) {
 void update_node_udp(node_t *n, const sockaddr_t *sa) {
 	if(n == myself) {
 		logger(DEBUG_ALWAYS, LOG_WARNING, "Trying to update UDP address of myself!");
+		return;
+	}
+
+	if(sa && node_has_active_lan_udp(n) && !sockaddr_is_private_lan(sa)) {
 		return;
 	}
 

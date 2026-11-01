@@ -69,14 +69,15 @@ data class PeerStatus(
       val nexthop = f.after("nexthop")?.takeIf { it != "-" }
       val via = f.after("via")?.takeIf { it != "-" }
       val reachable = self || status and STATUS_REACHABLE != 0
-      val relay = listOfNotNull(via, nexthop).firstOrNull { it != name }
+      val isDirectUdp = !self && reachable && (status and STATUS_UDP_CONFIRMED != 0) && (via == null || via == name)
+      val relay = if (isDirectUdp) null else listOfNotNull(via, nexthop).firstOrNull { it != name }
       return PeerStatus(
         name = name,
         self = self,
         address = host?.takeIf { !self && it != "unknown" },
         port = f.after("port")?.takeIf { !self && it != "unknown" },
         reachable = reachable,
-        directUdp = !self && reachable && status and STATUS_UDP_CONFIRMED != 0 && relay == null,
+        directUdp = isDirectUdp,
         via = if (reachable && !self) relay else null,
         rttMs = f.after("rtt")?.toDoubleOrNull(),
         transport = connections[name],
