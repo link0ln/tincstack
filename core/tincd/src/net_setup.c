@@ -184,6 +184,8 @@ static void load_one_node(const char *name) {
 	read_config_options(&config, name);
 	read_host_config(&config, name, true);
 
+	bool is_new = !n;
+
 	if(!n) {
 		n = new_node((char *) name);
 		node_add(n);
@@ -227,18 +229,8 @@ static void load_one_node(const char *name) {
 
 	transport_node_read_config(n, &config);
 
-	if(n != myself) {
-		bool direct_connect = true;
-
-		if(get_config_bool(lookup_config(&config, "DirectConnect"), &direct_connect) && !direct_connect) {
-			n->status.no_direct = true;
-		}
-
-		bool indirect_data = false;
-
-		if(get_config_bool(lookup_config(&config, "IndirectData"), &indirect_data) && indirect_data) {
-			n->status.no_direct = true;
-		}
+	if(is_new && n != myself) {
+		n->status.no_direct = node_is_no_direct(name);
 	}
 
 	splay_empty_tree(&config);
@@ -246,7 +238,6 @@ static void load_one_node(const char *name) {
 
 void load_all_nodes(void) {
 	setup_blocked_nodes();
-	setup_no_direct_nodes();
 
 	// YAML mode: there is no hosts/ directory; enumerate nodes from the YAML.
 	if(yamlconf_global && netname) {

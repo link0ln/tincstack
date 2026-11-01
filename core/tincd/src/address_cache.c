@@ -37,7 +37,7 @@ static const unsigned int NOT_CACHED = UINT_MAX;
       interface);
    3. a kernel route lookup (UDP connect + getsockname) selects one of
       `myself''s own /32 or /128 VPN tunnel addresses as the outgoing source IP. */
-bool address_routes_via_vpn(const sockaddr_t *sa) {
+static bool address_routes_via_vpn_uncached(const sockaddr_t *sa) {
 	if(!sa || !myself) {
 		return false;
 	}
@@ -86,12 +86,12 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 			got_local = true;
 
 			for splay_each(subnet_t, s, &myself->subnet_tree) {
-				if(local.sa.sa_family == AF_INET && s->type == SUBNET_IPV4 && s->net.ipv4.prefixlength == 32) {
+				if(local.sa.sa_family == AF_INET && s->type == SUBNET_IPV4) {
 					if(!memcmp(&local.in.sin_addr, &s->net.ipv4.address, sizeof(ipv4_t))) {
 						via_self = true;
 						break;
 					}
-				} else if(local.sa.sa_family == AF_INET6 && s->type == SUBNET_IPV6 && s->net.ipv6.prefixlength == 128) {
+				} else if(local.sa.sa_family == AF_INET6 && s->type == SUBNET_IPV6) {
 					if(!memcmp(&local.in6.sin6_addr, &s->net.ipv6.address, sizeof(ipv6_t))) {
 						via_self = true;
 						break;
@@ -183,6 +183,38 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 	}
 
 	return false;
+}
+
+bool address_routes_via_vpn(const sockaddr_t *sa) {
+	if(!sa || !myself) {
+		return false;
+	}
+
+	static struct {
+		sockaddr_t sa;
+		time_t ts;
+		bool res;
+	} cache[16];
+	static size_t cache_cursor = 0;
+
+	if(now.tv_sec > 0) {
+		for(size_t i = 0; i < 16; i++) {
+			if(cache[i].ts == now.tv_sec && !sockaddrcmp_noport(&cache[i].sa, sa)) {
+				return cache[i].res;
+			}
+		}
+	}
+
+	bool res = address_routes_via_vpn_uncached(sa);
+
+	if(now.tv_sec > 0) {
+		cache[cache_cursor].sa = *sa;
+		cache[cache_cursor].ts = now.tv_sec;
+		cache[cache_cursor].res = res;
+		cache_cursor = (cache_cursor + 1) & 15;
+	}
+
+	return res;
 }
 
 // Find edges pointing to this node, and use them to build a list of unique, known addresses.

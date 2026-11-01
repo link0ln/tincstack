@@ -153,7 +153,21 @@ class TincYaml(val file: File) {
     optChanges["NoDirectNodes"] = ndList.ifEmpty { null }
     setOptions(net, optChanges)
     if (hostText(net, peer) != null) {
-      setHostVars(net, peer, mapOf("DirectConnect" to if (noDirect) "no" else null))
+      val hostChanges = if (noDirect) {
+        mapOf("DirectConnect" to "no")
+      } else {
+        mapOf("DirectConnect" to null, "IndirectData" to null)
+      }
+      setHostVars(net, peer, hostChanges)
+    }
+  }
+
+  /** Replace or create the full host record `networks.<net>.hosts.<name>` with [newText]. */
+  fun setHostText(net: String, name: String, newText: String) {
+    val normalized = newText.trimEnd()
+    val original = hostText(net, name)?.trimEnd()
+    if (normalized != original || original == null) {
+      replaceHostBlock(net, name, if (normalized.isEmpty()) "" else "$normalized\n")
     }
   }
 

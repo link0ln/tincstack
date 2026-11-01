@@ -339,12 +339,12 @@ def host_no_direct(host_text: str) -> bool:
 
 def set_host_no_direct(host_text: str, no_direct: bool) -> str:
     """Set `DirectConnect = no` (when no_direct is True) or remove DirectConnect
-    from `host_text` while preserving all other lines."""
+    and IndirectData from `host_text` while preserving all other lines."""
     if not host_text and not no_direct:
         return ""
     kept = [
         ln for ln in (host_text or "").splitlines()
-        if not _HOST_DIRECT_RE.match(ln)
+        if not _HOST_DIRECT_RE.match(ln) and (no_direct or not _HOST_INDIRECT_RE.match(ln))
     ]
     if no_direct:
         kept.append("DirectConnect = no")

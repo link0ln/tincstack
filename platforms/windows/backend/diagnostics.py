@@ -1705,7 +1705,9 @@ class DiagWebServer:
                 except Exception:
                     pass
             nc.hosts[peer] = transports.set_host_preferred_transport(nc.hosts.get(peer, ""), carrier)
-            if carrier != "auto" and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer], re.I | re.M):
+            if (carrier != "auto"
+                    and not transports.is_peer_no_direct(nc.options, nc.hosts.get(peer, ""), peer)
+                    and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer], re.I | re.M)):
                 ct = nc.options.get("ConnectTo")
                 if isinstance(ct, list):
                     if peer not in ct:

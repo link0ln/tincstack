@@ -741,6 +741,12 @@ function renderPeersTable(d) {
     const rowStyle = (!n.is_self && isNoDirect) ? ` style="background:rgba(245,158,11,0.10);"` : "";
     const nameHtml = (!n.is_self && isNoDirect) ? `<b style="color:#fbbf24;">${n.name}</b>` : `<b>${n.name}</b>`;
 
+    const viaCell = n.is_self ? "—" : (
+      n.link === "direct" ? "direct" :
+      n.link === "direct-udp" ? (n.nexthop && n.nexthop !== n.name ? `direct <span style="color:var(--muted)">(meta: ${n.nexthop})</span>` : "direct") :
+      (n.via && n.via !== n.name ? `via <b>${n.via}</b>` : (n.nexthop || "—"))
+    );
+
     return `<tr${rowStyle}>
       <td>${nameHtml}</td>
       <td><code>${n.vpn_address || "—"}</code></td>
@@ -749,7 +755,7 @@ function renderPeersTable(d) {
       <td>${directCell}</td>
       <td>${trBadge}</td>
       <td>${selHtml}</td>
-      <td>${n.via && n.via !== n.name ? `via <b>${n.via}</b>` : (n.nexthop || "—")}</td>
+      <td>${viaCell}</td>
       <td>${n.rtt > 0 ? n.rtt.toFixed(1) + " ms" : "—"}</td>
       <td>${n.pmtu > 0 ? `${n.pmtu} <span style="color:var(--muted)">(${n.pmtu_min}..${n.pmtu_max})</span>` : "—"}</td>
       <td>↓${fmtBytes(n.rx_bytes)} / ↑${fmtBytes(n.tx_bytes)}</td>

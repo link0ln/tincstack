@@ -80,6 +80,10 @@ class Node:
     def no_direct(self) -> bool:
         return bool(self.status.get("no_direct"))
 
+    @no_direct.setter
+    def no_direct(self, value: bool) -> None:
+        self.status["no_direct"] = bool(value)
+
     @property
     def vpn_address(self) -> str:
         """This node's own address inside the VPN: its host-route Subnet. tinc

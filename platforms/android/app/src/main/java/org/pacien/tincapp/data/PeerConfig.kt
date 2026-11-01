@@ -55,7 +55,7 @@ data class PeerConfig(
   val httpsPort: String? get() = first("HttpsPort")
   val quicPort: String? get() = first("QuicPort")
   val obfsPort: String? get() = first("ObfsPort")
-  val preferredTransport: String? get() = first("PreferredTransport") ?: first("PreferredTransports")
+  val preferredTransport: String? get() = first("PreferredTransports") ?: first("PreferredTransport")
 
   /** True if DirectConnect = no or IndirectData = yes is set in this peer's host block. */
   val noDirect: Boolean

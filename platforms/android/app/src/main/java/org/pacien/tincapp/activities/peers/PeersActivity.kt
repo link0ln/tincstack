@@ -105,7 +105,8 @@ class PeersActivity : BaseActivity() {
         noDirect = n != own && (livePeer?.noDirect == true || yaml.isPeerNoDirect(stanza, n)),
       )
     }
-    adapter.submit(rows)
+    val summaries = rows.associate { p -> p.name to staticAddressSummary(yaml, stanza, p.name, p) }
+    adapter.submit(rows, summaries)
   }
 
   private fun staticPort(yaml: TincYaml, stanza: String, node: String, live: PeerStatus?): String? {
@@ -160,7 +161,8 @@ class PeersActivity : BaseActivity() {
       val merged = peers.map { p ->
         if (p.self || p.noDirect) p else p.copy(noDirect = yaml.isPeerNoDirect(stanza, p.name))
       }
-      adapter.submit(merged)
+      val summaries = merged.associate { p -> p.name to staticAddressSummary(yaml, stanza, p.name, p) }
+      adapter.submit(merged, summaries)
     }
     binding.peersPlaceholder.isVisible = peers == null && adapter.itemCount == 0
     if (peers == null && adapter.itemCount == 0) binding.peersPlaceholder.setText(R.string.peers_not_connected)
@@ -254,9 +256,17 @@ class PeersActivity : BaseActivity() {
         val chosen = codes[which]
         try {
           val valToSet = if (chosen == "auto") null else listOf(chosen)
-          yaml.setHostMultiVars(stanza, peerName, mapOf("PreferredTransport" to valToSet), createIfMissing = true)
+          yaml.setHostMultiVars(
+            stanza,
+            peerName,
+            mapOf("PreferredTransports" to valToSet, "PreferredTransport" to null),
+            createIfMissing = true,
+          )
           if (org.pacien.tincapp.service.TincVpnService.isDaemonRunning()) {
-            org.pacien.tincapp.service.TincVpnService.connect(netName)
+            Tinc.reload(netName)
+              .thenCompose { Tinc.disconnectNode(netName, peerName).exceptionally { "" } }
+              .thenCompose { Tinc.retry(netName) }
+              .exceptionallyAccept { org.pacien.tincapp.service.TincVpnService.connect(netName) }
           }
           renderStatic()
           notify(getString(R.string.config_saved))
@@ -294,11 +304,13 @@ class PeersActivity : BaseActivity() {
     private val onMenuClick: (PeerStatus, View) -> Unit,
   ) : RecyclerView.Adapter<Holder>() {
     private var items: List<PeerStatus> = emptyList()
+    private var summaries: Map<String, String?> = emptyMap()
 
     val current: List<PeerStatus> get() = items
 
-    fun submit(list: List<PeerStatus>) {
+    fun submit(list: List<PeerStatus>, summaryMap: Map<String, String?> = summaries) {
       items = list
+      summaries = summaryMap
       @Suppress("NotifyDataSetChanged") notifyDataSetChanged()
     }
 
@@ -311,9 +323,7 @@ class PeersActivity : BaseActivity() {
       val peer = items[position]
       val b = holder.binding
       val context = b.root.context
-      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-      val stanza = yaml.resolveNetwork(netName)
-      val isNoDirect = !peer.self && (peer.noDirect || yaml.isPeerNoDirect(stanza, peer.name))
+      val isNoDirect = !peer.self && peer.noDirect
 
       b.peerName.text = peer.name
       if (isNoDirect) {
@@ -371,7 +381,7 @@ class PeersActivity : BaseActivity() {
       }
 
       b.peerStatus.text = status(context, peer, isNoDirect)
-      val addrText = staticAddressSummary(yaml, stanza, peer.name, peer)
+      val addrText = summaries[peer.name]
       b.peerAddress.text = addrText.orEmpty()
       b.peerAddress.isVisible = !addrText.isNullOrBlank()
       b.peerRow.setOnClickListener { onRowClick(peer) }
@@ -387,7 +397,7 @@ class PeersActivity : BaseActivity() {
       ).joinToString("  ·  ")
       else -> listOfNotNull(
         if (peer.via != null) context.getString(R.string.peer_via_format, peer.via) else context.getString(R.string.peer_direct),
-        Labels.transportName(context, peer.transport),
+        Labels.transportName(context, peer.transport) ?: if (peer.directUdp) "UDP" else null,
         peer.rttMs?.let { context.getString(R.string.peer_rtt_format, String.format(Locale.ROOT, "%.1f", it)) },
       ).joinToString("  ·  ")
     }

@@ -120,5 +120,21 @@ def test_peer_no_direct_read_and_write():
     assert "DirectConnect" not in cleared_host
     assert not tr.host_no_direct(cleared_host)
 
+    # Host with IndirectData = yes also clears when no_direct is set to False
+    indirect_blob = host_blob + "IndirectData = yes\n"
+    assert tr.host_no_direct(indirect_blob)
+    cleared_indirect = tr.set_host_no_direct(indirect_blob, False)
+    assert not tr.host_no_direct(cleared_indirect)
+    assert "IndirectData" not in cleared_indirect
+
+    from backend.tinc_control import Node
+    node = Node(name="euvds")
+    assert not node.no_direct
+    node.no_direct = True
+    assert node.no_direct
+    node.no_direct = False
+    assert not node.no_direct
+
+
 
 

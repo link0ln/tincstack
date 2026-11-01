@@ -90,6 +90,10 @@ static const vpn_packet_t *multipath_current_tx_pkt = NULL;
 static const sockaddr_t *current_udp_rx_addr = NULL;
 static int current_udp_rx_sock = -1;
 static int current_udp_rx_len = 0;
+static bool current_udp_rx_direct = false;
+static sockaddr_t current_probe_reply_addr;
+static int current_probe_reply_sock = -1;
+static const node_t *current_probe_reply_node = NULL;
 bool localdiscovery = true;
 bool udp_discovery = true;
 int udp_discovery_keepalive_interval = 10;
@@ -259,6 +263,8 @@ static void send_udp_probe_reply(node_t *n, vpn_packet_t *packet, length_t len) 
 	n->status.udp_confirmed = true;
 	send_udppacket(n, packet);
 	n->status.udp_confirmed = udp_confirmed;
+	current_probe_reply_node = NULL;
+	current_probe_reply_sock = -1;
 }
 
 static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
@@ -608,7 +614,7 @@ static bool try_mac(node_t *n, const vpn_packet_t *inpkt) {
       by a post-`receive_udppacket()` call to `update_node_udp()`;
    3. A slower NAT-hairpinned packet arriving from a public WAN IP milliseconds
       after a direct private-LAN packet does not overwrite the active LAN path. */
-static void apply_incoming_udp_endpoint(node_t *n) {
+static void apply_incoming_udp_endpoint(node_t *n, bool is_probe_req) {
 	if(!n || !current_udp_rx_addr || current_udp_rx_sock < 0) {
 		return;
 	}
@@ -620,11 +626,28 @@ static void apply_incoming_udp_endpoint(node_t *n) {
 	current_udp_rx_sock = -1;
 	current_udp_rx_len = 0;
 
+	if(!direct_seal_permits(n, false)) {
+		return;
+	}
+
+	/* If an unconfirmed probe request arrives from a different address while we
+	   already have a confirmed UDP path to `n`, do not tear down `n->address`
+	   (`update_node_udp` resets `udp_confirmed = false`) until 2-way reachability
+	   on the new address is proven by a probe reply or data packet. Record the
+	   source endpoint so `send_udp_probe_reply()` answers back to `addr`. */
+	if(is_probe_req && n->status.udp_confirmed && sockaddrcmp(addr, &n->address)) {
+		current_probe_reply_addr = *addr;
+		current_probe_reply_sock = sock_idx;
+		current_probe_reply_node = n;
+		multipath_record_udp_rx(n, multipath_current_rx_uplink, sock_idx, addr, pkt_len);
+		return;
+	}
+
 	bool addr_is_lan = sockaddr_is_private_lan(addr);
 
 	if(addr_is_lan) {
 		n->last_lan_udp_rx = now.tv_sec;
-	} else if(node_has_active_lan_udp(n)) {
+	} else if(node_has_active_lan_udp(n) && (now.tv_sec - n->last_lan_udp_rx <= udp_discovery_interval + 1)) {
 		return;
 	}
 
@@ -805,9 +828,10 @@ static bool receive_udppacket(node_t *n, vpn_packet_t *inpkt) {
 	}
 
 	inpkt->priority = 0;
-	apply_incoming_udp_endpoint(n);
+	bool is_probe = !DATA(inpkt)[12] && !DATA(inpkt)[13];
+	apply_incoming_udp_endpoint(n, is_probe && !DATA(inpkt)[0]);
 
-	if(!DATA(inpkt)[12] && !DATA(inpkt)[13]) {
+	if(is_probe) {
 		udp_probe_h(n, inpkt, origlen);
 	} else {
 		receive_packet(n, inpkt);
@@ -1073,15 +1097,15 @@ bool sockaddr_is_private_lan(const sockaddr_t *sa) {
 		}
 
 		const uint8_t *b = sa->in6.sin6_addr.s6_addr;
-		return (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) || /* fe80::/10 */
-		       ((b[0] & 0xfe) == 0xfc);                   /* fc00::/7 */
+		return (b[0] == 0xfe && (b[1] & 0xc0) == 0x80 && sa->in6.sin6_scope_id != 0) || /* fe80::/10 (scoped) */
+		       ((b[0] & 0xfe) == 0xfc);                                                  /* fc00::/7 */
 	}
 
 	return false;
 }
 
 bool node_has_active_lan_udp(const node_t *n) {
-	return n && sockaddr_is_private_lan(&n->address) &&
+	return n && n->status.udp_confirmed && sockaddr_is_private_lan(&n->address) &&
 	       n->last_lan_udp_rx && (now.tv_sec - n->last_lan_udp_rx < udp_discovery_keepalive_interval * 2);
 }
 
@@ -1164,6 +1188,14 @@ bool node_shares_local_lan(const node_t *n) {
 }
 
 static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *sock) {
+	if(current_probe_reply_node == n && current_probe_reply_sock >= 0 &&
+	                !address_routes_via_vpn(&current_probe_reply_addr)) {
+		*sa = &current_probe_reply_addr;
+		*sock = (size_t)current_probe_reply_sock;
+		adapt_socket(*sa, sock);
+		return;
+	}
+
 	if(n->connection && n->connection->transport &&
 	                (n->connection->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) {
 		*sa = &n->connection->address;
@@ -1208,7 +1240,9 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 	/* If we have already received direct UDP from this peer on a private LAN
 	   address, keep probing that LAN address instead of rotating 2 out of 3
 	   probes to a remote relay's WAN view (`e->reverse->address`). */
-	if(node_has_active_lan_udp(n) && !address_routes_via_vpn(*sa)) {
+	if(sockaddr_is_private_lan(*sa) && n->last_lan_udp_rx &&
+	                (now.tv_sec - n->last_lan_udp_rx < udp_discovery_keepalive_interval * 2) &&
+	                !address_routes_via_vpn(*sa)) {
 		adapt_socket(*sa, sock);
 		return;
 	}
@@ -1721,6 +1755,7 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 
 	if(npaths > 0) {
 		size_t pkt_bytes = (size_t)(buf_ptr - buf);
+		bool any_ok = false;
 
 		for(int i = 0; i < npaths; i++) {
 			node_path_t *p = mp_paths[i];
@@ -1741,15 +1776,24 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 			obfs_send_t mp_wrapped = obfs_carrier ? obfs_wrap_send_fd(pfd, psock, psa, buf, pkt_bytes, relay, &mp_excess) : OBFS_SEND_PLAIN;
 
 			if(mp_wrapped == OBFS_SEND_OK) {
+				any_ok = true;
 				continue;
 			} else if(mp_wrapped == OBFS_SEND_TOOBIG) {
 				reduce_mtu(relay, (int)origlen - (int)(mp_excess ? mp_excess : 1));
+				any_ok = true;
+				continue;
+			} else if(mp_wrapped == OBFS_SEND_ERR) {
 				continue;
 			}
 
 			if(dv == DSEAL_SEND_SEAL) {
-				if(obfs_seal_send_fd(pfd, psock, psa, buf, pkt_bytes, relay, &mp_excess) == OBFS_SEND_TOOBIG) {
+				obfs_send_t mp_sealed = obfs_seal_send_fd(pfd, psock, psa, buf, pkt_bytes, relay, &mp_excess);
+
+				if(mp_sealed == OBFS_SEND_OK) {
+					any_ok = true;
+				} else if(mp_sealed == OBFS_SEND_TOOBIG) {
 					reduce_mtu(relay, (int)origlen - (int)(mp_excess ? mp_excess : 1));
+					any_ok = true;
 				}
 
 				continue;
@@ -1758,8 +1802,17 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 			if(sendto(pfd, buf, pkt_bytes, 0, &psa->sa, SALEN(psa->sa)) < 0 && !sockwouldblock(sockerrno)) {
 				if(sockmsgsize(sockerrno)) {
 					reduce_mtu(relay, (int)origlen - 1);
+					any_ok = true;
+				} else if(sendto(pfd, buf, pkt_bytes, 0, &psa->sa, SALEN(psa->sa)) >= 0 || sockwouldblock(sockerrno)) {
+					any_ok = true;
 				}
+			} else {
+				any_ok = true;
 			}
+		}
+
+		if(!any_ok) {
+			return handle_udp_send_error(relay, to, from, type, data, len);
 		}
 
 		return true;
@@ -1818,9 +1871,13 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	if(sendto(listen_socket[sock].udp.fd, buf, buf_ptr - buf, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
 		if(sockmsgsize(sockerrno)) {
 			reduce_mtu(relay, (int)origlen - 1);
-		} else {
-			logger(DEBUG_TRAFFIC, LOG_WARNING, "Error sending UDP SPTPS packet to %s (%s): %s", relay->name, relay->hostname, sockstrerror(sockerrno));
-			return handle_udp_send_error(relay, to, from, type, data, len);
+		} else if(sendto(listen_socket[sock].udp.fd, buf, buf_ptr - buf, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
+			if(sockmsgsize(sockerrno)) {
+				reduce_mtu(relay, (int)origlen - 1);
+			} else {
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "Error sending UDP SPTPS packet to %s (%s): %s", relay->name, relay->hostname, sockstrerror(sockerrno));
+				return handle_udp_send_error(relay, to, from, type, data, len);
+			}
 		}
 	}
 
@@ -1831,7 +1888,8 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	node_t *from = handle;
 
 	if(from->status.udppacket) {
-		apply_incoming_udp_endpoint(from);
+		bool is_probe_req = (type == PKT_PROBE && len >= 1 && ((const uint8_t *)data)[0] == 0);
+		apply_incoming_udp_endpoint(from, is_probe_req);
 	}
 
 	if(type == SPTPS_HANDSHAKE) {
@@ -1862,8 +1920,8 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	inpkt.priority = 0;
 
 	if(type == PKT_PROBE) {
-		if(!from->status.udppacket) {
-			logger(DEBUG_TRAFFIC, LOG_WARNING, "Ignoring SPTPS PROBE packet from %s (%s) received via TCP", from->name, from->hostname);
+		if(!from->status.udppacket || !current_udp_rx_direct) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "Ignoring SPTPS PROBE packet from %s (%s) received via relay/TCP", from->name, from->hostname);
 			return true;
 		}
 
@@ -1931,7 +1989,7 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		}
 	}
 
-	if(from->status.udppacket) {
+	if(from->status.udppacket && current_udp_rx_direct) {
 		from->udp_ping_unanswered = 0;
 		from->last_udp_rx = now.tv_sec;
 
@@ -2269,6 +2327,12 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 		bool changed = !from->remote_no_direct;
 		from->remote_no_direct = true;
 
+		for list_each(outgoing_t, outgoing, &outgoing_list) {
+			if(outgoing->node == from) {
+				list_delete_node(&outgoing_list, node);
+			}
+		}
+
 		if(from->status.udp_confirmed || from->status.udp_addr_confirmed) {
 			from->status.udp_confirmed = false;
 			from->status.udp_addr_confirmed = false;
@@ -2412,7 +2476,7 @@ static void try_udp(node_t *n, bool has_data) {
 	/* Coordinated hole punch: no unsolicited probe outside a round, except a
 	   rate-limited LocalDiscovery probe when the peer shares our local LAN. */
 	if(!n->status.udp_confirmed && punch_coordinated(n) && !punch_may_probe(n)) {
-		if(localdiscovery && n->prevedge && node_shares_local_lan(n)) {
+		if(localdiscovery && n->prevedge && now.tv_sec >= n->punch_backoff_until && node_shares_local_lan(n)) {
 			struct timeval ldisc_elapsed;
 			timersub(&now, &n->udp_ping_sent, &ldisc_elapsed);
 
@@ -3061,7 +3125,7 @@ static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t
 		if(pkt->len >= pkt->offset) {
 			from = lookup_node_id(SRCID(pkt));
 
-			if(from && from->status.sptps && !from->status.no_direct && !memcmp(DSTID(pkt), &nullid, sizeof(nullid))) {
+			if(from && from->status.sptps && !memcmp(DSTID(pkt), &nullid, sizeof(nullid))) {
 				if(sptps_verify_datagram(&from->sptps, DATA(pkt), pkt->len - 2 * sizeof(node_id_t))) {
 					n = from;
 				} else {
@@ -3105,7 +3169,12 @@ skip_harder:
 		}
 
 		if(!relay_enabled || !memcmp(DSTID(pkt), &nullid, sizeof(nullid))) {
-			if(n->status.no_direct) {
+			if(n->status.no_direct || node_is_no_direct(n->name)) {
+				if(n->last_no_direct_sent != now.tv_sec) {
+					n->last_no_direct_sent = now.tv_sec;
+					send_no_direct_signal(n, true);
+				}
+
 				return;
 			}
 
@@ -3179,7 +3248,9 @@ skip_harder:
 		current_udp_rx_len = 0;
 	}
 
+	current_udp_rx_direct = direct;
 	bool rx_ok = receive_udppacket(from, pkt);
+	current_udp_rx_direct = false;
 	current_udp_rx_addr = NULL;
 	current_udp_rx_sock = -1;
 	current_udp_rx_len = 0;

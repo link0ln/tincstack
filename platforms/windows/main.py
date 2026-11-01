@@ -1191,6 +1191,12 @@ class NetworkTab(QtWidgets.QWidget):
         for k in ("Transports", "PreferredTransports"):
             if k in new_opts:
                 new_opts[k] = transports.parse_carrier_list(new_opts[k])
+        if "NoDirectNodes" in new_opts:
+            nd_list = transports.parse_node_list(new_opts["NoDirectNodes"])
+            if nd_list:
+                new_opts["NoDirectNodes"] = nd_list
+            else:
+                new_opts.pop("NoDirectNodes", None)
         errs = transports.validate(new_opts)
         if errs:
             self.ctx.status("not saved: " + "; ".join(errs))

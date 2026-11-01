@@ -1048,7 +1048,7 @@ class ConfigEditorActivity : BaseActivity() {
         valuePresets = { listOf("19505", "8444", "0") },
       ),
       KeySpec(
-        name = "PreferredTransport",
+        name = "PreferredTransports",
         description = "Preferred transport when dialing this node",
         defaultSuggestion = "quic",
         valuePresets = { listOf("auto", "quic", "https", "obfs", "sf", "sftcp", "plain") },

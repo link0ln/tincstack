@@ -1985,12 +1985,13 @@ object DiagManager {
           }
           val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
           val stanza = yaml.resolveNetwork(targetNet)
-          if (yaml.hostText(stanza, peer) != null) {
-            yaml.setHostVars(stanza, peer, mapOf("PreferredTransports" to if (carrier == "auto") null else carrier))
-          } else {
-            val t = Transport.byId(carrier)
-            Transport.setPreferred(yaml, stanza, t?.takeIf { it != Transport.PLAIN })
-          }
+          val valToSet = if (carrier == "auto") null else listOf(carrier)
+          yaml.setHostMultiVars(
+            stanza,
+            peer,
+            mapOf("PreferredTransports" to valToSet, "PreferredTransport" to null),
+            createIfMissing = true,
+          )
           runTincCli(targetNet, 3500L, "reload")
           runTincCli(targetNet, 3500L, "disconnect", peer)
           runTincCli(targetNet, 3500L, "retry")
@@ -2035,15 +2036,7 @@ object DiagManager {
           }
           val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
           val stanza = yaml.resolveNetwork(targetNet)
-          yaml.setHostMultiVars(stanza, host, emptyMap()) // ensure block exists
-          val rawLines = content.split('\n').map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") && '=' in it }
-          val vars = LinkedHashMap<String, MutableList<String>>()
-          for (ln in rawLines) {
-            val k = ln.substringBefore('=').trim()
-            val v = ln.substringAfter('=').trim()
-            if (k.isNotEmpty()) vars.getOrPut(k) { mutableListOf() }.add(v)
-          }
-          yaml.setHostMultiVars(stanza, host, vars)
+          yaml.setHostText(stanza, host, content)
           val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() && it != host }
           yaml.setOptions(stanza, mapOf("BlockedNodes" to blocked.ifEmpty { null }))
           runTincCli(targetNet, 3500L, "reload")

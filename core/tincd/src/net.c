@@ -382,6 +382,7 @@ static void timeout_handler(void *data) {
 			} else if(localdiscovery &&
 			                now.tv_sec - myself->last_state_change >= 15 &&
 			                now.tv_sec - n->last_state_change >= 15 &&
+			                now.tv_sec - n->last_state_change <= 75 &&
 			                node_shares_local_lan(n)) {
 				try_tx(n, false);
 			}

@@ -534,6 +534,10 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 	   (send_carrier_beacon) must not wipe out the carrier's confirmed PMTU. */
 	n->status.udp_addr_confirmed = false;
 
+	if(!sa) {
+		n->last_lan_udp_rx = 0;
+	}
+
 	if(!sa || !n->connection || !n->connection->transport || !n->connection->transport->send_datagram) {
 		n->status.udp_confirmed = false;
 		n->maxrecentlen = 0;

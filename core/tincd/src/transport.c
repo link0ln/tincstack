@@ -691,6 +691,10 @@ void transport_node_read_config(node_t *n, splay_tree_t *config_tree) {
 	n->pref_transports_count = 0;
 	char *plist = config_join(config_tree, "PreferredTransports");
 
+	if(!plist) {
+		plist = config_join(config_tree, "PreferredTransport");
+	}
+
 	if(plist) {
 		uint32_t pmask = 0;
 		transport_id_t porder[TRANSPORT_MAX];
