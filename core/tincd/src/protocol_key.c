@@ -470,6 +470,11 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		char dseal[32];
 		send_request(from->nexthop->connection, "%d %s %s %d %s %s %s", REQ_KEY, myself->name, from->name, ANS_PUBKEY, pubkey, transport_accept_string(acceptlist), dseal_token(dseal, sizeof(dseal)));
 		free(pubkey);
+
+		if(from->status.no_direct || node_is_no_direct(from->name)) {
+			send_no_direct_signal(from, true);
+		}
+
 		return true;
 	}
 

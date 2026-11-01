@@ -585,6 +585,14 @@ bool id_h(connection_t *c, const char *request) {
 		return false;
 	}
 
+	if(!c->outgoing) {
+		node_t *peer_n = lookup_node(name);
+
+		if(peer_n && peer_n->remote_no_direct) {
+			peer_n->remote_no_direct = false;
+		}
+	}
+
 	/* If this is an outgoing connection, make sure we are connected to the right host */
 
 	if(c->outgoing) {

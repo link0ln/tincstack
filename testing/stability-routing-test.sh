@@ -347,6 +347,21 @@ else
 fi
 
 echo "===== Scenario 6: Application-Level NoDirectNodes / DirectConnect = no (Relay-Only Enforcement) ====="
+# Switch rfast <-> hub from https (OPTION_INDIRECT) to plain so client <-> hub can establish direct UDP first
+docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set PreferredTransports plain
+docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 disconnect hub || true
+docker exec "$PFX-rfast" tinc -c /etc/tincstack/tinc.yaml -n wsg1 retry
+for _ in $(seq 1 12); do
+	docker exec "$PFX-cl" ping -c 2 -W 1 "$HUB_VPN" >/dev/null 2>&1 || true
+	INIT_VIA=$(docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump nodes | awk '/^hub /{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}')
+	INIT_STATUS=$(docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump nodes | awk '/^hub /{for(i=1;i<=NF;i++) if($i=="status") print $(i+1)}')
+	if [ "$INIT_VIA" = "hub" ] && [ $(( (16#${INIT_STATUS:-0} & 0x0080) != 0 ? 1 : 0 )) -eq 1 ]; then
+		break
+	fi
+	sleep 1
+done
+
 # Without any iptables rules between client and hub, forbid direct connections to hub on client
 docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 set NoDirectNodes hub
 docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
@@ -366,6 +381,41 @@ if docker exec "$PFX-cl" ping -c 5 -W 2 "$HUB_VPN" >/dev/null 2>&1; then
 		note "NoDirectNodes enforced relay-only path to hub (via=$HUB_VIA, status=0x$HUB_STATUS_HEX, udp_confirmed=0, direct_conn=0) without iptables"
 	else
 		miss "NoDirectNodes check failed: line='$HUB_NODE_LINE' no_direct=$NO_DIRECT_BIT udp_confirmed=$UDP_CONF_BIT direct_conn=$DIRECT_CONN via=$HUB_VIA"
+	fi
+
+	# Verify bidirectional signaling: hub must also mark client as indirect (via relay) and stop punching to client
+	CL_ON_HUB_LINE=$(docker exec "$PFX-hub" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump nodes | grep "^client ")
+	CL_ON_HUB_VIA=$(echo "$CL_ON_HUB_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}')
+	CL_ON_HUB_STATUS=$(echo "$CL_ON_HUB_LINE" | awk '{for(i=1;i<=NF;i++) if($i=="status") print $(i+1)}')
+	CL_ON_HUB_UDP=$(( (16#${CL_ON_HUB_STATUS:-0} & 0x0080) != 0 ? 1 : 0 ))
+	if [ "$CL_ON_HUB_VIA" != "client" ] && [ "$CL_ON_HUB_UDP" -eq 0 ] && docker exec "$PFX-hub" grep -q "Peer client .* signaled NoDirect" /var/log/tinc.log; then
+		note "Bidirectional PUNCH_NO_DIRECT signal received by hub (client via=$CL_ON_HUB_VIA, udp_confirmed=0 on hub, UDP probes suppressed)"
+	else
+		miss "Bidirectional PUNCH_NO_DIRECT check on hub failed: line='$CL_ON_HUB_LINE' via='$CL_ON_HUB_VIA' udp=$CL_ON_HUB_UDP"
+	fi
+
+	# Re-enable direct connection on client and verify PUNCH_ALLOW_DIRECT immediately restores direct UDP
+	docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 del NoDirectNodes hub
+	docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 reload
+	direct_restored=0
+	for _ in $(seq 1 12); do
+		docker exec "$PFX-cl" ping -c 2 -W 1 "$HUB_VPN" >/dev/null 2>&1 || true
+		HUB_NODE_LINE2=$(docker exec "$PFX-cl" tinc -c /etc/tincstack/tinc.yaml -n wsg1 dump nodes | grep "^hub ")
+		HUB_STATUS_HEX2=$(echo "$HUB_NODE_LINE2" | awk '{for(i=1;i<=NF;i++) if($i=="status") print $(i+1)}')
+		HUB_VIA2=$(echo "$HUB_NODE_LINE2" | awk '{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}')
+		HUB_STATUS_VAL2=$((16#${HUB_STATUS_HEX2:-0}))
+		NO_DIRECT_BIT2=$(( (HUB_STATUS_VAL2 & 0x8000) != 0 ? 1 : 0 ))
+		UDP_CONF_BIT2=$(( (HUB_STATUS_VAL2 & 0x0080) != 0 ? 1 : 0 ))
+		if [ "$NO_DIRECT_BIT2" -eq 0 ] && [ "$UDP_CONF_BIT2" -eq 1 ] && [ "$HUB_VIA2" = "hub" ]; then
+			direct_restored=1
+			break
+		fi
+		sleep 1
+	done
+	if [ "$direct_restored" -eq 1 ] && docker exec "$PFX-hub" grep -q "Peer client .* re-enabled direct connections" /var/log/tinc.log; then
+		note "Bidirectional PUNCH_ALLOW_DIRECT restored direct UDP path between client and hub (via=hub, udp_confirmed=1)"
+	else
+		miss "Failed to restore direct UDP path after removing NoDirectNodes (direct_restored=$direct_restored, line='$HUB_NODE_LINE2')"
 	fi
 else
 	miss "Ping to hub failed when NoDirectNodes=hub was set"

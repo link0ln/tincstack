@@ -157,6 +157,8 @@ typedef struct node_t {
 	uint32_t quorum_verified_old;           /* peers with active verified edge/SPTPS under old key */
 	struct node_t *quorum_voted_for;        /* target node this peer last cast a quorum vote for */
 	time_t quorum_voted_at;                 /* round timestamp of that vote (deduplication) */
+	bool remote_no_direct;                  /* true if peer signaled that direct connections with it are forbidden */
+	time_t last_no_direct_sent;             /* rate limit for PUNCH_NO_DIRECT notifications to this peer */
 } node_t;
 
 extern struct node_t *myself;

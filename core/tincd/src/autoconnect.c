@@ -46,7 +46,7 @@ static void make_new_connection(void) {
 	uint32_t count = 0;
 
 	for splay_each(node_t, n, &node_tree) {
-		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n) || node_is_blocked(n->name) || n->status.no_direct || node_is_no_direct(n->name)) {
+		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n) || node_is_blocked(n->name) || n->status.no_direct || n->remote_no_direct || node_is_no_direct(n->name)) {
 			continue;
 		}
 
@@ -60,7 +60,7 @@ static void make_new_connection(void) {
 	uint32_t r = prng(count);
 
 	for splay_each(node_t, n, &node_tree) {
-		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n) || node_is_blocked(n->name) || n->status.no_direct || node_is_no_direct(n->name)) {
+		if(n == myself || n->connection || !(n->status.has_address || n->status.reachable) || declared_indirect(n) || node_is_blocked(n->name) || n->status.no_direct || n->remote_no_direct || node_is_no_direct(n->name)) {
 			continue;
 		}
 
@@ -106,7 +106,7 @@ static void connect_to_unreachable(void) {
 		}
 
 		/* Is it unreachable and do we know an address for it? If not, return. */
-		if(n == myself || n->connection || n->status.reachable || !n->status.has_address || declared_indirect(n) || node_is_blocked(n->name) || n->status.no_direct || node_is_no_direct(n->name)) {
+		if(n == myself || n->connection || n->status.reachable || !n->status.has_address || declared_indirect(n) || node_is_blocked(n->name) || n->status.no_direct || n->remote_no_direct || node_is_no_direct(n->name)) {
 			return;
 		}
 
@@ -292,7 +292,7 @@ void do_fallback_autoconnect(void) {
 	uint32_t count = 0;
 
 	for splay_each(node_t, n, &node_tree) {
-		if(n == myself || n->connection || !n->status.has_address || node_is_blocked(n->name) || n->status.no_direct || node_is_no_direct(n->name)) {
+		if(n == myself || n->connection || !n->status.has_address || node_is_blocked(n->name) || n->status.no_direct || n->remote_no_direct || node_is_no_direct(n->name)) {
 			continue;
 		}
 
@@ -317,7 +317,7 @@ void do_fallback_autoconnect(void) {
 	uint32_t r = prng(count);
 
 	for splay_each(node_t, n, &node_tree) {
-		if(n == myself || n->connection || !n->status.has_address || node_is_blocked(n->name) || n->status.no_direct || node_is_no_direct(n->name)) {
+		if(n == myself || n->connection || !n->status.has_address || node_is_blocked(n->name) || n->status.no_direct || n->remote_no_direct || node_is_no_direct(n->name)) {
 			continue;
 		}
 

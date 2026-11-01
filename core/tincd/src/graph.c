@@ -185,7 +185,7 @@ void sssp_bfs(void) {
 			     of nodes behind it.
 			 */
 
-			bool indirect = n->status.indirect || (e->options & OPTION_INDIRECT) || e->to->status.no_direct;
+			bool indirect = n->status.indirect || (e->options & OPTION_INDIRECT) || e->to->status.no_direct || e->to->remote_no_direct;
 
 			/* A direct neighbour (visited at distance 1 from myself) already has its
 			   authoritative edge with us. A 2-hop edge through another node must never
@@ -302,6 +302,11 @@ static void check_reachability(void) {
 					if(experimental && !n->connection && (!n->transports || !node_read_ecdsa_public_key(n))) {
 						send_req_transports(n);
 					}
+
+					if(n->status.no_direct || node_is_no_direct(n->name)) {
+						n->last_no_direct_sent = now.tv_sec;
+						send_no_direct_signal(n, true);
+					}
 				}
 			} else {
 				logger(DEBUG_TRAFFIC, LOG_DEBUG, "Node %s (%s) became unreachable",
@@ -309,6 +314,7 @@ static void check_reachability(void) {
 
 				if(n != myself) {
 					became_unreachable_count++;
+					n->remote_no_direct = false;
 				}
 			}
 

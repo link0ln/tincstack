@@ -319,6 +319,14 @@ void setup_no_direct_nodes(void) {
 
 		if(n->status.no_direct != nd) {
 			n->status.no_direct = nd;
+			n->last_no_direct_sent = (time_t)-1;
+
+			if(!nd) {
+				n->punch_backoff_until = 0;
+				n->punch_unanswered = 0;
+				n->punch_req_sent = 0;
+			}
+
 			changed = true;
 		}
 
@@ -343,6 +351,15 @@ void setup_no_direct_nodes(void) {
 
 	if(changed && myself) {
 		graph();
+	}
+
+	if(myself) {
+		for splay_each(node_t, n, &node_tree) {
+			if(n != myself && n->last_no_direct_sent == (time_t)-1) {
+				n->last_no_direct_sent = now.tv_sec;
+				send_no_direct_signal(n, n->status.no_direct);
+			}
+		}
 	}
 }
 

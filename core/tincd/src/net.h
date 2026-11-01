@@ -230,7 +230,10 @@ extern void handle_incoming_vpn_packet_decap(listen_socket_t *ls, const uint8_t 
 extern void handle_incoming_carrier_datagram(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *addr, struct node_t *from);
 /* REQ_KEY extension of the coordinated hole punch (net_packet.c). */
 #define PUNCH_REQ 98
+#define PUNCH_NO_DIRECT 3
+#define PUNCH_ALLOW_DIRECT 4
 extern bool punch_h(struct node_t *from, struct node_t *to, const char *request);
+extern void send_no_direct_signal(struct node_t *to, bool no_direct);
 extern void maybe_send_carrier_beacon(struct node_t *n);
 extern bool sptps_udp_addresses_known_nodes(const struct node_t *n, const uint8_t *buf, size_t len);
 extern void finish_connecting(struct connection_t *c);

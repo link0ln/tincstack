@@ -23,6 +23,7 @@
 #include "address_cache.h"
 #include "connection.h"
 #include "crypto.h"
+#include "graph.h"
 #include "logger.h"
 #include "meta.h"
 #include "multipath.h"
@@ -170,7 +171,7 @@ bool sptps_tcppacket_h(connection_t *c, const char *request) {
 /* Transmitting UDP information */
 
 bool send_udp_info(node_t *from, node_t *to) {
-	if(from->status.no_direct || to->status.no_direct) {
+	if(from->status.no_direct || to->status.no_direct || from->remote_no_direct || to->remote_no_direct) {
 		return true;
 	}
 
@@ -258,8 +259,18 @@ bool udp_info_h(connection_t *c, const char *request) {
 		return true;
 	}
 
-	if(from->status.no_direct) {
+	if(from->status.no_direct || node_is_no_direct(from->name)) {
+		if(!strcmp(to_name, myself->name) && from->last_no_direct_sent != now.tv_sec) {
+			from->last_no_direct_sent = now.tv_sec;
+			send_no_direct_signal(from, true);
+		}
+
 		return true;
+	}
+
+	if(!strcmp(to_name, myself->name) && from->remote_no_direct) {
+		from->remote_no_direct = false;
+		graph();
 	}
 
 	if(from != from->via) {

@@ -259,10 +259,20 @@ static void send_udp_probe_reply(node_t *n, vpn_packet_t *packet, length_t len) 
 
 static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 	if(n->status.no_direct || node_is_no_direct(n->name)) {
+		if(n->last_no_direct_sent != now.tv_sec) {
+			n->last_no_direct_sent = now.tv_sec;
+			send_no_direct_signal(n, true);
+		}
+
 		return;
 	}
 
 	if(!DATA(packet)[0]) {
+		if(n->remote_no_direct) {
+			n->remote_no_direct = false;
+			graph();
+		}
+
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got UDP probe request %d from %s (%s)", packet->len, n->name, n->hostname);
 
 		if(direct_seal_permits(n, false)) {
@@ -1828,7 +1838,7 @@ static bool has_confirmed_udp_addr(const node_t *n) {
 #define PUNCH_MAX_DELAY_MS 1000
 
 static bool punch_coordinated(const node_t *n) {
-	if(n->status.no_direct) {
+	if(n->status.no_direct || n->remote_no_direct) {
 		return false;
 	}
 
@@ -1842,7 +1852,7 @@ static void punch_timer_handler(void *data) {
 	node_t *n = data;
 	timeout_del(&n->punch_timer);
 
-	if(!n->status.reachable || n->status.udp_confirmed || n->status.no_direct) {
+	if(!n->status.reachable || n->status.udp_confirmed || n->status.no_direct || n->remote_no_direct) {
 		return;
 	}
 
@@ -1856,7 +1866,7 @@ static void punch_timer_handler(void *data) {
 static void punch_start(node_t *n, int delay_ms, const sockaddr_t *sa, const char *why) {
 	node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
-	if(!n->status.reachable || n->status.udp_confirmed || via != n || node_tcponly(n) || n->status.no_direct) {
+	if(!n->status.reachable || n->status.udp_confirmed || via != n || node_tcponly(n) || n->status.no_direct || n->remote_no_direct) {
 		return;
 	}
 
@@ -1955,12 +1965,25 @@ static bool punch_send_go(node_t *a, node_t *b) {
 	return ok;
 }
 
+void send_no_direct_signal(node_t *to, bool no_direct) {
+	if(!to || to == myself || !myself || !to->status.reachable || !to->nexthop || !to->nexthop->connection) {
+		return;
+	}
+
+	int flag = no_direct ? PUNCH_NO_DIRECT : PUNCH_ALLOW_DIRECT;
+	send_request(to->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, to->name, PUNCH_REQ, flag);
+
+	if(!no_direct && !to->connection && to->status.validkey) {
+		try_udp(to, false);
+	}
+}
+
 bool punch_h(node_t *from, node_t *to, const char *request) {
 	int flag = -1;
 	char addr[MAX_STRING_SIZE] = "";
 	char port[MAX_STRING_SIZE] = "";
 
-	if(sscanf(request, "%*d %*s %*s %*d %d " MAX_STRING " " MAX_STRING, &flag, addr, port) < 1 || flag < 0 || flag > 2) {
+	if(sscanf(request, "%*d %*s %*s %*d %d " MAX_STRING " " MAX_STRING, &flag, addr, port) < 1 || flag < 0 || flag > 4) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "PUNCH_REQ", from->name, from->hostname);
 		return true;
 	}
@@ -1968,7 +1991,8 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 	if(to != myself) {
 		/* The rendezvous: both ends are our meta neighbours, so both hear
 		   "go" from us at the same instant. */
-		if(flag == 0 && from->connection && to->connection && from->connection->edge && to->connection->edge) {
+		if(flag == 0 && !from->status.no_direct && !to->status.no_direct && !from->remote_no_direct && !to->remote_no_direct &&
+		                from->connection && to->connection && from->connection->edge && to->connection->edge) {
 			/* Only with both ends' real UDP addresses: a GO without them
 			   sends each end at its edge guess (the TCP address, port 655),
 			   which a port-changing NAT never maps, and the round is spent
@@ -1992,11 +2016,72 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 		return send_request(to->nexthop->connection, "%s", request);
 	}
 
-	if(!punch_coordinated(from)) {
-		if(from->status.no_direct) {
-			return true;
+	if(flag == PUNCH_NO_DIRECT) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Peer %s (%s) signaled NoDirect (relay-only); suppressing direct connections and UDP probes to it", from->name, from->hostname);
+		bool changed = !from->remote_no_direct;
+		from->remote_no_direct = true;
+
+		if(from->status.udp_confirmed || from->status.udp_addr_confirmed) {
+			from->status.udp_confirmed = false;
+			from->status.udp_addr_confirmed = false;
+			from->udp_ping_rtt = -1;
+			from->maxrecentlen = 0;
+			from->mtuprobes = 0;
+			from->minmtu = 0;
+			from->maxmtu = MTU;
+			timeout_del(&from->udp_ping_timeout);
+			changed = true;
 		}
 
+		timeout_del(&from->punch_timer);
+		from->punch_go = (struct timeval) {0, 0};
+		memset(from->paths, 0, sizeof(from->paths));
+
+		if(changed) {
+			graph();
+		}
+
+		return true;
+	}
+
+	if(flag == PUNCH_ALLOW_DIRECT) {
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Peer %s (%s) re-enabled direct connections; resuming direct discovery", from->name, from->hostname);
+		bool changed = from->remote_no_direct;
+		from->remote_no_direct = false;
+		from->punch_backoff_until = 0;
+		from->punch_unanswered = 0;
+		from->punch_req_sent = 0;
+
+		if(changed) {
+			graph();
+		}
+
+		if(from->status.reachable && !from->connection && from->status.validkey) {
+			try_udp(from, false);
+		}
+
+		return true;
+	}
+
+	if(from->status.no_direct || node_is_no_direct(from->name)) {
+		if(from->last_no_direct_sent != now.tv_sec) {
+			from->last_no_direct_sent = now.tv_sec;
+			send_no_direct_signal(from, true);
+		}
+
+		return true;
+	}
+
+	if((flag == 0 || flag == 1) && from->remote_no_direct) {
+		from->remote_no_direct = false;
+		graph();
+	}
+
+	if(from->remote_no_direct) {
+		return true;
+	}
+
+	if(!punch_coordinated(from)) {
 		/* Not a peer we coordinate with (a meta neighbour now, or its token
 		   changed): it asked, so still answer, and probe as usual. */
 		if(flag == 0) {
@@ -2029,7 +2114,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 static void try_udp(node_t *n, bool has_data) {
 	node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
-	if(!udp_discovery || via != n || node_tcponly(n) || n->status.no_direct) {
+	if(!udp_discovery || via != n || node_tcponly(n) || n->status.no_direct || n->remote_no_direct) {
 		return;
 	}
 

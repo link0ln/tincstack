@@ -496,6 +496,8 @@ int reload_configuration(void) {
 	}
 
 	load_all_nodes();
+	setup_blocked_nodes();
+	setup_no_direct_nodes();
 
 	if(strictsubnets) {
 		for splay_each(subnet_t, subnet, &subnet_tree) {
