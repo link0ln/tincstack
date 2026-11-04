@@ -504,9 +504,16 @@ class Win32(System):
 
     def add_route(self, prefix: str, ifindex: int, via: str = "") -> tuple[bool, str]:
         try:
-            return routes._netsh(routes.route_args("add", str(ifindex), prefix, via))
+            add = routes.route_args("add", str(ifindex), prefix, via)
+            update = routes.route_args("set", str(ifindex), prefix, via)
         except ValueError as e:
             return False, str(e)
+        ok, msg = routes._netsh(add)
+        if not ok:
+            ok2, msg2 = routes._netsh(update)
+            if ok2:
+                return True, msg2
+        return ok, msg
 
     def delete_route(self, prefix: str, ifindex: int, via: str = "") -> tuple[bool, str]:
         try:

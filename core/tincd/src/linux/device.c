@@ -149,6 +149,10 @@ static bool read_packet(vpn_packet_t *packet) {
 		inlen = read(device_fd, DATA(packet) + 10, MTU - 10);
 
 		if(inlen <= 0) {
+			if(inlen < 0 && (errno == EAGAIN || errno == EINTR)) {
+				return false;
+			}
+
 			logger(DEBUG_ALWAYS, LOG_ERR, "Error while reading from %s %s: %s",
 			       device_info, device, strerror(errno));
 
@@ -167,6 +171,10 @@ static bool read_packet(vpn_packet_t *packet) {
 		inlen = read(device_fd, DATA(packet), MTU);
 
 		if(inlen <= 0) {
+			if(inlen < 0 && (errno == EAGAIN || errno == EINTR)) {
+				return false;
+			}
+
 			logger(DEBUG_ALWAYS, LOG_ERR, "Error while reading from %s %s: %s",
 			       device_info, device, strerror(errno));
 			return false;

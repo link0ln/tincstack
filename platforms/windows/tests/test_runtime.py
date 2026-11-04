@@ -113,19 +113,21 @@ def test_start_reports_missing_binary(tmp_path, monkeypatch):
     assert not ok and "tincd not found" in msg
 
 
+@pytest.mark.parametrize("device_type", ["wintun", ""])
 @pytest.mark.parametrize("ok, expect, refuse", [
     (True, "wintun MTU: MTU=1400 set on 'demo'", "FAILED"),
     (False, "wintun MTU clamp to 1400 FAILED: adapter ['demo'] not found", "MTU: adapter"),
 ])
-def test_wintun_mtu_log_tells_a_failed_clamp_from_a_good_one(tmp_path, monkeypatch, ok, expect, refuse):
+def test_wintun_mtu_log_tells_a_failed_clamp_from_a_good_one(tmp_path, monkeypatch, device_type, ok, expect, refuse):
     """The clamp's success flag used to be dropped: a failure was logged
-    exactly like a success."""
+    exactly like a success. Also verify default (empty) DeviceType is clamped."""
     import types
     msg = "MTU=1400 set on 'demo'" if ok else "adapter ['demo'] not found"
     monkeypatch.setitem(sys.modules, "netmtu",
                         types.SimpleNamespace(set_interface_mtu=lambda aliases, mtu: (ok, msg)))
     app = yc.AppConfig(path=str(tmp_path / "tinc.yaml"))
-    app.networks["demo"] = yc.NetworkCfg(name="demo", options={"DeviceType": "wintun"})
+    opts = {"DeviceType": device_type} if device_type else {}
+    app.networks["demo"] = yc.NetworkCfg(name="demo", options=opts)
     rt = rt_mod.Runtime(app)
     rt._apply_wintun_mtu("demo")
     text = (tmp_path / "demo-tincmgr.log").read_text()

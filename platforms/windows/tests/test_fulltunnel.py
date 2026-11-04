@@ -401,3 +401,21 @@ def test_full_tunnel_setting_round_trips_through_tinc_yaml(tmp_path):
 ])
 def test_pinnable(addr, ok):
     assert ft.pinnable(addr, ["192.168.1.0/24"], ["10.8.179.0/24"]) is ok
+
+
+def test_win32_add_route_falls_back_to_set_when_route_exists(monkeypatch):
+    import routes
+    calls = []
+
+    def fake_netsh(args, timeout=15.0):
+        calls.append(args)
+        if "add" in args:
+            return False, "Этот объект уже существует."
+        return True, "OK."
+
+    monkeypatch.setattr(routes, "_netsh", fake_netsh)
+    w = ft.Win32.__new__(ft.Win32)
+    ok, msg = w.add_route("80.87.200.39/32", 14, "192.168.1.1")
+    assert ok and msg == "OK."
+    assert len(calls) == 2 and "add" in calls[0] and "set" in calls[1]
+

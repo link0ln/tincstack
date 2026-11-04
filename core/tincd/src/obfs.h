@@ -337,4 +337,7 @@ void dseal_note_probe(node_t *to);
 /* REQ_KEY DSEAL_KEX addressed to us. */
 bool dseal_kex_h(node_t *from, const char *request);
 
+/* Drop direct-seal session state when a peer becomes unreachable. */
+void dseal_node_unreachable(node_t *n);
+
 #endif /* TINC_OBFS_H */

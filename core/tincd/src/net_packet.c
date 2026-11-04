@@ -59,6 +59,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "transport_quic.h"
 #include "obfs.h"
 
 /* The minimum size of a probe is 14 bytes, but since we normally use CBC mode
@@ -3502,12 +3503,16 @@ void handle_incoming_vpn_data(void *data, int flags) {
 	num = recvmmsg(ls->udp.fd, msg, MAX_MSG, MSG_DONTWAIT, NULL);
 
 	if(num < 0) {
+		num = MAX_MSG;
+
 		if(!sockwouldblock(sockerrno)) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Receiving packet failed: %s", sockstrerror(sockerrno));
 		}
 
 		return;
 	}
+
+	quic_batch_begin();
 
 	for(int i = 0; i < num; i++) {
 		pkt[i].len = msg[i].msg_len;
@@ -3518,6 +3523,8 @@ void handle_incoming_vpn_data(void *data, int flags) {
 
 		handle_incoming_vpn_packet(ls, &pkt[i], &addr[i]);
 	}
+
+	quic_batch_end();
 
 #else
 	vpn_packet_t pkt;
@@ -3546,22 +3553,43 @@ void handle_device_data(void *data, int flags) {
 	(void)data;
 	(void)flags;
 	vpn_packet_t packet;
-	packet.offset = DEFAULT_PACKET_OFFSET;
-	packet.priority = 0;
 	static int errors = 0;
 
-	if(devops.read(&packet)) {
-		errors = 0;
-		myself->in_packets++;
-		myself->in_bytes += packet.len;
-		route(myself, &packet);
-	} else {
-		sleep_millis(errors * 50);
-		errors++;
+	quic_batch_begin();
 
-		if(errors > 10) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Too many errors from %s, exiting!", device);
-			event_exit();
+	for(int i = 0; i < 64; i++) {
+		errno = 0;
+		packet.offset = DEFAULT_PACKET_OFFSET;
+		packet.priority = 0;
+
+		if(devops.read(&packet)) {
+			errors = 0;
+			myself->in_packets++;
+			myself->in_bytes += packet.len;
+			route(myself, &packet);
+#ifdef HAVE_LINUX
+			if(devops.read != os_devops.read) {
+				break;
+			}
+#else
+			break;
+#endif
+		} else {
+			if(errno == EAGAIN || errno == EINTR) {
+				break;
+			}
+
+			sleep_millis(errors * 50);
+			errors++;
+
+			if(errors > 10) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Too many errors from %s, exiting!", device);
+				event_exit();
+			}
+
+			break;
 		}
 	}
+
+	quic_batch_end();
 }

@@ -261,3 +261,45 @@
     - В `Executor.kt` пул заменён на `Executors.newCachedThreadPool()`, а чтение `stdout`/`stderr` выполняется параллельно с `process.waitFor()`.
     - В `TincVpnService.kt` `waitForDaemonStartup()` ожидает фактической передачи `tun` FD через `fdDelivered: CompletableFuture<Unit>` (до `5000 мс`) перед закрытием `serverSocket`.
 
+---
+
+## Фаза 8 (Backlog после раскатки `v0.5.35`): Исправление Livelock при переборе `(транспорт × адрес)` в Core C и доработки Windows / Android UI
+
+- [ ] **8.1. Core C (P0): Устранение livelock-цикла без backoff при переборе нескольких адресов и транспортов в исходящих подключениях (`net.c`, `net_socket.c`)**
+  - **Файлы:** `core/tincd/src/net.c` (`terminate_connection`, строки 216–253), `core/tincd/src/net_socket.c` (`do_outgoing_connection`, строки 822–893)
+  - **Проблема (выявлена на бою `gw -> router` в `v0.5.35`):**
+    - Когда у целевого пира (`router`) в `address_cache` больше одного адреса (например, Адрес №1 `79.139.184.85:465` из графа через `get_known_addresses()` и Адрес №2 `192.168.1.1:465` из `Address = 192.168.1.1` в `tinc.yaml`) и несколько кандидатов-транспортов (`quic, https, plain`), при неудаче первой попытки на Адресе №1 `terminate_connection()` сразу вызывает `moved = transport_next_candidate(outgoing)` и при `moved == true` выполняет `reset_address_cache()`, сбрасывая список адресов обратно на Адрес №1.
+    - Когда последний транспорт (`plain`) падает на Адресе №1, `transport_next_candidate()` возвращает `moved = false` (перематывая индекс транспорта обратно на `quic` *без* сброса `address_cache`). Следующий вызов `do_outgoing_connection()` берёт Адрес №2 (`192.168.1.1`) на первом транспорте (`quic`), а после его таймаута `moved = true` снова сбрасывает `address_cache` на Адрес №1 для `https`.
+    - **Следствия:**
+      1. Второй и последующие транспорты (`https`, `plain`) никогда не пробуют Адрес №2 (`192.168.1.1`).
+      2. `get_recent_address()` никогда не возвращает `NULL`, поэтому `retry_outgoing()` с растущим backoff (`outgoing->timeout`) никогда не вызывается, и `tincd` бесконечно пытается подключиться каждые 5 секунд.
+  - **План решения:**
+    - При неудаче соединения до активации (`!activated` и `!post_activate_freeze`) не ротировать транспорт в `terminate_connection()`, пока в `address_cache` остаются непроверенные адреса для текущего транспорта.
+    - В `do_outgoing_connection()` при возврате `sa == NULL` из `get_recent_address()` проверять `if (transport_next_candidate(outgoing))`: если есть следующий транспорт — вызывать `reset_address_cache()` и проходить все адреса на новом транспорте (`goto begin`).
+    - Только когда `transport_next_candidate(outgoing)` вернул `false` (все пары `(транспорт, адрес)` исчерпаны в текущем цикле) — пробовать `transport_udp_meta_fallback()` (один раз за цикл) и затем уходить в `log_outgoing_failure(outgoing); retry_outgoing(outgoing);`.
+
+- [ ] **8.2. Core C (P1): Приоритет локальных (on-link LAN) `Address` из конфига над публичными WAN-адресами из графа (`address_cache.c`)**
+  - **Файлы:** `core/tincd/src/address_cache.c` (`get_recent_address`, строки 317–460)
+  - **Проблема:** `get_recent_address()` сначала перебирает адреса из рёбер графа (`get_known_addresses()`, например внешний WAN IP роутера `79.139.184.85`, недоступный изнутри LAN без Hairpin NAT), и только после них — явно прописанный `Address = 192.168.1.1` из `tinc.yaml`, даже если `192.168.1.1` находится в одной локальной `/24` подсети с самим узлом (`192.168.1.200`).
+  - **План решения:** При формировании кандидатов в `address_cache` проверять явно сконфигурированные IP-адреса из `Address`: если адрес является локальным on-link LAN-адресом (в той же подсети интерфейса), отдавать ему приоритет перед внешними адресами из `get_known_addresses()`.
+
+- [ ] **8.3. Core C (P1): Актуализация устаревшего списка `Transports` пира по графу (`protocol_key.c`, `obfs.c`, `node.h`)**
+  - **Файлы:** `core/tincd/src/protocol_key.c` (`send_req_carriers`, `req_key_ext_h`, строки 316–340, 481–557), `core/tincd/src/obfs.c` (строка 2598), `core/tincd/src/node.h`
+  - **Проблема:** Если в `tinc.yaml` у пира записан устаревший `Transports = plain,sf,obfs,https,quic` (тогда как пир реально принимает только `plain,sf,obfs,https`), а пир присылает `DSEAL_KEX`, то `obfs.c:2599` выставляет `from->dseal |= DSEAL_KNOWN`. Из-за проверки `if (to->transports && (to->dseal & DSEAL_KNOWN)) return false;` в `send_req_carriers()` узел считает список транспортов пира уже известным и никогда не запрашивает `ANS_PUBKEY` по графу.
+  - **План решения:**
+    - Выделить отдельный флаг в `node->status` (например, `transports_known`), который выставляется только при фактическом получении списка транспортов от пира (`ANS_PUBKEY` или `ACK`).
+    - При `outgoing->failures > 0` разрешать периодический перезапрос `send_req_transports(n)` (с существующим rate-limit `REQ_TRANSPORTS_INTERVAL = 60 с`), чтобы автоматически обновлять `n->transports` и запись `Transports` в `tinc.yaml`.
+
+- [ ] **8.4. Windows UI & Diagnostic WebUI (P2): Поддержка `LowPowerMode` (`main.py`, `tinc_control.py`, `transports_panel.py`, `diag_webui.py`, `diag_webui.html`)**
+  - **Файлы:** `platforms/windows/main.py`, `platforms/windows/backend/tinc_control.py`, `platforms/windows/backend/transports.py`, `platforms/windows/gui/transports_panel.py`, `platforms/windows/backend/diag_webui.py`, `platforms/android/app/src/main/assets/diag_webui.html`
+  - **План решения:**
+    - Добавить опцию `LowPowerMode` (`bool`) в каталог `KNOWN_OPTIONS` и панель настроек Windows-клиента (`tincmgr`), а также метод `set_low_power(net, enabled)` в `TincControl` (`tinc set-low-power yes|no`) для переключения на лету без рестарта туннеля.
+    - Добавить отображение и переключатель `LowPowerMode` в Diagnostic WebUI (Windows и Android) рядом с `MultipathMode`.
+
+- [ ] **8.5. Android UI (P2): Синхронизация тумблеров `MainActivity` в `onResume()` и индикация медиа-удержания VPN при выключенном экране (`MainActivity.kt`, `SessionStateMachine.kt`, `TincVpnService.kt`)**
+  - **Файлы:** `platforms/android/app/src/main/java/org/pacien/tincapp/activities/main/MainActivity.kt`, `platforms/android/app/src/main/java/org/pacien/tincapp/service/SessionStateMachine.kt`, `platforms/android/app/src/main/java/org/pacien/tincapp/service/TincVpnService.kt`
+  - **План решения:**
+    - В `MainActivity.onResume()` перечитывать состояние свитчей `DisconnectOnScreenOff` и `LowPowerMode` из `tinc.yaml`, чтобы изменения, внесённые через текстовый редактор конфига (`ConfigEditorActivity`) или через Diagnostic WebUI, сразу отражались на главном экране.
+    - Добавить явную индикацию (в логах диагностики и уведомлении сервиса), когда при заблокированном экране с включённым `DisconnectOnScreenOff` VPN-сессия удерживается активным воспроизведением аудио (`mediaActive = true`).
+
+

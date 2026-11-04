@@ -51,6 +51,7 @@
 #include "logger.h"
 #include "netutl.h"
 #include "node.h"
+#include "obfs.h"
 #include "protocol.h"
 #include "script.h"
 #include "subnet.h"
@@ -403,6 +404,7 @@ static void check_reachability(void) {
 			if(!n->status.reachable) {
 				bool has_address = n->status.has_address;
 				update_node_udp(n, NULL);
+				dseal_node_unreachable(n);
 				memset(&n->status, 0, sizeof(n->status));
 				n->status.has_address = has_address;
 				n->options = 0;

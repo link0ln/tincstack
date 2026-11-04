@@ -760,42 +760,6 @@ static void obfs_send_key(obfs_link_t *l, int flag) {
 	send_request(c, "%d %d %s %d", OBFS_KEY, flag, b64, OBFS_FRAME_VERSION);
 }
 
-void obfs_session_start(connection_t *c) {
-	if(!c->transport || c->transport->id != TRANSPORT_OBFS || !c->node) {
-		return;
-	}
-
-	obfs_link_t *l = obfs_link_for_node(c->node);
-
-	if(!l) {
-		return;
-	}
-
-	/* Fresh negotiation for this connection. */
-	obfs_ensure_local_seed(l);
-	l->have_peer_seed = false;
-	l->ack_sent = false;
-	obfs_send_key(l, 0);
-}
-
-/* Re-negotiate the session key on a live link (KeyExpire alignment). TX keeps
-   using the current session key until the new one is promoted, so there is no
-   black-out. */
-static void obfs_rekey_start(obfs_link_t *l) {
-	connection_t *c = l->node ? l->node->connection : NULL;
-
-	if(!c || c->allow_request != ALL) {
-		return;
-	}
-
-	randomize(l->local_seed, sizeof(l->local_seed));
-	l->have_local_seed = true;
-	l->have_peer_seed = false;
-	l->ack_sent = false;
-	l->sess_time = now.tv_sec;   /* do not re-issue every tick while it converges */
-	obfs_send_key(l, 0);
-}
-
 /* Promote the pending keyset: we seal with it from now on. The keyset it
    replaces stays readable for OBFS_PREV_GRACE seconds, because the peer
    switches one meta-channel trip later (or earlier) than we do and its
@@ -816,6 +780,71 @@ static void obfs_link_promote(obfs_link_t *l) {
 	memset(&l->next, 0, sizeof(l->next));
 	l->sess_tx_ready = true;
 	l->sess_time = now.tv_sec;
+	l->need_selfheal = false;
+}
+
+static void obfs_link_demote_sess(obfs_link_t *l) {
+	if(l->sess.valid) {
+		keyset_free(&l->prev);
+		l->prev = l->sess;
+		memset(&l->sess, 0, sizeof(l->sess));
+		l->prev_until = now.tv_sec + OBFS_PREV_GRACE;
+	}
+
+	keyset_free(&l->next);
+	l->sess_tx_ready = false;
+	l->dk_sent = 0;
+}
+
+void obfs_session_start(connection_t *c) {
+	if(!c->node) {
+		return;
+	}
+
+	if(!c->transport || c->transport->id != TRANSPORT_OBFS) {
+		if(!c->status.multipath_sub && !dseal_obfs_connected(c->node)) {
+			for list_each(obfs_link_t, l, &obfs_links) {
+				if(l->node == c->node) {
+					obfs_link_demote_sess(l);
+					break;
+				}
+			}
+		}
+
+		return;
+	}
+
+	obfs_link_t *l = obfs_link_for_node(c->node);
+
+	if(!l) {
+		return;
+	}
+
+	/* Fresh negotiation for this connection. */
+	obfs_ensure_local_seed(l);
+	l->have_peer_seed = false;
+	l->ack_sent = false;
+	l->last_selfheal = now.tv_sec;
+	l->need_selfheal = false;
+	obfs_send_key(l, 0);
+}
+
+/* Re-negotiate the session key on a live link (KeyExpire alignment). TX keeps
+   using the current session key until the new one is promoted, so there is no
+   black-out. */
+static void obfs_rekey_start(obfs_link_t *l) {
+	connection_t *c = l->node ? l->node->connection : NULL;
+
+	if(!c || c->allow_request != ALL) {
+		return;
+	}
+
+	randomize(l->local_seed, sizeof(l->local_seed));
+	l->have_local_seed = true;
+	l->have_peer_seed = false;
+	l->ack_sent = false;
+	l->sess_time = now.tv_sec;   /* do not re-issue every tick while it converges */
+	obfs_send_key(l, 0);
 }
 
 bool obfs_key_h(connection_t *c, const char *request) {
@@ -849,6 +878,7 @@ bool obfs_key_h(connection_t *c, const char *request) {
 	}
 
 	obfs_ensure_local_seed(l);
+	bool same_peer_seed = l->have_peer_seed && !memcmp(l->peer_seed, seed, sizeof(seed));
 	memcpy(l->peer_seed, seed, sizeof(seed));
 	l->have_peer_seed = true;
 
@@ -874,9 +904,11 @@ bool obfs_key_h(connection_t *c, const char *request) {
 		l->ack_sent = false;
 	}
 
-	if(!obfs_build_session(l)) {
-		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Could not derive obfs session key for %s", c->name);
-		return true;
+	if(!same_peer_seed || (!l->next.valid && !(l->sess_tx_ready && l->sess.valid))) {
+		if(!obfs_build_session(l)) {
+			logger(DEBUG_CONNECTIONS, LOG_WARNING, "Could not derive obfs session key for %s", c->name);
+			return true;
+		}
 	}
 
 	/* Acknowledge once: tell the peer we have its seed and computed the key. */
@@ -2005,7 +2037,6 @@ static void obfs_periodic(void *data) {
 
 			if(c->allow_request == ALL && c->transport && c->transport->id == TRANSPORT_OBFS) {
 				obfs_ensure_local_seed(l);
-				l->have_peer_seed = false;
 				l->ack_sent = false;
 				obfs_send_key(l, 0);
 			}
@@ -2258,6 +2289,19 @@ const char *dseal_token(char *buf, size_t len) {
    session key and DSEAL_KEX stays out of it. */
 static bool dseal_obfs_connected(const node_t *n) {
 	return n->connection && n->connection->transport && n->connection->transport->id == TRANSPORT_OBFS;
+}
+
+void dseal_node_unreachable(node_t *n) {
+	if(!n || dseal_obfs_connected(n)) {
+		return;
+	}
+
+	for list_each(obfs_link_t, l, &obfs_links) {
+		if(l->node == n) {
+			obfs_link_demote_sess(l);
+			break;
+		}
+	}
 }
 
 void dseal_learn(node_t *n, const char *token) {

@@ -141,6 +141,8 @@ bool event_loop(void) {
 			continue;
 		}
 
+		gettimeofday(&now, NULL);
+
 		unsigned int curgen = io_tree.generation;
 
 		for(int i = 0; i < n; i++) {

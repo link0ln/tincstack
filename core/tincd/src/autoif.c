@@ -154,6 +154,12 @@ bool autoif_up(void) {
 	ok &= build(cmd, sizeof(cmd), "ip addr replace %s dev %s", addr, iface) && run(cmd);
 	ok &= build(cmd, sizeof(cmd), "ip link set %s up", iface) && run(cmd);
 
+	if(build(cmd, sizeof(cmd), "tc qdisc replace dev %s root fq flow_limit 2000 >/dev/null 2>&1", iface)) {
+		if(system(cmd) < 0) {
+			/* Best-effort: kernels without sch_fq keep their default qdisc. */
+		}
+	}
+
 	for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
 		char *route = xstrdup(cfg->value);
 		char *via = strchr(route, ' ');

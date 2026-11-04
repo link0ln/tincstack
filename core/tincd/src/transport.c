@@ -804,7 +804,7 @@ static void build_candidates(outgoing_t *outgoing) {
 	   a working obfuscated/encrypted carrier. */
 	if(outgoing->node && outgoing->node->pref_transports_count > 0) {
 		static const transport_id_t fallback_order[] = {
-			TRANSPORT_QUIC, TRANSPORT_HTTPS, TRANSPORT_OBFS, TRANSPORT_SF, TRANSPORT_SFTCP
+			TRANSPORT_QUIC, TRANSPORT_HTTPS, TRANSPORT_OBFS, TRANSPORT_SF, TRANSPORT_PLAIN
 		};
 
 		for(size_t i = 0; i < sizeof(fallback_order) / sizeof(fallback_order[0]) && outgoing->ncandidates < TRANSPORT_MAX; i++) {

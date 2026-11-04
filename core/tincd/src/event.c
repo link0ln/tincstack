@@ -121,7 +121,7 @@ struct timeval *timeout_execute(struct timeval *diff) {
 		timeout_t *timeout = timeout_tree.head->data;
 		timersub(&timeout->tv, &now, diff);
 
-		if(diff->tv_sec < 0) {
+		if(diff->tv_sec < 0 || (diff->tv_sec == 0 && diff->tv_usec <= 0)) {
 			timeout->cb(timeout->data);
 
 			if(timercmp(&timeout->tv, &now, <)) {

@@ -20,6 +20,7 @@
 #include "../system.h"
 
 #include <sys/epoll.h>
+#include <sys/syscall.h>
 
 #include "../event.h"
 #include "../utils.h"
@@ -116,18 +117,38 @@ bool event_loop(void) {
 		struct timeval *tv = timeout_execute(&diff);
 
 		struct epoll_event events[MAX_EVENTS_PER_LOOP];
-		/* Round up. Truncated, a timer less than a millisecond away became
-		   epoll_wait(0) and the loop spun until it was due; the quic carrier
-		   arms ngtcp2's microsecond timers on every packet, so at 1 Mbit/s
-		   that spin was 15 % of a core (windows/event.c adds 1 for the same
-		   reason). */
-		long timeout = (tv->tv_sec * 1000) + ((tv->tv_usec + 999) / 1000);
+		int n = -1;
+#ifdef __NR_epoll_pwait2
+		static bool have_pwait2 = true;
 
-		if(timeout > INT_MAX) {
-			timeout = INT_MAX;
+		if(have_pwait2) {
+			struct timespec ts = {
+				.tv_sec = tv->tv_sec,
+				.tv_nsec = tv->tv_usec * 1000,
+			};
+			n = epoll_pwait2(epollset, events, MAX_EVENTS_PER_LOOP, &ts, NULL);
+
+			if(n < 0 && errno == ENOSYS) {
+				have_pwait2 = false;
+			}
 		}
 
-		int n = epoll_wait(epollset, events, MAX_EVENTS_PER_LOOP, (int)timeout);
+		if(!have_pwait2)
+#endif
+		{
+			/* Round up. Truncated, a timer less than a millisecond away became
+			   epoll_wait(0) and the loop spun until it was due; the quic carrier
+			   arms ngtcp2's microsecond timers on every packet, so at 1 Mbit/s
+			   that spin was 15 % of a core (windows/event.c adds 1 for the same
+			   reason). */
+			long timeout = (tv->tv_sec * 1000) + ((tv->tv_usec + 999) / 1000);
+
+			if(timeout > INT_MAX) {
+				timeout = INT_MAX;
+			}
+
+			n = epoll_wait(epollset, events, MAX_EVENTS_PER_LOOP, (int)timeout);
+		}
 
 		if(n < 0) {
 			if(sockwouldblock(sockerrno)) {
@@ -140,6 +161,8 @@ bool event_loop(void) {
 		if(!n) {
 			continue;
 		}
+
+		gettimeofday(&now, NULL);
 
 		unsigned int curgen = io_tree.generation;
 

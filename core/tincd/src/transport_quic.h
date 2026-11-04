@@ -53,12 +53,19 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
    datagram ceiling, so the caller treats it exactly like EMSGSIZE and lets
    tinc's MTU probing converge (docs/transports.md §9.5). */
 bool quic_send_datagram(struct connection_t *c, const void *buf, size_t len, size_t *excess);
+void quic_batch_begin(void);
+void quic_batch_end(void);
 
 /* Classifier hook: short-header 1-RTT packets carry a destination connection
    id we issued and no version word, so the pure classifier cannot key on them.
    quic_init() registers its CID lookup with transport_set_quic_cid_matcher()
    (transport.h); transport_classify_udp() calls it for a short-header packet
    before falling through to SPTPS (docs/transports.md §9.5). */
+
+#else
+
+static inline void quic_batch_begin(void) {}
+static inline void quic_batch_end(void) {}
 
 #endif /* HAVE_QUIC */
 

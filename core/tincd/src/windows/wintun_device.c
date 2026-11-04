@@ -260,6 +260,38 @@ static void configure_ip(void) {
 	free(spec);
 }
 
+/* Clamp the Wintun adapter's IPv4 MTU (Wintun defaults to 65535, which causes
+   Windows to advertise a giant TCP MSS and send oversized UDP datagrams). */
+static void configure_mtu(void) {
+	int mtu = 1400;
+	if(get_config_int(lookup_config(&config_tree, "WintunMTU"), &mtu) ||
+	   get_config_int(lookup_config(&config_tree, "InterfaceMTU"), &mtu)) {
+		if(mtu < 576 || mtu > MTU - ETH_HDR) {
+			mtu = 1400;
+		}
+	}
+
+	NET_LUID luid;
+	WintunGetAdapterLUID(adapter, &luid);
+
+	MIB_IPINTERFACE_ROW iprow;
+	InitializeIpInterfaceEntry(&iprow);
+	iprow.Family = AF_INET;
+	iprow.InterfaceLuid = luid;
+
+	DWORD r = GetIpInterfaceEntry(&iprow);
+	if(r == NO_ERROR) {
+		iprow.SitePrefixLength = 0;
+		iprow.NlMtu = (ULONG)mtu;
+		r = SetIpInterfaceEntry(&iprow);
+		if(r == NO_ERROR) {
+			logger(DEBUG_ALWAYS, LOG_INFO, "Adapter IPv4 MTU set to %d", mtu);
+		} else {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Could not set adapter IPv4 MTU to %d: error %lu", mtu, (unsigned long)r);
+		}
+	}
+}
+
 /* Install the `InterfaceRoute` entries on the adapter. Same option, same
    syntax and the same meaning as the Linux built-in tinc-up (autoif.c):
    "<prefix>" or "<prefix> via <nexthop>". This is what turns a subnet another
@@ -500,6 +532,7 @@ static void enable_device(void) {
 
 	/* assign the adapter IP automatically (if WintunAddress is configured) */
 	configure_ip();
+	configure_mtu();
 	configure_routes();
 
 	read_wait = WintunGetReadWaitEvent(session);

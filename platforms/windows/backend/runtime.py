@@ -320,7 +320,7 @@ class Runtime:
         sink.start()
         self._procs[net_name] = proc
         self._sinks[net_name] = sink
-        if sys.platform == "win32" and nc.device_type == "wintun":
+        if sys.platform == "win32" and nc.device_type in ("", "wintun"):
             threading.Thread(target=self._apply_wintun_mtu, args=(net_name,),
                              name=f"mtu-{net_name}", daemon=True).start()
         # the maintainer waits for the daemon and its adapter by itself
@@ -363,7 +363,7 @@ class Runtime:
         large packets over the tunnel; force the configured value (default 1400)
         via the Win32 IP Helper API (no netsh)."""
         nc = self.app.net(net_name)
-        if not nc or nc.device_type != "wintun":
+        if not nc or nc.device_type not in ("", "wintun"):
             return
         mtu = nc.wintun_mtu or 1400
         try:

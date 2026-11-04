@@ -67,7 +67,9 @@
 
 #define QUIC_ALPN_DEFAULT "h3"
 #define QUIC_MAX_DGRAM 1400
-#define QUIC_DGRAM_QUEUE 256
+#define QUIC_DGRAM_QUEUE 2048
+#define QUIC_CODEL_TARGET (25ULL * NGTCP2_MILLISECONDS)
+#define QUIC_CODEL_INTERVAL (100ULL * NGTCP2_MILLISECONDS)
 #define QUIC_PKT_BUF 1452
 #define QUIC_CID_SLOTS 16               /* issued connection ids we track per session */
 #define QUIC_UNI_STREAMS 3              /* control, QPACK encoder, QPACK decoder */
@@ -172,9 +174,17 @@ typedef struct quic_session_t {
 	struct {
 		uint8_t data[QUIC_MAX_DGRAM];
 		size_t len;
+		ngtcp2_tstamp ts;
 	} dgram[QUIC_DGRAM_QUEUE];
 	size_t dgram_head, dgram_n;
 	uint64_t dgram_id;
+	ngtcp2_tstamp codel_first_above;
+	ngtcp2_tstamp codel_drop_next;
+	uint32_t codel_count;
+	bool codel_dropping;
+	size_t burst_sent;
+	uint32_t rx_unflushed;
+	bool flush_pending;
 
 	/* Server-side authenticator gate: the one a request's cookie carried,
 	   and how much of the copy that opens the dialler's body has gone by. */
@@ -201,6 +211,7 @@ static list_t quic_sessions = {
 static timeout_t quic_reaper;
 static uint8_t static_secret[32];       /* stateless-reset token secret */
 static bool quic_ready;
+static bool quic_batch_mode;
 
 /* QuicPort: an optional extra UDP listener (e.g. 443 for HTTP/3 plausibility).
    Default = the tinc port, i.e. the shared listen socket and no extra socket.
@@ -1373,21 +1384,138 @@ static size_t tx_vecs(quic_txq_t *q, ngtcp2_vec *v, size_t max) {
 	return n;
 }
 
+static uint32_t quic_codel_isqrt(uint32_t x) {
+	uint32_t r = 1;
+
+	while(r * r < x && r < 65535) {
+		r++;
+	}
+
+	return r;
+}
+
+/* CoDel-style sojourn-time AQM on the DATAGRAM queue: absorbs transient bursts
+   up to QUIC_DGRAM_QUEUE (2048 packets) with zero loss, while gently head-dropping
+   the oldest packet if standing queue delay stays above QUIC_CODEL_TARGET (25 ms)
+   for an entire QUIC_CODEL_INTERVAL (100 ms). */
+static void quic_codel_step(quic_session_t *s, ngtcp2_tstamp now_ts) {
+	if(s->dgram_n > 2) {
+		ngtcp2_tstamp dgram_ts = s->dgram[s->dgram_head].ts;
+		ngtcp2_tstamp sojourn = now_ts > dgram_ts ? now_ts - dgram_ts : 0;
+
+		if(sojourn < QUIC_CODEL_TARGET) {
+			s->codel_first_above = 0;
+			s->codel_dropping = false;
+		} else if(s->codel_first_above == 0) {
+			s->codel_first_above = now_ts + QUIC_CODEL_INTERVAL;
+		} else if(s->codel_dropping) {
+			if(now_ts >= s->codel_drop_next) {
+				s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
+				s->dgram_n--;
+				s->codel_count++;
+				s->codel_drop_next += QUIC_CODEL_INTERVAL / quic_codel_isqrt(s->codel_count);
+			}
+		} else if(now_ts >= s->codel_first_above) {
+			s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
+			s->dgram_n--;
+			s->codel_dropping = true;
+			s->codel_count = s->codel_count > 2 ? s->codel_count - 2 : 1;
+			s->codel_drop_next = now_ts + QUIC_CODEL_INTERVAL / quic_codel_isqrt(s->codel_count);
+		}
+	} else {
+		s->codel_first_above = 0;
+		s->codel_dropping = false;
+	}
+}
+
+#define QUIC_FLUSH_BATCH 16
+
+static void quic_send_pkts(quic_session_t *s, uint8_t pkts[][QUIC_PKT_BUF], const size_t *lens,
+                           const sockaddr_t *dests, const socklen_t *destlens, int npkts) {
+	if(npkts <= 0) {
+		return;
+	}
+
+#ifdef HAVE_RECVMMSG
+	if(npkts > 1) {
+		struct mmsghdr msg[QUIC_FLUSH_BATCH];
+		struct iovec iov[QUIC_FLUSH_BATCH];
+
+		for(int i = 0; i < npkts; i++) {
+			iov[i].iov_base = pkts[i];
+			iov[i].iov_len = lens[i];
+			memset(&msg[i], 0, sizeof(msg[i]));
+			msg[i].msg_hdr.msg_name = (void *)&dests[i].sa;
+			msg[i].msg_hdr.msg_namelen = destlens[i];
+			msg[i].msg_hdr.msg_iov = &iov[i];
+			msg[i].msg_hdr.msg_iovlen = 1;
+		}
+
+		int sent = sendmmsg(s->fd, msg, (unsigned int)npkts, 0);
+
+		if(sent >= npkts) {
+			return;
+		}
+
+		int start = sent > 0 ? sent : 0;
+
+		for(int i = start; i < npkts; i++) {
+			if(sendto(s->fd, (void *)pkts[i], lens[i], 0, &dests[i].sa, destlens[i]) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: sendto %s failed: %s", s->c->hostname, sockstrerror(sockerrno));
+			}
+		}
+
+		return;
+	}
+#endif
+
+	for(int i = 0; i < npkts; i++) {
+		if(sendto(s->fd, (void *)pkts[i], lens[i], 0, &dests[i].sa, destlens[i]) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: sendto %s failed: %s", s->c->hostname, sockstrerror(sockerrno));
+		}
+	}
+}
+
 static void quic_flush(quic_session_t *s) {
 	if(s->dead || !s->conn) {
 		return;
 	}
 
-	uint8_t buf[QUIC_PKT_BUF];
+	s->flush_pending = false;
+	s->rx_unflushed = 0;
+
+	uint8_t pkts[QUIC_FLUSH_BATCH][QUIC_PKT_BUF];
+	size_t pkt_lens[QUIC_FLUSH_BATCH];
+	sockaddr_t dests[QUIC_FLUSH_BATCH];
+	socklen_t destlens[QUIC_FLUSH_BATCH];
+	int npkts = 0;
+
 	ngtcp2_path_storage ps;
 	ngtcp2_pkt_info pi;
 	ngtcp2_tstamp ts = quic_now();
 	ngtcp2_path_storage_zero(&ps);
 	bool prefer_stream = false;
 	bool dgram_deferred = false;
+	bool wrote_dgram = false;
+
+	size_t quantum = ngtcp2_conn_get_send_quantum2(s->conn);
+
+	if(quantum < 4 * QUIC_CURL_UDP_PAYLOAD) {
+		quantum = 4 * QUIC_CURL_UDP_PAYLOAD;
+	} else if(quantum > 16 * QUIC_CURL_UDP_PAYLOAD) {
+		quantum = 16 * QUIC_CURL_UDP_PAYLOAD;
+	}
+
+	bool blocked = false;
 
 	for(;;) {
+		if(!dgram_deferred) {
+			quic_codel_step(s, ts);
+		}
+
+		uint8_t *buf = pkts[npkts];
 		ngtcp2_ssize nwrite;
+		int64_t sid = -1;
 		bool has_meta = s->stream_id >= 0 && !s->stream_blocked && quic_txq_unsent(&s->tx) > 0;
 		bool send_dgram = s->dgram_n > 0 && !dgram_deferred && (!has_meta || !prefer_stream);
 
@@ -1408,10 +1536,11 @@ static void quic_flush(quic_session_t *s) {
 				dflags = NGTCP2_WRITE_DATAGRAM_FLAG_PADDING;
 			}
 
-			nwrite = ngtcp2_conn_writev_datagram(s->conn, &ps.path, &pi, buf, sizeof(buf), &accepted, dflags,
+			nwrite = ngtcp2_conn_writev_datagram(s->conn, &ps.path, &pi, buf, QUIC_PKT_BUF, &accepted, dflags,
 			                                     ++s->dgram_id, &v, 1, ts);
 
 			if(nwrite < 0) {
+				quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
 				ngtcp2_ccerr_set_liberr(&s->ccerr, (int)nwrite, NULL, 0);
 				quic_fail(s, true);
 				return;
@@ -1426,6 +1555,7 @@ static void quic_flush(quic_session_t *s) {
 				s->dgram_n--;
 			} else {
 				dgram_deferred = true;
+				blocked = true;
 			}
 
 			if(nwrite == 0) {
@@ -1435,6 +1565,8 @@ static void quic_flush(quic_session_t *s) {
 
 				break;
 			}
+
+			wrote_dgram = true;
 		} else {
 			prefer_stream = false;
 			/* One stream per packet, in this order: our unidirectional
@@ -1445,7 +1577,6 @@ static void quic_flush(quic_session_t *s) {
 			   type in a STREAM frame of its own. */
 			ngtcp2_vec v[QUIC_TX_VECS] = {{NULL, 0}};
 			size_t cnt = 0;
-			int64_t sid = -1;
 			uint32_t wflags = 0;
 			int uni = -1, req = -1;
 			ngtcp2_ssize pdatalen = 0;
@@ -1491,7 +1622,11 @@ static void quic_flush(quic_session_t *s) {
 				sid = s->stream_id;
 			}
 
-			nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, sizeof(buf), &pdatalen, wflags, sid, v, cnt, ts);
+			if(sid < 0 && wrote_dgram) {
+				break;
+			}
+
+			nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, QUIC_PKT_BUF, &pdatalen, wflags, sid, v, cnt, ts);
 
 			if(nwrite == NGTCP2_ERR_STREAM_DATA_BLOCKED) {
 				if(uni >= 0) {
@@ -1526,6 +1661,7 @@ static void quic_flush(quic_session_t *s) {
 			}
 
 			if(nwrite < 0) {
+				quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
 				ngtcp2_ccerr_set_liberr(&s->ccerr, (int)nwrite, NULL, 0);
 				quic_fail(s, true);
 				return;
@@ -1547,6 +1683,10 @@ static void quic_flush(quic_session_t *s) {
 			}
 
 			if(nwrite == 0) {
+				if(sid >= 0) {
+					blocked = true;
+				}
+
 				break;
 			}
 		}
@@ -1556,16 +1696,39 @@ static void quic_flush(quic_session_t *s) {
 		const struct sockaddr *to = ps.path.remote.addrlen ? (const struct sockaddr *)ps.path.remote.addr : &s->peer.sa;
 		socklen_t tolen = ps.path.remote.addrlen ? ps.path.remote.addrlen : SALEN(s->peer.sa);
 
-		if(sendto(s->fd, (void *)buf, (size_t)nwrite, 0, to, tolen) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
-			logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: sendto %s failed: %s", s->c->hostname, sockstrerror(sockerrno));
+		pkt_lens[npkts] = (size_t)nwrite;
+		memset(&dests[npkts], 0, sizeof(dests[npkts]));
+		memcpy(&dests[npkts].sa, to, tolen <= sizeof(dests[npkts]) ? tolen : sizeof(dests[npkts]));
+		destlens[npkts] = tolen;
+		npkts++;
+
+		if(send_dgram || sid >= 0) {
+			s->burst_sent += (size_t)nwrite;
 		}
+
+		if(npkts >= QUIC_FLUSH_BATCH) {
+			quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
+			npkts = 0;
+		}
+
+		if(s->burst_sent >= quantum) {
+			break;
+		}
+	}
+
+	if(npkts > 0) {
+		quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
 	}
 
 	if(s->c) {
 		s->c->transport_outbuf_len = (size_t)quic_txq_unsent(&s->tx);
 	}
 
-	ngtcp2_conn_update_pkt_tx_time(s->conn, ts);
+	if(s->burst_sent >= quantum || (s->burst_sent > 0 && (blocked || s->dgram_n > 0))) {
+		ngtcp2_conn_update_pkt_tx_time(s->conn, ts);
+		s->burst_sent = 0;
+	}
+
 	quic_arm_timer(s);
 }
 
@@ -1574,6 +1737,11 @@ static void quic_timer(void *data) {
 
 	if(s->dead) {
 		return;
+	}
+
+	if(s->burst_sent > 0 && s->conn) {
+		ngtcp2_conn_update_pkt_tx_time(s->conn, quic_now());
+		s->burst_sent = 0;
 	}
 
 	s->reading = true;
@@ -1596,16 +1764,24 @@ static void quic_arm_timer(quic_session_t *s) {
 
 	ngtcp2_tstamp expiry = ngtcp2_conn_get_expiry(s->conn);
 
-	if(expiry == UINT64_MAX) {
+	if(expiry == UINT64_MAX && s->burst_sent == 0) {
 		timeout_del(&s->timer);
 		return;
 	}
 
 	ngtcp2_tstamp n = quic_now();
-	ngtcp2_tstamp delta = expiry > n ? expiry - n : 0;
+	ngtcp2_tstamp delta = (expiry != UINT64_MAX && expiry > n) ? expiry - n : 0;
+	ngtcp2_tstamp usec = (delta / NGTCP2_MICROSECONDS) + 1;
+
+	if(s->burst_sent > 0 && (expiry == UINT64_MAX || usec > 1000)) {
+		usec = 1000;
+	}
+
+	gettimeofday(&now, NULL);
+
 	struct timeval tv = {
-		(time_t)(delta / NGTCP2_SECONDS),
-		(long)((delta % NGTCP2_SECONDS) / NGTCP2_MICROSECONDS)   /* tv_usec: suseconds_t, long on Windows */
+		(time_t)(usec / 1000000ULL),
+		(long)(usec % 1000000ULL)   /* tv_usec: suseconds_t, long on Windows */
 	};
 
 	if(s->timer.cb) {
@@ -1822,8 +1998,8 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	quic_flush(s);
 }
 
-/* Feed one datagram to an existing session and flush what it produced. */
-static void session_read(quic_session_t *s, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
+/* Feed one datagram to an existing session without flushing. */
+static void session_read_pkt(quic_session_t *s, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
 	sockaddr_t addr = *vaddr;
 	int rv;
 
@@ -1868,6 +2044,11 @@ static void session_read(quic_session_t *s, const uint8_t *buf, size_t len, cons
 			decoder_append(s, inc, n);
 		}
 	}
+}
+
+/* Feed one datagram to an existing session and flush what it produced. */
+static void session_read(quic_session_t *s, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
+	session_read_pkt(s, buf, len, vaddr);
 
 	if(!s->dead) {
 		quic_flush(s);
@@ -1882,6 +2063,7 @@ static void quic_client_read(void *data, int flags) {
 	(void)flags;
 	quic_session_t *s = data;
 	uint8_t buf[MAXSIZE];
+	int nread = 0;
 
 	for(int i = 0; i < 64 && !s->dead; i++) {
 		sockaddr_t addr;
@@ -1905,7 +2087,16 @@ static void quic_client_read(void *data, int flags) {
 			continue;
 		}
 
-		session_read(s, buf, (size_t)len, &addr);
+		session_read_pkt(s, buf, (size_t)len, &addr);
+		nread++;
+
+		if((nread & 15) == 0 && !s->dead) {
+			quic_flush(s);
+		}
+	}
+
+	if((nread & 15) != 0 && !s->dead) {
+		quic_flush(s);
 	}
 }
 
@@ -1946,10 +2137,37 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 	/* A client session reads its own ephemeral socket (quic_client_read);
 	   its connection ids never arrive on a listening socket legitimately. */
 	if(!s->own_socket) {
-		session_read(s, buf, len, &addr);
+		if(quic_batch_mode) {
+			session_read_pkt(s, buf, len, &addr);
+
+			if(!s->dead) {
+				s->flush_pending = true;
+				s->rx_unflushed++;
+
+				if(s->rx_unflushed >= QUIC_FLUSH_BATCH || s->dgram_n >= QUIC_FLUSH_BATCH) {
+					quic_flush(s);
+				}
+			}
+		} else {
+			session_read(s, buf, len, &addr);
+		}
 	}
 
 	return true;
+}
+
+void quic_batch_begin(void) {
+	quic_batch_mode = true;
+}
+
+void quic_batch_end(void) {
+	quic_batch_mode = false;
+
+	for list_each(quic_session_t, s, &quic_sessions) {
+		if(s->flush_pending && !s->dead) {
+			quic_flush(s);
+		}
+	}
 }
 
 /* Table hook (void): the dispatcher calls quic_udp_try() directly so a
@@ -2254,17 +2472,29 @@ bool quic_send_datagram(connection_t *c, const void *buf, size_t len, size_t *ex
 	}
 
 	if(s->dgram_n == QUIC_DGRAM_QUEUE) {
-		return true; /* queue full: drop, SPTPS recovers */
+		/* Queue full: head-drop the oldest datagram so TCP sees an early loss
+		   signal instead of tail-dropping the newest packet in the burst. */
+		s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
+		s->dgram_n--;
 	}
 
 	size_t i = (s->dgram_head + s->dgram_n) % QUIC_DGRAM_QUEUE;
 	memcpy(s->dgram[i].data, qsid, qlen);
 	memcpy(s->dgram[i].data + qlen, buf, len);
 	s->dgram[i].len = qlen + len;
+	s->dgram[i].ts = quic_now();
 	s->dgram_n++;
 
 	if(!s->reading) {
-		quic_flush(s);
+		if(quic_batch_mode) {
+			s->flush_pending = true;
+
+			if(s->dgram_n >= QUIC_FLUSH_BATCH) {
+				quic_flush(s);
+			}
+		} else if(s->dgram_n == 1 || !s->conn || quic_now() >= ngtcp2_conn_get_expiry(s->conn)) {
+			quic_flush(s);
+		}
 	}
 
 	return true;

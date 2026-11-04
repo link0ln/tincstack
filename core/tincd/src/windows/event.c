@@ -210,6 +210,8 @@ bool event_loop(void) {
 				break;
 			}
 
+			gettimeofday(&now, NULL);
+
 			/* Look up io in the map by index. */
 			DWORD fired_index = result + event_offset;
 			io_t *io = io_map[fired_index];

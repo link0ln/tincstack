@@ -191,6 +191,12 @@ until cli pid >/dev/null 2>&1; do
     sleep 0.5
 done
 
+# Raise sch_fq per-flow packet limit on the TUN device (default 100p drops
+# single-flow QUIC/UDP bursts with -ENOBUFS under BBR pacing).
+if command -v tc >/dev/null 2>&1; then
+    tc qdisc replace dev "$NETNAME" root fq flow_limit 2000 2>/dev/null || true
+fi
+
 # --- choices that needed the materialised identity -------------------------
 if [[ -z $name ]]; then
     name=$(cli get Name)
