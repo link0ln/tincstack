@@ -48,11 +48,12 @@ RUN dpkg --add-architecture i386 \
 ENV WINEPREFIX=/wine \
     WINEARCH=win64 \
     WINEDEBUG=-all \
+    WINEDLLOVERRIDES="mscoree,mshtml=" \
     WINPY="C:\\Python312\\python.exe"
 
 # 64-bit prefix. `wineserver -w` after every wine command, so the registry is
 # flushed to disk before the layer is committed.
-RUN ulimit -n 65536 2>/dev/null || true; xvfb-run -a wineboot --init && wineserver -w
+RUN ulimit -n 65536 2>/dev/null || true; wineboot --init && wineserver -w
 
 # Official python.org installer, checksum-verified, installed headless.
 RUN ulimit -n 65536 2>/dev/null || true \
