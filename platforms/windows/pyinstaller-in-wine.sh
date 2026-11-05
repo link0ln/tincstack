@@ -18,6 +18,8 @@
 #   SMOKE_MS  how long each smoke window stays up before it quits (default 2000).
 #   TINCMGR_VERSION  recorded in the install manifest (default "dev").
 set -eu
+# shellcheck disable=SC3045
+ulimit -n 65536 2>/dev/null || true
 
 cd /work
 

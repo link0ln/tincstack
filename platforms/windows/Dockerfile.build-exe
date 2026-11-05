@@ -33,16 +33,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Wine needs its i386 runtime: the python.org amd64 installer ships a 32-bit
 # bootstrapper even though the payload it lays down is 64-bit.
 RUN dpkg --add-architecture i386 \
-    && apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    && apt-get -o Acquire::Retries=5 -o Dpkg::Use-Pty=0 update \
+    && apt-get -o Acquire::Retries=5 -o Dpkg::Use-Pty=0 install -y --no-install-recommends \
          ca-certificates curl gnupg xvfb xauth unzip file binutils procps \
     && mkdir -pm755 /etc/apt/keyrings \
     && curl -fsSL --retry 5 --retry-all-errors https://dl.winehq.org/wine-builds/winehq.key \
          -o /etc/apt/keyrings/winehq-archive.key \
     && curl -fsSL --retry 5 --retry-all-errors https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
          -o /etc/apt/sources.list.d/winehq-bookworm.sources \
-    && apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends "winehq-stable=${WINE_PKG_VERSION}" \
+    && apt-get -o Acquire::Retries=5 -o Dpkg::Use-Pty=0 update \
+    && apt-get -o Acquire::Retries=5 -o Dpkg::Use-Pty=0 install -y --no-install-recommends "winehq-stable=${WINE_PKG_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 ENV WINEPREFIX=/wine \
@@ -52,10 +52,11 @@ ENV WINEPREFIX=/wine \
 
 # 64-bit prefix. `wineserver -w` after every wine command, so the registry is
 # flushed to disk before the layer is committed.
-RUN wineboot --init && wineserver -w
+RUN ulimit -n 65536 2>/dev/null || true; xvfb-run -a wineboot --init && wineserver -w
 
 # Official python.org installer, checksum-verified, installed headless.
-RUN curl -fsSL --retry 5 --retry-all-errors -o /tmp/python-installer.exe \
+RUN ulimit -n 65536 2>/dev/null || true \
+    && curl -fsSL --retry 5 --retry-all-errors -o /tmp/python-installer.exe \
       "https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-amd64.exe" \
     && echo "${PYTHON_INSTALLER_SHA256}  /tmp/python-installer.exe" | sha256sum -c - \
     && xvfb-run -a wine /tmp/python-installer.exe /quiet InstallAllUsers=1 \
@@ -67,7 +68,8 @@ RUN curl -fsSL --retry 5 --retry-all-errors -o /tmp/python-installer.exe \
 
 # App dependencies for Windows + PyInstaller. Transitive versions are pinned
 # too, so the image content is reproducible from this file alone.
-RUN wine "${WINPY}" -m pip install --no-warn-script-location \
+RUN ulimit -n 65536 2>/dev/null || true \
+    && wine "${WINPY}" -m pip install --no-warn-script-location \
         --retries 5 --disable-pip-version-check --only-binary=:all: \
         PySide6-Essentials==6.7.3 \
         shiboken6==6.7.3 \

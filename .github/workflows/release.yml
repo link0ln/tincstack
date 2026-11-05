@@ -220,7 +220,7 @@ jobs:
   windows:
     name: windows x86_64
     needs: meta
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -263,7 +263,7 @@ jobs:
         run: |
           set -eo pipefail
           SMOKE=1 TINCMGR_VERSION='${{ needs.meta.outputs.version }}' platforms/windows/build-exe.sh 2>&1 | tee win-exe.log || {
-            msg=$(tail -n 40 win-exe.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            msg=$(tail -n 40 win-exe.log | tr -d '\r' | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::error title=build-exe failed::$msg"
             exit 1
           }
