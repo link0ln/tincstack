@@ -118,7 +118,7 @@ bool event_loop(void) {
 
 		struct epoll_event events[MAX_EVENTS_PER_LOOP];
 		int n = -1;
-#ifdef __NR_epoll_pwait2
+#if defined(__NR_epoll_pwait2) && !defined(__ANDROID__)
 		static bool have_pwait2 = true;
 
 		if(have_pwait2) {
