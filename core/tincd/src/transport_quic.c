@@ -298,6 +298,7 @@ static bool quic_cid_match(const uint8_t *dcid) {
 
 static void quic_reap(void *data) {
 	(void)data;
+	timeout_del(&quic_reaper);
 
 	for list_each(quic_session_t, s, &quic_sessions) {
 		if(s->dead) {

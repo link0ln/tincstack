@@ -409,12 +409,23 @@ class Maintainer(threading.Thread):
 
     def run(self) -> None:
         self._log(f"full tunnel: on, exit node {self.ft.exit_node}")
+        daemon_errors = 0
         while not self._halt.is_set():
             try:
                 snap = self._snapshot()
                 if getattr(snap, "error", ""):
+                    daemon_errors += 1
                     self.ft.state = "waiting for the daemon"
+                    if daemon_errors >= 2 and self.ft.split_if is not None:
+                        lines: list[str] = [
+                            f"full tunnel: daemon unresponsive ({snap.error}) -- "
+                            f"removing split routes (fail-open)"
+                        ]
+                        self.ft._remove_split(lines)
+                        for line in lines:
+                            self._log(line)
                 else:
+                    daemon_errors = 0
                     options, hosts, own = self._config()
                     for line in self.ft.step(snap, options, hosts, own):
                         self._log(line)

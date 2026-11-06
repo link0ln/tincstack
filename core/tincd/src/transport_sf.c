@@ -326,6 +326,7 @@ static void sf_arm_rto(sf_session_t *s) {
    RTO callback. */
 static void sf_reap(void *data) {
 	(void)data;
+	timeout_del(&sf_reaper);
 
 	for list_each(sf_session_t, s, &sf_sessions) {
 		if(s->dead) {

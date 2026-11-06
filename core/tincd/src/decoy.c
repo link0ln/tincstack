@@ -2093,6 +2093,7 @@ static void decoy_reap_finished(void) {
 
 static void reaper_cb(void *data) {
 	(void) data;
+	timeout_del(&decoy_reaper);
 	decoy_reap_finished();
 }
 

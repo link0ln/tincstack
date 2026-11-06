@@ -302,6 +302,29 @@ def test_maintainer_survives_a_failing_pass():
     assert t.state == "off"
 
 
+def test_maintainer_removes_split_routes_when_daemon_hangs():
+    s = FakeSystem()
+    t = tunnel(s)
+    lines = []
+    hung = {"v": False}
+
+    def snap_fn():
+        if hung["v"]:
+            return NetworkSnapshot("tincstack", error="tinc timed out after 5s")
+        return snapshot()
+
+    m = ft.Maintainer(t, snap_fn, lambda: (OPTIONS, HOSTS, OWN), lines.append, interval=0.01)
+    m.start()
+    assert _wait(lambda: t.state == "active via euvds")
+    assert s.prefixes_on(TUN) == ["0.0.0.0/1", "128.0.0.0/1"]
+    hung["v"] = True
+    assert _wait(lambda: s.prefixes_on(TUN) == [])
+    assert t.state == "waiting for the daemon"
+    assert any("removing split routes (fail-open)" in x for x in lines)
+    m.stop()
+
+
+
 # ---- Runtime wiring ------------------------------------------------------------
 
 def _runtime(tmp_path, monkeypatch, full_tunnel="euvds"):

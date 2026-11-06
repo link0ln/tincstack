@@ -120,6 +120,7 @@ static timeout_t https_reaper;
 
 static void https_reap(void *data) {
 	(void) data;
+	timeout_del(&https_reaper);
 
 	for list_each(connection_t, c, &connection_list) {
 		if(c->transport && c->transport->id == TRANSPORT_HTTPS && c->transport_data) {
