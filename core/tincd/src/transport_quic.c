@@ -68,8 +68,8 @@
 #define QUIC_ALPN_DEFAULT "h3"
 #define QUIC_MAX_DGRAM 1400
 #define QUIC_DGRAM_QUEUE 2048
-#define QUIC_CODEL_TARGET (25ULL * NGTCP2_MILLISECONDS)
-#define QUIC_CODEL_INTERVAL (100ULL * NGTCP2_MILLISECONDS)
+#define QUIC_CODEL_TARGET (100ULL * NGTCP2_MILLISECONDS)
+#define QUIC_CODEL_INTERVAL (200ULL * NGTCP2_MILLISECONDS)
 #define QUIC_PKT_BUF 1452
 #define QUIC_CID_SLOTS 16               /* issued connection ids we track per session */
 #define QUIC_UNI_STREAMS 3              /* control, QPACK encoder, QPACK decoder */
@@ -182,7 +182,6 @@ typedef struct quic_session_t {
 	ngtcp2_tstamp codel_drop_next;
 	uint32_t codel_count;
 	bool codel_dropping;
-	size_t burst_sent;
 	uint32_t rx_unflushed;
 	bool flush_pending;
 
@@ -1497,23 +1496,8 @@ static void quic_flush(quic_session_t *s) {
 	ngtcp2_path_storage_zero(&ps);
 	bool prefer_stream = false;
 	bool dgram_deferred = false;
-	bool wrote_dgram = false;
-
-	size_t quantum = ngtcp2_conn_get_send_quantum2(s->conn);
-
-	if(quantum < 4 * QUIC_CURL_UDP_PAYLOAD) {
-		quantum = 4 * QUIC_CURL_UDP_PAYLOAD;
-	} else if(quantum > 16 * QUIC_CURL_UDP_PAYLOAD) {
-		quantum = 16 * QUIC_CURL_UDP_PAYLOAD;
-	}
-
-	bool blocked = false;
 
 	for(;;) {
-		if(!dgram_deferred) {
-			quic_codel_step(s, ts);
-		}
-
 		uint8_t *buf = pkts[npkts];
 		ngtcp2_ssize nwrite;
 		int64_t sid = -1;
@@ -1554,9 +1538,9 @@ static void quic_flush(quic_session_t *s) {
 			if(accepted || s->dgram[s->dgram_head].len > dgram_room(s)) {
 				s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
 				s->dgram_n--;
+				quic_codel_step(s, ts);
 			} else {
 				dgram_deferred = true;
-				blocked = true;
 			}
 
 			if(nwrite == 0) {
@@ -1566,8 +1550,6 @@ static void quic_flush(quic_session_t *s) {
 
 				break;
 			}
-
-			wrote_dgram = true;
 		} else {
 			prefer_stream = false;
 			/* One stream per packet, in this order: our unidirectional
@@ -1621,10 +1603,6 @@ static void quic_flush(quic_session_t *s) {
 			if(sid < 0 && s->stream_id >= 0 && !s->stream_blocked && quic_txq_unsent(&s->tx)) {
 				cnt = tx_vecs(&s->tx, v, SIZE_MAX);
 				sid = s->stream_id;
-			}
-
-			if(sid < 0 && wrote_dgram) {
-				break;
 			}
 
 			nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, QUIC_PKT_BUF, &pdatalen, wflags, sid, v, cnt, ts);
@@ -1684,10 +1662,6 @@ static void quic_flush(quic_session_t *s) {
 			}
 
 			if(nwrite == 0) {
-				if(sid >= 0) {
-					blocked = true;
-				}
-
 				break;
 			}
 		}
@@ -1703,17 +1677,9 @@ static void quic_flush(quic_session_t *s) {
 		destlens[npkts] = tolen;
 		npkts++;
 
-		if(send_dgram || sid >= 0) {
-			s->burst_sent += (size_t)nwrite;
-		}
-
 		if(npkts >= QUIC_FLUSH_BATCH) {
 			quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
 			npkts = 0;
-		}
-
-		if(s->burst_sent >= quantum) {
-			break;
 		}
 	}
 
@@ -1725,11 +1691,7 @@ static void quic_flush(quic_session_t *s) {
 		s->c->transport_outbuf_len = (size_t)quic_txq_unsent(&s->tx);
 	}
 
-	if(s->burst_sent >= quantum || (s->burst_sent > 0 && (blocked || s->dgram_n > 0))) {
-		ngtcp2_conn_update_pkt_tx_time(s->conn, ts);
-		s->burst_sent = 0;
-	}
-
+	ngtcp2_conn_update_pkt_tx_time(s->conn, ts);
 	quic_arm_timer(s);
 }
 
@@ -1738,11 +1700,6 @@ static void quic_timer(void *data) {
 
 	if(s->dead) {
 		return;
-	}
-
-	if(s->burst_sent > 0 && s->conn) {
-		ngtcp2_conn_update_pkt_tx_time(s->conn, quic_now());
-		s->burst_sent = 0;
 	}
 
 	s->reading = true;
@@ -1765,18 +1722,14 @@ static void quic_arm_timer(quic_session_t *s) {
 
 	ngtcp2_tstamp expiry = ngtcp2_conn_get_expiry(s->conn);
 
-	if(expiry == UINT64_MAX && s->burst_sent == 0) {
+	if(expiry == UINT64_MAX) {
 		timeout_del(&s->timer);
 		return;
 	}
 
 	ngtcp2_tstamp n = quic_now();
-	ngtcp2_tstamp delta = (expiry != UINT64_MAX && expiry > n) ? expiry - n : 0;
+	ngtcp2_tstamp delta = expiry > n ? expiry - n : 0;
 	ngtcp2_tstamp usec = (delta / NGTCP2_MICROSECONDS) + 1;
-
-	if(s->burst_sent > 0 && (expiry == UINT64_MAX || usec > 1000)) {
-		usec = 1000;
-	}
 
 	gettimeofday(&now, NULL);
 
@@ -2145,7 +2098,7 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 				s->flush_pending = true;
 				s->rx_unflushed++;
 
-				if(s->rx_unflushed >= QUIC_FLUSH_BATCH || s->dgram_n >= QUIC_FLUSH_BATCH) {
+				if(s->rx_unflushed >= QUIC_FLUSH_BATCH) {
 					quic_flush(s);
 				}
 			}
@@ -2489,11 +2442,7 @@ bool quic_send_datagram(connection_t *c, const void *buf, size_t len, size_t *ex
 	if(!s->reading) {
 		if(quic_batch_mode) {
 			s->flush_pending = true;
-
-			if(s->dgram_n >= QUIC_FLUSH_BATCH) {
-				quic_flush(s);
-			}
-		} else if(s->dgram_n == 1 || !s->conn || quic_now() >= ngtcp2_conn_get_expiry(s->conn)) {
+		} else {
 			quic_flush(s);
 		}
 	}
