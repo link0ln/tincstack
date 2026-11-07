@@ -127,20 +127,34 @@ void setup_blocked_nodes(void) {
 		free(copy);
 	}
 
+	list_t blocked_victims = {
+		.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+	};
+
 	for list_each(connection_t, c, &connection_list) {
 		if(c->status.control || !c->name) {
 			continue;
 		}
 
 		if(node_is_blocked(c->name)) {
-			if(c->outgoing) {
-				list_delete(&outgoing_list, c->outgoing);
-				c->outgoing = NULL;
-			}
-
-			terminate_connection(c, c->edge);
+			list_insert_tail(&blocked_victims, c);
 		}
 	}
+
+	for list_each(connection_t, c, &blocked_victims) {
+		if(!connection_is_live(c)) {
+			continue;
+		}
+
+		if(c->outgoing) {
+			list_delete(&outgoing_list, c->outgoing);
+			c->outgoing = NULL;
+		}
+
+		terminate_connection(c, c->edge);
+	}
+
+	list_empty_list(&blocked_victims);
 
 	for list_each(outgoing_t, outgoing, &outgoing_list) {
 		if(outgoing->node && node_is_blocked(outgoing->node->name)) {
@@ -286,27 +300,50 @@ void setup_no_direct_nodes(void) {
 		}
 	}
 
+	list_t nd_victims = {
+		.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+	};
+
 	for list_each(connection_t, c, &connection_list) {
 		if(c->status.control || !c->name) {
 			continue;
 		}
 
 		if(node_is_no_direct(c->name)) {
-			logger(DEBUG_CONNECTIONS, LOG_INFO, "Closing direct connection with relay-only (NoDirect) node %s (%s)", c->name, c->hostname);
-
-			if(c->outgoing) {
-				list_delete(&outgoing_list, c->outgoing);
-				c->outgoing = NULL;
-			}
-
-			terminate_connection(c, c->edge);
-			changed = true;
+			list_insert_tail(&nd_victims, c);
 		}
 	}
 
+	for list_each(connection_t, c, &nd_victims) {
+		if(!connection_is_live(c)) {
+			continue;
+		}
+
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Closing direct connection with relay-only (NoDirect) node %s (%s)", c->name, c->hostname);
+
+		if(c->outgoing) {
+			outgoing_t *out = c->outgoing;
+			c->outgoing = NULL;
+			timeout_del(&out->ev);
+
+			if(!out->from_config) {
+				list_delete(&outgoing_list, out);
+			}
+		}
+
+		terminate_connection(c, c->edge);
+		changed = true;
+	}
+
+	list_empty_list(&nd_victims);
+
 	for list_each(outgoing_t, outgoing, &outgoing_list) {
 		if(outgoing->node && node_is_no_direct(outgoing->node->name)) {
-			list_delete_node(&outgoing_list, node);
+			timeout_del(&outgoing->ev);
+
+			if(!outgoing->from_config) {
+				list_delete_node(&outgoing_list, node);
+			}
 		}
 	}
 
@@ -325,6 +362,15 @@ void setup_no_direct_nodes(void) {
 				n->punch_backoff_until = 0;
 				n->punch_unanswered = 0;
 				n->punch_req_sent = 0;
+
+				if(!n->remote_no_direct && !n->connection) {
+					for list_each(outgoing_t, outgoing, &outgoing_list) {
+						if(outgoing->node == n && !outgoing->ev.cb) {
+							setup_outgoing_connection(outgoing, true);
+							break;
+						}
+					}
+				}
 			}
 
 			changed = true;
@@ -441,6 +487,12 @@ void node_del(node_t *n) {
 		edge_del(e);
 	}
 
+	for splay_each(node_t, peer, &node_tree) {
+		if(peer->quorum_voted_for == n) {
+			peer->quorum_voted_for = NULL;
+		}
+	}
+
 	splay_delete(&node_id_tree, n);
 	splay_delete(&node_tree, n);
 }
@@ -462,16 +514,20 @@ node_t *lookup_node_udp(const sockaddr_t *sa) {
 	node_t tmp = {.address = *sa};
 	node_t *found = splay_search(&node_udp_tree, &tmp);
 
-	if(found) {
+	if(found && found->status.reachable && found->status.udp_confirmed) {
 		return found;
 	}
 
-	if(multipath_mode != MULTIPATH_OFF) {
-		for splay_each(node_t, n, &node_tree) {
-			if(n == myself || !n->status.udp_confirmed) {
-				continue;
-			}
+	for splay_each(node_t, n, &node_tree) {
+		if(n == myself || !n->status.reachable || !n->status.udp_confirmed) {
+			continue;
+		}
 
+		if(!sockaddrcmp(sa, &n->address)) {
+			return n;
+		}
+
+		if(multipath_mode != MULTIPATH_OFF) {
 			for(int i = 0; i < MAX_NODE_PATHS; i++) {
 				if(n->paths[i].active && n->paths[i].confirmed && !sockaddrcmp(sa, &n->paths[i].addr)) {
 					return n;
@@ -480,7 +536,7 @@ node_t *lookup_node_udp(const sockaddr_t *sa) {
 		}
 	}
 
-	return NULL;
+	return found;
 }
 
 void update_node_udp(node_t *n, const sockaddr_t *sa) {
@@ -536,6 +592,7 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 
 	if(!sa) {
 		n->last_lan_udp_rx = 0;
+		memset(n->paths, 0, sizeof(n->paths));
 	}
 
 	if(!sa || !n->connection || !n->connection->transport || !n->connection->transport->send_datagram) {

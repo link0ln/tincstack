@@ -193,9 +193,11 @@ done
 
 # Raise TUN txqueuelen and sch_fq per-flow packet limit on the TUN device
 # (default txqueuelen 500 and fq flow_limit 100p drop bursts under BBR pacing).
-ip link set "$NETNAME" txqueuelen 4000 2>/dev/null || true
+iface=$(cli get Interface 2>/dev/null || true)
+iface=${iface:-$NETNAME}
+ip link set "$iface" txqueuelen 4000 2>/dev/null || true
 if command -v tc >/dev/null 2>&1; then
-    tc qdisc replace dev "$NETNAME" root fq flow_limit 2000 2>/dev/null || true
+    tc qdisc replace dev "$iface" root fq flow_limit 2000 2>/dev/null || true
 fi
 
 # --- choices that needed the materialised identity -------------------------

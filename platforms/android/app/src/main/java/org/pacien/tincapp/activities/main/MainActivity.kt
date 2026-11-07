@@ -578,32 +578,40 @@ class MainActivity : BaseActivity() {
 
   private fun loadSettings() {
     val net = selected ?: return
-    summary = try {
-      val yaml = TincYaml(AppPaths.tincYamlFile(net))
-      val s = Networks.summary(net)
-      val mpMode = yaml.optionValue(s.stanza, "MultipathMode")?.trim()?.lowercase()
-        ?.takeIf { it in MULTIPATH_MODES } ?: "off"
-      val mpConns = yaml.optionValue(s.stanza, "MultipathConnections")?.trim()?.toIntOrNull()
-        ?.coerceIn(1, 8) ?: 1
-      NetworkSettings(
-        summary = s,
-        transport = Transport.preferred(yaml, s.stanza),
-        accepted = Transport.acceptedByPeers(yaml, s.stanza),
-        multipathMode = mpMode,
-        multipathConnections = mpConns,
-        routing = try {
-          SplitRouting.read(yaml, s.stanza)
-        } catch (e: Exception) {
-          null
-        },
-        pauseOnLock = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF), false),
-        lowPowerMode = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_LOW_POWER_MODE), false),
-      )
-    } catch (e: Exception) {
-      log.warn("Could not read the settings of {}: {}", net, e.defaultMessage())
-      null
+    Executor.supplyAsyncTask {
+      try {
+        val yaml = TincYaml(AppPaths.tincYamlFile(net))
+        val s = Networks.summary(net)
+        val mpMode = yaml.optionValue(s.stanza, "MultipathMode")?.trim()?.lowercase()
+          ?.takeIf { it in MULTIPATH_MODES } ?: "off"
+        val mpConns = yaml.optionValue(s.stanza, "MultipathConnections")?.trim()?.toIntOrNull()
+          ?.coerceIn(1, 8) ?: 1
+        NetworkSettings(
+          summary = s,
+          transport = Transport.preferred(yaml, s.stanza),
+          accepted = Transport.acceptedByPeers(yaml, s.stanza),
+          multipathMode = mpMode,
+          multipathConnections = mpConns,
+          routing = try {
+            SplitRouting.read(yaml, s.stanza)
+          } catch (e: Exception) {
+            null
+          },
+          pauseOnLock = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF), false),
+          lowPowerMode = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_LOW_POWER_MODE), false),
+        )
+      } catch (e: Exception) {
+        log.warn("Could not read the settings of {}: {}", net, e.defaultMessage())
+        null
+      }
+    }.thenAccept { loaded ->
+      runOnUiThread {
+        if (selected == net) {
+          summary = loaded
+          render()
+        }
+      }
     }
-    render()
   }
 
   private fun renderRows() {

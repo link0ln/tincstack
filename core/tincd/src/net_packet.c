@@ -1051,7 +1051,7 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 	   Exception: in MULTIPATH_REDUNDANT mode with multiple connections and
 	   a valid SPTPS key, use SPTPS records so the receiver deduplicates copies
 	   by SPTPS sequence number. */
-	if(n->connection && origpkt->len > n->minmtu &&
+	if(n->connection && origpkt->len - offset > n->minmtu &&
 	   !(multipath_mode == MULTIPATH_REDUNDANT && n->status.validkey && n->connections.count > 1)) {
 		connection_t *conns[2] = {NULL, NULL};
 		int nconns = multipath_select_connections(n, origpkt, conns);
@@ -1572,6 +1572,10 @@ end:
    hop inside the meta connection (SPTPS_PACKET, or REQ_KEY/ANS_KEY for older
    hops and handshakes). */
 static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void *data, size_t len) {
+	if(!to || !to->nexthop) {
+		return false;
+	}
+
 	connection_t *conns[2] = {NULL, NULL};
 	int nconns = (type == SPTPS_HANDSHAKE) ? 0 : multipath_select_connections(to->nexthop, multipath_current_tx_pkt, conns);
 
@@ -1580,7 +1584,13 @@ static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void 
 		nconns = conns[0] ? 1 : 0;
 	}
 
-	if(type != SPTPS_HANDSHAKE && (to->nexthop->connection->options >> 24) >= 7) {
+	connection_t *hdr_c = to->nexthop->connection ? to->nexthop->connection : (nconns > 0 ? conns[0] : NULL);
+
+	if(!hdr_c) {
+		return false;
+	}
+
+	if(type != SPTPS_HANDSHAKE && (hdr_c->options >> 24) >= 7) {
 		const size_t buflen = len + sizeof(to->id) + sizeof(from->id);
 		uint8_t *buf = alloca(buflen);
 		uint8_t *buf_ptr = buf;
@@ -1787,6 +1797,8 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 			nconns = 1;
 		}
 
+		bool sent_any = false;
+
 		for(int i = 0; i < nconns; i++) {
 			connection_t * target_c = conns[i];
 
@@ -1795,8 +1807,14 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 
 				if(!target_c->transport->send_datagram(target_c, buf, (size_t)(buf_ptr - buf), &excess)) {
 					reduce_mtu(relay, (int)origlen - (int)(excess ? excess : 1));
+				} else {
+					sent_any = true;
 				}
 			}
+		}
+
+		if(!sent_any && type != PKT_PROBE) {
+			return send_sptps_data_meta(to, from, type, data, len);
 		}
 
 		return true;
@@ -1835,7 +1853,7 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	   are active for `relay`, dispatch across the selected path(s) (1 for
 	   failover/flowhash/split, 2 for redundant). */
 	node_path_t *mp_paths[2] = {NULL, NULL};
-	int npaths = (type != PKT_PROBE && !relay->status.send_locally) ?
+	int npaths = (direct && type != PKT_PROBE && !relay->status.send_locally) ?
 	             multipath_select_udp_paths(relay, multipath_current_tx_pkt, mp_paths) : 0;
 
 	if(npaths > 0) {
@@ -2080,12 +2098,12 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		from->udp_ping_unanswered = 0;
 		from->last_udp_rx = now.tv_sec;
 
-		if(inpkt.len >= MINMTU) {
+		if(len >= MINMTU) {
 			from->last_large_udp_rx = now.tv_sec;
 		}
 
-		if(inpkt.len > from->maxrecentlen) {
-			from->maxrecentlen = inpkt.len;
+		if(len > from->maxrecentlen) {
+			from->maxrecentlen = len;
 		}
 	}
 
@@ -2448,6 +2466,10 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 			return true;
 		}
 
+		if(!to->nexthop || !to->nexthop->connection) {
+			return true;
+		}
+
 		return send_request(to->nexthop->connection, "%s", request);
 	}
 
@@ -2458,7 +2480,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 
 		for list_each(outgoing_t, outgoing, &outgoing_list) {
 			if(outgoing->node == from) {
-				list_delete_node(&outgoing_list, node);
+				timeout_del(&outgoing->ev);
 			}
 		}
 
@@ -2498,6 +2520,15 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 			graph();
 		}
 
+		if(!from->status.no_direct && !node_is_no_direct(from->name) && !from->connection) {
+			for list_each(outgoing_t, outgoing, &outgoing_list) {
+				if(outgoing->node == from && !outgoing->ev.cb) {
+					setup_outgoing_connection(outgoing, false);
+					break;
+				}
+			}
+		}
+
 		if(from->status.reachable && !from->connection && from->status.validkey) {
 			try_udp(from, false);
 		}
@@ -2526,7 +2557,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 	if(!punch_coordinated(from)) {
 		/* Not a peer we coordinate with (a meta neighbour now, or its token
 		   changed): it asked, so still answer, and probe as usual. */
-		if(flag == 0) {
+		if(flag == 0 && from->nexthop && from->nexthop->connection) {
 			send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
 		}
 
@@ -2547,6 +2578,12 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 
 	if(have) {
 		sa = str2sockaddr(addr, port);
+
+		if(sa.sa.sa_family == AF_UNSPEC || sa.sa.sa_family == AF_UNKNOWN ||
+		                !sockaddr_is_unicast_ip(&sa) || address_routes_via_vpn(&sa) ||
+		                from->nexthop == from) {
+			have = false;
+		}
 	}
 
 	punch_start(from, 0, have ? &sa : NULL, flag == 2 ? "the relay says go" : "the peer says go");
@@ -3097,13 +3134,29 @@ void broadcast_packet(const node_t *from, vpn_packet_t *packet) {
 	// In MST mode, broadcast packets travel via the Minimum Spanning Tree.
 	// This guarantees all nodes receive the broadcast packet, and
 	// usually distributes the sending of broadcast packets over all nodes.
-	case BMODE_MST:
-		for list_each(connection_t, c, &connection_list)
-			if(c->edge && c->status.mst && c != from->nexthop->connection) {
-				send_packet(c->node, packet);
+	case BMODE_MST: {
+		int count = connection_list.count;
+
+		if(count > 0) {
+			node_t **targets = alloca((size_t)count * sizeof(node_t *));
+			int ntargets = 0;
+			connection_t *skip_c = from->nexthop ? from->nexthop->connection : NULL;
+
+			for list_each(connection_t, c, &connection_list) {
+				if(c->edge && c->status.mst && c != skip_c && c->node && ntargets < count) {
+					targets[ntargets++] = c->node;
+				}
 			}
 
+			for(int i = 0; i < ntargets; i++) {
+				if(targets[i]->status.reachable) {
+					send_packet(targets[i], packet);
+				}
+			}
+		}
+
 		break;
+	}
 
 	// In direct mode, we send copies to each node we know of.
 	// However, this only reaches nodes that can be reached in a single hop.
@@ -3278,9 +3331,14 @@ static void process_sptps_udp(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t
 		if(pkt->len >= pkt->offset) {
 			from = lookup_node_id(SRCID(pkt));
 
-			if(from && from->status.sptps && !memcmp(DSTID(pkt), &nullid, sizeof(nullid))) {
+			if(from && from->status.sptps &&
+			                (!memcmp(DSTID(pkt), &nullid, sizeof(nullid)) || !memcmp(DSTID(pkt), &myself->id, sizeof(myself->id)))) {
 				if(sptps_verify_datagram(&from->sptps, DATA(pkt), pkt->len - 2 * sizeof(node_id_t))) {
-					n = from;
+					if(!memcmp(DSTID(pkt), &nullid, sizeof(nullid))) {
+						n = from;
+					} else {
+						n = (from->via && from->via != myself) ? from->via : (from->nexthop ? from->nexthop : from);
+					}
 				} else {
 					goto skip_harder;
 				}
@@ -3423,6 +3481,11 @@ skip_harder:
 	   through the relay path. */
 
 	if(!direct) {
+		if(n != from) {
+			n->last_udp_rx = now.tv_sec;
+			n->udp_ping_unanswered = 0;
+		}
+
 		send_mtu_info(myself, from, MTU);
 	}
 }

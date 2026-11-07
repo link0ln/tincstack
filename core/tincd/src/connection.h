@@ -163,6 +163,7 @@ extern void free_connection(connection_t *c);
 extern connection_t *new_connection(void) ATTR_MALLOC ATTR_DEALLOCATOR(free_connection);
 extern void connection_add(connection_t *c);
 extern void connection_del(connection_t *c);
+extern bool connection_is_live(const connection_t *target);
 extern bool dump_connections(struct connection_t *c);
 
 /* Remember the current content of this peer's host record (YAML mode; a no-op

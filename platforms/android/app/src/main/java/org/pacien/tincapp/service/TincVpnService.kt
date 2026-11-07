@@ -379,7 +379,10 @@ class TincVpnService : VpnService() {
     try {
       running.get(STOP_TIMEOUT_S, TimeUnit.SECONDS)
     } catch (e: Exception) {
-      if (!running.isDone) log.warn("tinc daemon still running after stop.")
+      if (!running.isDone) {
+        log.warn("tinc daemon still running after stop; killing forcefully.")
+        Tincd.killForcefully()
+      }
     }
   }
 

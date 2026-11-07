@@ -2097,8 +2097,7 @@ object DiagManager {
           val rawText = payload["raw_yaml"]?.toString().orEmpty()
           if (rawText.isBlank()) return false to mapOf("ok" to false, "message" to "Empty YAML")
           val f = AppPaths.tincYamlFile(targetNet)
-          f.writeText(rawText)
-          TincYaml(f).networks() // validate syntax
+          TincYaml(f).writeRawText(rawText)
           runTincCli(targetNet, 3500L, "reload")
           true to mapOf("ok" to true, "message" to "Saved tinc.yaml")
         }
@@ -2162,11 +2161,16 @@ object DiagManager {
       val qs = parseQuery(query)
 
       var contentLength = 0
+      var originHeader = ""
+      var hostHeader = ""
       while (true) {
         val h = readAsciiLine(ins) ?: break
         if (h.isEmpty()) break
-        if (h.lowercase().startsWith("content-length:")) {
-          contentLength = h.substringAfter(':').trim().toIntOrNull() ?: 0
+        val lower = h.lowercase()
+        when {
+          lower.startsWith("content-length:") -> contentLength = h.substringAfter(':').trim().toIntOrNull() ?: 0
+          lower.startsWith("origin:") -> originHeader = h.substringAfter(':').trim()
+          lower.startsWith("host:") -> hostHeader = h.substringAfter(':').trim()
         }
       }
 
@@ -2233,6 +2237,14 @@ object DiagManager {
       }
 
       if (method == "POST") {
+        if (originHeader.isNotEmpty()) {
+          val expectedHttp = "http://$hostHeader"
+          val expectedHttps = "https://$hostHeader"
+          if (hostHeader.isNotEmpty() && originHeader != expectedHttp && originHeader != expectedHttps) {
+            sendJson(mapOf("ok" to false, "error" to "Cross-origin POST rejected"), status = 400)
+            return
+          }
+        }
         val payload = try {
           val str = String(bodyBytes, StandardCharsets.UTF_8).trim()
           if (str.isNotEmpty()) (JsonCodec.parse(str) as? Map<String, Any?>).orEmpty() else emptyMap()

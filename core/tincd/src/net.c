@@ -313,9 +313,18 @@ static void timeout_handler(void *data) {
 
 	last_periodic_run_time = now;
 
+	list_t conn_snapshot = {
+		.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+	};
+
 	for list_each(connection_t, c, &connection_list) {
-		// control connections (eg. tinc ctl) do not have any timeout
-		if(c->status.control) {
+		if(!c->status.control) {
+			list_insert_tail(&conn_snapshot, c);
+		}
+	}
+
+	for list_each(connection_t, c, &conn_snapshot) {
+		if(!connection_is_live(c) || c->status.control) {
 			continue;
 		}
 
@@ -374,6 +383,8 @@ static void timeout_handler(void *data) {
 			send_ping(c);
 		}
 	}
+
+	list_empty_list(&conn_snapshot);
 
 	/* Keep confirmed direct UDP paths to non-neighbor nodes alive across idle
 	   periods, and proactively discover direct LAN UDP paths for nodes that
@@ -602,6 +613,10 @@ int reload_configuration(void) {
 
 	/* Close connections to hosts that have a changed or deleted host config file */
 
+	list_t victims = {
+		.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+	};
+
 	for list_each(connection_t, c, &connection_list) {
 		if(c->status.control) {
 			continue;
@@ -628,20 +643,14 @@ int reload_configuration(void) {
 
 			if(!present) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config of %s has been removed", c->name);
-				if(c->outgoing) {
-					c->outgoing->retry_requested = true;
-				}
-				terminate_connection(c, c->edge);
+				list_insert_tail(&victims, c);
 				continue;
 			}
 
 			if(memcmp(c->host_digest, digest, sizeof(digest))) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config file of %s has been changed", c->name);
 				memcpy(c->host_digest, digest, sizeof(digest));
-				if(c->outgoing) {
-					c->outgoing->retry_requested = true;
-				}
-				terminate_connection(c, c->edge);
+				list_insert_tail(&victims, c);
 			}
 
 			continue;
@@ -652,12 +661,23 @@ int reload_configuration(void) {
 
 		if(stat(fname, &s) || s.st_mtime > last_config_check) {
 			logger(DEBUG_CONNECTIONS, LOG_INFO, "Host config file of %s has been changed", c->name);
-			if(c->outgoing) {
-				c->outgoing->retry_requested = true;
-			}
-			terminate_connection(c, c->edge);
+			list_insert_tail(&victims, c);
 		}
 	}
+
+	for list_each(connection_t, c, &victims) {
+		if(!connection_is_live(c)) {
+			continue;
+		}
+
+		if(c->outgoing) {
+			c->outgoing->retry_requested = true;
+		}
+
+		terminate_connection(c, c->edge);
+	}
+
+	list_empty_list(&victims);
 
 	setup_blocked_nodes();
 	setup_no_direct_nodes();

@@ -1270,6 +1270,8 @@ bool yamlconf_lock(const char *path) {
 	free(lockpath);
 	if(lock_fd < 0) return false;
 	if(flock(lock_fd, LOCK_EX)) { close(lock_fd); lock_fd = -1; return false; }
+	struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0 };
+	while(fcntl(lock_fd, F_SETLKW, &fl) == -1 && errno == EINTR) {}
 #endif
 	lock_depth = 1;
 	return true;

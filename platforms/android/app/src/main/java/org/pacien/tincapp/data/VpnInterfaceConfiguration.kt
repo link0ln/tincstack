@@ -19,6 +19,7 @@
 
 package org.pacien.tincapp.data
 
+import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.extensions.Java.applyIgnoringException
 import java.io.File
 
@@ -81,7 +82,9 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
       TincYaml(f).let { yaml -> fromTincYaml(yaml, yaml.resolveNetwork(netName)) }
 
     fun fromTincYaml(yaml: TincYaml, net: String): VpnInterfaceConfiguration {
-      val allowed = yaml.optionValues(net, KEY_ALLOWED_APPLICATIONS).map(String::trim).filter(String::isNotEmpty)
+      val allowed = yaml.optionValues(net, KEY_ALLOWED_APPLICATIONS)
+        .map(String::trim)
+        .filter { it.isNotEmpty() && it != BuildConfig.APPLICATION_ID }
       val disallowed = yaml.optionValues(net, KEY_DISALLOWED_APPLICATIONS).map(String::trim).filter(String::isNotEmpty)
       if (allowed.isNotEmpty() && disallowed.isNotEmpty())
         throw TincYaml.InvalidConfigurationException(

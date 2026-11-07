@@ -167,10 +167,11 @@ class Runtime:
     def _kill_orphan_daemons(self) -> None:
         """On Windows, kill any orphaned tincd.exe processes left over from a
         previous session whose pidfile was lost or overwritten, provided no
-        network managed by this Runtime currently has a live child process."""
+        network managed by this Runtime currently has a live or running daemon."""
         if sys.platform != "win32":
             return
-        if any(self.has_live_process(n) for n in list(self._procs)):
+        all_nets = list(set(self._procs) | set(self.app.networks))
+        if any(self.has_live_process(n) or self.is_running(n) for n in all_nets):
             return
         try:
             subprocess.run(["taskkill", "/F", "/IM", "tincd.exe"],
@@ -492,6 +493,10 @@ class Runtime:
         for name in list(self.app.networks):
             if self.is_running(name) or name in self._procs:
                 self.stop(name, timeout=5.0)
+            else:
+                self._full_tunnel_off(name)
+        for name in list(self._ft):
+            self._full_tunnel_off(name)
 
     def status(self, net: str) -> str:
         return "running" if self.is_running(net) else "stopped"

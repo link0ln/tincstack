@@ -511,6 +511,12 @@ static bool load_or_generate(char **cert_pem, char **key_pem, const char **sourc
 			return false;
 		}
 
+		bool ylocked = yamlconf_lock(yamlconf_path);
+
+		if(ylocked) {
+			yamlconf_reload_global();
+		}
+
 		yamlconf_set_key_pem(yamlconf_global, netname, "tls_cert", *cert_pem);
 		yamlconf_set_key_pem(yamlconf_global, netname, "tls_key", *key_pem);
 
@@ -520,6 +526,10 @@ static bool load_or_generate(char **cert_pem, char **key_pem, const char **sourc
 			   start, changing the fingerprint. Warn loudly. */
 		} else {
 			logger(DEBUG_ALWAYS, LOG_NOTICE, "Generated a self-signed TLS certificate into `%s' [%s]", yamlconf_path, netname);
+		}
+
+		if(ylocked) {
+			yamlconf_unlock();
 		}
 
 		*source = "generated self-signed (YAML keys)";

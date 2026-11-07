@@ -527,6 +527,18 @@ static int req_slot(quic_session_t *s, int64_t id) {
 	}
 
 	if(s->nreq == QUIC_REQ_SLOTS) {
+		for(int i = 0; i < s->nreq; i++) {
+			if(s->req[i].done && s->req[i].id != s->stream_id && !s->req[i].hdr_blocked) {
+				decoy_fetch_cancel(s->req[i].fetch);
+				free(s->req[i].resp);
+				free(s->req[i].hdr);
+				free(s->req[i].fields);
+				memset(&s->req[i], 0, sizeof(s->req[i]));
+				s->req[i].id = id;
+				return i;
+			}
+		}
+
 		return -1;
 	}
 
@@ -1773,8 +1785,6 @@ static void quic_arm_timer(quic_session_t *s) {
 	ngtcp2_tstamp n = quic_now();
 	ngtcp2_tstamp delta = expiry > n ? expiry - n : 0;
 	ngtcp2_tstamp usec = (delta / NGTCP2_MICROSECONDS) + 1;
-
-	gettimeofday(&now, NULL);
 
 	struct timeval tv = {
 		(time_t)(usec / 1000000ULL),

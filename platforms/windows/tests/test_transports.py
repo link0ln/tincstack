@@ -105,27 +105,31 @@ def test_peer_no_direct_read_and_write():
     host_blob = "Address = 198.51.100.10\nSubnet = 10.200.240.3/32\nEd25519PublicKey = CCCC\n"
     assert not tr.is_peer_no_direct(opts, host_blob, "euvds")
 
-    # Enable no_direct for euvds
+    # Enable no_direct for euvds — ConnectTo must be preserved as a lower-level setting
     updated_host = tr.set_peer_no_direct(opts, host_blob, "euvds", True)
     assert tr.is_peer_no_direct(opts, updated_host, "euvds")
     assert opts["NoDirectNodes"] == ["euvds"]
-    assert opts["ConnectTo"] == ["ruvds3"]
+    assert opts["ConnectTo"] == ["ruvds3", "euvds"]
     assert "DirectConnect = no" in updated_host
     assert tr.host_no_direct(updated_host)
 
-    # Disable no_direct for euvds
+    # Disable no_direct for euvds — ConnectTo remains intact
     cleared_host = tr.set_peer_no_direct(opts, updated_host, "euvds", False)
     assert not tr.is_peer_no_direct(opts, cleared_host, "euvds")
     assert "NoDirectNodes" not in opts
+    assert opts["ConnectTo"] == ["ruvds3", "euvds"]
     assert "DirectConnect" not in cleared_host
     assert not tr.host_no_direct(cleared_host)
 
-    # Host with IndirectData = yes also clears when no_direct is set to False
+    # Host with IndirectData = yes preserves IndirectData when no_direct is toggled
     indirect_blob = host_blob + "IndirectData = yes\n"
-    assert tr.host_no_direct(indirect_blob)
-    cleared_indirect = tr.set_host_no_direct(indirect_blob, False)
+    assert not tr.host_no_direct(indirect_blob)
+    enabled_indirect = tr.set_host_no_direct(indirect_blob, True)
+    assert tr.host_no_direct(enabled_indirect)
+    assert "IndirectData = yes" in enabled_indirect
+    cleared_indirect = tr.set_host_no_direct(enabled_indirect, False)
     assert not tr.host_no_direct(cleared_indirect)
-    assert "IndirectData" not in cleared_indirect
+    assert "IndirectData = yes" in cleared_indirect
 
     from backend.tinc_control import Node
     node = Node(name="euvds")

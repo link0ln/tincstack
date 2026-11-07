@@ -753,8 +753,27 @@ int cmd_invite(int argc, char *argv[]) {
 
 	b64encode_tinc_urlsafe(cookie, cookie, 18);
 
+	// Get the local address before allocating from the pool or creating the
+	// invitation file on disk, since get_my_hostname() may block on stdin or
+	// network discovery and may update our own host config.
+	char *address = NULL;
+	char *port = NULL;
+
+	if(!get_my_hostname(&address, &port)) {
+		memzero(cookie, sizeof(cookie));
+		return 1;
+	}
+
+	bool ylocked = yamlconf_path && yamlconf_lock(yamlconf_path);
+
+	if(ylocked) {
+		yamlconf_reload_global();
+	}
+
 	// Assign the invitee an address from our AddressPool (M3). Done before the
-	// invitation file exists so the pending-invitation scan does not see it.
+	// invitation file exists so the pending-invitation scan does not see it,
+	// and serialized under yamlconf_lock so concurrent invitations cannot
+	// hand out the same IP.
 	char *pool = conf_get(tinc_conf, "AddressPool");
 	char *assigned = NULL;
 	int pool_prefix = 0;
@@ -765,7 +784,12 @@ int cmd_invite(int argc, char *argv[]) {
 		if(!pool_parse(pool, &pool_net, &pool_prefix)) {
 			fprintf(stderr, "Invalid AddressPool `%s'.\n", pool);
 			free(pool);
+			free(address);
+			free(port);
 			memzero(cookie, sizeof(cookie));
+			if(ylocked) {
+				yamlconf_unlock();
+			}
 			return 1;
 		}
 
@@ -773,7 +797,12 @@ int cmd_invite(int argc, char *argv[]) {
 
 		if(!assigned) {
 			free(pool);
+			free(address);
+			free(port);
 			memzero(cookie, sizeof(cookie));
+			if(ylocked) {
+				yamlconf_unlock();
+			}
 			return 1;
 		}
 
@@ -789,6 +818,11 @@ int cmd_invite(int argc, char *argv[]) {
 	if(ifd < 0) {
 		memzero(cookie, sizeof(cookie));
 		free(assigned);
+		free(address);
+		free(port);
+		if(ylocked) {
+			yamlconf_unlock();
+		}
 		fprintf(stderr, "Could not create invitation file %s: %s\n", filename, strerror(errno));
 		return 1;
 	}
@@ -797,18 +831,6 @@ int cmd_invite(int argc, char *argv[]) {
 
 	if(!f) {
 		abort();
-	}
-
-	// Get the local address
-	char *address = NULL;
-	char *port = NULL;
-
-	if(!get_my_hostname(&address, &port)) {
-		memzero(cookie, sizeof(cookie));
-		fclose(f);
-		unlink(filename);
-		free(assigned);
-		return 1;
 	}
 
 	// Create an URL from the local address, key hash and cookie
@@ -872,6 +894,10 @@ int cmd_invite(int argc, char *argv[]) {
 
 	bool appended = append_host_config(f, myname, port);
 	free(port);
+
+	if(ylocked) {
+		yamlconf_unlock();
+	}
 
 	if(!appended) {
 		fprintf(stderr, "Could not append my config to invitation file: %s.\n", strerror(errno));

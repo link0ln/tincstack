@@ -57,15 +57,12 @@ data class PeerConfig(
   val obfsPort: String? get() = first("ObfsPort")
   val preferredTransport: String? get() = first("PreferredTransports") ?: first("PreferredTransport")
 
-  /** True if DirectConnect = no or IndirectData = yes is set in this peer's host block. */
+  /** True if DirectConnect = no is set in this peer's host block. */
   val noDirect: Boolean
     get() {
       first("DirectConnect")?.trim()?.lowercase()?.let {
         if (it in setOf("no", "false", "0", "off")) return true
         if (it in setOf("yes", "true", "1", "on")) return false
-      }
-      first("IndirectData")?.trim()?.lowercase()?.let {
-        if (it in setOf("yes", "true", "1", "on")) return true
       }
       return false
     }

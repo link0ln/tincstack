@@ -549,6 +549,15 @@ function fmtTime(epoch) {
   return d.toLocaleTimeString("ru-RU", {hour12: false}) + "." + String(d.getMilliseconds()).padStart(3, "0").slice(0,2);
 }
 
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function switchTab(tab, btn) {
   STATE.activeTab = tab;
   document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
@@ -640,7 +649,7 @@ function renderOverview(d) {
   // System KV
   const sys = d.system_info || {};
   document.getElementById("sys-kv").innerHTML = Object.entries(sys).map(([k,v]) =>
-    `<div class="k">${k}</div><div>${String(v)}</div>`
+    `<div class="k">${esc(k)}</div><div>${esc(v)}</div>`
   ).join("");
 
   // Incidents
@@ -650,9 +659,9 @@ function renderOverview(d) {
     const bcls = inc.severity === "error" ? "err" : (inc.severity === "warn" ? "warn" : "info");
     return `<tr>
       <td>${fmtTime(inc.ts)}</td>
-      <td><span class="badge ${bcls}">${inc.kind}</span></td>
-      <td><b>${inc.peer || "—"}</b></td>
-      <td style="white-space:normal;">${inc.message || ""}</td>
+      <td><span class="badge ${bcls}">${esc(inc.kind)}</span></td>
+      <td><b>${esc(inc.peer || "—")}</b></td>
+      <td style="white-space:normal;">${esc(inc.message || "")}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="4" style="color:var(--muted);">Аномалий пока не зафиксировано</td></tr>`;
 
@@ -671,14 +680,14 @@ function renderIncidents() {
   document.getElementById("all-incidents-body").innerHTML = incs.map(inc => {
     const bcls = inc.severity === "error" ? "err" : (inc.severity === "warn" ? "warn" : "info");
     const tb = (inc.details && inc.details.traceback)
-      ? `<details style="margin-top:6px;"><summary style="cursor:pointer;color:var(--accent);">Показать стектрейс</summary><pre class="console" style="margin-top:4px;max-height:220px;">${String(inc.details.traceback).replace(/</g, "&lt;")}</pre></details>`
+      ? `<details style="margin-top:6px;"><summary style="cursor:pointer;color:var(--accent);">Показать стектрейс</summary><pre class="console" style="margin-top:4px;max-height:220px;">${esc(inc.details.traceback)}</pre></details>`
       : "";
     return `<tr>
       <td>${fmtTime(inc.ts)}</td>
-      <td><span class="badge ${bcls}">${inc.severity}</span></td>
-      <td><code>${inc.kind}</code></td>
-      <td><b>${inc.peer || "—"}</b></td>
-      <td style="white-space:normal;">${inc.message || ""}${tb}</td>
+      <td><span class="badge ${bcls}">${esc(inc.severity)}</span></td>
+      <td><code>${esc(inc.kind)}</code></td>
+      <td><b>${esc(inc.peer || "—")}</b></td>
+      <td style="white-space:normal;">${esc(inc.message || "")}${tb}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="5" style="color:var(--muted);">Нет записей</td></tr>`;
 }
@@ -688,22 +697,23 @@ function renderPeersTable(d) {
   const nodes = d.nodes || [];
   const choices = ["auto", "quic", "https", "obfs", "sf", "sftcp", "plain"];
   tbody.innerHTML = nodes.map(n => {
+    const safeName = esc(n.name);
     const linkBadge = n.is_self ? `<span class="badge info">★ this node</span>` :
       (n.link === "direct-udp" ? `<span class="badge ok">● direct UDP</span>` :
        n.link === "direct-tcp" ? `<span class="badge warn">◐ direct TCP</span>` :
        n.link === "relay" ? `<span class="badge warn">↻ relay</span>` :
        `<span class="badge err">○ down</span>`);
 
-    const trBadge = n.transport ? `<span class="badge purple">${n.transport}</span>` : "—";
+    const trBadge = n.transport ? `<span class="badge purple">${esc(n.transport)}</span>` : "—";
     const pref = n.preferred_transport || "auto";
-    const selHtml = n.is_self ? "—" : `<select onchange="setPeerTransport('${n.name}', this.value)">
+    const selHtml = n.is_self ? "—" : `<select onchange="setPeerTransport('${safeName}', this.value)">
       ${choices.map(c => `<option value="${c}" ${c===pref?'selected':''}>${c === 'auto' ? 'auto' : '📌 ' + c}</option>`).join("")}
     </select>`;
 
     const isNoDirect = Boolean(n.no_direct || (n.status && n.status.no_direct));
     const directCell = n.is_self ? "—" : (isNoDirect
-      ? `<button class="sm warn-btn" onclick="togglePeerDirect('${n.name}', false)" title="Прямой коннект к ${n.name} запрещён (NoDirectNodes). Трафик идёт только в обход через релей. Нажмите, чтобы разрешить прямой коннект.">🚫 Только релей</button>`
-      : `<button class="sm" style="border-color:rgba(34,197,94,0.4);color:#4ade80;" onclick="togglePeerDirect('${n.name}', true)" title="Прямой коннект к ${n.name} разрешён. Нажмите, чтобы запретить прямой коннект и пустить трафик через релей.">✓ Разрешён</button>`);
+      ? `<button class="sm warn-btn" onclick="togglePeerDirect('${safeName}', false)" title="Прямой коннект к ${safeName} запрещён (NoDirectNodes). Трафик идёт только в обход через релей. Нажмите, чтобы разрешить прямой коннект.">🚫 Только релей</button>`
+      : `<button class="sm" style="border-color:rgba(34,197,94,0.4);color:#4ade80;" onclick="togglePeerDirect('${safeName}', true)" title="Прямой коннект к ${safeName} разрешён. Нажмите, чтобы запретить прямой коннект и пустить трафик через релей.">✓ Разрешён</button>`);
 
     const flags = [];
     if (n.status) {
@@ -715,26 +725,26 @@ function renderPeersTable(d) {
     }
     if (isNoDirect) flags.push("🚫no_direct");
 
-    const actions = n.is_self ? `<button class="sm" onclick="editPeerHost('${n.name}')">✏️ Host</button>` : `
-      <button class="sm" onclick="showPeerInfo('${n.name}')" title="tinc info">ℹ️ Info</button>
-      <button class="sm" onclick="editPeerHost('${n.name}')" title="Редактировать конфиг хоста">✏️ Host</button>
-      <button class="sm warn-btn" onclick="runAction('peer_reconnect', {peer:'${n.name}'})" title="Переподключить ноду">🔌 Reconnect</button>
-      <button class="sm" onclick="quickPingPeer('${n.vpn_address}', '${n.name}')" title="Ping внутри VPN">📡 Ping</button>
+    const actions = n.is_self ? `<button class="sm" onclick="editPeerHost('${safeName}')">✏️ Host</button>` : `
+      <button class="sm" onclick="showPeerInfo('${safeName}')" title="tinc info">ℹ️ Info</button>
+      <button class="sm" onclick="editPeerHost('${safeName}')" title="Редактировать конфиг хоста">✏️ Host</button>
+      <button class="sm warn-btn" onclick="runAction('peer_reconnect', {peer:'${safeName}'})" title="Переподключить ноду">🔌 Reconnect</button>
+      <button class="sm" onclick="quickPingPeer('${esc(n.vpn_address)}', '${safeName}')" title="Ping внутри VPN">📡 Ping</button>
     `;
 
     const rowStyle = (!n.is_self && isNoDirect) ? ` style="background:rgba(245,158,11,0.10);"` : "";
-    const nameHtml = (!n.is_self && isNoDirect) ? `<b style="color:#fbbf24;">${n.name}</b>` : `<b>${n.name}</b>`;
+    const nameHtml = (!n.is_self && isNoDirect) ? `<b style="color:#fbbf24;">${safeName}</b>` : `<b>${safeName}</b>`;
 
     const viaCell = n.is_self ? "—" : (
       n.link === "direct" ? "direct" :
-      n.link === "direct-udp" ? (n.nexthop && n.nexthop !== n.name ? `direct <span style="color:var(--muted)">(meta: ${n.nexthop})</span>` : "direct") :
-      (n.via && n.via !== n.name ? `via <b>${n.via}</b>` : (n.nexthop || "—"))
+      n.link === "direct-udp" ? (n.nexthop && n.nexthop !== n.name ? `direct <span style="color:var(--muted)">(meta: ${esc(n.nexthop)})</span>` : "direct") :
+      (n.via && n.via !== n.name ? `via <b>${esc(n.via)}</b>` : esc(n.nexthop || "—"))
     );
 
     return `<tr${rowStyle}>
       <td>${nameHtml}</td>
-      <td><code>${n.vpn_address || "—"}</code></td>
-      <td><code>${n.address && n.address !== "MYSELF" ? (n.address + ":" + (n.port||"655")) : "—"}</code></td>
+      <td><code>${esc(n.vpn_address || "—")}</code></td>
+      <td><code>${n.address && n.address !== "MYSELF" ? esc(n.address + ":" + (n.port||"655")) : "—"}</code></td>
       <td>${linkBadge}</td>
       <td>${directCell}</td>
       <td>${trBadge}</td>
@@ -744,7 +754,7 @@ function renderPeersTable(d) {
       <td>${n.pmtu > 0 ? `${n.pmtu} <span style="color:var(--muted)">(${n.pmtu_min}..${n.pmtu_max})</span>` : "—"}</td>
       <td>↓${fmtBytes(n.rx_bytes)} / ↑${fmtBytes(n.tx_bytes)}</td>
       <td><span style="font-size:11.5px;color:var(--muted);">${flags.join(" ") || "—"}</span></td>
-      <td><code>${(n.subnets || []).join(", ") || "—"}</code></td>
+      <td><code>${esc((n.subnets || []).join(", ") || "—")}</code></td>
       <td>${actions}</td>
     </tr>`;
   }).join("");
@@ -933,7 +943,7 @@ async function showPeerInfo(peer) {
   document.getElementById("modal-body").innerHTML = `<pre class="console">Загрузка...</pre>`;
   document.getElementById("modal-backdrop").style.display = "flex";
   const res = await apiPost("/api/action", {net: STATE.net, action: "peer_info", peer});
-  document.getElementById("modal-body").innerHTML = `<pre class="console">${res.output || res.message || "Нет данных"}</pre>`;
+  document.getElementById("modal-body").innerHTML = `<pre class="console">${esc(res.output || res.message || "Нет данных")}</pre>`;
 }
 
 async function editPeerHost(peer) {
@@ -945,7 +955,7 @@ async function editPeerHost(peer) {
     <p style="color:var(--muted);font-size:12px;margin-top:0;">Опции хоста (Address, Port, QuicPort, HttpsPort, ObfsPort, Subnet, PreferredTransports и ключи):</p>
     <textarea id="modal-host-text" class="code-editor" style="min-height:240px;"></textarea>
     <div class="row" style="margin-top:10px;">
-      <button class="primary" onclick="savePeerHost('${peer}')">💾 Сохранить хост и перезагрузить tincd</button>
+      <button class="primary" onclick="savePeerHost('${esc(peer)}')">💾 Сохранить хост и перезагрузить tincd</button>
     </div>
   `;
   document.getElementById("modal-host-text").value = bodyText;

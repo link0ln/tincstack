@@ -148,6 +148,73 @@ bool zeroconf_pool_first_host(const char *pool, char *out, size_t outlen) {
 	return true;
 }
 
+static bool zeroconf_pool_next_free_host(yamlconf_t *yc, const char *net, const char *pool, char *out, size_t outlen) {
+	uint32_t network;
+	int prefix;
+
+	if(!zeroconf_pool_parse(pool, &network, &prefix)) {
+		return false;
+	}
+
+	uint32_t hostmask = prefix >= 32 ? 0 : (0xffffffffu >> prefix);
+	uint32_t bcast = network | hostmask;
+	const char **hosts = yc && net ? yamlconf_host_names(yc, net) : NULL;
+
+	for(uint32_t cand = network + 1; cand < bcast && cand - network <= 4096; cand++) {
+		bool taken = false;
+
+		if(hosts) {
+			for(size_t i = 0; hosts[i] && !taken; i++) {
+				char *htext = yamlconf_host_text(yc, net, hosts[i]);
+
+				if(!htext) {
+					continue;
+				}
+
+				for(const char *p = htext; p && *p; p = strchr(p, '\n') ? strchr(p, '\n') + 1 : NULL) {
+					while(*p == ' ' || *p == '\t') {
+						p++;
+					}
+
+					if(strncasecmp(p, "Subnet", 6) || (p[6] != ' ' && p[6] != '\t' && p[6] != '=')) {
+						continue;
+					}
+
+					const char *v = p + 6;
+
+					while(*v == ' ' || *v == '\t' || *v == '=') {
+						v++;
+					}
+
+					unsigned int a, b, c, d;
+
+					if(sscanf(v, "%u.%u.%u.%u", &a, &b, &c, &d) == 4 &&
+					   a <= 255 && b <= 255 && c <= 255 && d <= 255) {
+						uint32_t ip = (a << 24) | (b << 16) | (c << 8) | d;
+
+						if(ip == cand) {
+							taken = true;
+							break;
+						}
+					}
+				}
+
+				free(htext);
+			}
+		}
+
+		if(!taken) {
+			free(hosts);
+			snprintf(out, outlen, "%u.%u.%u.%u/32",
+			         (cand >> 24) & 255, (cand >> 16) & 255, (cand >> 8) & 255, cand & 255);
+			return true;
+		}
+	}
+
+	free(hosts);
+	return zeroconf_pool_first_host(pool, out, outlen);
+}
+
 /* ---- picking a pool that does not collide with this machine -------------- */
 
 /* One IPv4 network this machine is directly attached to, in host order. */
@@ -761,7 +828,7 @@ static bool zeroconf_materialise_locked(bool reread) {
 		NOTE("AddressPool=%s ", pool);
 	}
 
-	if(!zeroconf_pool_first_host(pool, first, sizeof(first))) {
+	if(!zeroconf_pool_next_free_host(yc, netname, pool, first, sizeof(first))) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Invalid AddressPool `%s' in `%s' (expected IPv4 a.b.c.d/8..30)", pool, yamlconf_path);
 		free(name);
 		yamlconf_free(fresh ? yc : NULL);

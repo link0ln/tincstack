@@ -135,7 +135,7 @@ class TincYamlTest {
   fun writeLeavesNoTempFileBehind() {
     val f = yamlFile(DAEMON_DOC)
     TincYaml(f).setOptions("mynet", mapOf("MTU" to listOf("1400")))
-    assertEquals(listOf("tinc.yaml"), tmp.root.list()!!.toList())
+    assertEquals(listOf("tinc.yaml"), tmp.root.list()!!.filterNot { it.endsWith(".lock") })
   }
 
   @Test(expected = TincYaml.InvalidConfigurationException::class)
@@ -193,13 +193,17 @@ class TincYamlTest {
   }
 
   @Test
-  fun togglesPeerNoDirectAndUpdatesConnectTo() {
+  fun togglesPeerNoDirectAndPreservesConnectTo() {
     val f = yamlFile(DAEMON_DOC)
     val y = TincYaml(f)
     y.setHostMultiVars(
       "mynet",
       "hub",
-      mapOf("Address" to listOf("198.51.100.10"), "Subnet" to listOf("10.165.0.2/32")),
+      mapOf(
+        "Address" to listOf("198.51.100.10"),
+        "Subnet" to listOf("10.165.0.2/32"),
+        "IndirectData" to listOf("yes"),
+      ),
       createIfMissing = true,
     )
     assertEquals(false, y.isPeerNoDirect("mynet", "hub"))
@@ -207,13 +211,16 @@ class TincYamlTest {
     y.setPeerNoDirect("mynet", "hub", true)
     assertTrue(y.isPeerNoDirect("mynet", "hub"))
     assertEquals(listOf("hub"), y.optionValues("mynet", "NoDirectNodes"))
-    assertEquals(listOf("relay"), y.optionValues("mynet", "ConnectTo"))
+    assertEquals(listOf("hub", "relay"), y.optionValues("mynet", "ConnectTo"))
     assertTrue(PeerConfig("hub", y.hostText("mynet", "hub")!!).noDirect)
+    assertTrue(y.hostText("mynet", "hub")!!.contains("IndirectData = yes"))
 
     y.setPeerNoDirect("mynet", "hub", false)
     assertEquals(false, y.isPeerNoDirect("mynet", "hub"))
     assertEquals(emptyList<String>(), y.optionValues("mynet", "NoDirectNodes"))
+    assertEquals(listOf("hub", "relay"), y.optionValues("mynet", "ConnectTo"))
     assertEquals(false, PeerConfig("hub", y.hostText("mynet", "hub")!!).noDirect)
+    assertTrue(y.hostText("mynet", "hub")!!.contains("IndirectData = yes"))
   }
 
   companion object {

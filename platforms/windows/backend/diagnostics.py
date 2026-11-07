@@ -1252,6 +1252,16 @@ class DiagWebServer:
                 self._send_json({"ok": False, "error": "Not found"}, status=404)
 
             def do_POST(self) -> None:
+                origin = (self.headers.get("Origin") or "").strip()
+                if origin and origin != "null":
+                    try:
+                        o_host = (urllib.parse.urlparse(origin).hostname or "").lower()
+                        req_host = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
+                        if o_host and o_host not in ("127.0.0.1", "localhost", "::1", req_host):
+                            self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
+                            return
+                    except Exception:
+                        pass
                 parsed = urllib.parse.urlparse(self.path)
                 length = int(self.headers.get("Content-Length", "0") or 0)
                 raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -1699,7 +1709,7 @@ class DiagWebServer:
             carrier = str(payload.get("carrier") or payload.get("transport") or "auto").strip()
             if not nc or not peer:
                 return False, "Invalid network or peer", {}
-            if peer not in nc.hosts and os.path.exists(app.path):
+            if os.path.exists(app.path):
                 try:
                     yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
                 except Exception:
@@ -1728,7 +1738,7 @@ class DiagWebServer:
             peer = str(payload.get("peer") or "").strip()
             if not nc or not peer:
                 return False, "Invalid network or peer", {}
-            if peer not in nc.hosts and os.path.exists(app.path):
+            if os.path.exists(app.path):
                 try:
                     yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
                 except Exception:
@@ -1785,6 +1795,11 @@ class DiagWebServer:
             content = str(payload.get("content") or payload.get("text") or "").rstrip("\n")
             if not host:
                 return False, "Host name is empty", {}
+            if os.path.exists(app.path):
+                try:
+                    yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                except Exception:
+                    pass
             nc.hosts[host] = content
             blocked = nc.options.get("BlockedNodes")
             if isinstance(blocked, list):

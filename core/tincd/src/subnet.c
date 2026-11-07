@@ -204,13 +204,13 @@ void subnet_add(node_t *n, subnet_t *subnet) {
 }
 
 void subnet_del(node_t *n, subnet_t *subnet) {
+	subnet_cache_flush(subnet);
+
 	if(n) {
 		splay_delete(&n->subnet_tree, subnet);
 	}
 
 	splay_delete(&subnet_tree, subnet);
-
-	subnet_cache_flush(subnet);
 }
 
 /* Subnet lookup routines */
@@ -224,9 +224,11 @@ subnet_t *lookup_subnet_mac(const node_t *owner, const mac_t *address) {
 
 	// Check if this address is cached
 
-	if(r) {
+	if(r && (!owner || r->owner == owner)) {
 		return r;
 	}
+
+	r = NULL;
 
 	// Search all subnets for a matching one
 
@@ -244,9 +246,9 @@ subnet_t *lookup_subnet_mac(const node_t *owner, const mac_t *address) {
 		}
 	}
 
-	// Cache the result
+	// Cache the result only for global lookups so node-scoped queries do not poison mac_cache
 
-	if(r) {
+	if(r && !owner) {
 		hash_insert(mac_t, &mac_cache, address, r);
 	}
 

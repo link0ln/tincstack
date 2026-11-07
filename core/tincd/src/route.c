@@ -530,7 +530,7 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 			continue;
 		}
 
-		if(DATA(packet)[start + 21] != 4) {
+		if(DATA(packet)[start + 21 + i] != 4) {
 			break;
 		}
 
@@ -648,29 +648,42 @@ static void route_broadcast(node_t *source, vpn_packet_t *packet) {
 static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t ether_size, uint16_t path_mtu) {
 	struct ip ip;
 	vpn_packet_t fragment;
-	size_t maxlen, todo;
+	size_t maxlen, todo, ihl;
 	uint8_t *offset;
-	uint16_t ip_off, origf;
+	uint16_t ip_off, origf, ip_tot_len;
+
+	if(packet->len < ether_size + ip_size) {
+		return;
+	}
 
 	memcpy(&ip, DATA(packet) + ether_size, ip_size);
 	fragment.priority = packet->priority;
 	fragment.offset = DEFAULT_PACKET_OFFSET;
 
-	if(ip.ip_hl != ip_size / 4) {
+	ihl = (size_t)ip.ip_hl * 4;
+
+	if(ihl < ip_size || packet->len < ether_size + ihl) {
 		return;
 	}
 
-	todo = ntohs(ip.ip_len) - ip_size;
+	ip_tot_len = ntohs(ip.ip_len);
 
-	if(ether_size + ip_size + todo != packet->len) {
-		logger(DEBUG_TRAFFIC, LOG_WARNING, "Length of packet (%d) doesn't match length in IPv4 header (%lu)", packet->len, (unsigned long)(ether_size + ip_size + todo));
+	if(ip_tot_len < ihl || ether_size + ip_tot_len > packet->len) {
+		logger(DEBUG_TRAFFIC, LOG_WARNING, "Length of packet (%d) doesn't match length in IPv4 header (%lu)", packet->len, (unsigned long)(ether_size + ip_tot_len));
 		return;
 	}
+
+	todo = ip_tot_len - ihl;
 
 	logger(DEBUG_TRAFFIC, LOG_INFO, "Fragmenting packet of %d bytes to %s (%s)", packet->len, dest->name, dest->hostname);
 
-	offset = DATA(packet) + ether_size + ip_size;
-	maxlen = (MAX(path_mtu, 590) - ether_size - ip_size) & ~0x7;
+	offset = DATA(packet) + ether_size + ihl;
+	maxlen = (MAX(path_mtu, 590) - ether_size - ihl) & ~0x7;
+
+	if(!maxlen) {
+		return;
+	}
+
 	ip_off = ntohs(ip.ip_off);
 	origf = (ip_off & ~IP_OFFMASK) & ~IP_DF;
 	ip_off &= IP_OFFMASK;
@@ -688,17 +701,18 @@ static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t et
 
 	while(todo) {
 		size_t len = todo > maxlen ? maxlen : todo;
-		memcpy(DATA(&fragment) + ether_size + ip_size, offset, len);
+		memcpy(DATA(&fragment) + ether_size + ihl, offset, len);
 		todo -= len;
 		offset += len;
 
-		ip.ip_len = htons(ip_size + len);
+		ip.ip_len = htons(ihl + len);
 		ip.ip_off = htons(ip_off | origf | (todo ? IP_MF : 0));
 		ip.ip_sum = 0;
-		ip.ip_sum = inet_checksum(&ip, ip_size, 0xFFFF);
 		memcpy(DATA(&fragment), DATA(packet), ether_size);
+		memcpy(DATA(&fragment) + ether_size, DATA(packet) + ether_size, ihl);
 		memcpy(DATA(&fragment) + ether_size, &ip, ip_size);
-		fragment.len = ether_size + ip_size + len;
+		((struct ip *)(DATA(&fragment) + ether_size))->ip_sum = inet_checksum(DATA(&fragment) + ether_size, ihl, 0xFFFF);
+		fragment.len = ether_size + ihl + len;
 
 		send_packet(dest, &fragment);
 

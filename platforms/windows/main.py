@@ -455,7 +455,7 @@ class PeersTab(QtWidgets.QWidget):
             return
         mode_str = "relay-only (no direct connect)" if no_direct else "direct connect allowed"
         diagnostics.log_app_event(f"Setting peer '{peer_name}' to {mode_str} on network '{net}'")
-        if peer_name not in nc.hosts and os.path.exists(ctx.app.path):
+        if os.path.exists(ctx.app.path):
             try:
                 yaml_config.refresh_in_place(ctx.app, yaml_config.read_document(ctx.app.path))
             except Exception:
@@ -480,6 +480,8 @@ class PeersTab(QtWidgets.QWidget):
             snap.nodes[peer_name].no_direct = no_direct
         if hasattr(ctx, "network"):
             ctx.network.reload()
+        if hasattr(ctx, "transports"):
+            ctx.transports.reload()
         self._pop_direct_cell(peer_name)
         self._pop_transport_cell(peer_name)
         if self._menu_open_count > 0:
@@ -630,7 +632,7 @@ class PeersTab(QtWidgets.QWidget):
         if nc is None:
             return
         diagnostics.log_app_event(f"Switching peer '{peer_name}' transport to '{carrier}' on network '{net}'")
-        if peer_name not in nc.hosts and os.path.exists(ctx.app.path):
+        if os.path.exists(ctx.app.path):
             try:
                 yaml_config.refresh_in_place(ctx.app, yaml_config.read_document(ctx.app.path))
             except Exception:
@@ -661,6 +663,8 @@ class PeersTab(QtWidgets.QWidget):
             return
         if hasattr(ctx, "network"):
             ctx.network.reload()
+        if hasattr(ctx, "transports"):
+            ctx.transports.reload()
         self._pop_transport_cell(peer_name)
         if self._menu_open_count > 0:
             self._deferred_table_refresh = True
@@ -819,6 +823,8 @@ class PeersTab(QtWidgets.QWidget):
             self._pop_route_cell(node.name)
             self._table(self._snaps.get(net))
             return
+        if hasattr(ctx, "network"):
+            ctx.network.reload()
         self._pop_route_cell(node.name)
         verb = "added" if on else "removed"
         if not ctx._running.get(net, False):
@@ -1205,6 +1211,8 @@ class NetworkTab(QtWidgets.QWidget):
         nc.autostart = self.autostart.isChecked()
         nc.wintun_mtu = mtu
         self.ctx.save_config("config saved (restart network to apply)")
+        if hasattr(self.ctx, "transports"):
+            self.ctx.transports.reload()
 
 
 # ---- Transports tab -----------------------------------------------------------
@@ -1265,6 +1273,8 @@ class TransportsTab(QtWidgets.QWidget):
             return True
         transports.apply_changes(nc.options, delta)
         self.ctx.save_config("transports saved: " + ", ".join(delta) + " (restart network to apply)")
+        if hasattr(self.ctx, "network"):
+            self.ctx.network.reload()
         net = self.ctx.cur_net()
         diagnostics.log_app_event(f"Transports saved for '{net or ''}': {delta}")
         if net and "MultipathMode" in delta and self.ctx._running.get(net):
@@ -1649,7 +1659,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 nc.options[key] = value
             else:
                 nc.options.pop(key, None)
-        return self.save_config(f"certificate settings saved for '{self.cur_net()}'")
+        ok = self.save_config(f"certificate settings saved for '{self.cur_net()}'")
+        if ok:
+            self.network.reload()
+            self.transports.reload()
+        return ok
 
     def open_join(self) -> JoinDialog | None:
         dlg = JoinDialog(self, list(self.app.networks), self.tc.join, self.pool)
@@ -1695,14 +1709,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.pool.run(self.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}")
             # If tincd exited unexpectedly while the network was supposed to be running,
             # automatically restart it so the user does not have to manually start it again.
-            if (not up and prev.get(net, False) and self._wanted_running.get(net, False)
+            if (not up and self._wanted_running.get(net, False)
                     and self.admin and not self.quitting_or_busy(net)
                     and (now - self._last_autorestart.get(net, 0.0)) >= 10.0):
                 self._last_autorestart[net] = now
                 self._lifecycle(self.rt.start, net, "auto-restart")
 
     def quitting_or_busy(self, net: str) -> bool:
-        return bool(getattr(self, "_quitting", False) or self.pool.busy(f"life-{net}"))
+        return bool(
+            getattr(self, "_quitting", False)
+            or self.pool.busy(f"life-{net}")
+            or self.pool.busy("autostart")
+        )
 
     def _select_net(self, name: str) -> bool:
         for i in range(self.net_list.count()):
@@ -2200,6 +2218,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def done(result: tuple[bool, str]) -> None:
             _ok, msg = result
+            if not _ok and label == "start":
+                self._wanted_running[net] = False
             diagnostics.log_app_event(f"Lifecycle '{label}' finished for '{net}': ok={_ok}, msg={msg}")
             self.status(f"{label} {net}: {msg}")
             self.peers.sample_async()
@@ -2441,6 +2461,7 @@ def main() -> None:
                                        + (f"\n\n{note}" if note else ""))
         sys.exit(1)
     w = MainWindow(cfg)
+    app.aboutToQuit.connect(w.rt.stop_all)
     w.show()
     note = "; ".join(n for n in (note, w.rt.stage_note) if n)
     ok, msg = paths.binaries_present()

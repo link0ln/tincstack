@@ -390,7 +390,10 @@ def apply_patch(doc: dict, patch: dict[tuple, Any]) -> dict:
 
 
 from contextlib import contextmanager
+import threading
 import time
+
+_MEM_LOCK = threading.RLock()
 
 
 @contextmanager
@@ -403,19 +406,29 @@ def _file_lock(path: str):
         os.makedirs(d, exist_ok=True)
     if sys.platform == "win32":
         import ctypes
+        from ctypes import wintypes
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        handle = -1
+        k32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        invalid = wintypes.HANDLE(-1).value
+        handle = None
         for _ in range(200):
             h = k32.CreateFileW(lockpath, 0xC0000000, 0, None, 4, 0x80, None)
-            if h not in (-1, 0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+            if h not in (None, 0, -1, invalid):
                 handle = h
                 break
             time.sleep(0.05)
+        if handle is None:
+            raise ConfigError(f"{path}: timed out waiting for lock {lockpath}")
         try:
             yield
         finally:
-            if handle not in (-1, 0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
-                k32.CloseHandle(handle)
+            k32.CloseHandle(handle)
     else:
         import fcntl
         fd = os.open(lockpath, os.O_RDWR | os.O_CREAT, 0o600)
@@ -439,48 +452,53 @@ def save(app: AppConfig, path: str | None = None) -> str:
     (ConfigError) rather than overwritten. Saving to another path is a plain
     full export.
     """
-    target = path or app.path
-    if not target:
-        raise ConfigError("no path to save to")
-    wanted = to_dict(app)
-    if path and os.path.abspath(path) != os.path.abspath(app.path or ""):
+    with _MEM_LOCK:
+        target = path or app.path
+        if not target:
+            raise ConfigError("no path to save to")
+        wanted = to_dict(app)
+        if path and os.path.abspath(path) != os.path.abspath(app.path or ""):
+            with _file_lock(target):
+                atomic_write_text(target, dump_text(wanted))
+            return target
+        patch = diff_documents(app.baseline, wanted)
         with _file_lock(target):
-            atomic_write_text(target, dump_text(wanted))
+            current = read_document(target)          # the daemon may have written meanwhile
+            merged = apply_patch(current, patch) if patch else current
+            if patch or not os.path.exists(target):
+                atomic_write_text(target, dump_text(merged))
+        # absorb what the daemon wrote so the model (and the next diff) start from
+        # the file as it is now, not from the GUI's stale view of it
+        refresh_in_place(app, merged)
         return target
-    patch = diff_documents(app.baseline, wanted)
-    with _file_lock(target):
-        current = read_document(target)          # the daemon may have written meanwhile
-        merged = apply_patch(current, patch) if patch else current
-        if patch or not os.path.exists(target):
-            atomic_write_text(target, dump_text(merged))
-    # absorb what the daemon wrote so the model (and the next diff) start from
-    # the file as it is now, not from the GUI's stale view of it
-    refresh_in_place(app, merged)
-    return target
 
 
 def refresh_in_place(app: AppConfig, doc: dict) -> None:
     """Update `app` from a raw document without replacing the NetworkCfg
     objects the GUI may still hold references to."""
-    fresh = from_document(doc, app.path)
-    app.workdir = fresh.workdir
-    app.extra = fresh.extra
-    for name in list(app.networks):
-        if name not in fresh.networks:
-            del app.networks[name]
-    for name, fnc in fresh.networks.items():
-        nc = app.networks.get(name)
-        if nc is None:
-            app.networks[name] = fnc
-            continue
-        nc.autostart = fnc.autostart
-        nc.wintun_mtu = fnc.wintun_mtu
-        nc.full_tunnel = fnc.full_tunnel
-        for attr in ("options", "hosts", "keys", "scripts", "extra"):
-            d = getattr(nc, attr)
-            d.clear()
-            d.update(getattr(fnc, attr))
-    app.baseline = copy.deepcopy(doc)
+    with _MEM_LOCK:
+        fresh = from_document(doc, app.path)
+        app.workdir = fresh.workdir
+        app.extra = fresh.extra
+        for name in list(app.networks):
+            if name not in fresh.networks:
+                del app.networks[name]
+        for name, fnc in fresh.networks.items():
+            nc = app.networks.get(name)
+            if nc is None:
+                app.networks[name] = fnc
+                continue
+            nc.autostart = fnc.autostart
+            nc.wintun_mtu = fnc.wintun_mtu
+            nc.full_tunnel = fnc.full_tunnel
+            for attr in ("options", "hosts", "keys", "scripts", "extra"):
+                d = getattr(nc, attr)
+                src = getattr(fnc, attr)
+                for k in list(d):
+                    if k not in src:
+                        d.pop(k, None)
+                d.update(src)
+        app.baseline = copy.deepcopy(doc)
 
 
 def save_text(path: str, text: str) -> None:

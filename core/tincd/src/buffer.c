@@ -33,6 +33,10 @@ void buffer_compact(buffer_t *buffer, uint32_t maxsize) {
 // Make sure we can add size bytes to the buffer, and return a pointer to the start of those bytes.
 
 char *buffer_prepare(buffer_t *buffer, uint32_t size) {
+	if(size > UINT32_MAX - buffer->len) {
+		abort();
+	}
+
 	if(!buffer->data) {
 		buffer->maxlen = size;
 		buffer->data = xmalloc(size);

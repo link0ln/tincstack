@@ -1281,6 +1281,7 @@ bool ack_h(connection_t *c, const char *request) {
 	n = lookup_node(c->name);
 
 	if(!n) {
+		c->status.multipath_sub = false;
 		n = new_node(c->name);
 		node_add(n);
 		n->connection = c;
@@ -1294,11 +1295,45 @@ bool ack_h(connection_t *c, const char *request) {
 				is_secondary_mp = (n->connection != c);
 			} else {
 				c->status.multipath_sub = false;
+
+				/* Simultaneous dial glare tie-break: if we already have a freshly
+				   activated connection to `n' (within 5s) and one link was dialled
+				   by us while the other was dialled by the peer on an equal-rank
+				   carrier, both sides keep the link dialled by the lexicographically
+				   smaller node name instead of killing each other's link. */
+				bool existing_we_dialled = (n->connection->outgoing != NULL);
+				bool peer_outranks = n->connection->outgoing && transport_outranks_connection(n->connection->outgoing, c);
+
+				if(!carrier_upgrade && !peer_outranks &&
+				                n->connection->status.active && n->connection->edge &&
+				                now.tv_sec - n->connection->activated_at <= 5 &&
+				                we_dialled != existing_we_dialled &&
+				                strcmp(myself->name, n->name) != 0) {
+					bool keep_existing = (strcmp(myself->name, n->name) < 0) ? !we_dialled : we_dialled;
+
+					if(keep_existing) {
+						logger(DEBUG_CONNECTIONS, LOG_DEBUG,
+						       "Simultaneous connection with %s (%s), keeping existing connection (glare tie-break)",
+						       c->name, c->hostname);
+
+						if(c->outgoing) {
+							if(!n->connection->outgoing) {
+								n->connection->outgoing = c->outgoing;
+								transport_candidate_activated(n->connection->outgoing, n->connection);
+							}
+
+							c->outgoing = NULL;
+						}
+
+						return false;
+					}
+				}
+
 				/* Oh dear, we already have a connection to this node. */
 				logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Established a second connection with %s (%s), closing old connection", n->connection->name, n->connection->hostname);
 
 				if(n->connection->outgoing) {
-					if(c->outgoing) {
+					if(c->outgoing && c->outgoing != n->connection->outgoing) {
 						logger(DEBUG_ALWAYS, LOG_WARNING, "Two outgoing connections to the same node!");
 					} else {
 						c->outgoing = n->connection->outgoing;
@@ -1307,8 +1342,36 @@ bool ack_h(connection_t *c, const char *request) {
 					n->connection->outgoing = NULL;
 				}
 
-				multipath_node_del_connection(n, n->connection);
-				terminate_connection(n->connection, false);
+				connection_t *old_primary = n->connection;
+				n->connection = NULL;
+				multipath_node_del_connection(n, old_primary);
+
+				list_t old_secondaries = {
+					.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+				};
+
+				for list_each(connection_t, sec, &n->connections) {
+					if(sec != c && sec != old_primary) {
+						list_insert_tail(&old_secondaries, sec);
+					}
+				}
+
+				list_empty_list(&n->connections);
+
+				for list_each(connection_t, sec, &old_secondaries) {
+					if(connection_is_live(sec)) {
+						sec->status.multipath_sub = false;
+						sec->edge = NULL;
+						terminate_connection(sec, false);
+					}
+				}
+
+				list_empty_list(&old_secondaries);
+
+				if(connection_is_live(old_primary)) {
+					terminate_connection(old_primary, false);
+				}
+
 				/* Run graph algorithm to purge key and make sure up/down scripts are rerun with new IP addresses and stuff */
 				graph();
 				n->connection = c;
@@ -1316,6 +1379,7 @@ bool ack_h(connection_t *c, const char *request) {
 				multipath_node_add_connection(n, c);
 			}
 		} else {
+			c->status.multipath_sub = false;
 			n->connection = c;
 			c->node = n;
 			multipath_node_add_connection(n, c);

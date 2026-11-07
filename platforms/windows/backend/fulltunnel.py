@@ -259,14 +259,15 @@ class FullTunnel:
     def _connect_to_ips(self, options: dict, hosts: dict, own: str = "") -> set[str]:
         out = set()
         now = self.clock()
-        targets = list(connect_to_hosts(options, hosts))
+        ct_targets = list(connect_to_hosts(options, hosts))
+        extra_targets: list[str] = []
         for name, text in (hosts or {}).items():
             if own and str(name).strip() == own:
                 continue
             for a in host_addresses(text):
-                if a not in targets:
-                    targets.append(a)
-        for host in targets:
+                if a not in ct_targets and a not in extra_targets:
+                    extra_targets.append(a)
+        for host in ct_targets:
             ip = _ipv4(host)
             if ip:
                 out.add(str(ip))
@@ -277,6 +278,21 @@ class FullTunnel:
                     ips = [str(_ipv4(a)) for a in self.system.resolve(host) if _ipv4(a)]
                 except OSError:
                     ips = ips or []   # keep the last answer while DNS is down
+                self._resolved[host] = (now + RESOLVE_TTL, ips)
+            out.update(ips)
+        for host in extra_targets:
+            ip = _ipv4(host)
+            if ip:
+                out.add(str(ip))
+                continue
+            exp, ips = self._resolved.get(host, (0.0, []))
+            # Avoid blocking on DNS queries for non-ConnectTo hosts while the
+            # split tunnel is active (when DNS itself may traverse a broken tunnel).
+            if now >= exp and self.split_if is None:
+                try:
+                    ips = [str(_ipv4(a)) for a in self.system.resolve(host) if _ipv4(a)]
+                except OSError:
+                    ips = ips or []
                 self._resolved[host] = (now + RESOLVE_TTL, ips)
             out.update(ips)
         return out
@@ -324,9 +340,9 @@ class FullTunnel:
         failed = {}
         for ip in sorted(want):
             have = self.pins.get(ip)
-            if have == gw:
+            if have == gw and has_route(table, f"{ip}/32", gw.ifindex):
                 continue
-            if have is not None:
+            if have is not None and have != gw:
                 sysm.delete_route(f"{ip}/32", have.ifindex, have.via)
             ok, msg = sysm.add_route(f"{ip}/32", gw.ifindex, gw.via)
             if ok:
@@ -416,14 +432,19 @@ class Maintainer(threading.Thread):
                 if getattr(snap, "error", ""):
                     daemon_errors += 1
                     self.ft.state = "waiting for the daemon"
-                    if daemon_errors >= 2 and self.ft.split_if is not None:
-                        lines: list[str] = [
-                            f"full tunnel: daemon unresponsive ({snap.error}) -- "
-                            f"removing split routes (fail-open)"
-                        ]
-                        self.ft._remove_split(lines)
-                        for line in lines:
-                            self._log(line)
+                    if daemon_errors >= 2:
+                        if self.ft.split_if is not None:
+                            lines: list[str] = [
+                                f"full tunnel: daemon unresponsive ({snap.error}) -- "
+                                f"removing split routes (fail-open)"
+                            ]
+                            self.ft._remove_split(lines)
+                            for line in lines:
+                                self._log(line)
+                        if self.ft.pins and self.ft.system.ifindex(self.ft.aliases) is None:
+                            for line in self.ft.stop():
+                                self._log(line)
+                            self.ft.state = "waiting for the daemon"
                 else:
                     daemon_errors = 0
                     options, hosts, own = self._config()

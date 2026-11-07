@@ -875,6 +875,10 @@ bool multipath_accept_secondary(node_t *n, connection_t *c) {
 		return false;
 	}
 
+	if(c->transport && (c->transport->id == TRANSPORT_SF || c->transport->id == TRANSPORT_OBFS)) {
+		return false;
+	}
+
 	multipath_node_add_connection(n, n->connection);
 
 	/* If n->connections already reached the cap, check if the oldest secondary
@@ -1502,11 +1506,11 @@ static void dial_secondary_connection(outgoing_t *outgoing) {
 
 	const sockaddr_t *sa = NULL;
 
-	for(int attempt = 0; attempt < 8; attempt++) {
-		const sockaddr_t *cand = get_recent_address(n->address_cache);
+	for(uint32_t i = 0; i < n->address_cache->data.used; i++) {
+		const sockaddr_t *cand = &n->address_cache->data.address[i];
 
-		if(!cand) {
-			break;
+		if(!cand->sa.sa_family || address_routes_via_vpn(cand)) {
+			continue;
 		}
 
 		bool already_used = false;
@@ -1526,7 +1530,6 @@ static void dial_secondary_connection(outgoing_t *outgoing) {
 	}
 
 	if(!sa) {
-		reset_address_cache(n->address_cache);
 		sa = &n->connection->base_address;
 	}
 
@@ -1549,6 +1552,7 @@ static void dial_secondary_connection(outgoing_t *outgoing) {
 	c->transport = t;
 	c->uplink_idx = multipath_pick_next_uplink(n);
 	c->status.multipath_sub = true;
+	connection_snapshot_host_config(c);
 
 	logger(DEBUG_CONNECTIONS, LOG_INFO,
 	       "multipath: dialling parallel connection to %s (%s) via %s (uplink=%d)",

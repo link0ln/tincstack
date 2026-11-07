@@ -721,24 +721,24 @@ size_t sptps_receive_data(sptps_t *s, const void *vdata, size_t len) {
 	s->inbuf[s->reclen + 3UL] = 0;
 
 	uint8_t type = s->inbuf[2];
+	uint16_t reclen = s->reclen;
+	s->buflen = 0;
 
 	if(type < SPTPS_HANDSHAKE) {
 		if(!s->instate) {
 			return error(s, EIO, "Application record received before handshake finished");
 		}
 
-		if(!s->receive_record(s->handle, type, s->inbuf + 3, s->reclen)) {
+		if(!s->receive_record(s->handle, type, s->inbuf + 3, reclen)) {
 			return false;
 		}
 	} else if(type == SPTPS_HANDSHAKE) {
-		if(!receive_handshake(s, s->inbuf + 3, s->reclen)) {
+		if(!receive_handshake(s, s->inbuf + 3, reclen)) {
 			return false;
 		}
 	} else {
 		return error(s, EIO, "Invalid record type %d", type);
 	}
-
-	s->buflen = 0;
 
 	return total_read;
 }

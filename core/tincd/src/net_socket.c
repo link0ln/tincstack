@@ -827,6 +827,17 @@ bool do_outgoing_connection(outgoing_t *outgoing) {
 
 	outgoing->retry_requested = false;
 
+	if(!outgoing->node || outgoing->node->status.no_direct ||
+	                node_is_no_direct(outgoing->node->name) || outgoing->node->remote_no_direct) {
+		timeout_del(&outgoing->ev);
+
+		if(!outgoing->from_config) {
+			list_delete(&outgoing_list, outgoing);
+		}
+
+		return false;
+	}
+
 begin:
 	sa = get_recent_address(outgoing->node->address_cache);
 	t = NULL;
@@ -868,6 +879,7 @@ begin:
 	c->last_ping_time = now.tv_sec;
 	c->transport = t;
 	c->uplink_idx = multipath_pick_next_uplink(outgoing->node);
+	connection_snapshot_host_config(c);
 
 	if(fallback) {
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "No address of %s accepts a meta connection, but its UDP data path is direct: dialling %s (%s) via %s", outgoing->node->name, outgoing->node->name, c->hostname, t->name);
@@ -898,8 +910,11 @@ void setup_outgoing_connection(outgoing_t *outgoing, bool verbose) {
 
 	node_t *n = outgoing->node;
 
-	if(n->status.no_direct || node_is_no_direct(n->name)) {
-		list_delete(&outgoing_list, outgoing);
+	if(!n || n->status.no_direct || node_is_no_direct(n->name) || n->remote_no_direct) {
+		if(!outgoing->from_config) {
+			list_delete(&outgoing_list, outgoing);
+		}
+
 		return;
 	}
 
@@ -1166,7 +1181,7 @@ void try_outgoing_connections(void) {
 			continue;
 		}
 
-		if(!strcmp(name, myself->name) || node_is_blocked(name) || node_is_no_direct(name)) {
+		if(!strcmp(name, myself->name) || node_is_blocked(name)) {
 			free(name);
 			continue;
 		}
@@ -1202,13 +1217,29 @@ void try_outgoing_connections(void) {
 
 	/* Terminate any connections whose outgoing_t is to be deleted. */
 
+	list_t victims = {
+		.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+	};
+
 	for list_each(connection_t, c, &connection_list) {
+		if(c->outgoing && c->outgoing->timeout == -1) {
+			list_insert_tail(&victims, c);
+		}
+	}
+
+	for list_each(connection_t, c, &victims) {
+		if(!connection_is_live(c)) {
+			continue;
+		}
+
 		if(c->outgoing && c->outgoing->timeout == -1) {
 			c->outgoing = NULL;
 			logger(DEBUG_CONNECTIONS, LOG_INFO, "No more outgoing connection to %s", c->name);
 			terminate_connection(c, c->edge);
 		}
 	}
+
+	list_empty_list(&victims);
 
 	/* Delete outgoing_ts for which there is no ConnectTo. */
 

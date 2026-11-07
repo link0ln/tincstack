@@ -226,7 +226,8 @@ static void evaluate_key_quorum(node_t *target) {
 	uint32_t total_votes = target->quorum_votes_new + target->quorum_votes_old;
 	bool approved = false;
 
-	if(target->quorum_direct_new >= 1) {
+	if(target->quorum_direct_new >= 1 &&
+	                (total_votes >= target->quorum_asked_peers || target->quorum_votes_new >= 2 || target->quorum_asked_peers <= 1)) {
 		/* At least one direct graph neighbor of `target' (which authenticated
 		   `target' on its meta edge) confirmed the new key, and no peer in the
 		   mesh holds a verified session under the old key. */
@@ -238,10 +239,12 @@ static void evaluate_key_quorum(node_t *target) {
 		approved = true;
 	} else if(target->quorum_asked_peers > 0 &&
 	                total_votes >= target->quorum_asked_peers &&
-	                target->quorum_votes_new > target->quorum_votes_old) {
+	                target->quorum_votes_new > target->quorum_votes_old &&
+	                (target->quorum_votes_new >= 2 || target->quorum_direct_new >= 1 || target->quorum_asked_peers == 1)) {
 		/* All queried peers with a key responded and the majority confirmed it. */
 		approved = true;
-	} else if(target->quorum_votes_new >= 2 && target->quorum_votes_old == 0) {
+	} else if(target->quorum_votes_new >= 2 && target->quorum_votes_old == 0 &&
+	                total_votes >= target->quorum_asked_peers) {
 		/* At least two independent mesh peers unanimously confirmed the new key. */
 		approved = true;
 	}
@@ -744,12 +747,14 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		from->quorum_voted_at = target->pending_pubkey_time;
 
 		if(!(flags & KEY_QUORUM_FLAG_HAS_KEY) || !strcmp(voted_pubkey, "-")) {
-			if(target->quorum_asked_peers > 0) {
+			if(target->quorum_asked_peers > target->quorum_votes_new + target->quorum_votes_old + 1) {
 				target->quorum_asked_peers--;
 			}
 		} else {
-			bool is_direct = (flags & KEY_QUORUM_FLAG_DIRECT_EDGE) || lookup_edge(from, target) || lookup_edge(target, from);
-			bool is_verified = (flags & (KEY_QUORUM_FLAG_DIRECT_EDGE | KEY_QUORUM_FLAG_VALID_SPTPS)) != 0;
+			bool has_graph_edge = lookup_edge(from, target) != NULL || lookup_edge(target, from) != NULL;
+			bool is_direct = has_graph_edge && ((flags & KEY_QUORUM_FLAG_DIRECT_EDGE) != 0);
+			bool is_verified = (has_graph_edge && (flags & KEY_QUORUM_FLAG_DIRECT_EDGE)) ||
+			                   ((flags & KEY_QUORUM_FLAG_VALID_SPTPS) != 0);
 
 			if(!strcmp(voted_pubkey, target->pending_pubkey)) {
 				target->quorum_votes_new++;

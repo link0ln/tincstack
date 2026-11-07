@@ -42,9 +42,12 @@ object Tincd {
   /** The log file is appended to by every launch; above this it is cut back to its tail. */
   private const val LOG_MAX_BYTES = 1L shl 20
 
+  @Volatile
+  private var activeProcess: Process? = null
+
   fun start(netName: String, stanza: String, device: String): CompletableFuture<Unit> {
     trimLog(AppPaths.logFile(netName))
-    return Executor.call(Command(AppPaths.tincd().absolutePath)
+    val cmd = Command(AppPaths.tincd().absolutePath)
       .withOption("no-detach")
       .withOption("debug", LOG_LEVEL.toString())
       .withOption("config", AppPaths.tincYamlFile(netName).absolutePath)
@@ -53,7 +56,32 @@ object Tincd {
       .withOption("logfile", AppPaths.logFile(netName).absolutePath)
       .withOption("option", "DeviceType=fd")
       .withOption("option", "Device=@$device")
-    ).thenApply { }
+    val process = Executor.run(cmd)
+    activeProcess = process
+    val stderrFuture = Executor.supplyAsyncTask {
+      process.errorStream.bufferedReader().use { it.readLines() }
+    }
+    return Executor.supplyAsyncTask {
+      try {
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+          throw Executor.CommandExecutionException(
+            stderrFuture.get().lastOrNull() ?: "Non-zero exit status ($exitCode)."
+          )
+        }
+      } finally {
+        if (activeProcess === process) activeProcess = null
+      }
+    }
+  }
+
+  fun killForcefully() {
+    val p = activeProcess ?: return
+    try {
+      p.destroyForcibly()
+    } catch (_: Exception) {
+      try { p.destroy() } catch (_: Exception) {}
+    }
   }
 
   private fun trimLog(log: File) {

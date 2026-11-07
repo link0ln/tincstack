@@ -193,6 +193,20 @@ void connection_del(connection_t *c) {
 	list_delete(&connection_list, c);
 }
 
+bool connection_is_live(const connection_t *target) {
+	if(!target) {
+		return false;
+	}
+
+	for list_each(connection_t, cur, &connection_list) {
+		if(cur == target) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool dump_connections(connection_t *cdump) {
 	for list_each(connection_t, c, &connection_list) {
 		/* Trailing carrier name ("plain" if none), so `tinc dump connections'

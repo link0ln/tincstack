@@ -23,6 +23,9 @@ import org.yaml.snakeyaml.Yaml
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
+import java.io.RandomAccessFile
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * The one tincstack configuration file of a network (`tinc.yaml`, see
@@ -126,10 +129,11 @@ class TincYaml(val file: File) {
     return PeerConfig(peer, hText).noDirect
   }
 
-  /** Enable or disable relay-only mode (`NoDirectNodes` / `DirectConnect = no`) for [peerName]. */
-  fun setPeerNoDirect(net: String, peerName: String, noDirect: Boolean) {
+  /** Enable or disable relay-only mode (`NoDirectNodes` / `DirectConnect = no`) for [peerName].
+   *  Preserves `ConnectTo` and `IndirectData` as lower-level topology declarations. */
+  fun setPeerNoDirect(net: String, peerName: String, noDirect: Boolean) = withFileLock {
     val peer = peerName.trim()
-    if (peer.isEmpty()) return
+    if (peer.isEmpty()) return@withFileLock
     val ndList = optionValues(net, "NoDirectNodes")
       .flatMap { it.split(Regex("[\\s,;]+")) }
       .map { it.trim() }
@@ -140,13 +144,6 @@ class TincYaml(val file: File) {
       if (ndList.none { it.equals(peer, ignoreCase = true) }) {
         ndList.add(peer)
       }
-      val ctList = optionValues(net, "ConnectTo")
-        .flatMap { it.split(Regex("[\\s,;]+")) }
-        .map { it.trim() }
-        .filter { it.isNotEmpty() && !it.equals(peer, ignoreCase = true) }
-      if (ctList != optionValues(net, "ConnectTo")) {
-        optChanges["ConnectTo"] = ctList.ifEmpty { null }
-      }
     } else {
       ndList.removeAll { it.equals(peer, ignoreCase = true) }
     }
@@ -156,14 +153,14 @@ class TincYaml(val file: File) {
       val hostChanges = if (noDirect) {
         mapOf("DirectConnect" to "no")
       } else {
-        mapOf("DirectConnect" to null, "IndirectData" to null)
+        mapOf("DirectConnect" to null)
       }
       setHostVars(net, peer, hostChanges)
     }
   }
 
   /** Replace or create the full host record `networks.<net>.hosts.<name>` with [newText]. */
-  fun setHostText(net: String, name: String, newText: String) {
+  fun setHostText(net: String, name: String, newText: String) = withFileLock {
     val normalized = newText.trimEnd()
     val original = hostText(net, name)?.trimEnd()
     if (normalized != original || original == null) {
@@ -175,7 +172,7 @@ class TincYaml(val file: File) {
   fun readRawText(): String = if (file.exists()) file.readText() else ""
 
   /** Validate that [newText] is a valid `tinc.yaml` mapping and write it atomically. */
-  fun writeRawText(newText: String) {
+  fun writeRawText(newText: String) = withFileLock {
     val root = try {
       newYaml().load<Any?>(newText)
     } catch (e: Exception) {
@@ -209,15 +206,15 @@ class TincYaml(val file: File) {
    * rest of the document is preserved verbatim. Missing `networks:` / `<net>:`
    * / `options:` scaffolding is created.
    */
-  fun setOptions(net: String, changes: Map<String, List<String>?>) {
-    if (changes.isEmpty()) return
+  fun setOptions(net: String, changes: Map<String, List<String>?>) = withFileLock {
+    if (changes.isEmpty()) return@withFileLock
     val original = if (file.exists()) file.readText() else ""
     val edited = splice(original, net, changes)
     if (edited != original) writeAtomically(edited)
   }
 
   /** Create the file with a minimal stanza (`Name` only); the daemon fills in the rest at first start. */
-  fun createNetwork(net: String, nodeName: String) {
+  fun createNetwork(net: String, nodeName: String) = withFileLock {
     if (file.exists()) throw IOException("${file.absolutePath} already exists")
     file.parentFile?.mkdirs()
     writeAtomically(splice("", net, mapOf("Name" to listOf(nodeName))))
@@ -230,8 +227,8 @@ class TincYaml(val file: File) {
    * place. A value of null removes all lines of that key; a value with no
    * existing line is appended to the end of the record's `Key = value` lines.
    */
-  fun setHostVars(net: String, name: String, changes: Map<String, String?>) {
-    if (changes.isEmpty()) return
+  fun setHostVars(net: String, name: String, changes: Map<String, String?>) = withFileLock {
+    if (changes.isEmpty()) return@withFileLock
     val original = hostText(net, name)
       ?: throw InvalidConfigurationException("no host record for '$name' in ${file.name}")
     val edited = spliceHostVars(original, changes)
@@ -242,8 +239,8 @@ class TincYaml(val file: File) {
    * Rewrite single- or multi-value `Key = value` lines inside `networks.<net>.hosts.<name>`,
    * creating the host record if it does not yet exist.
    */
-  fun setHostMultiVars(net: String, name: String, changes: Map<String, List<String>?>, createIfMissing: Boolean = true) {
-    if (changes.isEmpty() && hostText(net, name) != null) return
+  fun setHostMultiVars(net: String, name: String, changes: Map<String, List<String>?>, createIfMissing: Boolean = true) = withFileLock {
+    if (changes.isEmpty() && hostText(net, name) != null) return@withFileLock
     val original = hostText(net, name)
       ?: if (createIfMissing) "" else throw InvalidConfigurationException("no host record for '$name' in ${file.name}")
     val edited = spliceHostMultiVars(original, changes)
@@ -330,10 +327,12 @@ class TincYaml(val file: File) {
     var parsed = rawLines.map(::Line)
     val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
     require(netsIdx >= 0) { "no networks: section in ${file.name}" }
+    if (stripEmptyFlowMap(rawLines, netsIdx)) parsed = rawLines.map(::Line)
     val netsEnd = blockEnd(parsed, netsIdx)
     val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
     val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
     require(netIdx >= 0) { "no network '$net' in ${file.name}" }
+    if (stripEmptyFlowMap(rawLines, netIdx)) parsed = rawLines.map(::Line)
     var netEnd = blockEnd(parsed, netIdx)
     val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
     var hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
@@ -344,6 +343,8 @@ class TincYaml(val file: File) {
       parsed = rawLines.map(::Line)
       netEnd = blockEnd(parsed, netIdx)
       hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
+    } else if (stripEmptyFlowMap(rawLines, hostsIdx)) {
+      parsed = rawLines.map(::Line)
     }
     val hostsEnd = blockEnd(parsed, hostsIdx)
     val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
@@ -372,27 +373,44 @@ class TincYaml(val file: File) {
   }
 
   /** Remove the host block `networks.<net>.hosts.<name>` if present. */
-  fun removeHost(net: String, name: String) {
-    if (!file.exists()) return
+  fun removeHost(net: String, name: String) = withFileLock {
+    if (!file.exists()) return@withFileLock
     val rawLines = file.readText().split('\n').let { if (it.last().isEmpty()) it.dropLast(1) else it }
     val parsed = rawLines.map(::Line)
     val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
-    if (netsIdx < 0) return
+    if (netsIdx < 0) return@withFileLock
     val netsEnd = blockEnd(parsed, netsIdx)
     val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
     val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
-    if (netIdx < 0) return
+    if (netIdx < 0) return@withFileLock
     val netEnd = blockEnd(parsed, netIdx)
     val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
     val hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
-    if (hostsIdx < 0) return
+    if (hostsIdx < 0) return@withFileLock
     val hostsEnd = blockEnd(parsed, hostsIdx)
     val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
     val hostIdx = findChild(parsed, hostsIdx + 1, hostsEnd, hostIndent, name)
-    if (hostIdx < 0) return
+    if (hostIdx < 0) return@withFileLock
     val hostEnd = blockEnd(parsed, hostIdx)
     val result = rawLines.subList(0, hostIdx) + rawLines.subList(hostEnd, rawLines.size)
     writeAtomically(result.joinToString("\n") + "\n")
+  }
+
+  private fun <T> withFileLock(block: () -> T): T = MEM_LOCK.withLock {
+    if (MEM_LOCK.holdCount > 1) return@withLock block()
+    val dir = file.absoluteFile.parentFile
+    if (dir != null && !dir.exists()) dir.mkdirs()
+    val lockFile = File("${file.absolutePath}.lock")
+    try {
+      RandomAccessFile(lockFile, "rw").use { raf ->
+        raf.channel.lock().use {
+          return@withLock block()
+        }
+      }
+    } catch (_: Exception) {
+      // Fallback to in-process lock if filesystem lock cannot be opened
+      return@withLock block()
+    }
   }
 
   private fun writeAtomically(text: String) {
@@ -414,6 +432,19 @@ class TincYaml(val file: File) {
   companion object {
     const val FILE_NAME = "tinc.yaml"
     private val HOST_KEY_RE = Regex("^[A-Za-z][A-Za-z0-9_]*$")
+    private val MEM_LOCK = ReentrantLock()
+    private val EMPTY_FLOW_MAP_RE = Regex("^(\\s*[^:#]+:)\\s*\\{\\s*\\}(\\s*(?:#.*)?)$")
+
+    private fun stripEmptyFlowMap(rawLines: MutableList<String>, idx: Int): Boolean {
+      val m = EMPTY_FLOW_MAP_RE.matchEntire(rawLines[idx]) ?: return false
+      rawLines[idx] = "${m.groupValues[1]}${m.groupValues[2]}"
+      return true
+    }
+
+    private fun stripEmptyFlowMapLine(lines: MutableList<Line>, idx: Int) {
+      val m = EMPTY_FLOW_MAP_RE.matchEntire(lines[idx].text) ?: return
+      lines[idx] = Line("${m.groupValues[1]}${m.groupValues[2]}")
+    }
 
     private fun newYaml() = Yaml(LoaderOptions().apply { isAllowDuplicateKeys = true })
 
@@ -538,6 +569,8 @@ class TincYaml(val file: File) {
       if (netsIdx < 0) {
         insert(lines.size, listOf("networks:"))
         netsIdx = lines.size - 1
+      } else {
+        stripEmptyFlowMapLine(lines, netsIdx)
       }
       val netsEnd = blockEnd(lines, netsIdx)
       val netIndent = firstChildIndent(lines, netsIdx + 1, netsEnd, 2)
@@ -547,6 +580,8 @@ class TincYaml(val file: File) {
       if (netIdx < 0) {
         insert(netsEnd, listOf("${" ".repeat(netIndent)}$net:"))
         netIdx = netsEnd
+      } else {
+        stripEmptyFlowMapLine(lines, netIdx)
       }
       val netEnd = blockEnd(lines, netIdx)
       val sectionIndent = firstChildIndent(lines, netIdx + 1, netEnd, netIndent + 2)
@@ -556,6 +591,8 @@ class TincYaml(val file: File) {
       if (optIdx < 0) {
         insert(netIdx + 1, listOf("${" ".repeat(sectionIndent)}options:"))
         optIdx = netIdx + 1
+      } else {
+        stripEmptyFlowMapLine(lines, optIdx)
       }
       var optEnd = blockEnd(lines, optIdx)
       val keyIndent = firstChildIndent(lines, optIdx + 1, optEnd, sectionIndent + 2)

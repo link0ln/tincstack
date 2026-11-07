@@ -142,7 +142,7 @@ bool wintun_available(void) {
    an existing TAP adapter of the same name (Windows then renames the TAP and
    leaves a stale registry entry). The network name is unique per network and
    won't clash with TAP interface names. WintunInterface can override it. */
-static void adapter_name_w(WCHAR *out, size_t cch) {
+static void adapter_name_w(WCHAR *out, size_t cch, char *utf8_out, size_t utf8_cap) {
 	char *override = NULL;
 	const char *name;
 
@@ -154,6 +154,10 @@ static void adapter_name_w(WCHAR *out, size_t cch) {
 		name = iface;
 	} else {
 		name = "tinc";
+	}
+
+	if(utf8_out && utf8_cap > 0) {
+		snprintf(utf8_out, utf8_cap, "%s", name);
 	}
 
 	MultiByteToWideChar(CP_UTF8, 0, name, -1, out, (int)cch);
@@ -290,6 +294,21 @@ static void configure_mtu(void) {
 			logger(DEBUG_ALWAYS, LOG_WARNING, "Could not set adapter IPv4 MTU to %d: error %lu", mtu, (unsigned long)r);
 		}
 	}
+
+	InitializeIpInterfaceEntry(&iprow);
+	iprow.Family = AF_INET6;
+	iprow.InterfaceLuid = luid;
+
+	r = GetIpInterfaceEntry(&iprow);
+	if(r == NO_ERROR) {
+		ULONG mtu6 = (ULONG)(mtu >= 1280 ? mtu : 1280);
+		iprow.SitePrefixLength = 0;
+		iprow.NlMtu = mtu6;
+		r = SetIpInterfaceEntry(&iprow);
+		if(r == NO_ERROR) {
+			logger(DEBUG_ALWAYS, LOG_INFO, "Adapter IPv6 MTU set to %lu", (unsigned long)mtu6);
+		}
+	}
 }
 
 /* Install the `InterfaceRoute` entries on the adapter. Same option, same
@@ -414,7 +433,8 @@ static bool setup_device(void) {
 	}
 
 	WCHAR wname[256];
-	adapter_name_w(wname, sizeof(wname) / sizeof(wname[0]));
+	char eff_name[256];
+	adapter_name_w(wname, sizeof(wname) / sizeof(wname[0]), eff_name, sizeof(eff_name));
 
 	/* Clean up any orphaned Wintun adapter(s) with the same name left over
 	   from an unclean shutdown or crash. Passing NULL GUID to WintunCreateAdapter
@@ -427,12 +447,12 @@ static bool setup_device(void) {
 			break;
 		}
 
-		logger(DEBUG_ALWAYS, LOG_INFO, "Removing stale Wintun adapter '%s' from previous run", iface);
+		logger(DEBUG_ALWAYS, LOG_INFO, "Removing stale Wintun adapter '%s' from previous run", eff_name);
 		WintunCloseAdapter(stale);
 	}
 
 	GUID guid;
-	adapter_guid(iface, &guid);
+	adapter_guid(eff_name, &guid);
 	adapter = WintunCreateAdapter(wname, L"tinc", &guid);
 
 	if(!adapter) {

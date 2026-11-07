@@ -62,20 +62,20 @@ static bool install_service(void) {
 	GetModuleFileName(module, command + 1, sizeof(command) - 1);
 	command[sizeof(command) - 1] = 0;
 
-	strncat(command, "\"", sizeof(command) - strlen(command));
+	strncat(command, "\"", sizeof(command) - strlen(command) - 1);
 
 	for(char **argp = g_argv + 1; *argp; argp++) {
 		char *space = strchr(*argp, ' ');
-		strncat(command, " ", sizeof(command) - strlen(command));
+		strncat(command, " ", sizeof(command) - strlen(command) - 1);
 
 		if(space) {
-			strncat(command, "\"", sizeof(command) - strlen(command));
+			strncat(command, "\"", sizeof(command) - strlen(command) - 1);
 		}
 
-		strncat(command, *argp, sizeof(command) - strlen(command));
+		strncat(command, *argp, sizeof(command) - strlen(command) - 1);
 
 		if(space) {
-			strncat(command, "\"", sizeof(command) - strlen(command));
+			strncat(command, "\"", sizeof(command) - strlen(command) - 1);
 		}
 	}
 

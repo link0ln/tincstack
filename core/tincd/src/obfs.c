@@ -209,7 +209,22 @@ int obfs_pick_socket(const sockaddr_t *sa) {
 	sockaddrunmap(&a);
 
 	for list_each(obfs_link_t, l, &obfs_links) {
-		if(l->have_addr && !sockaddrcmp(&a, &l->addr) && l->rx_fd >= 0) {
+		if(l->rx_fd < 0) {
+			continue;
+		}
+
+		bool match = l->have_addr && !sockaddrcmp(&a, &l->addr);
+
+		if(!match) {
+			for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
+				if(l->have_alt_addr[i] && !sockaddrcmp(&a, &l->alt_addrs[i])) {
+					match = true;
+					break;
+				}
+			}
+		}
+
+		if(match) {
 			for(int i = 0; i < obfs_listens; i++) {
 				if(obfs_listen[i].udp.fd == l->rx_fd) {
 					return l->rx_fd;
@@ -548,11 +563,16 @@ void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr) {
 			/* Remember the previous address in alt_addrs so concurrent multipath
 			   flows from two NATs/interfaces both stay on the fast path. */
 			bool found = false;
+			bool was_alt = false;
 
 			for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
-				if(l->have_alt_addr[i] && !sockaddrcmp(&l->addr, &l->alt_addrs[i])) {
-					found = true;
-					break;
+				if(l->have_alt_addr[i]) {
+					if(!sockaddrcmp(&l->addr, &l->alt_addrs[i])) {
+						found = true;
+					}
+					if(!sockaddrcmp(&clean, &l->alt_addrs[i])) {
+						was_alt = true;
+					}
 				}
 			}
 
@@ -563,7 +583,9 @@ void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr) {
 				l->alt_addr_next = (slot + 1) % OBFS_ALT_ADDRS;
 			}
 
-			l->have_budget = false;   /* new peer address: the cached budget is stale */
+			if(!was_alt) {
+				l->have_budget = false;   /* genuinely new peer address: refresh cached budget */
+			}
 		} else if(!l->have_addr) {
 			l->have_budget = false;
 		}
@@ -1913,6 +1935,8 @@ void obfs_close(connection_t *c) {
 	if(l && !superseded) {
 		l->active = false;
 		l->have_addr = false;
+		memset(l->have_alt_addr, 0, sizeof(l->have_alt_addr));
+		l->alt_addr_next = 0;
 		l->rx_fd = -1;
 	}
 

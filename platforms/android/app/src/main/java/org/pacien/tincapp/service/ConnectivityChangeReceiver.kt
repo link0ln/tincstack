@@ -29,6 +29,8 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import org.pacien.tincapp.commands.Tinc
+import org.pacien.tincapp.context.AppPaths
+import org.pacien.tincapp.data.TincYaml
 import org.slf4j.LoggerFactory
 import java.lang.IllegalArgumentException
 import java.net.Inet4Address
@@ -154,8 +156,25 @@ object ConnectivityChangeReceiver : BroadcastReceiver() {
       .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
       .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
       .build()
+    val mpActive = try {
+      val netName = tincVpnService.getCurrentNetName()
+      if (netName != null) {
+        val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+        val stanza = yaml.resolveNetwork(netName)
+        val mode = yaml.optionValue(stanza, "MultipathMode")?.trim()?.lowercase() ?: "off"
+        mode != "off" && mode != "no" && mode != "false" && mode != "0"
+      } else {
+        false
+      }
+    } catch (_: Exception) {
+      false
+    }
     try {
-      cm.requestNetwork(cellReq, cellCb)
+      if (mpActive) {
+        cm.requestNetwork(cellReq, cellCb)
+      } else {
+        cm.registerNetworkCallback(cellReq, cellCb)
+      }
       cellCallback = cellCb
     } catch (e: Exception) {
       try {

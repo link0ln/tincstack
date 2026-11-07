@@ -44,21 +44,6 @@ static bool control_ok(connection_t *c, int type) {
 	return control_return(c, type, 0);
 }
 
-/* Is this connection still on connection_list? connection_del() frees the
-   connection_t, so a pointer taken before a terminate_connection() may be
-   dangling; membership is the only safe test. connection_list is short (one
-   entry per peer plus the control connections), and `disconnect' is an
-   operator command, so the linear scan costs nothing that matters. */
-static bool connection_is_live(const connection_t *c) {
-	for list_each(connection_t, other, &connection_list) {
-		if(other == c) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
 bool control_h(connection_t *c, const char *request) {
 	int type;
 

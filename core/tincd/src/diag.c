@@ -412,6 +412,15 @@ static void diag_tcp_read_local(diag_tcp_conn_t *c) {
 	}
 }
 
+static uint16_t diag_tcp_rx_wnd(const diag_tcp_conn_t *c) {
+	if(!c || c->rx_len >= sizeof(c->rx_buf)) {
+		return 0;
+	}
+
+	size_t avail = sizeof(c->rx_buf) - c->rx_len;
+	return avail > 65535 ? 65535 : (uint16_t)avail;
+}
+
 static void diag_tcp_pump_tx(diag_tcp_conn_t *c, size_t max_segments) {
 	if(!c || !c->syn_acked) {
 		return;
@@ -424,6 +433,8 @@ static void diag_tcp_pump_tx(diag_tcp_conn_t *c, size_t max_segments) {
 		max_inflight = DIAG_TCP_MSS;
 	}
 
+	uint16_t rx_wnd = diag_tcp_rx_wnd(c);
+
 	while(c->tx_sent_offset < c->tx_len && c->tx_sent_offset < max_inflight) {
 		if(max_segments > 0 && sent_segs >= max_segments) {
 			break;
@@ -434,7 +445,7 @@ static void diag_tcp_pump_tx(diag_tcp_conn_t *c, size_t max_segments) {
 		uint32_t seq = c->tx_una_seq + (uint32_t)c->tx_sent_offset;
 
 		diag_tcp_send_segment(c->my_ip, c->peer_ip, c->my_port, c->peer_port,
-		                      seq, c->rcv_nxt, DIAG_TH_PUSH | DIAG_TH_ACK, 65535,
+		                      seq, c->rcv_nxt, DIAG_TH_PUSH | DIAG_TH_ACK, rx_wnd,
 		                      c->tx_buf + c->tx_sent_offset, chunk, false);
 
 		c->tx_sent_offset += chunk;
@@ -445,7 +456,7 @@ static void diag_tcp_pump_tx(diag_tcp_conn_t *c, size_t max_segments) {
 	if(c->local_eof && c->tx_sent_offset == c->tx_len && !c->fin_sent && !c->fin_acked) {
 		uint32_t seq = c->tx_una_seq + (uint32_t)c->tx_sent_offset;
 		diag_tcp_send_segment(c->my_ip, c->peer_ip, c->my_port, c->peer_port,
-		                      seq, c->rcv_nxt, DIAG_TH_FIN | DIAG_TH_ACK, 65535,
+		                      seq, c->rcv_nxt, DIAG_TH_FIN | DIAG_TH_ACK, rx_wnd,
 		                      NULL, 0, false);
 		c->fin_sent = true;
 		c->last_tx_tv = now;
@@ -703,7 +714,9 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 	}
 
 	if(flags & DIAG_TH_RST) {
-		diag_tcp_conn_close(c);
+		if(!c->syn_acked || (uint32_t)(seq - c->rcv_nxt) < 65536) {
+			diag_tcp_conn_close(c);
+		}
 		return;
 	}
 
@@ -712,7 +725,7 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 
 	if(flags & DIAG_TH_ACK) {
 		if(!c->syn_acked) {
-			if((int32_t)(ack - (c->iss + 1)) >= 0) {
+			if(ack == c->iss + 1) {
 				c->syn_acked = true;
 				c->rto_count = 0;
 			}
@@ -720,16 +733,17 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 
 		if(c->syn_acked) {
 			int32_t acked = (int32_t)(ack - c->tx_una_seq);
+			int32_t max_ackable = (int32_t)c->tx_sent_offset + (c->fin_sent ? 1 : 0);
 
-			if(acked > 0) {
+			if(acked > 0 && acked <= max_ackable) {
 				c->rto_count = 0;
-				size_t drop = (size_t)acked <= c->tx_len ? (size_t)acked : c->tx_len;
+				size_t drop = (size_t)acked <= c->tx_sent_offset ? (size_t)acked : c->tx_sent_offset;
 
 				if(drop > 0) {
 					memmove(c->tx_buf, c->tx_buf + drop, c->tx_len - drop);
 					c->tx_len -= drop;
 					c->tx_una_seq += (uint32_t)drop;
-					c->tx_sent_offset = (c->tx_sent_offset > drop) ? (c->tx_sent_offset - drop) : 0;
+					c->tx_sent_offset -= drop;
 					c->last_tx_tv = now;
 				}
 
@@ -792,7 +806,7 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 	if(send_ack && c->tx_sent_offset == prev_sent && c->fin_sent == prev_fin) {
 		uint32_t cur_seq = c->tx_una_seq + (uint32_t)c->tx_sent_offset + (c->fin_sent ? 1 : 0);
 		diag_tcp_send_segment(c->my_ip, c->peer_ip, c->my_port, c->peer_port,
-		                      cur_seq, c->rcv_nxt, DIAG_TH_ACK, 65535,
+		                      cur_seq, c->rcv_nxt, DIAG_TH_ACK, diag_tcp_rx_wnd(c),
 		                      NULL, 0, false);
 	}
 
