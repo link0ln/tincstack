@@ -274,6 +274,8 @@ extern int reload_configuration(void);
 extern void load_all_nodes(void);
 extern void try_tx(struct node_t *n, bool mtu);
 extern bool sockaddr_is_private_lan(const union sockaddr_t *sa);
+extern bool sockaddr_is_my_nat_wan_ip(const union sockaddr_t *sa);
+extern bool node_best_lan_address(const struct node_t *n, union sockaddr_t *out);
 extern bool node_has_active_lan_udp(const struct node_t *n);
 extern bool node_shares_local_lan(const struct node_t *n);
 extern void tarpit(int fd);

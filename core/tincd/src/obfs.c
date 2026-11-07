@@ -1634,6 +1634,10 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 	sockaddr_t addr = *vaddr;
 	sockaddrunmap(&addr);
 
+	if(sockaddr_is_my_nat_wan_ip(&addr)) {
+		return true;
+	}
+
 	uint8_t inner[MAXSIZE];
 	obfs_keyset_t *ks = NULL;
 	uint64_t seq = 0;

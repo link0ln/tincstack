@@ -171,6 +171,7 @@ set_host_vars() {
 [[ -z $name ]] || set_host_vars
 
 # --- run the daemon; it materialises anything still missing ---------------
+sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608 >/dev/null 2>&1 || true
 tincd -n "$NETNAME" -c "$YAML" -D -d"$LOG_LEVEL" &
 daemon=$!
 trap 'kill -TERM "$daemon" 2>/dev/null || true' TERM INT

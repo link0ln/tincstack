@@ -545,6 +545,16 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 		return;
 	}
 
+	sockaddr_t lan_sa;
+
+	if(sa && sockaddr_is_my_nat_wan_ip(sa)) {
+		if(node_best_lan_address(n, &lan_sa)) {
+			sa = &lan_sa;
+		} else {
+			return;
+		}
+	}
+
 	if(sa && node_has_active_lan_udp(n) && !sockaddr_is_private_lan(sa)) {
 		return;
 	}

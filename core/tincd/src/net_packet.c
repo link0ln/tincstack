@@ -1146,6 +1146,67 @@ bool node_has_active_lan_udp(const node_t *n) {
 	       n->last_lan_udp_rx && (now.tv_sec - n->last_lan_udp_rx < udp_discovery_keepalive_interval * 2);
 }
 
+/* Returns true when `sa` has the same public WAN IP that a remote peer sees
+   for `myself` (`e->reverse->address`) while our local socket address for that
+   edge is on a private LAN (or wildcard), meaning `sa` is our own NAT router's
+   public WAN IP (a hairpin NAT reflection). */
+bool sockaddr_is_my_nat_wan_ip(const sockaddr_t *sa) {
+	if(!myself || !sockaddr_is_unicast_ip(sa) || sockaddr_is_private_lan(sa)) {
+		return false;
+	}
+
+	for splay_each(edge_t, e, &myself->edge_tree) {
+		if(!e->reverse || !sockaddr_is_unicast_ip(&e->reverse->address) ||
+		                sockaddr_is_private_lan(&e->reverse->address) ||
+		                e->reverse->address.sa.sa_family != sa->sa.sa_family) {
+			continue;
+		}
+
+		if(sockaddr_is_unicast_ip(&e->local_address) && !sockaddr_is_private_lan(&e->local_address) &&
+		                e->local_address.sa.sa_family == sa->sa.sa_family) {
+			if(sa->sa.sa_family == AF_INET &&
+			                e->local_address.in.sin_addr.s_addr == e->reverse->address.in.sin_addr.s_addr) {
+				continue;
+			}
+
+			if(sa->sa.sa_family == AF_INET6 &&
+			                !memcmp(&e->local_address.in6.sin6_addr, &e->reverse->address.in6.sin6_addr, sizeof(struct in6_addr))) {
+				continue;
+			}
+		}
+
+		if(sa->sa.sa_family == AF_INET) {
+			if(sa->in.sin_addr.s_addr == e->reverse->address.in.sin_addr.s_addr) {
+				return true;
+			}
+		} else if(sa->sa.sa_family == AF_INET6) {
+			if(!memcmp(&sa->in6.sin6_addr, &e->reverse->address.in6.sin6_addr, sizeof(struct in6_addr))) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static bool node_shares_my_wan_ip(const node_t *n) {
+	if(!n || !myself || n == myself) {
+		return false;
+	}
+
+	if(sockaddr_is_my_nat_wan_ip(&n->address)) {
+		return true;
+	}
+
+	for splay_each(edge_t, e, &n->edge_tree) {
+		if(e->reverse && sockaddr_is_my_nat_wan_ip(&e->reverse->address)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static bool sockaddr_same_lan_as_myself(const sockaddr_t *sa) {
 	if(!myself || !sockaddr_is_private_lan(sa)) {
 		return false;
@@ -1199,6 +1260,37 @@ static const sockaddr_t *edge_usable_local_addr(const edge_t *e) {
 	return NULL;
 }
 
+bool node_best_lan_address(const node_t *n, sockaddr_t *out) {
+	if(!n || !out) {
+		return false;
+	}
+
+	for splay_each(edge_t, e, &n->edge_tree) {
+		const sockaddr_t *cand = edge_usable_local_addr(e);
+
+		if(cand && sockaddr_same_lan_as_myself(cand)) {
+			*out = *cand;
+			return true;
+		}
+	}
+
+	if(sockaddr_is_private_lan(&n->address) && !address_routes_via_vpn(&n->address)) {
+		*out = n->address;
+		return true;
+	}
+
+	for splay_each(edge_t, e, &n->edge_tree) {
+		const sockaddr_t *cand = edge_usable_local_addr(e);
+
+		if(cand && sockaddr_is_private_lan(cand)) {
+			*out = *cand;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool node_shares_local_lan(const node_t *n) {
 	if(!n || !myself || n == myself) {
 		return false;
@@ -1213,10 +1305,13 @@ bool node_shares_local_lan(const node_t *n) {
 		return false;
 	}
 
+	bool same_wan = node_shares_my_wan_ip(n);
+
 	for splay_each(edge_t, e, &n->edge_tree) {
 		const sockaddr_t *cand = edge_usable_local_addr(e);
 
-		if(cand && sockaddr_same_lan_as_myself(cand)) {
+		if(cand && (sockaddr_same_lan_as_myself(cand) ||
+		                (same_wan && sockaddr_is_private_lan(cand)))) {
 			return true;
 		}
 	}
@@ -1224,9 +1319,12 @@ bool node_shares_local_lan(const node_t *n) {
 	return false;
 }
 
+static void choose_local_address(const node_t *n, const sockaddr_t **sa, size_t *sock);
+
 static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *sock) {
 	if(force_node_address) {
-		if(n->address.sa.sa_family == AF_UNSPEC || n->address.sa.sa_family == AF_UNKNOWN || address_routes_via_vpn(&n->address)) {
+		if(n->address.sa.sa_family == AF_UNSPEC || n->address.sa.sa_family == AF_UNKNOWN ||
+		                address_routes_via_vpn(&n->address) || sockaddr_is_my_nat_wan_ip(&n->address)) {
 			*sa = NULL;
 			return;
 		}
@@ -1238,7 +1336,8 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 	}
 
 	if(current_probe_reply_node == n && current_probe_reply_sock >= 0 &&
-	                !address_routes_via_vpn(&current_probe_reply_addr)) {
+	                !address_routes_via_vpn(&current_probe_reply_addr) &&
+	                !sockaddr_is_my_nat_wan_ip(&current_probe_reply_addr)) {
 		*sa = &current_probe_reply_addr;
 		*sock = (size_t)current_probe_reply_sock;
 		adapt_socket(*sa, sock);
@@ -1264,11 +1363,12 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 			node_t *mut_n = (node_t *)n;
 			mut_n->last_vpn_route_check = now.tv_sec;
 
-			if((*sa)->sa.sa_family == AF_UNSPEC || (*sa)->sa.sa_family == AF_UNKNOWN || address_routes_via_vpn(*sa)) {
+			if((*sa)->sa.sa_family == AF_UNSPEC || (*sa)->sa.sa_family == AF_UNKNOWN ||
+			                address_routes_via_vpn(*sa) || sockaddr_is_my_nat_wan_ip(*sa)) {
 				*sa = NULL;
 
 				if(!carrier_datagram_path(n)) {
-					logger(DEBUG_TRAFFIC, LOG_INFO, "Confirmed UDP address of %s (%s) now routes via VPN, stopping direct UDP communication", n->name, n->hostname);
+					logger(DEBUG_TRAFFIC, LOG_INFO, "Confirmed UDP address of %s (%s) now routes via VPN or self WAN IP, stopping direct UDP communication", n->name, n->hostname);
 					mut_n->status.udp_confirmed = false;
 					mut_n->status.udp_addr_confirmed = false;
 					mut_n->last_lan_udp_rx = 0;
@@ -1303,7 +1403,8 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 	node_t *mut_n = (node_t *)n;
 
 	if((mut_n->udp_probe_seq++ % 3) != 2) {
-		if((*sa)->sa.sa_family != AF_UNSPEC && (*sa)->sa.sa_family != AF_UNKNOWN && !address_routes_via_vpn(*sa)) {
+		if((*sa)->sa.sa_family != AF_UNSPEC && (*sa)->sa.sa_family != AF_UNKNOWN &&
+		                !address_routes_via_vpn(*sa) && !sockaddr_is_my_nat_wan_ip(*sa)) {
 			adapt_socket(*sa, sock);
 			return;
 		}
@@ -1318,7 +1419,8 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 
 	for splay_each(edge_t, e, &n->edge_tree) {
 		if(i++ == j) {
-			if(e->reverse && !address_routes_via_vpn(&e->reverse->address)) {
+			if(e->reverse && !address_routes_via_vpn(&e->reverse->address) &&
+			                !sockaddr_is_my_nat_wan_ip(&e->reverse->address)) {
 				candidate = e->reverse;
 			}
 
@@ -1328,7 +1430,8 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 
 	if(!candidate) {
 		for splay_each(edge_t, e, &n->edge_tree) {
-			if(e->reverse && !address_routes_via_vpn(&e->reverse->address)) {
+			if(e->reverse && !address_routes_via_vpn(&e->reverse->address) &&
+			                !sockaddr_is_my_nat_wan_ip(&e->reverse->address)) {
 				candidate = e->reverse;
 				break;
 			}
@@ -1338,10 +1441,14 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 	if(candidate) {
 		*sa = &candidate->address;
 		*sock = prng(listen_sockets);
+	} else {
+		choose_local_address(n, sa, sock);
+		return;
 	}
 
-	if(!*sa || (*sa)->sa.sa_family == AF_UNSPEC || (*sa)->sa.sa_family == AF_UNKNOWN || address_routes_via_vpn(*sa)) {
-		*sa = NULL;
+	if(!*sa || (*sa)->sa.sa_family == AF_UNSPEC || (*sa)->sa.sa_family == AF_UNKNOWN ||
+	                address_routes_via_vpn(*sa) || sockaddr_is_my_nat_wan_ip(*sa)) {
+		choose_local_address(n, sa, sock);
 		return;
 	}
 
@@ -2583,6 +2690,10 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 		                !sockaddr_is_unicast_ip(&sa) || address_routes_via_vpn(&sa) ||
 		                from->nexthop == from) {
 			have = false;
+		} else if(sockaddr_is_my_nat_wan_ip(&sa)) {
+			if(!node_best_lan_address(from, &sa)) {
+				have = false;
+			}
 		}
 	}
 
@@ -3491,6 +3602,12 @@ skip_harder:
 }
 
 static void handle_incoming_vpn_packet(listen_socket_t *ls, vpn_packet_t *pkt, sockaddr_t *addr) {
+	sockaddrunmap(addr);
+
+	if(sockaddr_is_my_nat_wan_ip(addr)) {
+		return;
+	}
+
 	/* First give the carriers a chance to claim this datagram (single-flow
 	   meta frames, QUIC, obfs). Anything they do not claim is an ordinary
 	   SPTPS / legacy data packet and is handled by process_sptps_udp() exactly

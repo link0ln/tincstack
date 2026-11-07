@@ -1522,6 +1522,8 @@ bool ack_h(connection_t *c, const char *request) {
 
 	if(is_single_flow_udp) {
 		update_node_udp(n, &c->address);
+	} else if(sockaddr_is_private_lan(&c->edge->address) && !sockaddr_is_private_lan(&n->address)) {
+		update_node_udp(n, &c->edge->address);
 	}
 
 	/* Notify everyone of the new edge */

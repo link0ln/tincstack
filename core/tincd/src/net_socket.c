@@ -297,6 +297,14 @@ static void set_udp_buffer(int nfd, int type, const char *name, int size, bool w
 		return;
 	}
 
+#if defined(SOL_SOCKET) && defined(SO_RCVBUFFORCE) && defined(SO_SNDBUFFORCE)
+	int force_type = (type == SO_RCVBUF) ? SO_RCVBUFFORCE : ((type == SO_SNDBUF) ? SO_SNDBUFFORCE : 0);
+
+	if(force_type && !setsockopt(nfd, SOL_SOCKET, force_type, (void *)&size, sizeof(size))) {
+		return;
+	}
+#endif
+
 	if(setsockopt(nfd, SOL_SOCKET, type, (void *)&size, sizeof(size))) {
 		logger(DEBUG_ALWAYS, LOG_WARNING, "Can't set UDP %s to %i: %s", name, size, sockstrerror(sockerrno));
 		return;
