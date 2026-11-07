@@ -1406,25 +1406,29 @@ static void quic_codel_step(quic_session_t *s, ngtcp2_tstamp now_ts) {
 		if(sojourn < QUIC_CODEL_TARGET) {
 			s->codel_first_above = 0;
 			s->codel_dropping = false;
+			s->codel_count = 0;
 		} else if(s->codel_first_above == 0) {
 			s->codel_first_above = now_ts + QUIC_CODEL_INTERVAL;
 		} else if(s->codel_dropping) {
 			if(now_ts >= s->codel_drop_next) {
 				s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
 				s->dgram_n--;
-				s->codel_count++;
-				s->codel_drop_next += QUIC_CODEL_INTERVAL / quic_codel_isqrt(s->codel_count);
+				if(s->codel_count < 16) {
+					s->codel_count++;
+				}
+				s->codel_drop_next = now_ts + QUIC_CODEL_INTERVAL / quic_codel_isqrt(s->codel_count);
 			}
 		} else if(now_ts >= s->codel_first_above) {
 			s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
 			s->dgram_n--;
 			s->codel_dropping = true;
-			s->codel_count = s->codel_count > 2 ? s->codel_count - 2 : 1;
-			s->codel_drop_next = now_ts + QUIC_CODEL_INTERVAL / quic_codel_isqrt(s->codel_count);
+			s->codel_count = 1;
+			s->codel_drop_next = now_ts + QUIC_CODEL_INTERVAL;
 		}
 	} else {
 		s->codel_first_above = 0;
 		s->codel_dropping = false;
+		s->codel_count = 0;
 	}
 }
 
@@ -1539,8 +1543,14 @@ static void quic_flush(quic_session_t *s) {
 				s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
 				s->dgram_n--;
 				quic_codel_step(s, ts);
-			} else {
+			} else if(nwrite == 0) {
 				dgram_deferred = true;
+			} else {
+				/* ngtcp2 emitted an ACK or control/stream frame that left
+				   insufficient room in this packet for the datagram
+				   (ngtcp2_conn.c:4493). Offer the datagram again in the
+				   very next packet iteration instead of deferring the queue. */
+				prefer_stream = false;
 			}
 
 			if(nwrite == 0) {
@@ -2591,25 +2601,32 @@ static void quic_listen_read(void *data, int flags) {
 	(void)flags;
 	listen_socket_t *ls = data;
 	uint8_t buf[MAXSIZE];
-	sockaddr_t addr;
-	socklen_t addrlen = sizeof(addr);
-	ssize_t len = recvfrom(ls->udp.fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
 
-	if(len <= 0) {
-		if(len < 0 && !sockwouldblock(sockerrno)) {
-			logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: receive on the QuicPort socket failed: %s", sockstrerror(sockerrno));
+	quic_batch_begin();
+
+	for(int i = 0; i < 64; i++) {
+		sockaddr_t addr;
+		socklen_t addrlen = sizeof(addr);
+		ssize_t len = recvfrom(ls->udp.fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
+
+		if(len <= 0) {
+			if(len < 0 && !sockwouldblock(sockerrno)) {
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "quic: receive on the QuicPort socket failed: %s", sockstrerror(sockerrno));
+			}
+
+			break;
 		}
 
-		return;
+		if(!quic_ready || front_version_negotiation(ls->udp.fd, buf, (size_t)len, &addr, addrlen)) {
+			continue;
+		}
+
+		if(!quic_udp_try(ls, buf, (size_t)len, &addr)) {
+			front_stateless_reset(ls->udp.fd, buf, (size_t)len, &addr, addrlen);
+		}
 	}
 
-	if(!quic_ready || front_version_negotiation(ls->udp.fd, buf, (size_t)len, &addr, addrlen)) {
-		return;
-	}
-
-	if(!quic_udp_try(ls, buf, (size_t)len, &addr)) {
-		front_stateless_reset(ls->udp.fd, buf, (size_t)len, &addr, addrlen);
-	}
+	quic_batch_end();
 }
 
 bool quic_init(void) {
