@@ -765,4 +765,57 @@ def test_manual_update_check_shows_banner_and_updates_toolbar(window, monkeypatc
     assert "New version available: v0.5.14" in w.statusBar().currentMessage()
 
 
+def test_update_banner_progress_bar_hides_button_and_recovers_on_error(window, monkeypatch):
+    import management
+    import updates
+    w = window
+    monkeypatch.setattr(management, "current_version", lambda: "v0.5.39")
+    rel = updates.Release("v0.5.40", "v0.5.40", "https://x/v0.5.40.zip", "https://x/SHA256SUMS", "notes")
+    w._show_update_banner(rel)
+    assert w._update_banner is not None and not w._update_banner.isHidden()
+    assert w._update_go_btn is not None and not w._update_go_btn.isHidden() and w._update_go_btn.isEnabled()
+    assert w._update_progress_bar is not None and w._update_progress_bar.isHidden()
+
+    gate = threading.Event()
+    fetch_calls = []
+
+    def slow_failing_fetch(r, wd, progress_cb=None):
+        fetch_calls.append(r.version)
+        if progress_cb:
+            progress_cb(5 * 1024 * 1024, 20 * 1024 * 1024, "Downloading v0.5.40…")
+        gate.wait(timeout=5.0)
+        raise OSError("Downloading v0.5.40: connection timed out while transferring data")
+
+    warnings = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(lambda *a: warnings.append(a)))
+    monkeypatch.setattr(updates, "fetch", slow_failing_fetch)
+
+    # Click "Update now" -> button must hide immediately and progress bar must appear
+    w._update_go_btn.click()
+    assert w._update_in_progress is True
+    assert w._update_go_btn.isHidden() and not w._update_go_btn.isEnabled()
+    assert w._update_later_btn.isHidden()
+    assert not w._update_progress_bar.isHidden()
+    assert not w.update_act.isEnabled()
+
+    # Wait for progress callback to update the progress bar to 25%
+    assert wait_until(lambda: w._update_progress_bar.value() == 25 and w._update_progress_bar.maximum() == 100)
+    assert "25%" in w._update_banner_lbl.text()
+
+    # Clicking _update_install again while in progress must be a no-op
+    w._update_install(rel)
+    assert len(fetch_calls) == 1
+
+    # Let the download fail -> progress bar hides, error is shown in banner, and "Retry update" button is restored
+    gate.set()
+    assert wait_until(lambda: w._update_in_progress is False)
+    assert w._update_progress_bar.isHidden()
+    assert not w._update_go_btn.isHidden() and w._update_go_btn.isEnabled()
+    assert w._update_go_btn.text() == "Retry update"
+    assert "Update to v0.5.40 failed" in w._update_banner_lbl.text()
+    assert "timed out" in w._update_banner_lbl.text()
+    assert warnings and "timed out" in warnings[-1][2]
+
+
+
 

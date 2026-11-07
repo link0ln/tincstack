@@ -19,6 +19,7 @@ from PySide6 import QtCore
 class Worker(QtCore.QThread):
     done = QtCore.Signal(object)
     failed = QtCore.Signal(str)
+    progress = QtCore.Signal(object)
 
     def __init__(self, fn: Callable[..., Any], *args: Any, parent: QtCore.QObject | None = None,
                  **kwargs: Any) -> None:
@@ -26,6 +27,7 @@ class Worker(QtCore.QThread):
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self._callbacks: tuple[Any, ...] = ()
 
     def run(self) -> None:
         try:
@@ -65,15 +67,19 @@ class WorkerPool(QtCore.QObject):
     def run(self, fn: Callable[..., Any], *args: Any,
             on_done: Callable[[Any], None] | None = None,
             on_error: Callable[[str], None] | None = None,
+            on_progress: Callable[[Any], None] | None = None,
             tag: str | None = None, **kwargs: Any) -> Worker | None:
         if tag and self.busy(tag):
             return None
         w = Worker(fn, *args, parent=self, **kwargs)
+        w._callbacks = (on_done, on_error, on_progress)
         self._workers[w] = tag
         if on_done:
             w.done.connect(on_done)
         if on_error:
             w.failed.connect(on_error)
+        if on_progress:
+            w.progress.connect(on_progress)
         w.finished.connect(lambda: self._cleanup(w))
         w.start()
         return w

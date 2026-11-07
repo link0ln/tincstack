@@ -35,68 +35,90 @@ def is_admin() -> bool:
         return False
 
 
+def _clean_pyinstaller_env() -> dict[str, str]:
+    """Return a copy of os.environ with PyInstaller bootloader state reset so a
+    child PyInstaller executable unpacks/loads its own bundle instead of
+    inheriting the parent's _MEIPASS2."""
+    env = os.environ.copy()
+    env.pop("_MEIPASS2", None)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
 def run_elevated(exe: str, params: str, wait: bool = True) -> bool:
     """Launch exe with params elevated via UAC. Returns True if launched (and
     exited with 0 when wait=True)."""
     if sys.platform != "win32":
         return False
+    env = _clean_pyinstaller_env()
     if wait and is_admin():
         try:
             cmd = f'"{exe}" {params}'.strip()
             p = subprocess.run(cmd, shell=False, capture_output=True, text=True,
-                               creationflags=_NO_WINDOW, timeout=120)
+                               env=env, creationflags=_NO_WINDOW, timeout=120)
             return p.returncode == 0
         except Exception:
             pass
-    if wait:
-        try:
-            from ctypes import wintypes
-
-            class SHELLEXECUTEINFOW(ctypes.Structure):
-                _fields_ = [
-                    ("cbSize", wintypes.DWORD),
-                    ("fMask", wintypes.ULONG),
-                    ("hwnd", wintypes.HWND),
-                    ("lpVerb", wintypes.LPCWSTR),
-                    ("lpFile", wintypes.LPCWSTR),
-                    ("lpParameters", wintypes.LPCWSTR),
-                    ("lpDirectory", wintypes.LPCWSTR),
-                    ("nShow", ctypes.c_int),
-                    ("hInstApp", wintypes.HINSTANCE),
-                    ("lpIDList", ctypes.c_void_p),
-                    ("lpClass", wintypes.LPCWSTR),
-                    ("hkeyClass", wintypes.HKEY),
-                    ("dwHotKey", wintypes.DWORD),
-                    ("hIcon", wintypes.HANDLE),
-                    ("hProcess", wintypes.HANDLE),
-                ]
-
-            sei = SHELLEXECUTEINFOW()
-            sei.cbSize = ctypes.sizeof(sei)
-            sei.fMask = 0x00000040  # SEE_MASK_NOCLOSEPROCESS
-            sei.lpVerb = "runas"
-            sei.lpFile = exe
-            sei.lpParameters = params
-            sei.nShow = 0  # SW_HIDE
-            if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):  # type: ignore[attr-defined]
-                return False
-            if sei.hProcess:
-                try:
-                    ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, 120000)  # type: ignore[attr-defined]
-                    code = wintypes.DWORD(1)
-                    if ctypes.windll.kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(code)):  # type: ignore[attr-defined]
-                        return code.value == 0
-                finally:
-                    ctypes.windll.kernel32.CloseHandle(sei.hProcess)  # type: ignore[attr-defined]
-            return True
-        except Exception:
-            pass
+    old_meipass2 = os.environ.pop("_MEIPASS2", None)
+    old_reset = os.environ.get("PYINSTALLER_RESET_ENVIRONMENT")
+    os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     try:
-        # SW_HIDE = 0 ; returns >32 on success
-        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 0)  # type: ignore[attr-defined]
-        return int(rc) > 32
-    except Exception:
-        return False
+        if wait:
+            try:
+                from ctypes import wintypes
+
+                class SHELLEXECUTEINFOW(ctypes.Structure):
+                    _fields_ = [
+                        ("cbSize", wintypes.DWORD),
+                        ("fMask", wintypes.ULONG),
+                        ("hwnd", wintypes.HWND),
+                        ("lpVerb", wintypes.LPCWSTR),
+                        ("lpFile", wintypes.LPCWSTR),
+                        ("lpParameters", wintypes.LPCWSTR),
+                        ("lpDirectory", wintypes.LPCWSTR),
+                        ("nShow", ctypes.c_int),
+                        ("hInstApp", wintypes.HINSTANCE),
+                        ("lpIDList", ctypes.c_void_p),
+                        ("lpClass", wintypes.LPCWSTR),
+                        ("hkeyClass", wintypes.HKEY),
+                        ("dwHotKey", wintypes.DWORD),
+                        ("hIcon", wintypes.HANDLE),
+                        ("hProcess", wintypes.HANDLE),
+                    ]
+
+                sei = SHELLEXECUTEINFOW()
+                sei.cbSize = ctypes.sizeof(sei)
+                sei.fMask = 0x00000040  # SEE_MASK_NOCLOSEPROCESS
+                sei.lpVerb = "runas"
+                sei.lpFile = exe
+                sei.lpParameters = params
+                sei.nShow = 0  # SW_HIDE
+                if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):  # type: ignore[attr-defined]
+                    return False
+                if sei.hProcess:
+                    try:
+                        ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, 120000)  # type: ignore[attr-defined]
+                        code = wintypes.DWORD(1)
+                        if ctypes.windll.kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(code)):  # type: ignore[attr-defined]
+                            return code.value == 0
+                    finally:
+                        ctypes.windll.kernel32.CloseHandle(sei.hProcess)  # type: ignore[attr-defined]
+                return True
+            except Exception:
+                pass
+        try:
+            # SW_HIDE = 0 ; returns >32 on success
+            rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 0)  # type: ignore[attr-defined]
+            return int(rc) > 32
+        except Exception:
+            return False
+    finally:
+        if old_meipass2 is not None:
+            os.environ["_MEIPASS2"] = old_meipass2
+        if old_reset is None:
+            os.environ.pop("PYINSTALLER_RESET_ENVIRONMENT", None)
+        else:
+            os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = old_reset
 
 
 def relaunch_self_elevated() -> bool:
@@ -478,18 +500,19 @@ def start_self_update(exe_path: str, version: str, caller_pid: int | None = None
     d = install_dir()
     if not d:
         raise OSError("Program Files could not be resolved")
-    parts = ["--self-install"]
+    raw_args = ["--self-install"]
     if caller_pid and caller_pid > 0:
-        parts += ["--wait-pid", str(int(caller_pid))]
+        raw_args += ["--wait-pid", str(int(caller_pid))]
     if caller_exe and caller_exe.lower().endswith(".exe") and not _inside_dir(caller_exe, d):
-        parts += ["--replace-exe", f'"{caller_exe}"']
-    parts.append("--relaunch")
-    params = " ".join(parts)
+        raw_args += ["--replace-exe", caller_exe]
+    raw_args.append("--relaunch")
+    params = subprocess.list2cmdline(raw_args)
     if sys.platform == "win32" and is_admin():
         try:
             subprocess.Popen(
-                f'"{exe_path}" {params}',
+                [exe_path, *raw_args],
                 shell=False,
+                env=_clean_pyinstaller_env(),
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | _NO_WINDOW,
                 close_fds=True,
             )
@@ -508,6 +531,7 @@ def launch_detached(target: str) -> None:
         return
     subprocess.Popen(
         [target],
+        env=_clean_pyinstaller_env(),
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
         close_fds=True,
     )

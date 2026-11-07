@@ -107,3 +107,114 @@ def test_find_assets_accepts_release_with_asset_digest_without_sums_file():
     assert rel.sums_url == ""
     assert rel.zip_digest == "sha256:" + ("a" * 64)
 
+
+def test_fetch_streams_with_progress_and_verifies_checksums(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import zipfile
+
+    exe_payload = b"MZ-fake-tincmgr-exe-" * 4096
+    exe_sha = hashlib.sha256(exe_payload).hexdigest()
+    inner_sums = f"{exe_sha}  ./tincmgr.exe\n".encode("utf-8")
+
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("tincmgr.exe", exe_payload)
+        zf.writestr("SHA256SUMS", inner_sums)
+    zip_bytes = zbuf.getvalue()
+    zip_sha = hashlib.sha256(zip_bytes).hexdigest()
+
+    zip_name = "tincstack-v0.5.40-windows-x86_64.zip"
+    sums_bytes = f"{zip_sha}  {zip_name}\n".encode("utf-8")
+    sums_sha = hashlib.sha256(sums_bytes).hexdigest()
+    notes = f"## Checksums\n\nSHA256SUMS: {sums_sha}\n"
+
+    rel = updates.Release(
+        "v0.5.40",
+        "v0.5.40",
+        f"https://example.invalid/{zip_name}",
+        "https://example.invalid/SHA256SUMS",
+        notes,
+        zip_name=zip_name,
+    )
+
+    class FakeResp:
+        def __init__(self, data: bytes, status: int = 200, total_len: int | None = None):
+            self._bio = io.BytesIO(data)
+            self.status = status
+            self.headers = {"Content-Length": str(len(data) if total_len is None else total_len)}
+
+        def getcode(self):
+            return self.status
+
+        def read(self, n: int = -1) -> bytes:
+            return self._bio.read(n)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    calls = []
+
+    def fake_urlopen(req, timeout=25):
+        url = req.full_url
+        rng = req.get_header("Range")
+        calls.append((url, rng))
+        if url.endswith("SHA256SUMS"):
+            return FakeResp(sums_bytes)
+        # First attempt returns only the first half to simulate a dropped connection,
+        # second attempt resumes with HTTP 206 Partial Content!
+        half = len(zip_bytes) // 2
+        if rng is None:
+            return FakeResp(zip_bytes[:half], status=200, total_len=len(zip_bytes))
+        assert rng == f"bytes={half}-"
+        return FakeResp(zip_bytes[half:], status=206, total_len=len(zip_bytes) - half)
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(updates.time, "sleep", lambda _s: None)
+
+    events = []
+    exe_path, zpath = updates.fetch(rel, str(tmp_path), progress_cb=lambda r, t, s: events.append((r, t, s)))
+    assert os.path.isfile(exe_path)
+    assert open(exe_path, "rb").read() == exe_payload
+    assert any("Downloading v0.5.40" in s for _, _, s in events)
+    assert any(r == len(zip_bytes) and t == len(zip_bytes) for r, t, _ in events)
+    # Verify that resume with Range header was used on the retry
+    assert (f"https://example.invalid/{zip_name}", f"bytes={len(zip_bytes) // 2}-") in calls
+
+
+def test_fetch_fails_fast_on_404_with_clear_message(tmp_path, monkeypatch):
+    import email.message
+    import urllib.error
+    import pytest
+
+    rel = updates.Release(
+        "v0.5.40",
+        "v0.5.40",
+        "https://example.invalid/tincstack-v0.5.40-windows-x86_64.zip",
+        "https://example.invalid/SHA256SUMS",
+        "notes",
+    )
+    attempts = []
+
+    def fake_urlopen(req, timeout=25):
+        attempts.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", email.message.Message(), None)
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(OSError, match="HTTP 404"):
+        updates.fetch(rel, str(tmp_path))
+    # 404 must not retry 3 times
+    assert len(attempts) == 1
+
+
+def test_clean_pyinstaller_env_resets_meipass2(monkeypatch):
+    import management
+    monkeypatch.setenv("_MEIPASS2", r"C:\Users\u\AppData\Local\Temp\_MEI12345")
+    env = management._clean_pyinstaller_env()
+    assert "_MEIPASS2" not in env
+    assert env.get("PYINSTALLER_RESET_ENVIRONMENT") == "1"
+
+

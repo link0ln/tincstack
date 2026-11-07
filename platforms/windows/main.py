@@ -1277,6 +1277,8 @@ class TransportsTab(QtWidgets.QWidget):
 # ---- main window -------------------------------------------------------------
 
 class MainWindow(QtWidgets.QMainWindow):
+    _update_progress_sig = QtCore.Signal(int, int, str)
+
     def __init__(self, cfg_path: str, runner: Any = None, autostart: bool = True) -> None:
         super().__init__()
         self.admin = management.is_admin()
@@ -1360,8 +1362,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.update_timer.timeout.connect(self._update_check_start)
         self.update_timer.start()
         self._quitting = False
-        self._update_banner = None
+        self._update_banner: QtWidgets.QFrame | None = None
+        self._update_banner_lbl: QtWidgets.QLabel | None = None
+        self._update_progress_bar: QtWidgets.QProgressBar | None = None
+        self._update_go_btn: QtWidgets.QPushButton | None = None
+        self._update_later_btn: QtWidgets.QPushButton | None = None
         self._available_update: updates.Release | None = None
+        self._update_in_progress = False
+        self._update_progress_sig.connect(self._on_update_progress)
         self._build_tray()
         self._show_load_error()
         self.reload_networks()
@@ -1744,7 +1752,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # -- update check (GitHub Releases; at most one network poll per 3 h) ----
 
     def _update_check_start(self) -> None:
-        if not management.is_frozen():
+        if not management.is_frozen() or self._update_in_progress:
             return                       # a dev run never phones home automatically
         updates.cleanup_old_workdirs()
         installed = management.current_version()
@@ -1762,6 +1770,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def check_updates_manual(self) -> None:
         """Triggered by the user clicking 'Check updates' in the toolbar or tray."""
+        if self._update_in_progress:
+            if self._update_banner is not None:
+                self._update_banner.show()
+            self._show_window()
+            self.status("An update download is already in progress…", hold_secs=8.0)
+            return
         if self._available_update is not None and self._update_banner is not None and self._update_banner.isHidden():
             self._update_banner.show()
         installed = management.current_version()
@@ -1779,7 +1793,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_manual_done(self, res: tuple[str, updates.Release | None, str],
                             installed: str | None) -> None:
         from datetime import datetime, timezone
-        if hasattr(self, "update_act"):
+        if hasattr(self, "update_act") and not self._update_in_progress:
             self.update_act.setEnabled(True)
         status, rel, detail = res
         if status in ("update", "up_to_date"):
@@ -1826,8 +1840,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _show_update_banner(self, rel: updates.Release) -> None:
         self._available_update = rel
-        if hasattr(self, "update_act"):
+        if hasattr(self, "update_act") and not self._update_in_progress:
             self.update_act.setText(f"⬆ Update ({rel.version})")
+            self.update_act.setEnabled(True)
+        if self._update_in_progress and self._update_banner is not None:
+            self._update_banner.show()
+            return
         if self._update_banner is not None:
             self._update_banner.deleteLater()
         bar = QtWidgets.QFrame()
@@ -1837,6 +1855,11 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         bl = QtWidgets.QHBoxLayout(bar)
         bl.setContentsMargins(12, 8, 12, 8)
+        bl.setSpacing(10)
+
+        left_col = QtWidgets.QVBoxLayout()
+        left_col.setContentsMargins(0, 0, 0, 0)
+        left_col.setSpacing(6)
         cur = management.current_version()
         cur_txt = f" (current: {cur})" if cur else ""
         lbl = QtWidgets.QLabel(f"<span style='color:#60a5fa;font-weight:bold;'>⬆ A new version is available: "
@@ -1846,13 +1869,29 @@ class MainWindow(QtWidgets.QMainWindow):
                                f"restarts automatically.</span>")
         lbl.setStyleSheet("color:#e2e8f0;background:transparent;border:none;")
         lbl.setWordWrap(True)
-        bl.addWidget(lbl, stretch=1)
+        left_col.addWidget(lbl)
+
+        prog = QtWidgets.QProgressBar()
+        prog.setObjectName("updateProgressBar")
+        prog.setMinimumHeight(18)
+        prog.setMaximumHeight(20)
+        prog.setTextVisible(True)
+        prog.setStyleSheet(
+            "QProgressBar#updateProgressBar{background:#0f172a;border:1px solid #3b82f6;"
+            "border-radius:4px;color:#f8fafc;font-weight:bold;text-align:center;}"
+            "QProgressBar#updateProgressBar::chunk{background:#2563eb;border-radius:3px;}"
+        )
+        prog.hide()
+        left_col.addWidget(prog)
+        bl.addLayout(left_col, stretch=1)
+
         go = QtWidgets.QPushButton("Update now")
         go.setCursor(QtCore.Qt.PointingHandCursor)
         go.setStyleSheet(
             "QPushButton{background:#1a73e8;color:#ffffff;font-weight:bold;border:none;"
             "border-radius:4px;padding:6px 14px;}"
             "QPushButton:hover{background:#2563eb;}"
+            "QPushButton:disabled{background:#1e3a5f;color:#94a3b8;}"
         )
         go.clicked.connect(lambda: self._update_install(rel))
         later = QtWidgets.QPushButton("Later")
@@ -1863,22 +1902,117 @@ class MainWindow(QtWidgets.QMainWindow):
             "QPushButton:hover{background:#334155;color:#ffffff;}"
         )
         later.clicked.connect(bar.hide)
-        bl.addWidget(go); bl.addWidget(later)
+        bl.addWidget(go)
+        bl.addWidget(later)
         self.outer_layout().insertWidget(1, bar)
         self._update_banner = bar
+        self._update_banner_lbl = lbl
+        self._update_progress_bar = prog
+        self._update_go_btn = go
+        self._update_later_btn = later
 
     def outer_layout(self) -> QtWidgets.QVBoxLayout:
         # the banner sits above the tab area, like the load-error banner
         central = self.centralWidget()
         return central.layout()
 
+    def _emit_update_progress(self, read_bytes: int, total_bytes: int, stage: str) -> None:
+        self._update_progress_sig.emit(int(read_bytes), int(total_bytes), str(stage))
+
+    def _on_update_progress(self, read_bytes: int, total_bytes: int, stage: str) -> None:
+        import html
+        safe_stage = html.escape(stage)
+        if _is_widget_alive(self._update_progress_bar):
+            assert self._update_progress_bar is not None
+            self._update_progress_bar.show()
+            if total_bytes > 0 and read_bytes > 0:
+                pct = min(100, max(0, int((read_bytes * 100) // total_bytes)))
+                self._update_progress_bar.setRange(0, 100)
+                self._update_progress_bar.setValue(pct)
+                dl_txt = f"{human_bytes(read_bytes)} / {human_bytes(total_bytes)} ({pct}%)"
+                self._update_progress_bar.setFormat(dl_txt)
+            else:
+                self._update_progress_bar.setRange(0, 0)
+                dl_txt = f"{human_bytes(read_bytes)} downloaded" if read_bytes > 0 else ""
+        else:
+            if total_bytes > 0 and read_bytes > 0:
+                pct = min(100, max(0, int((read_bytes * 100) // total_bytes)))
+                dl_txt = f"{human_bytes(read_bytes)} / {human_bytes(total_bytes)} ({pct}%)"
+            else:
+                dl_txt = f"{human_bytes(read_bytes)} downloaded" if read_bytes > 0 else ""
+
+        if _is_widget_alive(self._update_banner_lbl):
+            assert self._update_banner_lbl is not None
+            if dl_txt:
+                self._update_banner_lbl.setText(
+                    f"<span style='color:#60a5fa;font-weight:bold;'>⬇ {safe_stage}</span> "
+                    f"<span style='color:#e2e8f0;'>{html.escape(dl_txt)}</span>"
+                )
+            else:
+                self._update_banner_lbl.setText(
+                    f"<span style='color:#60a5fa;font-weight:bold;'>⏳ {safe_stage}</span>"
+                )
+        status_msg = f"{stage} {dl_txt}".strip() if dl_txt else stage
+        self.status(status_msg, hold_secs=120.0)
+
     def _update_install(self, rel: updates.Release) -> None:
+        import inspect
         import shutil
-        self.status(f"Downloading {rel.version}…", hold_secs=60.0)
+        if self._update_in_progress or self.pool.busy("update-fetch") or self.pool.busy("update-install"):
+            return
+        self._update_in_progress = True
+        self._available_update = rel
+        if self._update_banner is None:
+            self._show_update_banner(rel)
+        if _is_widget_alive(self._update_banner):
+            assert self._update_banner is not None
+            self._update_banner.setStyleSheet(
+                "QFrame#updateBanner{background:#16243a;border:1px solid #2b6cb0;border-radius:6px;}"
+            )
+            self._update_banner.show()
+        if _is_widget_alive(self._update_go_btn):
+            assert self._update_go_btn is not None
+            self._update_go_btn.setEnabled(False)
+            self._update_go_btn.hide()
+        if _is_widget_alive(self._update_later_btn):
+            assert self._update_later_btn is not None
+            self._update_later_btn.setEnabled(False)
+            self._update_later_btn.hide()
+        if _is_widget_alive(self._update_progress_bar):
+            assert self._update_progress_bar is not None
+            self._update_progress_bar.setRange(0, 0)
+            self._update_progress_bar.show()
+        if _is_widget_alive(self._update_banner_lbl):
+            assert self._update_banner_lbl is not None
+            self._update_banner_lbl.setText(
+                f"<span style='color:#60a5fa;font-weight:bold;'>⬇ Downloading {rel.version}…</span> "
+                f"<span style='color:#e2e8f0;'>Connecting to GitHub Releases…</span>"
+            )
+        if hasattr(self, "update_act"):
+            self.update_act.setEnabled(False)
+            self.update_act.setText(f"⏳ Updating ({rel.version})…")
+
+        self.status(f"Downloading {rel.version}…", hold_secs=120.0)
         workdir = tempfile.mkdtemp(prefix="tincmgr-update-")
-        self.pool.run(updates.fetch, rel, workdir, tag="update-fetch",
-                      on_done=lambda r: self._update_run(rel, r, workdir),
-                      on_error=lambda msg, wd=workdir: (shutil.rmtree(wd, ignore_errors=True), self._update_failed(msg)))
+
+        def do_fetch() -> tuple[str, str]:
+            try:
+                sig = inspect.signature(updates.fetch)
+                if "progress_cb" in sig.parameters:
+                    return updates.fetch(rel, workdir, progress_cb=self._emit_update_progress)
+            except (TypeError, ValueError):
+                pass
+            return updates.fetch(rel, workdir)
+
+        w = self.pool.run(
+            do_fetch,
+            tag="update-fetch",
+            on_done=lambda r: self._update_run(rel, r, workdir),
+            on_error=lambda msg, wd=workdir: (shutil.rmtree(wd, ignore_errors=True), self._update_failed(msg)),
+        )
+        if w is None:
+            shutil.rmtree(workdir, ignore_errors=True)
+            self._update_failed("Could not start update download worker.")
 
     def _update_run(self, rel: updates.Release, extracted: tuple[str, str], workdir: str) -> None:
         import shutil
@@ -1888,33 +2022,73 @@ class MainWindow(QtWidgets.QMainWindow):
                 os.unlink(zpath)
         except OSError:
             pass
+        if _is_widget_alive(self._update_progress_bar):
+            assert self._update_progress_bar is not None
+            self._update_progress_bar.setRange(0, 0)
+            self._update_progress_bar.show()
+        if _is_widget_alive(self._update_banner_lbl):
+            assert self._update_banner_lbl is not None
+            self._update_banner_lbl.setText(
+                f"<span style='color:#60a5fa;font-weight:bold;'>⚙ Installing {rel.version}…</span> "
+                f"<span style='color:#e2e8f0;'>Stopping active tunnels and launching installer…</span>"
+            )
         self.status(f"Installing {rel.version}… (elevation prompt)", hold_secs=60.0)
-        # Launch the downloaded single-file tincmgr.exe asynchronously with
-        # --self-install --wait-pid <our PID> --relaunch so this process can
-        # stop its tunnels and exit first, releasing all locks on Program Files
-        # before the installer swaps the new tree in and restarts the GUI.
+        # Prevent _tick() / _on_running() from auto-restarting tincd while stop_all() runs
+        self._quitting = True
+        self.timer.stop()
+        self.cert_timer.stop()
+        self.update_timer.stop()
+
+        # Stop active tunnels first so all locks and Wintun handles are released,
+        # then launch the downloaded single-file tincmgr.exe asynchronously with
+        # --self-install --wait-pid <our PID> --relaunch before exiting.
         def do_install() -> str:
             try:
                 if not management.is_frozen():
                     raise OSError("only the built tincmgr.exe can update in place")
                 management.check_downgrade(rel.version, management.installed_version())
-                target = management.start_self_update(
-                    exe, rel.version, caller_pid=os.getpid(), caller_exe=sys.executable
-                )
+                if hasattr(self, "diag_server"):
+                    try:
+                        self.diag_server.stop()
+                    except Exception:
+                        pass
                 if self.admin:
                     try:
                         self.rt.stop_all()
                     except Exception:
                         pass
+                target = management.start_self_update(
+                    exe, rel.version, caller_pid=os.getpid(), caller_exe=sys.executable
+                )
                 return target
             except BaseException:
                 shutil.rmtree(workdir, ignore_errors=True)
                 raise
-        self.pool.run(do_install, tag="update-install",
-                      on_done=lambda target: self._update_restart(target),
-                      on_error=self._update_failed)
+
+        def on_install_error(msg: str) -> None:
+            self._quitting = False
+            self.timer.start()
+            self.cert_timer.start()
+            self.update_timer.start()
+            self._update_failed(msg)
+
+        w = self.pool.run(
+            do_install,
+            tag="update-install",
+            on_done=lambda target: self._update_restart(target),
+            on_error=on_install_error,
+        )
+        if w is None:
+            shutil.rmtree(workdir, ignore_errors=True)
+            on_install_error("Could not start update installer worker.")
 
     def _update_restart(self, target: str) -> None:
+        if _is_widget_alive(self._update_banner_lbl):
+            assert self._update_banner_lbl is not None
+            self._update_banner_lbl.setText(
+                f"<span style='color:#4ade80;font-weight:bold;'>✓ Restarting into updated tincmgr…</span> "
+                f"<span style='color:#e2e8f0;'>({target})</span>"
+            )
         self.status(f"Installing into {target}; restarting…", hold_secs=30.0)
         self._quitting = True
         self.timer.stop()
@@ -1925,8 +2099,49 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(250, lambda: os._exit(0))
 
     def _update_failed(self, msg: str) -> None:
-        self.status("", hold_secs=0.0)
-        QtWidgets.QMessageBox.warning(self, "Update", f"The update did not complete:\n{msg}")
+        import html
+        self._update_in_progress = False
+        clean_msg = re.sub(r"^(?:OSError|ValueError|RuntimeError):\s*", "", (msg or "").strip())
+        if not clean_msg:
+            clean_msg = "Unknown update error"
+        try:
+            diagnostics.log_app_event(f"Update failed: {clean_msg}")
+        except Exception:
+            pass
+        rel = self._available_update
+        rel_ver = rel.version if rel else "new version"
+        if hasattr(self, "update_act"):
+            self.update_act.setEnabled(True)
+            if rel:
+                self.update_act.setText(f"⬆ Update ({rel.version})")
+            else:
+                self.update_act.setText("🔄 Check updates")
+        if _is_widget_alive(self._update_progress_bar):
+            assert self._update_progress_bar is not None
+            self._update_progress_bar.hide()
+        if _is_widget_alive(self._update_banner):
+            assert self._update_banner is not None
+            self._update_banner.setStyleSheet(
+                "QFrame#updateBanner{background:#2d161e;border:1px solid #ef4444;border-radius:6px;}"
+            )
+            self._update_banner.show()
+        if _is_widget_alive(self._update_banner_lbl):
+            assert self._update_banner_lbl is not None
+            self._update_banner_lbl.setText(
+                f"<span style='color:#f87171;font-weight:bold;'>⚠ Update to {html.escape(rel_ver)} failed:</span> "
+                f"<span style='color:#fecaca;'>{html.escape(clean_msg)}</span>"
+            )
+        if _is_widget_alive(self._update_go_btn):
+            assert self._update_go_btn is not None
+            self._update_go_btn.setText("Retry update")
+            self._update_go_btn.setEnabled(True)
+            self._update_go_btn.show()
+        if _is_widget_alive(self._update_later_btn):
+            assert self._update_later_btn is not None
+            self._update_later_btn.setEnabled(True)
+            self._update_later_btn.show()
+        self.status(f"Update failed: {clean_msg}", hold_secs=15.0)
+        QtWidgets.QMessageBox.warning(self, "Update", f"The update did not complete:\n{clean_msg}")
 
     def _cert_badge(self, days: int | None, threshold: int) -> None:
         """Mark the toolbar action when the certificate is running out. Silent
@@ -2185,16 +2400,30 @@ def main() -> None:
                 replace_exe = args[idx + 1].strip('"')
         try:
             if wait_pid > 0:
-                management.wait_for_pid(wait_pid, timeout=15.0)
-            target = management.install_self(sys.executable, retry_secs=10.0 if wait_pid > 0 else 0.0)
+                management.wait_for_pid(wait_pid, timeout=30.0)
+            target = management.install_self(sys.executable, retry_secs=20.0 if wait_pid > 0 else 0.0)
             if replace_exe:
-                management.replace_standalone_exe(sys.executable, replace_exe, retry_secs=10.0)
+                management.replace_standalone_exe(sys.executable, replace_exe, retry_secs=20.0)
             if relaunch:
                 management.launch_detached(target)
             print(f"installed: {target}")
             sys.exit(0)
         except (OSError, management.DowngradeRefused) as e:
-            print(f"error: {e}", file=sys.stderr)
+            err_msg = f"error: {e}"
+            print(err_msg, file=sys.stderr)
+            try:
+                err_log = os.path.join(tempfile.gettempdir(), "tincmgr-update-error.log")
+                with open(err_log, "a", encoding="utf-8") as ef:
+                    ef.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {err_msg}\n")
+            except OSError:
+                pass
+            if relaunch:
+                fallback = replace_exe if (replace_exe and os.path.isfile(replace_exe)) else (management.installed_exe() or "")
+                if fallback and os.path.isfile(fallback):
+                    try:
+                        management.launch_detached(fallback)
+                    except OSError:
+                        pass
             sys.exit(1)
 
     # always run elevated on Windows: relaunch via UAC if we're not (the built
