@@ -1620,6 +1620,11 @@ static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, 
 
 	ks->last_ok = now.tv_sec;
 	obfs_follow_version(l, ver);
+	if(ks == &l->boot && l->sess_tx_ready &&
+	                (obfs_opens_session(inner, innerlen) || now.tv_sec - l->sess_time >= 2)) {
+		obfs_link_demote_sess(l);
+		l->ack_sent = false;
+	}
 	l->rx_since_dial = true;
 	l->rx_fd = ls ? ls->udp.fd : -1;
 	obfs_link_activate(l, addr);
@@ -1852,6 +1857,10 @@ bool obfs_dial(connection_t *c) {
 		}
 	}
 
+	if(!c->status.multipath_sub && !dseal_obfs_connected(n)) {
+		obfs_link_demote_sess(l);
+		l->ack_sent = false;
+	}
 	obfs_link_activate(l, &c->address);
 	l->rx_since_dial = false;
 	obfs_send_junk((size_t)sock, &c->address);
