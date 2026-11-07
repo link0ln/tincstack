@@ -95,6 +95,10 @@ bool random_early_drop(connection_t *c) {
 	size_t qlen = out_pending + c->transport_outbuf_len;
 
 	if(qlen > (size_t)maxoutbufsize / 2) {
+		if(qlen >= (size_t)maxoutbufsize * 3 / 4) {
+			return true;
+		}
+
 		if((qlen - (size_t)maxoutbufsize / 2) > prng((size_t)maxoutbufsize / 2)) {
 			return true;
 		}

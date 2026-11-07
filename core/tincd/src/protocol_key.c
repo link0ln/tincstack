@@ -90,6 +90,8 @@ bool key_changed_h(connection_t *c, const char *request) {
 	if(!n->status.sptps) {
 		n->status.validkey = false;
 		n->last_req_key = 0;
+	} else {
+		n->last_req_key = now.tv_sec;
 	}
 
 	/* Tell the others */
@@ -417,7 +419,8 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 				   to prevent storms. See matching reasoning in net_packet.c
 				   receive_udppacket: the cooldown is 30s to give in-progress
 				   handshakes time to finish on the TCP relay path. */
-				if(from->sptps.state == SPTPS_SECONDARY_KEX && from->last_req_key < now.tv_sec - 30) {
+				if(from->sptps.state == SPTPS_SECONDARY_KEX && from->last_req_key < now.tv_sec - 30 &&
+				                (!from->status.validkey || now.tv_sec - from->last_udp_rx > 5)) {
 					logger(DEBUG_PROTOCOL, LOG_ERR, "Failed to decode TCP packet from %s (%s), restarting SPTPS", from->name, from->hostname);
 					send_req_key(from);
 				}

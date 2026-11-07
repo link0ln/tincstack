@@ -464,7 +464,8 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 	   TCP segments unclamped. Cap provisional/TCP-only MSS calculation at 1400
 	   (MSS 1346) so inner TCP segments always fit any tunnel carrier without
 	   forcing multi-hop relays onto the meta stream. */
-	if(mtu > 1400 && (!via || !via->status.udp_confirmed || via->mtuprobes >= 0)) {
+	if(mtu > 1400 && (!via || !via->status.udp_confirmed || via->mtuprobes >= 0 ||
+	                  (!dest->status.udp_confirmed && dest->mtu == MTU))) {
 		mtu = 1400;
 	}
 
@@ -621,9 +622,11 @@ static void learn_mac(mac_t *address) {
 				send_add_subnet(c, subnet);
 			}
 
-		timeout_add(&age_subnets_timeout, age_subnets, NULL, &(struct timeval) {
-			10, jitter()
-		});
+		if(!age_subnets_timeout.cb) {
+			timeout_add(&age_subnets_timeout, age_subnets, NULL, &(struct timeval) {
+				10, jitter()
+			});
+		}
 	} else {
 		if(subnet->expires) {
 			subnet->expires = now.tv_sec + macexpire;

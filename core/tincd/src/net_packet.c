@@ -708,7 +708,8 @@ static bool receive_udppacket(node_t *n, vpn_packet_t *inpkt) {
 			   (30s) because after a reset, stale UDP packets from the previous
 			   session keep arriving for a while; we want the TCP-relayed handshake
 			   to finish in peace before considering another reset. */
-			if(n->sptps.state == SPTPS_SECONDARY_KEX && n->last_req_key < now.tv_sec - 30) {
+			if(n->sptps.state == SPTPS_SECONDARY_KEX && n->last_req_key < now.tv_sec - 30 &&
+			                (!n->status.validkey || now.tv_sec - n->last_udp_rx > 5)) {
 				logger(DEBUG_PROTOCOL, LOG_ERR, "Failed to decode raw UDP packet from %s (%s), restarting SPTPS", n->name, n->hostname);
 				send_req_key(n);
 			}
@@ -974,7 +975,8 @@ bool receive_tcppacket_sptps(connection_t *c, const char *data, size_t len) {
 		   so let's restart SPTPS in case that helps. But don't do that too often
 		   to prevent storms. Cooldown raised to 30s for the same reason as in
 		   receive_udppacket: give the in-progress handshake time to finish. */
-		if(from->sptps.state == SPTPS_SECONDARY_KEX && from->last_req_key < now.tv_sec - 30) {
+		if(from->sptps.state == SPTPS_SECONDARY_KEX && from->last_req_key < now.tv_sec - 30 &&
+		                (!from->status.validkey || now.tv_sec - from->last_udp_rx > 5)) {
 			logger(DEBUG_PROTOCOL, LOG_ERR, "Failed to decode raw TCP packet from %s (%s), restarting SPTPS", from->name, from->hostname);
 			send_req_key(from);
 		}
@@ -1712,6 +1714,10 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 			return true;
 		}
 
+		if(from != myself && type != SPTPS_HANDSHAKE && origlen > relay->minmtu && relay->minmtu >= MINMTU) {
+			send_mtu_info(to, from, relay->minmtu);
+		}
+
 		return send_sptps_data_meta(to, from, type, data, len);
 	}
 
@@ -1972,6 +1978,8 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	}
 
 	if(type == SPTPS_HANDSHAKE) {
+		from->last_req_key = now.tv_sec;
+
 		if(!from->status.validkey) {
 			from->status.validkey = true;
 			from->status.waitingforkey = false;
@@ -3373,6 +3381,9 @@ skip_harder:
 
 				n->status.udp_addr_confirmed = true;
 			}
+
+			n->last_udp_rx = now.tv_sec;
+			n->udp_ping_unanswered = 0;
 
 			send_sptps_data(to, from, 0, DATA(pkt), pkt->len);
 			try_tx(to, true);

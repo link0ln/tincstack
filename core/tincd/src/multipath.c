@@ -1493,10 +1493,10 @@ static void dial_secondary_connection(outgoing_t *outgoing) {
 	}
 
 	/* Single-flow UDP (`sf` / `obfs`) demuxes incoming frames by peer source
-	   address unless bound to a distinct uplink socket; TCP-based (`plain`,
-	   `sftcp`, `https`) and `quic` (Connection ID demuxed) can always open
-	   multiple parallel connections even on a single interface. */
-	if((t->id == TRANSPORT_SF || t->id == TRANSPORT_OBFS) && multipath_uplink_count < 2) {
+	   address / per-node link state and uses multipath at the UDP datagram
+	   layer; only TCP-based (`plain`, `sftcp`, `https`) and `quic`
+	   (Connection ID demuxed) open multiple parallel meta connections. */
+	if(t->id == TRANSPORT_SF || t->id == TRANSPORT_OBFS) {
 		return;
 	}
 
@@ -1585,6 +1585,11 @@ void multipath_maintain(void) {
 						cand->edge->connection = cand;
 						cand->edge->address = cand->address;
 						n->connection->edge = NULL;
+					}
+
+					if(n->connection->outgoing && !cand->outgoing) {
+						cand->outgoing = n->connection->outgoing;
+						n->connection->outgoing = NULL;
 					}
 
 					n->connection->status.multipath_sub = true;

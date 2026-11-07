@@ -55,6 +55,11 @@ static inline uint64_t quic_txq_unsent(const quic_txq_t *q) {
 	return q->end - q->sent;
 }
 
+/* Bytes appended and not yet acknowledged by the peer. */
+static inline uint64_t quic_txq_unacked(const quic_txq_t *q) {
+	return q->end > q->acked ? q->end - q->acked : 0;
+}
+
 /* Up to `nvec' pieces of what follows `sent', at most `max' bytes in all.
    Returns the number of pieces. The pointers stay valid until the bytes
    are acknowledged. */

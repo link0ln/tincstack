@@ -1640,8 +1640,6 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 			if(n >= 0) {
 				return obfs_accept(ls, l, ks, seq, ver, inner, (size_t)n, &addr);
 			}
-
-			break;
 		}
 	}
 

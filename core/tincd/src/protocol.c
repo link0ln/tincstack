@@ -236,9 +236,11 @@ bool seen_request(const char *request) {
 		new->request = xstrdup(request);
 		new->firstseen = now.tv_sec;
 		splay_insert(&past_request_tree, new);
-		timeout_add(&past_request_timeout, age_past_requests, NULL, &(struct timeval) {
-			10, jitter()
-		});
+		if(!past_request_timeout.cb) {
+			timeout_add(&past_request_timeout, age_past_requests, NULL, &(struct timeval) {
+				10, jitter()
+			});
+		}
 		return false;
 	}
 }

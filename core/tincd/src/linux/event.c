@@ -122,11 +122,14 @@ bool event_loop(void) {
 		static bool have_pwait2 = true;
 
 		if(have_pwait2) {
-			struct timespec ts = {
-				.tv_sec = tv->tv_sec,
-				.tv_nsec = tv->tv_usec * 1000,
-			};
-			n = epoll_pwait2(epollset, events, MAX_EVENTS_PER_LOOP, &ts, NULL);
+			struct timespec ts;
+
+			if(tv) {
+				ts.tv_sec = tv->tv_sec;
+				ts.tv_nsec = tv->tv_usec * 1000;
+			}
+
+			n = epoll_pwait2(epollset, events, MAX_EVENTS_PER_LOOP, tv ? &ts : NULL, NULL);
 
 			if(n < 0 && errno == ENOSYS) {
 				have_pwait2 = false;
@@ -141,10 +144,14 @@ bool event_loop(void) {
 			   arms ngtcp2's microsecond timers on every packet, so at 1 Mbit/s
 			   that spin was 15 % of a core (windows/event.c adds 1 for the same
 			   reason). */
-			long timeout = (tv->tv_sec * 1000) + ((tv->tv_usec + 999) / 1000);
+			long timeout = -1;
 
-			if(timeout > INT_MAX) {
-				timeout = INT_MAX;
+			if(tv) {
+				timeout = (tv->tv_sec * 1000) + ((tv->tv_usec + 999) / 1000);
+
+				if(timeout > INT_MAX) {
+					timeout = INT_MAX;
+				}
 			}
 
 			n = epoll_wait(epollset, events, MAX_EVENTS_PER_LOOP, (int)timeout);

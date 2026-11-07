@@ -412,6 +412,10 @@ static void sf_process_ack(sf_session_t *s, uint32_t ack) {
 		s->rto_ms = SF_RTO_INITIAL_MS;
 		s->hard_errors = 0;   /* the peer answered: whatever the kernel said, this path works */
 
+		if(s->c && (s->c->edge || s->c->status.active) && s->c->status.pinged) {
+			s->c->last_ping_time = now.tv_sec;
+		}
+
 		while(s->inflight.head) {
 			sf_segment_t *seg = s->inflight.head->data;
 

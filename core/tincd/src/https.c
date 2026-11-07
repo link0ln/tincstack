@@ -100,6 +100,7 @@ typedef struct https_session_t {
 
 	bool established_after_write; /* server: become established once wbuf drains */
 	bool decoy_keep_alive;  /* server: the decoy said keep-alive; read the next request */
+	bool read_wants_write;  /* SSL_read returned SSL_ERROR_WANT_WRITE */
 	decoy_fetch_t *fetch;   /* server: outstanding upstream decoy fetch (M5-1) */
 
 	size_t pad_budget;      /* pending TLS 1.3 record padding for inner ClientHello bursts (A3) */
@@ -744,9 +745,14 @@ static void https_flush(connection_t *c) {
 
 		int err = SSL_get_error(s->ssl, n);
 
-		if(err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ ||
+		if(err == SSL_ERROR_WANT_WRITE ||
 		   (err == SSL_ERROR_SYSCALL && n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR))) {
 			set_io(s, IO_READ | IO_WRITE);
+			return;
+		}
+
+		if(err == SSL_ERROR_WANT_READ) {
+			set_io(s, IO_READ);
 			return;
 		}
 
@@ -760,7 +766,7 @@ static void https_flush(connection_t *c) {
 		return;
 	}
 
-	set_io(s, IO_READ);
+	set_io(s, s->read_wants_write ? (IO_READ | IO_WRITE) : IO_READ);
 }
 
 static void established_read(https_session_t *s) {
@@ -768,6 +774,7 @@ static void established_read(https_session_t *s) {
 	char buf[MAXBUFSIZE];
 
 	for(;;) {
+		s->read_wants_write = false;
 		ERR_clear_error();
 		int n = SSL_read(s->ssl, buf, sizeof(buf));
 
@@ -775,6 +782,10 @@ static void established_read(https_session_t *s) {
 			if(!receive_meta_bytes(c, buf, n)) {
 				c->status.tarpit = false;
 				terminate_connection(c, c->edge);
+				return;
+			}
+
+			if(s->state != HS_ESTABLISHED) {
 				return;
 			}
 
@@ -786,10 +797,15 @@ static void established_read(https_session_t *s) {
 
 		if(err == SSL_ERROR_WANT_READ ||
 		   (err == SSL_ERROR_SYSCALL && n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR))) {
+			if(c->outbuf.len <= c->outbuf.offset) {
+				set_io(s, IO_READ);
+			}
+
 			return;
 		}
 
 		if(err == SSL_ERROR_WANT_WRITE) {
+			s->read_wants_write = true;
 			set_io(s, IO_READ | IO_WRITE);
 			return;
 		}
@@ -1141,11 +1157,31 @@ static void https_io(void *data, int flags) {
 
 	case HS_ESTABLISHED:
 		if(flags & IO_WRITE) {
+			if(s->read_wants_write) {
+				established_read(s);
+
+				if(s->state != HS_ESTABLISHED) {
+					return;
+				}
+			}
+
 			https_flush(c);
+
+			if(s->state != HS_ESTABLISHED) {
+				return;
+			}
 		}
 
 		if(flags & IO_READ) {
 			established_read(s);
+
+			if(s->state != HS_ESTABLISHED) {
+				return;
+			}
+
+			if(c->outbuf.len > c->outbuf.offset) {
+				https_flush(c);
+			}
 		}
 
 		return;

@@ -76,6 +76,7 @@ static int timeout_compare(const timeout_t *a, const timeout_t *b) {
 
 splay_tree_t io_tree = {.compare = (splay_compare_t)io_compare};
 splay_tree_t timeout_tree = {.compare = (splay_compare_t)timeout_compare};
+static timeout_t *current_executing_timeout = NULL;
 
 void timeout_add(timeout_t *timeout, timeout_cb_t cb, void *data, const struct timeval *tv) {
 	timeout->cb = cb;
@@ -102,6 +103,10 @@ void timeout_set(timeout_t *timeout, const struct timeval *tv) {
 }
 
 void timeout_del(timeout_t *timeout) {
+	if(current_executing_timeout == timeout) {
+		current_executing_timeout = NULL;
+	}
+
 	if(!timeout->cb) {
 		return;
 	}
@@ -122,10 +127,15 @@ struct timeval *timeout_execute(struct timeval *diff) {
 		timersub(&timeout->tv, &now, diff);
 
 		if(diff->tv_sec < 0 || (diff->tv_sec == 0 && diff->tv_usec <= 0)) {
+			current_executing_timeout = timeout;
 			timeout->cb(timeout->data);
 
-			if(!timercmp(&timeout->tv, &now, >)) {
-				timeout_del(timeout);
+			if(current_executing_timeout == timeout) {
+				current_executing_timeout = NULL;
+
+				if(!timercmp(&timeout->tv, &now, >)) {
+					timeout_del(timeout);
+				}
 			}
 		} else {
 			tv = diff;

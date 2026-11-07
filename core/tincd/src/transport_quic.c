@@ -71,7 +71,7 @@
 #define QUIC_CODEL_TARGET (100ULL * NGTCP2_MILLISECONDS)
 #define QUIC_CODEL_INTERVAL (200ULL * NGTCP2_MILLISECONDS)
 #define QUIC_PKT_BUF 1452
-#define QUIC_CID_SLOTS 16               /* issued connection ids we track per session */
+#define QUIC_CID_SLOTS 32               /* issued connection ids we track per session */
 #define QUIC_UNI_STREAMS 3              /* control, QPACK encoder, QPACK decoder */
 #define QUIC_PEER_UNI 3                 /* the peer's: our initial_max_streams_uni (server) */
 #define QUIC_REQ_SLOTS 8                /* request streams a server answers per connection */
@@ -248,9 +248,12 @@ static void cid_add(quic_session_t *s, const uint8_t *data, size_t len) {
 	}
 
 	if(s->ncids >= QUIC_CID_SLOTS) {
-		/* Drop the oldest; ngtcp2 keeps at most active_connection_id_limit
-		   live at once, well under the slot count. */
-		memmove(&s->cids[0], &s->cids[1], (QUIC_CID_SLOTS - 1) * sizeof(s->cids[0]));
+		/* Drop the oldest rotated id while preserving s->cids[0..2]
+		   (our initial scid, the client's original dcid, and seq 1,
+		   which OpenSSL's QUIC client switches to without retiring
+		   seq 0). Evicting an active SCID makes incoming 1-RTT packets
+		   miss session_by_cid_addr() and trigger a stateless reset. */
+		memmove(&s->cids[3], &s->cids[4], (QUIC_CID_SLOTS - 4) * sizeof(s->cids[0]));
 		s->ncids = QUIC_CID_SLOTS - 1;
 	}
 
@@ -446,7 +449,7 @@ static void tx_append(quic_session_t *s, const void *data, size_t len) {
 	quic_txq_append(&s->tx, data, len);
 
 	if(s->c) {
-		s->c->transport_outbuf_len = (size_t)quic_txq_unsent(&s->tx);
+		s->c->transport_outbuf_len = (size_t)quic_txq_unacked(&s->tx);
 	}
 }
 
@@ -1063,8 +1066,17 @@ static int cb_acked_stream_data_offset(ngtcp2_conn *conn, int64_t stream_id, uin
 	quic_session_t *s = user_data;
 	uint64_t acked = offset + datalen;
 
+	if(s->c && (s->c->edge || s->c->status.active) && s->c->status.pinged) {
+		s->c->last_ping_time = now.tv_sec;
+	}
+
 	if(stream_id == s->stream_id) {
 		quic_txq_ack(&s->tx, acked);
+
+		if(s->c) {
+			s->c->transport_outbuf_len = (size_t)quic_txq_unacked(&s->tx);
+		}
+
 		return 0;
 	}
 
@@ -1107,6 +1119,10 @@ static int cb_recv_datagram(ngtcp2_conn *conn, uint32_t flags, const uint8_t *da
 
 	data += n;
 	datalen -= n;
+
+	if(s->c && (s->c->edge || s->c->status.active) && s->c->status.pinged) {
+		s->c->last_ping_time = now.tv_sec;
+	}
 
 	/* The SPTPS data record, byte-for-byte what send_sptps_data() would have
 	   put on the wire; hand it straight to the SPTPS receive path with the
@@ -1500,13 +1516,14 @@ static void quic_flush(quic_session_t *s) {
 	ngtcp2_path_storage_zero(&ps);
 	bool prefer_stream = false;
 	bool dgram_deferred = false;
+	bool write_more = false;
 
 	for(;;) {
 		uint8_t *buf = pkts[npkts];
 		ngtcp2_ssize nwrite;
 		int64_t sid = -1;
 		bool has_meta = s->stream_id >= 0 && !s->stream_blocked && quic_txq_unsent(&s->tx) > 0;
-		bool send_dgram = s->dgram_n > 0 && !dgram_deferred && (!has_meta || !prefer_stream);
+		bool send_dgram = !write_more && s->dgram_n > 0 && !dgram_deferred && (!has_meta || !prefer_stream);
 
 		if(send_dgram) {
 			prefer_stream = true;
@@ -1631,6 +1648,8 @@ static void quic_flush(quic_session_t *s) {
 
 			/* The packet has room for more: the next stream goes in too. */
 			if(nwrite == NGTCP2_ERR_WRITE_MORE) {
+				write_more = true;
+
 				if(uni >= 0 && pdatalen > 0) {
 					quic_txq_sent(&s->uni_tx[uni], (size_t)pdatalen);
 				} else if(req >= 0 && pdatalen >= 0) {
@@ -1671,6 +1690,20 @@ static void quic_flush(quic_session_t *s) {
 				}
 			}
 
+			if(nwrite == 0 && write_more) {
+				write_more = false;
+				nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, QUIC_PKT_BUF, NULL, 0, -1, NULL, 0, ts);
+
+				if(nwrite < 0) {
+					quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
+					ngtcp2_ccerr_set_liberr(&s->ccerr, (int)nwrite, NULL, 0);
+					quic_fail(s, true);
+					return;
+				}
+			}
+
+			write_more = false;
+
 			if(nwrite == 0) {
 				break;
 			}
@@ -1698,7 +1731,7 @@ static void quic_flush(quic_session_t *s) {
 	}
 
 	if(s->c) {
-		s->c->transport_outbuf_len = (size_t)quic_txq_unsent(&s->tx);
+		s->c->transport_outbuf_len = (size_t)quic_txq_unacked(&s->tx);
 	}
 
 	ngtcp2_conn_update_pkt_tx_time(s->conn, ts);
@@ -1887,6 +1920,7 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	}
 
 	quic_session_t *s = new_session(c, ls->udp.fd, (size_t)sock, addr, true);
+	s->local = ls->sa;
 
 	if(!quic_tls_session_init(&s->tls, true, get_conn, &s->tls, alpn ? alpn : QUIC_ALPN_DEFAULT, NULL, NULL)) {
 		free(alpn);
@@ -1983,6 +2017,21 @@ static void session_read_pkt(quic_session_t *s, const uint8_t *buf, size_t len, 
 	rv = ngtcp2_conn_read_pkt(s->conn, &path, &pi, buf, len, quic_now());
 	s->reading = false;
 
+	/* Connection-level MAX_DATA frames do not fire cb_extend_max_stream_data,
+	   even though ngtcp2_conn_writev_stream() returns NGTCP2_ERR_STREAM_DATA_BLOCKED
+	   when connection-level flow control is exhausted. Re-arm blocked flags
+	   after processing incoming frames so a connection-level window update
+	   always wakes the streams. */
+	s->stream_blocked = false;
+
+	for(int i = 0; i < s->nuni; i++) {
+		s->uni_blocked[i] = false;
+	}
+
+	for(int i = 0; i < s->nreq; i++) {
+		s->req[i].blocked = false;
+	}
+
 	if(rv) {
 		if(rv == NGTCP2_ERR_DRAINING || rv == NGTCP2_ERR_CLOSING || rv == NGTCP2_ERR_DROP_CONN) {
 			quic_fail(s, false);
@@ -2029,6 +2078,8 @@ static void quic_client_read(void *data, int flags) {
 	uint8_t buf[MAXSIZE];
 	int nread = 0;
 
+	quic_batch_begin();
+
 	for(int i = 0; i < 64 && !s->dead; i++) {
 		sockaddr_t addr;
 		socklen_t addrlen = sizeof(addr);
@@ -2062,6 +2113,8 @@ static void quic_client_read(void *data, int flags) {
 	if((nread & 15) != 0 && !s->dead) {
 		quic_flush(s);
 	}
+
+	quic_batch_end();
 }
 
 bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
@@ -2392,6 +2445,7 @@ bool quic_send(connection_t *c) {
 	if(avail) {
 		tx_append_data(s, c->outbuf.data + c->outbuf.offset, avail);
 		buffer_read(&c->outbuf, avail);
+		c->transport_outbuf_len = (size_t)quic_txq_unacked(&s->tx);
 	}
 
 	if(!s->reading) {
