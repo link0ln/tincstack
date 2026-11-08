@@ -339,8 +339,14 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 			edge_t *e = n->connection->edge;
 			int new_weight = n->smoothed_rtt_ms;
 
-			if(low_power_mode) {
+			if(low_power_mode || myself->status.no_direct) {
 				new_weight += 1000;
+			}
+
+			if(n->connection->options & OPTION_TCPONLY) {
+				new_weight += 500;
+			} else if(n->connection->transport && n->connection->transport->send_datagram) {
+				new_weight += 250;
 			}
 
 			int diff = new_weight > e->weight ? new_weight - e->weight : e->weight - new_weight;

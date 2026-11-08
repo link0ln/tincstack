@@ -200,7 +200,7 @@ void sssp_bfs(void) {
 				continue;
 			}
 
-			int step_weight = e->weight;
+			int step_weight = (e->reverse && e->reverse->weight > e->weight) ? e->reverse->weight : e->weight;
 
 			if(n != myself) {
 				if(n->status.no_direct || n->remote_no_direct) {
