@@ -58,6 +58,9 @@
 #include "xalloc.h"
 #include "address_cache.h"
 
+#define TINC_TRANSPORT_DAEMON
+#include "transport.h"
+
 /* Implementation of Kruskal's algorithm.
    Running time: O(EN)
    Please note that sorting on weight is already done by add_edge().
@@ -197,17 +200,37 @@ void sssp_bfs(void) {
 				continue;
 			}
 
+			int step_weight = e->weight;
+
+			if(n != myself) {
+				if(n->status.no_direct || n->remote_no_direct) {
+					step_weight += 10000;
+				}
+
+				node_t *cand_nh = n->nexthop;
+
+				if(cand_nh && cand_nh != myself && cand_nh->connection) {
+					if((cand_nh->connection->options & OPTION_TCPONLY) || (e->options & OPTION_TCPONLY)) {
+						step_weight += 1000;
+					} else if(cand_nh->connection->transport && cand_nh->connection->transport->send_datagram) {
+						step_weight += 500;
+					}
+				} else if(e->options & OPTION_TCPONLY) {
+					step_weight += 1000;
+				}
+			}
+
 			if(e->to->status.visited
 			                && (!e->to->status.indirect || indirect)
-			                && (e->to->distance != n->distance + 1 || e->to->weighted_distance <= n->weighted_distance + e->weight)) {
+			                && (e->to->distance != n->distance + 1 || e->to->weighted_distance <= n->weighted_distance + step_weight)) {
 				continue;
 			}
 
 			// Only update nexthop if it doesn't increase the path length
 
-			if(!e->to->status.visited || (e->to->distance == n->distance + 1 && e->to->weighted_distance > n->weighted_distance + e->weight)) {
+			if(!e->to->status.visited || (e->to->distance == n->distance + 1 && e->to->weighted_distance > n->weighted_distance + step_weight)) {
 				e->to->nexthop = (n->nexthop == myself) ? e->to : n->nexthop;
-				e->to->weighted_distance = n->weighted_distance + e->weight;
+				e->to->weighted_distance = n->weighted_distance + step_weight;
 				e->to->distance = n->distance + 1;
 			}
 

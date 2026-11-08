@@ -1130,10 +1130,18 @@ bool send_ack(connection_t *c) {
 	if(get_config_int(lookup_config(c->config_tree, "Weight"), &c->estimated_weight) ||
 	                get_config_int(lookup_config(&config_tree, "Weight"), &c->estimated_weight)) {
 		c->status.custom_weight = true;
-	} else if(low_power_mode) {
-		/* Battery saver / leaf clients should not outrank regular nodes
-		   as transit relays when hop counts are equal. */
-		c->estimated_weight += 1000;
+	} else {
+		if(low_power_mode || (myself && myself->status.no_direct)) {
+			/* Battery saver / Relay-Only leaf clients should not outrank regular
+			   nodes as transit relays when hop counts are equal. */
+			c->estimated_weight += 1000;
+		}
+
+		if(c->options & OPTION_TCPONLY) {
+			c->estimated_weight += 500;
+		} else if(c->transport && c->transport->send_datagram) {
+			c->estimated_weight += 250;
+		}
 	}
 
 	/* Advertise our transport accept list as a trailing token. An unmodified
