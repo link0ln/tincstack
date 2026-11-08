@@ -361,6 +361,7 @@ bool send_req_key(node_t *to) {
 		to->status.waitingforkey = true;
 		to->status.sptps_route_stale = false;   /* this one goes out over the route we have now */
 		to->last_req_key = now.tv_sec;
+		to->sptps_cooldown = 24 + (uint8_t)prng(13);
 		to->incompression = myself->incompression;
 		/* DirectSeal: learn whether it reads sealed datagrams while the
 		   handshake runs, so the first probe after it need not wait for the
@@ -612,9 +613,11 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			   cooldown while the peer's request -- which came over the relay
 			   that works -- is discarded. */
 			time_t pending = now.tv_sec - from->last_req_key;
-			bool stale = from->status.sptps_route_stale || pending >= SPTPS_GLARE_WINDOW;
+			bool stale = from->status.sptps_route_stale ||
+			             (from->sptps.state == SPTPS_KEX && pending >= SPTPS_GLARE_WINDOW) ||
+			             pending >= 15;
 
-			if(!stale && strcmp(myself->name, from->name) < 0) {
+			if(!stale && (strcmp(myself->name, from->name) < 0 || from->sptps.state > SPTPS_KEX)) {
 				logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while our SPTPS session is pending; keeping ours (glare tie-break: we win)", from->name);
 				return true;
 			}
@@ -661,6 +664,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		from->status.validkey = false;
 		from->status.waitingforkey = true;
 		from->last_req_key = now.tv_sec;
+		from->sptps_cooldown = 24 + (uint8_t)prng(13);
 		send_req_dseal(from);   /* see send_req_key() */
 		sptps_start(&from->sptps, from, false, true, myself->connection->ecdsa, from->ecdsa, label, labellen, send_sptps_data_myself, receive_sptps_record);
 		sptps_receive_data(&from->sptps, buf, len);

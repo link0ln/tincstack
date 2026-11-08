@@ -86,6 +86,7 @@ typedef enum {
 typedef struct sf_segment_t {
 	uint32_t seq;
 	uint16_t len;
+	time_t queued_at;
 	uint8_t data[SF_MAX_PAYLOAD];
 } sf_segment_t;
 
@@ -99,12 +100,15 @@ typedef struct sf_session_t {
 	bool established;       /* the peer has acknowledged something (or, as acceptor, sent the SYN) */
 	bool dead;              /* failed; waiting for the reaper to terminate the connection */
 	bool close_sent;
+	bool in_recovery;       /* fast/RTO loss recovery active until snd_una reaches recover_seq */
 
 	uint32_t snd_una;       /* oldest unacknowledged stream offset */
 	uint32_t snd_nxt;       /* next stream offset to send */
 	uint32_t rcv_nxt;       /* next stream offset expected from the peer */
+	uint32_t recover_seq;   /* snd_nxt when loss recovery started */
 
 	list_t inflight;        /* sf_segment_t, oldest first */
+	list_t ooo;             /* out-of-order received sf_segment_t, sorted by seq */
 	timeout_t rto;
 	int rto_ms;
 	int retries;
@@ -115,6 +119,7 @@ typedef struct sf_session_t {
 static void free_session(sf_session_t *s) {
 	timeout_del(&s->rto);
 	list_empty_list(&s->inflight);
+	list_empty_list(&s->ooo);
 	free(s);
 }
 
@@ -268,6 +273,17 @@ static void sf_retransmit_head(sf_session_t *s) {
 	sf_send_frame(s, SF_TYPE_DATA, flags, seg->seq, seg->data, seg->len);
 }
 
+static void sf_retransmit_inflight(sf_session_t *s) {
+	for list_each(sf_segment_t, seg, &s->inflight) {
+		if(s->dead) {
+			break;
+		}
+
+		uint8_t flags = (seg->seq == 0 && s->initiator) ? SF_FLAG_SYN : 0;
+		sf_send_frame(s, SF_TYPE_DATA, flags, seg->seq, seg->data, seg->len);
+	}
+}
+
 static void sf_rto_handler(void *data) {
 	sf_session_t *s = data;
 
@@ -297,9 +313,22 @@ static void sf_rto_handler(void *data) {
 		return;
 	}
 
+	sf_segment_t *head = list_get_head(&s->inflight);
+
+	if(s->established && head && head->queued_at && now.tv_sec - head->queued_at > 20) {
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Single-flow link to %s (%s): head segment stalled for %ld s; failing the carrier over",
+		       s->c->name, s->c->hostname, (long)(now.tv_sec - head->queued_at));
+		s->dead = true;
+		sf_schedule_reap();
+		return;
+	}
+
 	s->retries++;
-	logger(DEBUG_TRAFFIC, LOG_DEBUG, "Single-flow retransmit #%d to %s (%s), rto %d ms", s->retries, s->c->name, s->c->hostname, s->rto_ms);
-	sf_retransmit_head(s);
+	s->in_recovery = true;
+	s->recover_seq = s->snd_nxt;
+	logger(DEBUG_TRAFFIC, LOG_DEBUG, "Single-flow retransmit #%d to %s (%s), rto %d ms (%d inflight)",
+	       s->retries, s->c->name, s->c->hostname, s->rto_ms, s->inflight.count);
+	sf_retransmit_inflight(s);
 	s->rto_ms *= 2;
 
 	if(s->rto_ms > SF_RTO_MAX_MS) {
@@ -386,6 +415,7 @@ bool sf_send(connection_t *c) {
 		sf_segment_t *seg = xmalloc(sizeof(*seg));
 		seg->seq = s->snd_nxt;
 		seg->len = (uint16_t)n;
+		seg->queued_at = now.tv_sec;
 		memcpy(seg->data, p, n);
 		list_insert_tail(&s->inflight, seg);
 
@@ -426,6 +456,16 @@ static void sf_process_ack(sf_session_t *s, uint32_t ack) {
 			list_delete_head(&s->inflight);
 		}
 
+		if(s->in_recovery) {
+			if(!s->inflight.count || (int32_t)(ack - s->recover_seq) >= 0) {
+				s->in_recovery = false;
+			} else {
+				/* NewReno partial ACK: another segment in the recovery window
+				   was lost too; retransmit the new head immediately. */
+				sf_retransmit_head(s);
+			}
+		}
+
 		if(s->inflight.count) {
 			sf_arm_rto(s);
 		} else {
@@ -437,6 +477,8 @@ static void sf_process_ack(sf_session_t *s, uint32_t ack) {
 	} else if(adv == 0 && s->inflight.count) {
 		if(++s->dupacks >= 3) {
 			s->dupacks = 0;
+			s->in_recovery = true;
+			s->recover_seq = s->snd_nxt;
 			logger(DEBUG_TRAFFIC, LOG_DEBUG, "Single-flow fast retransmit to %s (%s)", s->c->name, s->c->hostname);
 			sf_retransmit_head(s);
 		}
@@ -463,6 +505,7 @@ static sf_session_t *new_session(connection_t *c, size_t sock, const sockaddr_t 
 	s->initiator = initiator;
 	s->rto_ms = SF_RTO_INITIAL_MS;
 	s->inflight.delete = (list_action_t)free;
+	s->ooo.delete = (list_action_t)free;
 	c->transport_data = s;
 	c->socket = -1;
 	list_insert_tail(&sf_sessions, s);
@@ -582,6 +625,51 @@ bool sf_local_address(connection_t *c, sockaddr_t *sa) {
 
 /* ---- receiving ----------------------------------------------------------- */
 
+static void sf_buffer_ooo(sf_session_t *s, uint32_t seq, const uint8_t *payload, size_t len) {
+	if(!len || len > SF_MAX_PAYLOAD) {
+		return;
+	}
+
+	for(list_node_t *node = s->ooo.head; node; node = node->next) {
+		sf_segment_t *cur = node->data;
+		int32_t d = (int32_t)(seq - cur->seq);
+
+		if(d == 0) {
+			if(len > cur->len) {
+				cur->len = (uint16_t)len;
+				memcpy(cur->data, payload, len);
+			}
+
+			return;
+		}
+
+		if(d < 0) {
+			if(s->ooo.count >= SF_WINDOW) {
+				return;
+			}
+
+			sf_segment_t *seg = xmalloc(sizeof(*seg));
+			seg->seq = seq;
+			seg->len = (uint16_t)len;
+			seg->queued_at = now.tv_sec;
+			memcpy(seg->data, payload, len);
+			list_insert_before(&s->ooo, node, seg);
+			return;
+		}
+	}
+
+	if(s->ooo.count >= SF_WINDOW) {
+		return;
+	}
+
+	sf_segment_t *seg = xmalloc(sizeof(*seg));
+	seg->seq = seq;
+	seg->len = (uint16_t)len;
+	seg->queued_at = now.tv_sec;
+	memcpy(seg->data, payload, len);
+	list_insert_tail(&s->ooo, seg);
+}
+
 static void sf_deliver(sf_session_t *s, const uint8_t *payload, size_t len) {
 	connection_t *c = s->c;
 
@@ -590,16 +678,70 @@ static void sf_deliver(sf_session_t *s, const uint8_t *payload, size_t len) {
 	   receive_meta_bytes() returns, `s' must not be touched. */
 	s->rcv_nxt += (uint32_t)len;
 	s->established = true;
+
+	while(s->ooo.head) {
+		sf_segment_t *seg = s->ooo.head->data;
+
+		if((int32_t)(seg->seq + seg->len - s->rcv_nxt) > 0) {
+			break;
+		}
+
+		list_delete_head(&s->ooo);
+	}
+
+	uint8_t *combined = NULL;
+	const uint8_t *deliver_ptr = payload;
+	size_t deliver_len = len;
+
+	if(s->ooo.head) {
+		sf_segment_t *first = s->ooo.head->data;
+
+		if((int32_t)(first->seq - s->rcv_nxt) <= 0) {
+			combined = xmalloc(len + (size_t)s->ooo.count * SF_MAX_PAYLOAD);
+
+			if(len) {
+				memcpy(combined, payload, len);
+			}
+
+			size_t total = len;
+
+			while(s->ooo.head) {
+				sf_segment_t *seg = s->ooo.head->data;
+				int32_t d = (int32_t)(seg->seq - s->rcv_nxt);
+
+				if(d > 0) {
+					break;
+				}
+
+				if((int32_t)(seg->seq + seg->len - s->rcv_nxt) > 0) {
+					size_t skip = (size_t)(-d);
+					size_t take = seg->len - skip;
+					memcpy(combined + total, seg->data + skip, take);
+					total += take;
+					s->rcv_nxt += (uint32_t)take;
+				}
+
+				list_delete_head(&s->ooo);
+			}
+
+			deliver_ptr = combined;
+			deliver_len = total;
+		}
+	}
+
 	sf_send_frame(s, SF_TYPE_ACK, 0, s->snd_nxt, NULL, 0);
 
-	if(!len) {
+	if(!deliver_len) {
+		free(combined);
 		return;
 	}
 
-	if(!receive_meta_bytes(c, (char *)payload, (ssize_t)len)) {
+	if(!receive_meta_bytes(c, (char *)deliver_ptr, (ssize_t)deliver_len)) {
 		c->status.tarpit = false; /* no socket to tarpit */
 		terminate_connection(c, c->edge);
 	}
+
+	free(combined);
 }
 
 static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr, obfs_link_t *obfs) {
@@ -665,17 +807,31 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 	case SF_TYPE_DATA: {
 		sf_process_ack(s, ack);
 
+		if(s->dead) {
+			return;
+		}
+
 		int32_t diff = (int32_t)(seq - s->rcv_nxt);
+
+		if(diff < 0 && (int32_t)(seq + plen - s->rcv_nxt) > 0) {
+			/* Retransmission overlapping data we already have: take the tail. */
+			size_t skip = (size_t)(-diff);
+			seq += (uint32_t)skip;
+			payload += skip;
+			plen -= skip;
+			diff = 0;
+		}
 
 		if(diff == 0) {
 			sf_deliver(s, payload, plen);
-		} else if(diff < 0 && (int32_t)(seq + plen - s->rcv_nxt) > 0) {
-			/* Retransmission overlapping data we already have: take the tail. */
-			size_t skip = (size_t)(-diff);
-			sf_deliver(s, payload + skip, plen - skip);
+		} else if(diff > 0 && plen > 0 && (uint32_t)diff <= SF_WINDOW * SF_MAX_PAYLOAD) {
+			/* Out-of-order segment within the receive window: buffer it so a
+			   single lost packet does not discard the rest of the flight, and
+			   re-ACK rcv_nxt to trigger fast retransmit of the missing hole. */
+			sf_buffer_ooo(s, seq, payload, plen);
+			sf_send_frame(s, SF_TYPE_ACK, 0, s->snd_nxt, NULL, 0);
 		} else {
-			/* Old duplicate, or a gap (go-back-N: not buffered). Re-ACK what
-			   we have so the sender resends from there. */
+			/* Old duplicate, or beyond window. Re-ACK what we have. */
 			sf_send_frame(s, SF_TYPE_ACK, 0, s->snd_nxt, NULL, 0);
 		}
 

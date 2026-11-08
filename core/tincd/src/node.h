@@ -165,6 +165,7 @@ typedef struct node_t {
 	uint16_t punch_base_port;               /* reflexive UDP port reported by relay during hole punch */
 	int16_t nat_port_delta;                 /* learned sequential port allocation stride across NAT mappings */
 	uint8_t udp_probe_seq;                  /* per-node unconfirmed UDP address rotation counter */
+	uint8_t sptps_cooldown;                 /* per-attempt randomized SPTPS retry timeout (24..36s) */
 } node_t;
 
 extern struct node_t *myself;

@@ -2254,7 +2254,7 @@ static void try_sptps(node_t *n) {
 		n->status.waitingforkey = false;
 		send_req_key(n);
 	} else {
-		int cooldown = 30 + (int)prng(13) - 6;   /* 24..36s */
+		int cooldown = n->sptps_cooldown ? (int)n->sptps_cooldown : 30;   /* 24..36s chosen once per attempt */
 
 		if(n->last_req_key + cooldown < now.tv_sec) {
 			logger(DEBUG_ALWAYS, LOG_DEBUG, "No key from %s after %d seconds, restarting SPTPS", n->name, cooldown);
