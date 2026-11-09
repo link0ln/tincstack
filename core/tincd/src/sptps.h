@@ -78,6 +78,7 @@ typedef struct sptps {
 
 	bool instate;
 	chacha_poly1305_ctx_t *incipher;
+	chacha_poly1305_ctx_t *prev_incipher;
 	uint32_t inseqno;
 	uint32_t received;
 	unsigned int replaywin;

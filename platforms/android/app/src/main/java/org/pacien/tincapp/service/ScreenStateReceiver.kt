@@ -81,9 +81,23 @@ class ScreenStateReceiver(
       dispatch(Event.MediaStarted)
     }
     // SCREEN_OFF may be followed by a CPU suspend as soon as onReceive returns:
-    // hold the broadcast (and its wake lock) until the daemon is stopped.
+    // hold the broadcast (and its wake lock) until the daemon is stopped,
+    // capped at 5 seconds so a busy worker can never trigger a 10s BroadcastReceiver ANR.
     val pending = goAsyncOrNull()
-    dispatch(event).whenComplete { _, _ -> pending?.finish() }
+    val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+    val finishOnce = Runnable {
+      if (finished.compareAndSet(false, true)) {
+        try {
+          pending?.finish()
+        } catch (_: Exception) {
+        }
+      }
+    }
+    handler.postDelayed(finishOnce, 5000L)
+    dispatch(event).whenComplete { _, _ ->
+      handler.removeCallbacks(finishOnce)
+      finishOnce.run()
+    }
   }
 
   fun handleAudioStateChanged(context: Context, configs: List<AudioPlaybackConfiguration>? = null) {

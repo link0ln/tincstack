@@ -2519,13 +2519,19 @@ static bool punch_may_probe(node_t *n) {
 /* Tell `b' to start punching towards `a' now, with `a''s UDP address as we
    see it (the relay's view; only if we confirmed it). */
 static bool punch_send_go(node_t *a, node_t *b) {
+	connection_t *conn = b->connection ? b->connection : (b->nexthop ? b->nexthop->connection : NULL);
+
+	if(!conn) {
+		return false;
+	}
+
 	char *addr = NULL, *port = NULL;
 
 	if(has_confirmed_udp_addr(a) && a->address.sa.sa_family != AF_UNSPEC && a->address.sa.sa_family != AF_UNKNOWN) {
 		sockaddr2str(&a->address, &addr, &port);
 	}
 
-	bool ok = send_request(b->connection, "%d %s %s %d %d %s %s", REQ_KEY, a->name, b->name, PUNCH_REQ, 2, addr ? addr : "-", port ? port : "-");
+	bool ok = send_request(conn, "%d %s %s %d %d %s %s", REQ_KEY, a->name, b->name, PUNCH_REQ, 2, addr ? addr : "-", port ? port : "-");
 	free(addr);
 	free(port);
 	return ok;
@@ -2555,40 +2561,58 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 	}
 
 	if(to != myself) {
-		/* The rendezvous: both ends are our meta neighbours, so both hear
-		   "go" from us at the same instant. */
-		if(flag == 0 && !low_power_mode && !from->status.no_direct && !to->status.no_direct && !from->remote_no_direct && !to->remote_no_direct &&
-		                from->connection && to->connection && from->connection->edge && to->connection->edge) {
-			/* Only with both ends' real UDP addresses: a GO without them
-			   sends each end at its edge guess (the TCP address, port 655),
-			   which a port-changing NAT never maps, and the round is spent
-			   there (lab: masq x portrestricted, 10 s -> 45 s). Stay silent
-			   until we have confirmed both; the asker retries every
-			   PUNCH_REQ_RETRY s and runs a round on its own after
-			   PUNCH_MAX_UNANSWERED requests (a relay that never has UDP to
-			   them, e.g. TCP-only links). */
-			if(!has_confirmed_udp_addr(from) || !has_confirmed_udp_addr(to)) {
+		/* The rendezvous: if we have confirmed UDP addresses for both ends
+		   (whether direct meta neighbours or multi-hop), coordinate the punch
+		   immediately so both hear "go" from us at the same instant. */
+		if(flag == 0 && !low_power_mode && !from->status.no_direct && !to->status.no_direct && !from->remote_no_direct && !to->remote_no_direct) {
+			if(has_confirmed_udp_addr(from) && has_confirmed_udp_addr(to)) {
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "Coordinated hole punch between %s and %s: telling both to start", from->name, to->name);
+				punch_send_go(from, to);
+				punch_send_go(to, from);
+				return true;
+			}
+
+			if(from->connection && to->connection && from->connection->edge && to->connection->edge) {
+				/* Both are direct meta neighbours of this relay: wait until both
+				   UDP addresses are confirmed rather than forwarding flag 0. */
 				logger(DEBUG_PROTOCOL, LOG_INFO, "Coordinated hole punch between %s and %s: not yet, no confirmed UDP address of %s", from->name, to->name,
 				       !has_confirmed_udp_addr(from) ? from->name : to->name);
 				return true;
 			}
-
-			logger(DEBUG_CONNECTIONS, LOG_INFO, "Coordinated hole punch between %s and %s: telling both to start", from->name, to->name);
-			punch_send_go(from, to);
-			punch_send_go(to, from);
-			return true;
 		}
 
 		if(!to->nexthop || !to->nexthop->connection) {
 			return true;
 		}
 
+		/* Multi-hop relay assist: if we are forwarding a PUNCH_REQ (flag 0 or 1)
+		   that carries no reflexive UDP address yet, and `from` is a peer whose
+		   UDP address we have confirmed, stamp `from`'s reflexive UDP address
+		   into the forwarded request so the far peer can punch across >1 hops. */
+		if((flag == 0 || flag == 1) && (!*addr || !strcmp(addr, "-")) &&
+		                !from->status.no_direct && !from->remote_no_direct &&
+		                has_confirmed_udp_addr(from) &&
+		                from->address.sa.sa_family != AF_UNSPEC && from->address.sa.sa_family != AF_UNKNOWN) {
+			char *f_addr = NULL, *f_port = NULL;
+			sockaddr2str(&from->address, &f_addr, &f_port);
+			bool ok = send_request(to->nexthop->connection, "%d %s %s %d %d %s %s",
+			                       REQ_KEY, from->name, to->name, PUNCH_REQ, flag,
+			                       f_addr ? f_addr : "-", f_port ? f_port : "-");
+			free(f_addr);
+			free(f_port);
+			return ok;
+		}
+
 		return send_request(to->nexthop->connection, "%s", request);
 	}
 
 	if(flag == PUNCH_NO_DIRECT) {
-		logger(DEBUG_CONNECTIONS, LOG_INFO, "Peer %s (%s) signaled NoDirect (relay-only); suppressing direct connections and UDP probes to it", from->name, from->hostname);
 		bool changed = !from->remote_no_direct;
+
+		if(changed) {
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "Peer %s (%s) signaled NoDirect (relay-only); suppressing direct connections and UDP probes to it", from->name, from->hostname);
+		}
+
 		from->remote_no_direct = true;
 
 		for list_each(outgoing_t, outgoing, &outgoing_list) {
@@ -2658,31 +2682,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 		return true;
 	}
 
-	if((flag == 0 || flag == 1) && from->remote_no_direct) {
-		from->remote_no_direct = false;
-		graph();
-	}
-
 	if(from->remote_no_direct) {
-		return true;
-	}
-
-	if(!punch_coordinated(from)) {
-		/* Not a peer we coordinate with (a meta neighbour now, or its token
-		   changed): it asked, so still answer, and probe as usual. */
-		if(flag == 0 && from->nexthop && from->nexthop->connection) {
-			send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
-		}
-
-		return true;
-	}
-
-	if(flag == 0) {
-		/* The relay forwarded the request instead of answering it (an older
-		   build): answer the peer ourselves and start once our answer has
-		   crossed the meta path, estimated as half its weighted distance. */
-		send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
-		punch_start(from, from->weighted_distance / 2, NULL, "the peer asked through an older relay");
 		return true;
 	}
 
@@ -2701,6 +2701,26 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 				have = false;
 			}
 		}
+	}
+
+	if(!punch_coordinated(from)) {
+		/* Not a peer we coordinate with (a meta neighbour now, or its token
+		   changed): it asked, so still answer, and probe as usual. */
+		if(flag == 0 && from->nexthop && from->nexthop->connection) {
+			send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
+		}
+
+		return true;
+	}
+
+	if(flag == 0) {
+		/* The relay forwarded the request instead of answering it (a multi-hop
+		   path or an older build): answer the peer ourselves and start once our
+		   answer has crossed the meta path, estimated as half its weighted
+		   distance. */
+		send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
+		punch_start(from, from->weighted_distance / 2, have ? &sa : NULL, "the peer asked through a relay");
+		return true;
 	}
 
 	punch_start(from, 0, have ? &sa : NULL, flag == 2 ? "the relay says go" : "the peer says go");

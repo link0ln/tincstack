@@ -72,6 +72,9 @@ object Networks {
       stanza,
       yaml.optionValue(stanza, "Name"),
       cfg?.addresses?.firstOrNull()?.address,
-      yaml.optionValues(stanza, "ConnectTo").map(String::trim).filter(String::isNotEmpty))
+      yaml.optionValues(stanza, "ConnectTo")
+        .flatMap { it.split(Regex("[\\s,;]+")) }
+        .map(String::trim)
+        .filter(String::isNotEmpty))
   }
 }

@@ -424,6 +424,16 @@ bool sf_send(connection_t *c) {
 		s->snd_nxt += n;
 	}
 
+	c->transport_outbuf_len = (size_t)(s->snd_nxt - s->snd_una);
+
+	if((c->outbuf.len - c->outbuf.offset) + c->transport_outbuf_len > (size_t)maxoutbufsize) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Metadata socket send buffer overflow for %s (%s)", c->name, c->hostname);
+		s->dead = true;
+		timeout_del(&s->rto);
+		sf_schedule_reap();
+		return false;
+	}
+
 	if(s->inflight.count && !s->rto.cb) {
 		sf_arm_rto(s);
 	}
@@ -436,6 +446,9 @@ static void sf_process_ack(sf_session_t *s, uint32_t ack) {
 
 	if(adv > 0 && (int32_t)(ack - s->snd_nxt) <= 0) {
 		s->snd_una = ack;
+		if(s->c) {
+			s->c->transport_outbuf_len = (size_t)(s->snd_nxt - s->snd_una);
+		}
 		s->established = true;
 		s->retries = 0;
 		s->dupacks = 0;
@@ -603,6 +616,7 @@ void sf_close(connection_t *c) {
 		sf_send_frame(s, SF_TYPE_CLOSE, 0, s->snd_nxt, NULL, 0);
 	}
 
+	c->transport_outbuf_len = 0;
 	c->transport_data = NULL;
 	list_delete(&sf_sessions, s);
 }
@@ -788,13 +802,35 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 			return;
 		}
 	} else if(sockaddrcmp(&addr, &s->peer)) {
-		if(debug_level >= DEBUG_TRAFFIC) {
-			char *hostname = sockaddr2hostname(&addr);
-			logger(DEBUG_TRAFFIC, LOG_WARNING, "Single-flow frame for a session with %s (%s) from a different address %s; dropped", s->c->name, s->c->hostname, hostname);
-			free(hostname);
-		}
+		if(obfs && s->obfs == obfs) {
+			/* Frame was already AEAD-authenticated and replay-checked by
+			   obfs_accept(); accept NAT source-port rebinding or roaming
+			   without dropping the session. */
+			s->peer = addr;
+			s->sock = (size_t)(ls - listen_socket);
 
-		return;
+			if(s->c) {
+				s->c->address = addr;
+				free(s->c->hostname);
+				s->c->hostname = sockaddr2hostname(&addr);
+
+				if(s->c->edge) {
+					s->c->edge->address = addr;
+				}
+
+				logger(DEBUG_CONNECTIONS, LOG_INFO,
+				       "Single-flow obfuscated session with %s migrated to %s",
+				       s->c->name, s->c->hostname);
+			}
+		} else {
+			if(debug_level >= DEBUG_TRAFFIC) {
+				char *hostname = sockaddr2hostname(&addr);
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "Single-flow frame for a session with %s (%s) from a different address %s; dropped", s->c->name, s->c->hostname, hostname);
+				free(hostname);
+			}
+
+			return;
+		}
 	}
 
 	if(s->dead) {

@@ -626,6 +626,8 @@ static void build_ws_accept(const char *head, char *out, size_t outlen) {
 
 /* ---- become an established meta-over-TLS connection ---------------------- */
 
+static void established_read(https_session_t *s);
+
 static void become_established(https_session_t *s) {
 	connection_t *c = s->c;
 	s->state = HS_ESTABLISHED;
@@ -637,6 +639,23 @@ static void become_established(https_session_t *s) {
 	c->options |= OPTION_TCPONLY | OPTION_INDIRECT;
 	c->last_ping_time = now.tv_sec;
 
+	char *tail = NULL;
+	size_t tail_len = 0;
+
+	if(s->rbuf && s->rlen >= 4) {
+		char *end = memmem(s->rbuf, s->rlen, "\r\n\r\n", 4);
+
+		if(end) {
+			size_t head_len = (size_t)(end - s->rbuf) + 4;
+
+			if(s->rlen > head_len) {
+				tail_len = s->rlen - head_len;
+				tail = xmalloc(tail_len);
+				memcpy(tail, s->rbuf + head_len, tail_len);
+			}
+		}
+	}
+
 	free(s->rbuf);
 	s->rbuf = NULL;
 	s->rlen = s->rcap = 0;
@@ -645,6 +664,29 @@ static void become_established(https_session_t *s) {
 	s->wlen = s->woff = 0;
 
 	set_io(s, IO_READ);
+
+	if(!s->is_server) {
+		/* Kick the tinc handshake: this sets allow_request = ID and sends our
+		   ID line over TLS before any coalesced peer bytes are processed. */
+		finish_connecting(c);
+	}
+
+	if(tail) {
+		bool ok = receive_meta_bytes(c, tail, (int)tail_len);
+		free(tail);
+
+		if(!ok) {
+			c->status.tarpit = false;
+			s->state = HS_DYING;
+			set_io(s, 0);
+			https_schedule_reap();
+			return;
+		}
+	}
+
+	if(s->state == HS_ESTABLISHED && s->ssl && SSL_pending(s->ssl) > 0) {
+		established_read(s);
+	}
 }
 
 /* ---- established: meta stream over TLS ------------------------------------ */
@@ -747,6 +789,14 @@ static void https_flush(connection_t *c) {
 
 		if(err == SSL_ERROR_WANT_WRITE ||
 		   (err == SSL_ERROR_SYSCALL && n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR))) {
+			if(c->outbuf.len - c->outbuf.offset > (size_t)maxoutbufsize) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Metadata socket send buffer overflow for %s (%s)", c->name, c->hostname);
+				s->state = HS_DYING;
+				set_io(s, 0);
+				https_schedule_reap();
+				return;
+			}
+
 			set_io(s, IO_READ | IO_WRITE);
 			return;
 		}
@@ -1030,9 +1080,6 @@ static void client_read_response(https_session_t *s) {
 	}
 
 	become_established(s);
-
-	/* Kick the tinc handshake: this sends the ID line over TLS. */
-	finish_connecting(s->c);
 }
 
 static void https_io(void *data, int flags) {

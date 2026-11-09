@@ -479,6 +479,7 @@ static bool setup_device(void) {
 		logger(DEBUG_ALWAYS, LOG_WARNING,
 		       "Wintun is layer-3 only; forcing router mode behaviour. "
 		       "Set Mode = router for this network.");
+		routing_mode = RMODE_ROUTER;
 	}
 
 	overwrite_mac = 1;  /* L3: there is no real MAC, tinc fakes the header */

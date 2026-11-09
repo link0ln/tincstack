@@ -368,6 +368,12 @@ bool send_req_key(node_t *to) {
 		   answer (a no-op once known). */
 		send_req_dseal(to);
 		maybe_send_carrier_beacon(to);
+
+		if((to->status.no_direct || node_is_no_direct(to->name)) && to->last_no_direct_sent != now.tv_sec) {
+			to->last_no_direct_sent = now.tv_sec;
+			send_no_direct_signal(to, true);
+		}
+
 		return sptps_start(&to->sptps, to, true, true, myself->connection->ecdsa, to->ecdsa, label, labellen, send_initial_sptps_data, receive_sptps_record);
 	}
 
@@ -571,6 +577,11 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		}
 
 		maybe_send_carrier_beacon(from);
+
+		if((from->status.no_direct || node_is_no_direct(from->name)) && from->last_no_direct_sent != now.tv_sec) {
+			from->last_no_direct_sent = now.tv_sec;
+			send_no_direct_signal(from, true);
+		}
 
 		if(from->status.waitingforkey && from->sptps.label && from->sptps.initiator) {
 			/* REQ_KEY glare (patch 5): both peers started an SPTPS session as
@@ -990,7 +1001,9 @@ bool ans_key_h(connection_t *c, const char *request) {
 			return true;
 		}
 
-		if(!*address && from->address.sa.sa_family != AF_UNSPEC && to->minmtu) {
+		if(!*address && (from->status.udp_confirmed || from->status.udp_addr_confirmed) && from->address.sa.sa_family != AF_UNSPEC &&
+		                !from->status.no_direct && !from->remote_no_direct &&
+		                !to->status.no_direct && !to->remote_no_direct && to->minmtu) {
 			char *address, *port;
 			logger(DEBUG_PROTOCOL, LOG_DEBUG, "Appending reflexive UDP address to ANS_KEY from %s to %s", from->name, to->name);
 			sockaddr2str(&from->address, &address, &port);
@@ -1098,7 +1111,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 		   moved the pair to the relay for seconds -- 8.6 % of packets at
 		   KeyExpire 20 s in the lab (docs/nat.md §7.6). udp_info_h() has
 		   always had this rule. */
-		if(from->status.validkey && !from->status.no_direct && *address && *port) {
+		if(from->status.validkey && !from->status.no_direct && !from->remote_no_direct && *address && *port) {
 			if(from->status.udp_confirmed) {
 				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Not using reflexive UDP address from %s (%s port %s): the direct path is confirmed", from->name, address, port);
 			} else {
@@ -1173,7 +1186,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 	from->status.sptps_route_stale = false;   /* the exchange completed; see receive_sptps_record */
 	from->sent_seqno = 0;
 
-	if(*address && *port && !from->status.udp_confirmed && !from->status.no_direct) {
+	if(*address && *port && !from->status.udp_confirmed && !from->status.no_direct && !from->remote_no_direct) {
 		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 		sockaddr_t sa = str2sockaddr(address, port);
 		update_node_udp(from, &sa);

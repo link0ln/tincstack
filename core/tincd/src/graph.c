@@ -244,7 +244,8 @@ void sssp_bfs(void) {
 				e->to->options |= OPTION_TCPONLY;
 			}
 
-			if(!e->to->status.reachable || (e->to->address.sa.sa_family == AF_UNSPEC && e->address.sa.sa_family != AF_UNKNOWN)) {
+			if((!e->to->status.reachable || (e->to->address.sa.sa_family == AF_UNSPEC && e->address.sa.sa_family != AF_UNKNOWN)) &&
+			                !e->to->status.no_direct && !e->to->remote_no_direct) {
 				update_node_udp(e->to, &e->address);
 			}
 
@@ -426,10 +427,12 @@ static void check_reachability(void) {
 
 			if(!n->status.reachable) {
 				bool has_address = n->status.has_address;
+				bool no_direct = n->status.no_direct || node_is_no_direct(n->name);
 				update_node_udp(n, NULL);
 				dseal_node_unreachable(n);
 				memset(&n->status, 0, sizeof(n->status));
 				n->status.has_address = has_address;
+				n->status.no_direct = no_direct;
 				n->options = 0;
 			} else if(n->connection) {
 				// Speed up UDP probing by sending our key.

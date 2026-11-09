@@ -827,6 +827,7 @@ void obfs_session_start(connection_t *c) {
 		if(!c->status.multipath_sub && !dseal_obfs_connected(c->node)) {
 			for list_each(obfs_link_t, l, &obfs_links) {
 				if(l->node == c->node) {
+					l->active = false;
 					obfs_link_demote_sess(l);
 					break;
 				}
@@ -924,6 +925,7 @@ bool obfs_key_h(connection_t *c, const char *request) {
 	   1 session key on each side, 8 offers ignored. */
 	if(flag == 0) {
 		l->ack_sent = false;
+		l->sess_time = now.tv_sec;
 	}
 
 	if(!same_peer_seed || (!l->next.valid && !(l->sess_tx_ready && l->sess.valid))) {

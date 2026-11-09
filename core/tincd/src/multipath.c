@@ -688,6 +688,9 @@ static void parse_multipath_interface_line(const char *val) {
 }
 
 void multipath_read_config(void) {
+	multipath_mode = MULTIPATH_FAILOVER;
+	multipath_target_connections = 1;
+
 	char *mode_str = NULL;
 
 	if(get_config_string(lookup_config(&config_tree, "MultipathMode"), &mode_str)) {
@@ -862,16 +865,44 @@ void multipath_node_del_connection(node_t *n, connection_t *c) {
 	list_delete(&n->connections, c);
 }
 
+static void multipath_transfer_edge(connection_t *from, connection_t *to) {
+	if(!from || !to || !from->edge) {
+		return;
+	}
+
+	edge_t *e = from->edge;
+	uint16_t old_port = 0;
+
+	if(e->address.sa.sa_family == AF_INET) {
+		old_port = e->address.in.sin_port;
+	} else if(e->address.sa.sa_family == AF_INET6) {
+		old_port = e->address.in6.sin6_port;
+	}
+
+	bool is_single_flow_udp = to->transport &&
+	                          (to->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP);
+
+	to->edge = e;
+	e->connection = to;
+	e->address = to->address;
+
+	if(!is_single_flow_udp && old_port) {
+		if(e->address.sa.sa_family == AF_INET) {
+			e->address.in.sin_port = old_port;
+		} else if(e->address.sa.sa_family == AF_INET6) {
+			e->address.in6.sin6_port = old_port;
+		}
+	}
+
+	from->edge = NULL;
+}
+
 /* Called in ack_h() when a new connection `c` to `n` completes authentication
    while `n->connection` already exists.
    Returns true if `c` is accepted into `n->connections` without terminating
    `n->connection` (zero-drop parallel connection / make-before-break). */
 bool multipath_accept_secondary(node_t *n, connection_t *c) {
 	if(!n || !c || !n->connection || n->connection == c) {
-		return false;
-	}
-
-	if(multipath_mode == MULTIPATH_OFF) {
 		return false;
 	}
 
@@ -924,10 +955,7 @@ bool multipath_accept_secondary(node_t *n, connection_t *c) {
 	                     old_primary->status.pinged;
 
 	if(old_unhealthy && old_primary->edge) {
-		c->edge = old_primary->edge;
-		c->edge->connection = c;
-		c->edge->address = c->address;
-		old_primary->edge = NULL;
+		multipath_transfer_edge(old_primary, c);
 		old_primary->status.multipath_sub = true;
 		c->status.multipath_sub = false;
 		n->connection = c;
@@ -993,10 +1021,7 @@ bool multipath_promote_survivor(node_t *n, connection_t *dying) {
 	}
 
 	if(dying->edge) {
-		survivor->edge = dying->edge;
-		survivor->edge->connection = survivor;
-		survivor->edge->address = survivor->address;
-		dying->edge = NULL;
+		multipath_transfer_edge(dying, survivor);
 	}
 
 	if(dying->outgoing && !survivor->outgoing) {
@@ -1029,10 +1054,7 @@ void multipath_peer_promoted_solo(connection_t *c) {
 		connection_t *old = n->connection;
 
 		if(old->edge) {
-			c->edge = old->edge;
-			c->edge->connection = c;
-			c->edge->address = c->address;
-			old->edge = NULL;
+			multipath_transfer_edge(old, c);
 		}
 
 		if(old->outgoing && !c->outgoing) {
@@ -1585,10 +1607,7 @@ void multipath_maintain(void) {
 			for list_each(connection_t, cand, &n->connections) {
 				if(cand != n->connection && cand->status.active && multipath_uplink_is_healthy(cand->uplink_idx)) {
 					if(n->connection->edge) {
-						cand->edge = n->connection->edge;
-						cand->edge->connection = cand;
-						cand->edge->address = cand->address;
-						n->connection->edge = NULL;
+						multipath_transfer_edge(n->connection, cand);
 					}
 
 					if(n->connection->outgoing && !cand->outgoing) {

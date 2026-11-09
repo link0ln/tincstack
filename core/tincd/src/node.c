@@ -321,6 +321,12 @@ void setup_no_direct_nodes(void) {
 
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "Closing direct connection with relay-only (NoDirect) node %s (%s)", c->name, c->hostname);
 
+		if(c->node) {
+			c->node->status.no_direct = true;
+			c->node->last_no_direct_sent = now.tv_sec;
+			send_no_direct_signal(c->node, true);
+		}
+
 		if(c->outgoing) {
 			outgoing_t *out = c->outgoing;
 			c->outgoing = NULL;

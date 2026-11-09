@@ -1880,10 +1880,19 @@ object DiagManager {
       try {
         val f = AppPaths.tincYamlFile(targetNet)
         if (f.isFile) {
-          rawYaml = f.readText()
+          rawYaml = f.readText().replace(
+            Regex("""(?im)^(\s*(?:Ed25519PrivateKey|PrivateKey|CloudflareToken)\s*[:=]\s*).*$"""),
+            "$1***REDACTED***",
+          )
           val yaml = TincYaml(f)
           val stanza = yaml.resolveNetwork(targetNet)
-          optionsMap = yaml.options(stanza)
+          val rawOpts = LinkedHashMap(yaml.options(stanza))
+          for (secretKey in listOf("Ed25519PrivateKey", "PrivateKey", "CloudflareToken")) {
+            if (rawOpts.containsKey(secretKey)) {
+              rawOpts[secretKey] = listOf("***REDACTED***")
+            }
+          }
+          optionsMap = rawOpts
           val rawHosts = (yaml.networkMapPublic(stanza)["hosts"] as? Map<*, *>).orEmpty()
           hostsMap = rawHosts.entries.associate { it.key.toString() to it.value?.toString().orEmpty() }
           prefVal = yaml.optionValues(stanza, "PreferredTransports").joinToString(", ")
@@ -2094,9 +2103,21 @@ object DiagManager {
           true to mapOf("ok" to true, "message" to "Saved network settings")
         }
         "save_raw_yaml" -> {
-          val rawText = payload["raw_yaml"]?.toString().orEmpty()
+          var rawText = payload["raw_yaml"]?.toString().orEmpty()
           if (rawText.isBlank()) return false to mapOf("ok" to false, "message" to "Empty YAML")
           val f = AppPaths.tincYamlFile(targetNet)
+          if (rawText.contains("***REDACTED***") && f.isFile) {
+            val origYaml = f.readText()
+            for (secretKey in listOf("Ed25519PrivateKey", "PrivateKey", "CloudflareToken")) {
+              val m = Regex("""(?im)^(\s*$secretKey\s*[:=]\s*)(.+)$""").find(origYaml)
+              if (m != null) {
+                val realVal = m.groupValues[2]
+                rawText = rawText.replace(
+                  Regex("""(?im)^(\s*$secretKey\s*[:=]\s*)\*\*\*REDACTED\*\*\*\s*$"""),
+                ) { mr -> mr.groupValues[1] + realVal }
+              }
+            }
+          }
           TincYaml(f).writeRawText(rawText)
           runTincCli(targetNet, 3500L, "reload")
           true to mapOf("ok" to true, "message" to "Saved tinc.yaml")

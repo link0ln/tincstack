@@ -60,7 +60,10 @@ enum class Transport(val id: String) {
      * record, no line) = only `plain` is known to work.
      */
     fun acceptedByPeers(yaml: TincYaml, net: String): Set<Transport> {
-      val peers = yaml.optionValues(net, OPTION_CONNECT_TO).map(String::trim).filter(String::isNotEmpty)
+      val peers = yaml.optionValues(net, OPTION_CONNECT_TO)
+        .flatMap { it.split(Regex("[\\s,;]+")) }
+        .map(String::trim)
+        .filter(String::isNotEmpty)
       val accepted = peers.flatMap { peer ->
         yaml.hostText(net, peer).orEmpty().lineSequence()
           .map(String::trim)

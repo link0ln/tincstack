@@ -130,7 +130,7 @@ bool send_id(connection_t *c) {
 	if(experimental) {
 		minor = myself->connection->protocol_minor;
 
-		if(c->outgoing && !ecdsa_active(c->ecdsa)) {
+		if((c->outgoing || c->status.multipath_sub) && !ecdsa_active(c->ecdsa)) {
 			c->ecdsa = read_ecdsa_public_key(&c->config_tree, c->name);
 
 			/* Defect C, dialler side (measured on the field stand: `Connected
@@ -159,7 +159,7 @@ bool send_id(connection_t *c) {
 		}
 	}
 
-	if(proxytype && c->outgoing)
+	if(proxytype && (c->outgoing || c->status.multipath_sub))
 		if(!send_proxyrequest(c)) {
 			return false;
 		}
@@ -583,14 +583,6 @@ bool id_h(connection_t *c, const char *request) {
 	if(node_is_no_direct(name)) {
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "Refusing direct connection with relay-only (NoDirect) node %s (%s)", name, c->hostname);
 		return false;
-	}
-
-	if(!c->outgoing) {
-		node_t *peer_n = lookup_node(name);
-
-		if(peer_n && peer_n->remote_no_direct) {
-			peer_n->remote_no_direct = false;
-		}
 	}
 
 	/* If this is an outgoing connection, make sure we are connected to the right host */
@@ -1475,6 +1467,10 @@ bool ack_h(connection_t *c, const char *request) {
 	}
 
 	/* Activate this connection */
+
+	if(!we_dialled && n->remote_no_direct) {
+		n->remote_no_direct = false;
+	}
 
 	c->status.active = true;
 	c->activated_at = now.tv_sec;

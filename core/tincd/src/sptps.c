@@ -280,7 +280,24 @@ static bool receive_ack(sptps_t *s, const uint8_t *data, uint16_t len) {
 
 	uint8_t *key = s->initiator ? s->key->key0 : s->key->key1;
 
-	if(!chacha_poly1305_set_key(s->incipher, key)) {
+	if(s->datagram && s->instate && s->incipher) {
+		chacha_poly1305_ctx_t *next = chacha_poly1305_init();
+
+		if(!next || !chacha_poly1305_set_key(next, key)) {
+			if(next) {
+				chacha_poly1305_exit(next);
+			}
+
+			return error(s, EINVAL, "Failed to set counter");
+		}
+
+		if(s->prev_incipher) {
+			chacha_poly1305_exit(s->prev_incipher);
+		}
+
+		s->prev_incipher = s->incipher;
+		s->incipher = next;
+	} else if(!chacha_poly1305_set_key(s->incipher, key)) {
 		return error(s, EINVAL, "Failed to set counter");
 	}
 
@@ -524,7 +541,8 @@ bool sptps_verify_datagram(sptps_t *s, const void *vdata, size_t len) {
 
 	uint8_t *buffer = alloca(len);
 	size_t outlen;
-	return chacha_poly1305_decrypt(s->incipher, seqno, data + 4, len - 4, buffer, &outlen);
+	return chacha_poly1305_decrypt(s->incipher, seqno, data + 4, len - 4, buffer, &outlen) ||
+	       (s->prev_incipher && chacha_poly1305_decrypt(s->prev_incipher, seqno, data + 4, len - 4, buffer, &outlen));
 }
 
 // Receive incoming data, datagram version.
@@ -594,6 +612,9 @@ static bool sptps_receive_data_datagram(sptps_t *s, const uint8_t *data, size_t 
 			} else {
 				return error(s, EIO, "Failed to decrypt and verify packet");
 			}
+		} else if(s->prev_incipher && chacha_poly1305_decrypt(s->prev_incipher, seqno, data, len, buffer, &outlen)) {
+			/* Late meta ANS_KEY (ACK) or in-flight UDP packet encrypted with the
+			   previous session key right after an implicit UDP key transition. */
 		} else {
 			return error(s, EIO, "Failed to decrypt and verify packet");
 		}
@@ -796,6 +817,7 @@ bool sptps_start(sptps_t *s, void *handle, bool initiator, bool datagram, ecdsa_
 bool sptps_stop(sptps_t *s) {
 	// Clean up any resources.
 	chacha_poly1305_exit(s->incipher);
+	chacha_poly1305_exit(s->prev_incipher);
 	chacha_poly1305_exit(s->outcipher);
 	ecdh_free(s->ecdh);
 	free(s->inbuf);

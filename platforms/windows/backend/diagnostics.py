@@ -1253,15 +1253,19 @@ class DiagWebServer:
 
             def do_POST(self) -> None:
                 origin = (self.headers.get("Origin") or "").strip()
-                if origin and origin != "null":
+                if origin:
+                    if origin.lower() == "null":
+                        self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
+                        return
                     try:
                         o_host = (urllib.parse.urlparse(origin).hostname or "").lower()
                         req_host = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
-                        if o_host and o_host not in ("127.0.0.1", "localhost", "::1", req_host):
+                        if not o_host or o_host not in ("127.0.0.1", "localhost", "::1", req_host):
                             self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
                             return
                     except Exception:
-                        pass
+                        self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
+                        return
                 parsed = urllib.parse.urlparse(self.path)
                 length = int(self.headers.get("Content-Length", "0") or 0)
                 raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -1608,6 +1612,11 @@ class DiagWebServer:
             try:
                 with open(app.path, "r", encoding="utf-8", errors="replace") as f:
                     raw_yaml = f.read()
+                raw_yaml = re.sub(
+                    r"(?im)^(\s*(?:Ed25519PrivateKey|PrivateKey|CloudflareToken)\s*[:=]\s*).*$",
+                    r"\1***REDACTED***",
+                    raw_yaml,
+                )
             except OSError:
                 pass
         tr_val = nc.options.get("Transports", "") if nc else ""
@@ -1616,6 +1625,10 @@ class DiagWebServer:
             tr_val = ", ".join(str(x) for x in tr_val)
         if isinstance(pref_val, list):
             pref_val = ", ".join(str(x) for x in pref_val)
+        safe_opts = dict(nc.options) if nc else {}
+        for secret_key in ("Ed25519PrivateKey", "PrivateKey", "CloudflareToken"):
+            if secret_key in safe_opts:
+                safe_opts[secret_key] = "***REDACTED***"
         return {
             "ok": True,
             "net": target_net,
@@ -1624,8 +1637,8 @@ class DiagWebServer:
             "full_tunnel": nc.full_tunnel if nc else "",
             "transports": str(tr_val),
             "preferred_transports": str(pref_val),
-            "options": dict(nc.options) if nc else {},
-            "options_conf": yaml_config.options_to_conf(nc.options) if nc else "",
+            "options": safe_opts,
+            "options_conf": yaml_config.options_to_conf(safe_opts) if nc else "",
             "hosts": dict(nc.hosts) if nc else {},
             "raw_yaml": raw_yaml,
         }
@@ -1875,6 +1888,9 @@ class DiagWebServer:
                 return False, "Network not found", {}
             conf_text = str(payload.get("options_conf") or "")
             new_opts = yaml_config.conf_to_options(conf_text)
+            for secret_key in ("Ed25519PrivateKey", "PrivateKey", "CloudflareToken"):
+                if new_opts.get(secret_key) == "***REDACTED***" and secret_key in nc.options:
+                    new_opts[secret_key] = nc.options[secret_key]
             for k in ("Transports", "PreferredTransports"):
                 if k in new_opts:
                     new_opts[k] = transports.parse_carrier_list(new_opts[k])
@@ -1896,6 +1912,21 @@ class DiagWebServer:
             if not app:
                 return False, "App config not loaded", {}
             raw_text = str(payload.get("raw_yaml") or "")
+            if "***REDACTED***" in raw_text and os.path.isfile(app.path):
+                try:
+                    with open(app.path, "r", encoding="utf-8", errors="replace") as f:
+                        orig_yaml = f.read()
+                    for secret_key in ("Ed25519PrivateKey", "PrivateKey", "CloudflareToken"):
+                        m = re.search(rf"(?im)^(\s*{secret_key}\s*[:=]\s*)(.+)$", orig_yaml)
+                        if m:
+                            real_val = m.group(2)
+                            raw_text = re.sub(
+                                rf"(?im)^(\s*{secret_key}\s*[:=]\s*)\*\*\*REDACTED\*\*\*\s*$",
+                                lambda g, rv=real_val: g.group(1) + rv,
+                                raw_text,
+                            )
+                except OSError:
+                    pass
             yaml_config.save_text(app.path, raw_text)
             yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
             self.tc.reload(net)

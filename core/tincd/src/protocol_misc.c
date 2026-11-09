@@ -272,9 +272,8 @@ bool udp_info_h(connection_t *c, const char *request) {
 		return true;
 	}
 
-	if(!strcmp(to_name, myself->name) && from->remote_no_direct) {
-		from->remote_no_direct = false;
-		graph();
+	if(from->remote_no_direct && !strcmp(to_name, myself->name)) {
+		return true;
 	}
 
 	if(from != from->via) {
@@ -285,7 +284,7 @@ bool udp_info_h(connection_t *c, const char *request) {
 
 	/* If we have a direct edge to "from", we are in a better position
 	   to guess its address than it is itself. */
-	if(!from->connection && !from->status.udp_confirmed) {
+	if(!from->connection && !from->status.udp_confirmed && !from->remote_no_direct) {
 		sockaddr_t from_addr = str2sockaddr(from_address, from_port);
 
 		if(sockaddrcmp(&from_addr, &from->address)) {

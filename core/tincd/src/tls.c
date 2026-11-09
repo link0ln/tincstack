@@ -436,6 +436,7 @@ static SSL_CTX *build_client_ctx(void) {
 	}
 
 	SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+	SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 
 	/* No PKI verification on purpose: an `https` peer is pinned by its
 	   SHA-256 fingerprint (accept-on-first-use, then pinned) and then

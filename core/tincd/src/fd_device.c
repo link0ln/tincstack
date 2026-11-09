@@ -209,7 +209,13 @@ static bool read_packet(vpn_packet_t *packet) {
 	ssize_t lenin = read(device_fd, DATA(packet) + ETH_HLEN, MTU - ETH_HLEN);
 
 	if(lenin <= 0) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "Error while reading from fd/%d: %s!", device_fd, strerror(errno));
+		if(lenin < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+			return false;
+		}
+
+		logger(DEBUG_ALWAYS, LOG_ERR, "Error while reading from fd/%d: %s!",
+		       device_fd, lenin == 0 ? "EOF" : strerror(errno));
+		event_exit();
 		return false;
 	}
 
