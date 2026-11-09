@@ -82,13 +82,17 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
       TincYaml(f).let { yaml -> fromTincYaml(yaml, yaml.resolveNetwork(netName)) }
 
     fun fromTincYaml(yaml: TincYaml, net: String): VpnInterfaceConfiguration {
-      val allowed = yaml.optionValues(net, KEY_ALLOWED_APPLICATIONS)
+      val rawAllowed = yaml.optionValues(net, KEY_ALLOWED_APPLICATIONS)
         .map(String::trim)
-        .filter { it.isNotEmpty() && it != BuildConfig.APPLICATION_ID }
+        .filter(String::isNotEmpty)
+      val allowed = rawAllowed.filter { it != BuildConfig.APPLICATION_ID }
       val disallowed = yaml.optionValues(net, KEY_DISALLOWED_APPLICATIONS).map(String::trim).filter(String::isNotEmpty)
-      if (allowed.isNotEmpty() && disallowed.isNotEmpty())
+      if (rawAllowed.isNotEmpty() && disallowed.isNotEmpty())
         throw TincYaml.InvalidConfigurationException(
           "$KEY_ALLOWED_APPLICATIONS and $KEY_DISALLOWED_APPLICATIONS are mutually exclusive (Android forbids mixing them); keep one list")
+      if (rawAllowed.isNotEmpty() && allowed.isEmpty())
+        throw TincYaml.InvalidConfigurationException(
+          "$KEY_ALLOWED_APPLICATIONS cannot contain only ${BuildConfig.APPLICATION_ID}")
 
       val pool = yaml.optionValue(net, KEY_ADDRESS_POOL)?.let { applyIgnoringException(CidrAddress.Companion::fromSlashSeparated, it) }
 

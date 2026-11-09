@@ -819,18 +819,21 @@ class ConfigEditorActivity : BaseActivity() {
 
         val optChanges = LinkedHashMap<String, List<String>?>()
         if (deletedNodes.isNotEmpty()) {
-          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
           for (delNode in deletedNodes) {
             if (delNode !in blocked) blocked.add(delNode)
           }
           optChanges["BlockedNodes"] = blocked
+          val ct = yaml.optionValues(stanza, "ConnectTo").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() && it !in deletedNodes }
+          optChanges["ConnectTo"] = ct.ifEmpty { null }
         }
         for (r in removedRows.filter { it.kind == Row.Kind.OPTION }) {
           optChanges[r.key()] = null
         }
         for (r in allRows.filter { it.kind == Row.Kind.OPTION }) {
           if (!r.changed()) continue
-          val vals = r.value().split(',').map { it.trim() }.filter { it.isNotEmpty() }
+          val sep = if (isTokenListKey(r.key())) Regex("[\\s,;]+") else Regex(",")
+          val vals = r.value().split(sep).map { it.trim() }.filter { it.isNotEmpty() }
           optChanges[r.key()] = vals.ifEmpty { null }
         }
         if (optChanges.isNotEmpty()) {
@@ -958,10 +961,7 @@ class ConfigEditorActivity : BaseActivity() {
       row: Row,
       presets: List<String>,
     ) {
-      val multiValueKey = row.key().equals("ConnectTo", ignoreCase = true) ||
-        row.key().equals("NoDirectNodes", ignoreCase = true) ||
-        row.key().equals("Transports", ignoreCase = true) ||
-        row.key().equals("PreferredTransports", ignoreCase = true)
+      val multiValueKey = isTokenListKey(row.key())
 
       for (preset in presets) {
         val chip = Chip(this@ConfigEditorActivity).apply {
@@ -970,7 +970,7 @@ class ConfigEditorActivity : BaseActivity() {
           setOnClickListener {
             val nextVal = if (multiValueKey && !preset.contains(',')) {
               val currentItems = editText.text?.toString()
-                ?.split(',')
+                ?.split(Regex("[\\s,;]+"))
                 ?.map { it.trim() }
                 ?.filter { it.isNotEmpty() }
                 .orEmpty()
@@ -1270,6 +1270,13 @@ class ConfigEditorActivity : BaseActivity() {
         valuePresets = { listOf("any", "ipv4", "ipv6") },
       ),
     )
+
+    fun isTokenListKey(key: String): Boolean =
+      key.equals("ConnectTo", ignoreCase = true) ||
+        key.equals("NoDirectNodes", ignoreCase = true) ||
+        key.equals("BlockedNodes", ignoreCase = true) ||
+        key.equals("Transports", ignoreCase = true) ||
+        key.equals("PreferredTransports", ignoreCase = true)
 
     fun findKeySpec(isOption: Boolean, key: String): KeySpec? {
       val list = if (isOption) OPTION_SPECS else HOST_SPECS

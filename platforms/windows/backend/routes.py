@@ -38,9 +38,11 @@ FULL_TUNNEL = ("0.0.0.0/0", "::/0")
 
 def parse_subnet(text: str):
     """The subnet as an ip_network, or None if it is not one. tinc prints a bare
-    address for a host route, which is a valid /32 here."""
+    address for a host route, which is a valid /32 here, and appends '#<weight>'
+    when a subnet carries an explicit weight."""
     try:
-        return ipaddress.ip_network(str(text).strip(), strict=False)
+        clean = str(text).split("#", 1)[0].strip()
+        return ipaddress.ip_network(clean, strict=False)
     except (ValueError, TypeError):
         return None
 

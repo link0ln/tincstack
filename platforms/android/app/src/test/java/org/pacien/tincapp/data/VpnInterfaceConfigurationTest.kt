@@ -136,6 +136,16 @@ class VpnInterfaceConfigurationTest {
       |""".trimMargin()), "n")
   }
 
+  @Test(expected = TincYaml.InvalidConfigurationException::class)
+  fun allowOnlySelfIsRefused() {
+    VpnInterfaceConfiguration.fromTincYaml(file("""
+      |networks:
+      |  n:
+      |    options:
+      |      AllowApplication: ${org.pacien.tincapp.BuildConfig.APPLICATION_ID}
+      |""".trimMargin()), "n")
+  }
+
   companion object {
     const val JOINED_RESOURCE = "/joined-tinc.yaml"
 

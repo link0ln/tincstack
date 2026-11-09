@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 import routes
+import transports
 
 SPLIT = ("0.0.0.0/1", "128.0.0.0/1")
 DEFAULT_V4 = "0.0.0.0/0"
@@ -144,17 +145,35 @@ def neighbour_addresses(snap, own: str) -> set[str]:
     return out
 
 
-def snapshot_addresses(snap, own: str) -> set[str]:
+def snapshot_addresses(snap, own: str, options: dict | None = None,
+                       hosts: dict | None = None) -> set[str]:
     """Every IPv4 address the daemon knows for another node or edge: where it
-    sends UDP to that node, and where each meta connection in the mesh runs."""
+    sends UDP to that node, and where each meta connection in the mesh runs,
+    excluding peers marked no_direct unless we have an active direct edge to them."""
     out = set()
-    for n in (getattr(snap, "nodes", {}) or {}).values():
-        ip = _ipv4(n.address) if (n.name != own and not n.is_self) else None
+    nodes = getattr(snap, "nodes", {}) or {}
+    edges = getattr(snap, "edges", []) or []
+    direct_peers = {e.to for e in edges if e.frm == own}
+
+    def _skip_peer(peer_name: str) -> bool:
+        if not peer_name or peer_name in direct_peers:
+            return False
+        nd_obj = nodes.get(peer_name)
+        if nd_obj is not None and getattr(nd_obj, "no_direct", False):
+            return True
+        return transports.is_peer_no_direct(options, (hosts or {}).get(peer_name, ""), peer_name)
+
+    for n in nodes.values():
+        if n.name == own or n.is_self or _skip_peer(n.name):
+            continue
+        ip = _ipv4(n.address)
         if ip:
             out.add(str(ip))
-    for e in getattr(snap, "edges", []) or []:
+    for e in edges:
         # an edge towards this node carries this node's own public address
-        ip = _ipv4(e.address) if e.to != own else None
+        if e.to == own or _skip_peer(e.to):
+            continue
+        ip = _ipv4(e.address)
         if ip:
             out.add(str(ip))
     return out
@@ -174,14 +193,15 @@ def connect_to_hosts(options: dict, hosts: dict) -> list[str]:
     """Hostnames/addresses of the peers this node dials (ConnectTo), from their
     host records. These have to be pinned before the first connection exists,
     and again after a reconnect to a new address."""
-    names = options.get("ConnectTo")
-    if names is None:
+    names = transports.parse_node_list((options or {}).get("ConnectTo"))
+    if not names:
         return []
-    if not isinstance(names, (list, tuple)):
-        names = [names]
     out = []
     for name in names:
-        for a in host_addresses(hosts.get(str(name).strip(), "")):
+        host_text = (hosts or {}).get(name, "")
+        if transports.is_peer_no_direct(options, host_text, name):
+            continue
+        for a in host_addresses(host_text):
             if a not in out:
                 out.append(a)
     return out
@@ -262,7 +282,10 @@ class FullTunnel:
         ct_targets = list(connect_to_hosts(options, hosts))
         extra_targets: list[str] = []
         for name, text in (hosts or {}).items():
-            if own and str(name).strip() == own:
+            peer_name = str(name).strip()
+            if own and peer_name == own:
+                continue
+            if transports.is_peer_no_direct(options, text, peer_name):
                 continue
             for a in host_addresses(text):
                 if a not in ct_targets and a not in extra_targets:
@@ -275,7 +298,9 @@ class FullTunnel:
             exp, ips = self._resolved.get(host, (0.0, []))
             if now >= exp:
                 try:
-                    ips = [str(_ipv4(a)) for a in self.system.resolve(host) if _ipv4(a)]
+                    fresh = [str(_ipv4(a)) for a in self.system.resolve(host) if _ipv4(a)]
+                    if fresh or not ips:
+                        ips = fresh
                 except OSError:
                     ips = ips or []   # keep the last answer while DNS is down
                 self._resolved[host] = (now + RESOLVE_TTL, ips)
@@ -290,7 +315,9 @@ class FullTunnel:
             # split tunnel is active (when DNS itself may traverse a broken tunnel).
             if now >= exp and self.split_if is None:
                 try:
-                    ips = [str(_ipv4(a)) for a in self.system.resolve(host) if _ipv4(a)]
+                    fresh = [str(_ipv4(a)) for a in self.system.resolve(host) if _ipv4(a)]
+                    if fresh or not ips:
+                        ips = fresh
                 except OSError:
                     ips = ips or []
                 self._resolved[host] = (now + RESOLVE_TTL, ips)
@@ -334,7 +361,7 @@ class FullTunnel:
         vpn = vpn_networks(snap, options)
         must = {a for a in neighbour_addresses(snap, own) | self._connect_to_ips(options, hosts, own)
                 if pinnable(a, local, vpn)}
-        want = must | {a for a in snapshot_addresses(snap, own) if pinnable(a, local, vpn)}
+        want = must | {a for a in snapshot_addresses(snap, own, options, hosts) if pinnable(a, local, vpn)}
 
         # 1. pins first, through the current physical gateway
         failed = {}

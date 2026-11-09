@@ -1722,25 +1722,21 @@ class DiagWebServer:
             carrier = str(payload.get("carrier") or payload.get("transport") or "auto").strip()
             if not nc or not peer:
                 return False, "Invalid network or peer", {}
-            if os.path.exists(app.path):
-                try:
-                    yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                except Exception:
-                    pass
-            nc.hosts[peer] = transports.set_host_preferred_transport(nc.hosts.get(peer, ""), carrier)
-            if (carrier != "auto"
-                    and not transports.is_peer_no_direct(nc.options, nc.hosts.get(peer, ""), peer)
-                    and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer], re.I | re.M)):
-                ct = nc.options.get("ConnectTo")
-                if isinstance(ct, list):
-                    if peer not in ct:
-                        ct.append(peer)
-                elif isinstance(ct, str) and ct.strip():
-                    if ct.strip() != peer:
-                        nc.options["ConnectTo"] = [ct.strip(), peer]
-                else:
-                    nc.options["ConnectTo"] = peer
-            yaml_config.save(app)
+            with yaml_config._MEM_LOCK:
+                if os.path.exists(app.path):
+                    try:
+                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                    except Exception:
+                        pass
+                nc.hosts[peer] = transports.set_host_preferred_transport(nc.hosts.get(peer, ""), carrier)
+                if (carrier != "auto"
+                        and not transports.is_peer_no_direct(nc.options, nc.hosts.get(peer, ""), peer)
+                        and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer], re.I | re.M)):
+                    ct_list = transports.parse_node_list(nc.options.get("ConnectTo"))
+                    if peer not in ct_list:
+                        ct_list.append(peer)
+                    nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
+                yaml_config.save(app)
             res = self.tc.switch_peer_transport(net, peer)
             self.collector.add_incident(
                 net=net, kind="USER_ACTION", severity="info", peer=peer,
@@ -1751,22 +1747,23 @@ class DiagWebServer:
             peer = str(payload.get("peer") or "").strip()
             if not nc or not peer:
                 return False, "Invalid network or peer", {}
-            if os.path.exists(app.path):
-                try:
-                    yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                except Exception:
-                    pass
-            if "no_direct" in payload:
-                no_direct = bool(payload.get("no_direct"))
-            elif "direct" in payload:
-                no_direct = not bool(payload.get("direct"))
-            else:
-                no_direct = not transports.is_peer_no_direct(nc.options, nc.hosts.get(peer, ""), peer)
-            old_host = nc.hosts.get(peer, "")
-            new_host = transports.set_peer_no_direct(nc.options, old_host, peer, no_direct)
-            if peer in nc.hosts or new_host:
-                nc.hosts[peer] = new_host
-            yaml_config.save(app)
+            with yaml_config._MEM_LOCK:
+                if os.path.exists(app.path):
+                    try:
+                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                    except Exception:
+                        pass
+                if "no_direct" in payload:
+                    no_direct = bool(payload.get("no_direct"))
+                elif "direct" in payload:
+                    no_direct = not bool(payload.get("direct"))
+                else:
+                    no_direct = not transports.is_peer_no_direct(nc.options, nc.hosts.get(peer, ""), peer)
+                old_host = nc.hosts.get(peer, "")
+                new_host = transports.set_peer_no_direct(nc.options, old_host, peer, no_direct)
+                if peer in nc.hosts or new_host:
+                    nc.hosts[peer] = new_host
+                yaml_config.save(app)
             res = self.tc.reload(net)
             mode_str = "Relay only (no direct connect)" if no_direct else "Direct connect allowed"
             self.collector.add_incident(
@@ -1808,26 +1805,19 @@ class DiagWebServer:
             content = str(payload.get("content") or payload.get("text") or "").rstrip("\n")
             if not host:
                 return False, "Host name is empty", {}
-            if os.path.exists(app.path):
-                try:
-                    yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                except Exception:
-                    pass
-            nc.hosts[host] = content
-            blocked = nc.options.get("BlockedNodes")
-            if isinstance(blocked, list):
-                blocked = [b for b in blocked if str(b).strip() != host]
-                if blocked:
-                    nc.options["BlockedNodes"] = blocked
+            with yaml_config._MEM_LOCK:
+                if os.path.exists(app.path):
+                    try:
+                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                    except Exception:
+                        pass
+                nc.hosts[host] = content
+                blocked_list = [b for b in transports.parse_node_list(nc.options.get("BlockedNodes")) if b != host]
+                if blocked_list:
+                    nc.options["BlockedNodes"] = blocked_list
                 else:
                     nc.options.pop("BlockedNodes", None)
-            elif isinstance(blocked, str):
-                parts = [p.strip() for p in re.split(r"[\s,;]+", blocked) if p.strip() and p.strip() != host]
-                if parts:
-                    nc.options["BlockedNodes"] = parts
-                else:
-                    nc.options.pop("BlockedNodes", None)
-            yaml_config.save(app)
+                yaml_config.save(app)
             self.tc.reload(net)
             return True, f"Saved host '{host}'", {}
         if action == "delete_host":
@@ -1836,28 +1826,23 @@ class DiagWebServer:
             host = str(payload.get("host") or payload.get("peer") or "").strip()
             if not host:
                 return False, "Host name is empty", {}
-            nc.hosts.pop(host, None)
-            ct = nc.options.get("ConnectTo")
-            if isinstance(ct, list):
-                ct = [c for c in ct if str(c).strip() != host]
-                if ct:
-                    nc.options["ConnectTo"] = ct
+            with yaml_config._MEM_LOCK:
+                if os.path.exists(app.path):
+                    try:
+                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                    except Exception:
+                        pass
+                nc.hosts.pop(host, None)
+                ct_list = [c for c in transports.parse_node_list(nc.options.get("ConnectTo")) if c != host]
+                if ct_list:
+                    nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
                 else:
                     nc.options.pop("ConnectTo", None)
-            elif isinstance(ct, str) and ct.strip() == host:
-                nc.options.pop("ConnectTo", None)
-            blocked = nc.options.get("BlockedNodes")
-            if isinstance(blocked, list):
-                if host not in blocked:
-                    blocked.append(host)
-            elif isinstance(blocked, str) and blocked.strip():
-                parts = [p.strip() for p in re.split(r"[\s,;]+", blocked) if p.strip()]
-                if host not in parts:
-                    parts.append(host)
-                nc.options["BlockedNodes"] = parts
-            else:
-                nc.options["BlockedNodes"] = [host]
-            yaml_config.save(app)
+                blocked_list = transports.parse_node_list(nc.options.get("BlockedNodes"))
+                if host not in blocked_list:
+                    blocked_list.append(host)
+                nc.options["BlockedNodes"] = blocked_list
+                yaml_config.save(app)
             self.tc.reload(net)
             return True, f"Deleted and blocked host '{host}'", {}
         if action == "save_settings":

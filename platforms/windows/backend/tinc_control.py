@@ -91,7 +91,8 @@ class Node:
         '' when the node announces only networks and no address of its own."""
         for s in self.subnets:
             try:
-                net = ipaddress.ip_network(str(s).strip(), strict=False)
+                clean = str(s).split("#", 1)[0].strip()
+                net = ipaddress.ip_network(clean, strict=False)
             except ValueError:
                 continue
             if net.prefixlen == net.max_prefixlen:

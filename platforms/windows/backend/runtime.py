@@ -30,6 +30,7 @@ from typing import IO
 import fulltunnel
 import paths
 import routes
+import yaml_config
 from tinc_control import TincControl
 from yaml_config import AppConfig
 
@@ -154,6 +155,7 @@ class Runtime:
         self.log_backups = log_backups
         self._procs: dict[str, subprocess.Popen] = {}
         self._sinks: dict[str, LogSink] = {}
+        self._op_lock = threading.RLock()
         self._fw_done = False
         # full tunnel (fulltunnel.py): one maintainer thread per network whose
         # `full_tunnel` names an exit node, while that network runs. The system
@@ -270,6 +272,10 @@ class Runtime:
 
     # -- lifecycle --
     def start(self, net_name: str) -> tuple[bool, str]:
+        with self._op_lock:
+            return self._start_locked(net_name)
+
+    def _start_locked(self, net_name: str) -> tuple[bool, str]:
         nc = self.app.net(net_name)
         if nc is None:
             return False, f"network '{net_name}' not in config"
@@ -385,6 +391,10 @@ class Runtime:
             self._log_line(net_name, f"[tincmgr] wintun MTU clamp to {mtu} FAILED: {msg}")
 
     def stop(self, net_name: str, timeout: float = 10.0) -> tuple[bool, str]:
+        with self._op_lock:
+            return self._stop_locked(net_name, timeout=timeout)
+
+    def _stop_locked(self, net_name: str, timeout: float = 10.0) -> tuple[bool, str]:
         # the split routes and pins go first, while the adapter still exists
         self._full_tunnel_off(net_name)
         # graceful: tincd removes its Wintun adapter on a clean stop
@@ -417,8 +427,9 @@ class Runtime:
         return (not self.is_running(net_name)), "stopped"
 
     def restart(self, net_name: str) -> tuple[bool, str]:
-        self.stop(net_name)
-        return self.start(net_name)
+        with self._op_lock:
+            self._stop_locked(net_name)
+            return self._start_locked(net_name)
 
     # -- full tunnel: all IPv4 traffic through the exit node (fulltunnel.py) --
     def _ft_sys(self) -> "fulltunnel.System | None":
@@ -460,10 +471,11 @@ class Runtime:
         tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
 
         def config() -> tuple[dict, dict, str]:
-            cfg = self.app.net(net_name)
-            if cfg is None:
-                return {}, {}, ""
-            return dict(cfg.options), dict(cfg.hosts), cfg.node_name
+            with yaml_config._MEM_LOCK:
+                cfg = self.app.net(net_name)
+                if cfg is None:
+                    return {}, {}, ""
+                return dict(cfg.options), dict(cfg.hosts), cfg.node_name
 
         m = fulltunnel.Maintainer(ft, lambda: tc.snapshot(net_name), config,
                                   lambda line: self._log_line(net_name, f"[tincmgr] {line}"),
@@ -490,13 +502,14 @@ class Runtime:
         return results
 
     def stop_all(self) -> None:
-        for name in list(self.app.networks):
-            if self.is_running(name) or name in self._procs:
-                self.stop(name, timeout=5.0)
-            else:
+        with self._op_lock:
+            for name in list(self.app.networks):
+                if self.is_running(name) or name in self._procs:
+                    self._stop_locked(name, timeout=5.0)
+                else:
+                    self._full_tunnel_off(name)
+            for name in list(self._ft):
                 self._full_tunnel_off(name)
-        for name in list(self._ft):
-            self._full_tunnel_off(name)
 
     def status(self, net: str) -> str:
         return "running" if self.is_running(net) else "stopped"

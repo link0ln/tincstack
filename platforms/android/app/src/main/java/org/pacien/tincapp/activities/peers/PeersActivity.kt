@@ -262,6 +262,9 @@ class PeersActivity : BaseActivity() {
             mapOf("PreferredTransports" to valToSet, "PreferredTransport" to null),
             createIfMissing = true,
           )
+          if (chosen != "auto") {
+            yaml.ensureConnectToIfDialable(stanza, peerName)
+          }
           if (org.pacien.tincapp.service.TincVpnService.isDaemonRunning()) {
             Tinc.reload(netName)
               .thenCompose { Tinc.disconnectPeer(netName, peerName).exceptionally { } }

@@ -996,6 +996,12 @@ bool receive_tcppacket_sptps(connection_t *c, const char *data, size_t len) {
 
 static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 	if(!n->status.validkey && !n->connection) {
+		if((DATA(origpkt)[12] | DATA(origpkt)[13]) && n->nexthop && n->nexthop->connection) {
+			connection_t *conns[2] = {NULL, NULL};
+			int nconns = multipath_select_connections(n->nexthop, origpkt, conns);
+			send_tcppacket(nconns > 0 ? conns[0] : n->nexthop->connection, origpkt);
+		}
+
 		return;
 	}
 
@@ -1057,8 +1063,8 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 	   Exception: in MULTIPATH_REDUNDANT mode with multiple connections and
 	   a valid SPTPS key, use SPTPS records so the receiver deduplicates copies
 	   by SPTPS sequence number. */
-	if(n->connection && origpkt->len - offset > n->minmtu &&
-	   !(multipath_mode == MULTIPATH_REDUNDANT && n->status.validkey && n->connections.count > 1)) {
+	if(n->connection && (!n->status.validkey || !n->sptps.outstate || origpkt->len - offset > n->minmtu) &&
+	   !(multipath_mode == MULTIPATH_REDUNDANT && n->status.validkey && n->sptps.outstate && n->connections.count > 1)) {
 		connection_t *conns[2] = {NULL, NULL};
 		int nconns = multipath_select_connections(n, origpkt, conns);
 		send_tcppacket(nconns > 0 ? conns[0] : n->connection, origpkt);
@@ -2922,6 +2928,12 @@ static length_t choose_initial_maxmtu(node_t *n) {
 
 		if((n->options >> 24) >= 4) {
 			mtu -= sizeof(node_id_t) + sizeof(node_id_t);
+		}
+
+		size_t obfs_ovh = obfs_link_wire_overhead(n);
+
+		if(obfs_ovh > 0 && mtu > (length_t)(obfs_ovh + MINMTU)) {
+			mtu -= (length_t)obfs_ovh;
 		}
 
 #ifndef DISABLE_LEGACY

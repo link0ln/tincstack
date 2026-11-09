@@ -714,7 +714,9 @@ yamlconf_t *yamlconf_parse(char *text) {
 }
 
 yamlconf_t *yamlconf_load(const char *path) {
+	bool locked = yamlconf_lock(path);
 	char *text = read_file(path);
+	if(locked) yamlconf_unlock();
 	if(!text) return NULL;
 	yamlconf_t *yc = yamlconf_parse(text);
 	free(text);

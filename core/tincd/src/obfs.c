@@ -2373,6 +2373,24 @@ void dseal_learn(node_t *n, const char *token) {
 		       n->dseal & DSEAL_WANTS ? ", seals its own" : "",
 		       n->dseal & DSEAL_KEX ? ", key exchange" : "",
 		       n->dseal & DSEAL_PUNCH ? ", coordinated punch" : "");
+
+		if(dseal_verdict(n) == DSEAL_SEND_SEAL) {
+			obfs_link_t *l = obfs_link_for_node(n);
+			size_t max_in = l ? obfs_max_inner(l, false) : 0;
+			size_t sptps_ovh = SPTPS_DATAGRAM_OVERHEAD + (((n->options >> 24) >= 4) ? 2 * sizeof(node_id_t) : 0);
+
+			if(max_in > sptps_ovh + MINMTU) {
+				length_t cap = (length_t)(max_in - sptps_ovh);
+
+				if(n->maxmtu > cap) {
+					n->maxmtu = cap;
+				}
+
+				if(n->minmtu > cap) {
+					n->minmtu = cap;
+				}
+			}
+		}
 	}
 }
 
@@ -2384,6 +2402,20 @@ bool obfs_link_is_active(const node_t *n) {
 	}
 
 	return false;
+}
+
+size_t obfs_link_wire_overhead(node_t *n) {
+	if(!n) {
+		return 0;
+	}
+
+	bool obfs_carrier = n->connection && n->connection->transport && n->connection->transport->id == TRANSPORT_OBFS;
+
+	if(obfs_carrier || obfs_link_is_active(n) || dseal_verdict(n) == DSEAL_SEND_SEAL) {
+		return obfs_base_overhead(false) + obfs_header_junk(false);
+	}
+
+	return 0;
 }
 
 dseal_verdict_t dseal_verdict(node_t *n) {

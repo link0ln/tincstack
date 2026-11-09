@@ -49,18 +49,18 @@ class TincYaml(val file: File) {
   class InvalidConfigurationException(msg: String) : RuntimeException(msg)
 
   /** Parsed `networks:` map, or an empty map for an absent/empty file. */
-  fun networks(): Map<String, Any?> {
-    if (!file.exists()) return emptyMap()
+  fun networks(): Map<String, Any?> = MEM_LOCK.withLock {
+    if (!file.exists()) return@withLock emptyMap()
     val root = try {
       newYaml().load<Any?>(file.readText())
     } catch (e: Exception) {
       throw InvalidConfigurationException("${file.name}: ${e.message}")
     }
-    if (root == null) return emptyMap()
+    if (root == null) return@withLock emptyMap()
     if (root !is Map<*, *>) throw InvalidConfigurationException("${file.name}: top level is not a mapping")
-    val networks = root["networks"] ?: return emptyMap()
+    val networks = root["networks"] ?: return@withLock emptyMap()
     if (networks !is Map<*, *>) throw InvalidConfigurationException("${file.name}: 'networks' is not a mapping")
-    return networks.entries.associate { it.key.toString() to it.value }
+    networks.entries.associate { it.key.toString() to it.value }
   }
 
   fun networkNames(): List<String> = networks().keys.toList()
@@ -168,8 +168,28 @@ class TincYaml(val file: File) {
     }
   }
 
+  /**
+   * Ensure [peerName] is listed in `ConnectTo` when direct connections to it
+   * are allowed (`!isPeerNoDirect`) and its host record declares an `Address`.
+   */
+  fun ensureConnectToIfDialable(net: String, peerName: String) = withFileLock {
+    val peer = peerName.trim()
+    if (peer.isEmpty() || isPeerNoDirect(net, peer)) return@withFileLock
+    val hText = hostText(net, peer) ?: return@withFileLock
+    if (PeerConfig(peer, hText).address.isNullOrBlank()) return@withFileLock
+    val ct = optionValues(net, "ConnectTo")
+      .flatMap { it.split(Regex("[\\s,;]+")) }
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+      .toMutableList()
+    if (ct.none { it.equals(peer, ignoreCase = true) }) {
+      ct.add(peer)
+      setOptions(net, mapOf("ConnectTo" to ct))
+    }
+  }
+
   /** Raw text of `tinc.yaml`, or empty string if absent. */
-  fun readRawText(): String = if (file.exists()) file.readText() else ""
+  fun readRawText(): String = MEM_LOCK.withLock { if (file.exists()) file.readText() else "" }
 
   /** Validate that [newText] is a valid `tinc.yaml` mapping and write it atomically. */
   fun writeRawText(newText: String) = withFileLock {
@@ -416,7 +436,7 @@ class TincYaml(val file: File) {
   private fun writeAtomically(text: String) {
     val dir = file.absoluteFile.parentFile ?: throw FileNotFoundException(file.absolutePath)
     if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Could not create ${dir.absolutePath}")
-    val tmp = File(dir, "${file.name}.${System.nanoTime()}.tmp")
+    val tmp = File(dir, "${file.name}.kt.${System.nanoTime()}.tmp")
     try {
       tmp.writeText(text)
       // the file holds private keys: owner-only, like the daemon's 0600

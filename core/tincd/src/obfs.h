@@ -323,6 +323,10 @@ void dseal_log_hold(node_t *n, dseal_verdict_t v);
 /* True when an obfs link to `n' is up (its datagrams are sealed anyway). */
 bool obfs_link_is_active(const node_t *n);
 
+/* Steady-state wire overhead (header + tag + configured transport junk) added
+   when `n' uses the obfs carrier or DirectSeal, or 0 if plain. */
+size_t obfs_link_wire_overhead(node_t *n);
+
 /* Seal one SPTPS datagram for `to' with its obfs link, creating the link if
    needed (DSEAL_SEND_SEAL). Same contract as obfs_wrap_send, except that it
    never returns OBFS_SEND_PLAIN: a datagram that cannot be sealed is dropped,

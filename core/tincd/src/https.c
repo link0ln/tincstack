@@ -123,15 +123,27 @@ static void https_reap(void *data) {
 	(void) data;
 	timeout_del(&https_reaper);
 
+	list_t victims = {
+		.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+	};
+
 	for list_each(connection_t, c, &connection_list) {
 		if(c->transport && c->transport->id == TRANSPORT_HTTPS && c->transport_data) {
 			https_session_t *s = c->transport_data;
 
 			if(s->state == HS_DYING) {
-				terminate_connection(c, c->edge);
+				list_insert_tail(&victims, c);
 			}
 		}
 	}
+
+	for list_each(connection_t, c, &victims) {
+		if(connection_is_live(c)) {
+			terminate_connection(c, c->edge);
+		}
+	}
+
+	list_empty_list(&victims);
 }
 
 static void https_schedule_reap(void) {
@@ -485,6 +497,11 @@ static void https_learn_pin(https_session_t *s) {
 
 	s->pin_pending = false;
 	logger(DEBUG_ALWAYS, LOG_NOTICE, "https: SPTPS authenticated %s over TLS; pinning TlsFingerprint %s", s->c->name, s->server_fp_hex);
+
+	if(s->c->node) {
+		free(s->c->node->tls_fingerprint);
+		s->c->node->tls_fingerprint = xstrdup(s->server_fp_hex);
+	}
 
 	/* Replace, not append: a moved pin must not leave the old one first in
 	   the record, where lookup_config() would keep finding it. */

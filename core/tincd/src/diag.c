@@ -630,7 +630,11 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 		}
 
 		if(slot < 0) {
-			diag_tcp_conn_close(tcp_conns[oldest_slot]);
+			diag_tcp_conn_t *evict = tcp_conns[oldest_slot];
+			diag_tcp_send_segment(evict->my_ip, evict->peer_ip, evict->my_port, evict->peer_port,
+			                      evict->tx_una_seq + (uint32_t)evict->tx_sent_offset, evict->rcv_nxt,
+			                      DIAG_TH_RST | DIAG_TH_ACK, 0, NULL, 0, false);
+			diag_tcp_conn_close(evict);
 			slot = oldest_slot;
 		}
 
@@ -1159,6 +1163,10 @@ bool control_diag_ping_h(connection_t *c, const char *request) {
 
 	if(pending_count >= MAX_DIAG_PING_REQS && oldest) {
 		diag_ping_timeout_cb(oldest);
+
+		if(!connection_is_live(c)) {
+			return false;
+		}
 	}
 
 	uint16_t seq = ++diag_ping_seq;

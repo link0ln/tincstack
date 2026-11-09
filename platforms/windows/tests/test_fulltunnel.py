@@ -442,3 +442,30 @@ def test_win32_add_route_falls_back_to_set_when_route_exists(monkeypatch):
     assert ok and msg == "OK."
     assert len(calls) == 2 and "add" in calls[0] and "set" in calls[1]
 
+
+def test_relay_only_peer_is_not_pinned_to_physical_gateway():
+    s = FakeSystem()
+    t = tunnel(s)
+    snap = snapshot()
+    snap.nodes["euvds"].no_direct = True
+    opts = {"Name": OWN, "ConnectTo": "ruvds2, euvds", "NoDirectNodes": ["euvds"],
+            "InterfaceAddress": "10.8.179.3/24"}
+    hosts = {
+        "ruvds2": "Address = 80.87.200.39\nSubnet = 10.8.179.1/32\n",
+        "euvds": "Address = 88.218.122.166\nDirectConnect = no\nSubnet = 10.8.179.4/32\n",
+    }
+    t.step(snap, opts, hosts, OWN)
+    # ruvds2 is pinned, but euvds (RelayOnly) must NOT be pinned to physical gateway
+    assert "80.87.200.39/32" in pinned(s)
+    assert "88.218.122.166/32" not in pinned(s)
+    assert t.state == "active via euvds"
+
+
+def test_weighted_default_route_is_accepted_by_exit_ready():
+    snap = snapshot(announces_default=False)
+    snap.subnets.append(Subnet("0.0.0.0/0#10", "euvds"))
+    snap.attach_subnets()
+    ok, reason = ft.exit_ready(snap, "euvds")
+    assert ok and reason == ""
+
+

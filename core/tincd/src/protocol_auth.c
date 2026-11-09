@@ -675,6 +675,24 @@ bool id_h(connection_t *c, const char *request) {
 			       c->name, c->hostname);
 		} else if(experimental && !ecdsa_active(c->ecdsa)) {
 			c->ecdsa = read_ecdsa_public_key(&c->config_tree, c->name);
+
+			/* A partial host record (e.g. created by TlsFingerprint pinning,
+			   DirectConnect = no, or PreferredTransports) has no Ed25519PublicKey
+			   line yet; fall back to the graph-learned Ed25519 key just as when
+			   no host record exists at all. */
+			if(!ecdsa_active(c->ecdsa)) {
+				node_t *n = lookup_node(c->name);
+				ecdsa_t *graphkey = n ? ecdsa_from_graph(c->name) : NULL;
+
+				if(graphkey) {
+					c->ecdsa = graphkey;
+					logger(DEBUG_CONNECTIONS, LOG_INFO,
+					       "Peer %s (%s) host record has no Ed25519PublicKey; authenticating it against the Ed25519 key the graph gave us",
+					       c->name, c->hostname);
+				} else if(n && n->status.reachable) {
+					send_req_pubkey(n);
+				}
+			}
 		}
 
 		/* Ignore failures if no key known yet */

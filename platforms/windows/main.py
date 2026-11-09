@@ -632,28 +632,25 @@ class PeersTab(QtWidgets.QWidget):
         if nc is None:
             return
         diagnostics.log_app_event(f"Switching peer '{peer_name}' transport to '{carrier}' on network '{net}'")
-        if os.path.exists(ctx.app.path):
-            try:
-                yaml_config.refresh_in_place(ctx.app, yaml_config.read_document(ctx.app.path))
-            except Exception:
-                pass
-        old_host = nc.hosts.get(peer_name, "")
-        nc.hosts[peer_name] = transports.set_host_preferred_transport(old_host, carrier)
-        # If the user pinned a specific transport for a peer that has an Address
-        # in its host block, make sure ConnectTo includes it so tincd dials it directly
-        # (unless direct connections to this peer are forbidden).
-        is_nd = transports.is_peer_no_direct(nc.options, nc.hosts[peer_name], peer_name)
-        if not is_nd and carrier != "auto" and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer_name], re.I | re.M):
-            ct = nc.options.get("ConnectTo")
-            if isinstance(ct, list):
-                if peer_name not in ct:
-                    ct.append(peer_name)
-            elif isinstance(ct, str) and ct.strip():
-                if ct.strip() != peer_name:
-                    nc.options["ConnectTo"] = [ct.strip(), peer_name]
-            else:
-                nc.options["ConnectTo"] = peer_name
-        if not ctx.save_config():
+        with yaml_config._MEM_LOCK:
+            if os.path.exists(ctx.app.path):
+                try:
+                    yaml_config.refresh_in_place(ctx.app, yaml_config.read_document(ctx.app.path))
+                except Exception:
+                    pass
+            old_host = nc.hosts.get(peer_name, "")
+            nc.hosts[peer_name] = transports.set_host_preferred_transport(old_host, carrier)
+            # If the user pinned a specific transport for a peer that has an Address
+            # in its host block, make sure ConnectTo includes it so tincd dials it directly
+            # (unless direct connections to this peer are forbidden).
+            is_nd = transports.is_peer_no_direct(nc.options, nc.hosts[peer_name], peer_name)
+            if not is_nd and carrier != "auto" and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer_name], re.I | re.M):
+                ct_list = transports.parse_node_list(nc.options.get("ConnectTo"))
+                if peer_name not in ct_list:
+                    ct_list.append(peer_name)
+                nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
+            saved = ctx.save_config()
+        if not saved:
             nc.hosts[peer_name] = old_host
             self._pop_transport_cell(peer_name)
             if self._menu_open_count > 0:
@@ -1056,12 +1053,10 @@ class NetworkTab(QtWidgets.QWidget):
         if not name:
             self.ctx.status("node name is empty"); return
         nc.hosts[name] = self.host_edit.toPlainText().rstrip("\n")
-        blocked = nc.options.get("BlockedNodes")
-        if isinstance(blocked, list) and name in blocked:
-            blocked.remove(name)
-            if not blocked:
-                nc.options.pop("BlockedNodes", None)
-        elif isinstance(blocked, str) and blocked.strip() == name:
+        blocked_list = [b for b in transports.parse_node_list(nc.options.get("BlockedNodes")) if b != name]
+        if blocked_list:
+            nc.options["BlockedNodes"] = blocked_list
+        else:
             nc.options.pop("BlockedNodes", None)
         self.ctx.save_config(f"saved host {name}"); self.reload()
 
@@ -1071,15 +1066,15 @@ class NetworkTab(QtWidgets.QWidget):
             return
         if QtWidgets.QMessageBox.question(self, "Delete node", f"Delete host '{name}'?") == QtWidgets.QMessageBox.Yes:
             nc.hosts.pop(name, None)
-            blocked = nc.options.get("BlockedNodes")
-            if isinstance(blocked, list):
-                if name not in blocked:
-                    blocked.append(name)
-            elif isinstance(blocked, str) and blocked.strip():
-                if blocked.strip() != name:
-                    nc.options["BlockedNodes"] = [blocked.strip(), name]
+            ct_list = [c for c in transports.parse_node_list(nc.options.get("ConnectTo")) if c != name]
+            if ct_list:
+                nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
             else:
-                nc.options["BlockedNodes"] = [name]
+                nc.options.pop("ConnectTo", None)
+            blocked_list = transports.parse_node_list(nc.options.get("BlockedNodes"))
+            if name not in blocked_list:
+                blocked_list.append(name)
+            nc.options["BlockedNodes"] = blocked_list
             self.ctx.save_config(f"deleted host {name}"); self.reload()
 
     def _import_host(self) -> None:
@@ -1197,12 +1192,19 @@ class NetworkTab(QtWidgets.QWidget):
         for k in ("Transports", "PreferredTransports"):
             if k in new_opts:
                 new_opts[k] = transports.parse_carrier_list(new_opts[k])
-        if "NoDirectNodes" in new_opts:
-            nd_list = transports.parse_node_list(new_opts["NoDirectNodes"])
-            if nd_list:
-                new_opts["NoDirectNodes"] = nd_list
+        for k in ("NoDirectNodes", "BlockedNodes"):
+            if k in new_opts:
+                nd_list = transports.parse_node_list(new_opts[k])
+                if nd_list:
+                    new_opts[k] = nd_list
+                else:
+                    new_opts.pop(k, None)
+        if "ConnectTo" in new_opts:
+            ct_list = transports.parse_node_list(new_opts["ConnectTo"])
+            if ct_list:
+                new_opts["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
             else:
-                new_opts.pop("NoDirectNodes", None)
+                new_opts.pop("ConnectTo", None)
         errs = transports.validate(new_opts)
         if errs:
             self.ctx.status("not saved: " + "; ".join(errs))
@@ -1378,6 +1380,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_go_btn: QtWidgets.QPushButton | None = None
         self._update_later_btn: QtWidgets.QPushButton | None = None
         self._available_update: updates.Release | None = None
+        self._update_extracted: tuple[str, tuple[str, str], str] | None = None
         self._update_in_progress = False
         self._update_progress_sig.connect(self._on_update_progress)
         self._build_tray()
@@ -2010,6 +2013,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.update_act.setEnabled(False)
             self.update_act.setText(f"⏳ Updating ({rel.version})…")
 
+        cached = getattr(self, "_update_extracted", None)
+        if cached is not None:
+            c_ver, c_extracted, c_workdir = cached
+            if c_ver == rel.version and os.path.isfile(c_extracted[0]):
+                self._update_run(rel, c_extracted, c_workdir)
+                return
+            shutil.rmtree(c_workdir, ignore_errors=True)
+            self._update_extracted = None
+
         self.status(f"Downloading {rel.version}…", hold_secs=120.0)
         workdir = tempfile.mkdtemp(prefix="tincmgr-update-")
 
@@ -2033,13 +2045,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_failed("Could not start update download worker.")
 
     def _update_run(self, rel: updates.Release, extracted: tuple[str, str], workdir: str) -> None:
-        import shutil
         exe, zpath = extracted
         try:
             if zpath and os.path.isfile(zpath):
                 os.unlink(zpath)
         except OSError:
             pass
+        self._update_extracted = (rel.version, (exe, ""), workdir)
         if _is_widget_alive(self._update_progress_bar):
             assert self._update_progress_bar is not None
             self._update_progress_bar.setRange(0, 0)
@@ -2061,27 +2073,23 @@ class MainWindow(QtWidgets.QMainWindow):
         # then launch the downloaded single-file tincmgr.exe asynchronously with
         # --self-install --wait-pid <our PID> --relaunch before exiting.
         def do_install() -> str:
-            try:
-                if not management.is_frozen():
-                    raise OSError("only the built tincmgr.exe can update in place")
-                management.check_downgrade(rel.version, management.installed_version())
-                if hasattr(self, "diag_server"):
-                    try:
-                        self.diag_server.stop()
-                    except Exception:
-                        pass
-                if self.admin:
-                    try:
-                        self.rt.stop_all()
-                    except Exception:
-                        pass
-                target = management.start_self_update(
-                    exe, rel.version, caller_pid=os.getpid(), caller_exe=sys.executable
-                )
-                return target
-            except BaseException:
-                shutil.rmtree(workdir, ignore_errors=True)
-                raise
+            if not management.is_frozen():
+                raise OSError("only the built tincmgr.exe can update in place")
+            management.check_downgrade(rel.version, management.installed_version())
+            if hasattr(self, "diag_server"):
+                try:
+                    self.diag_server.stop()
+                except Exception:
+                    pass
+            if self.admin:
+                try:
+                    self.rt.stop_all()
+                except Exception:
+                    pass
+            target = management.start_self_update(
+                exe, rel.version, caller_pid=os.getpid(), caller_exe=sys.executable
+            )
+            return target
 
         def on_install_error(msg: str) -> None:
             self._quitting = False
@@ -2097,7 +2105,6 @@ class MainWindow(QtWidgets.QMainWindow):
             on_error=on_install_error,
         )
         if w is None:
-            shutil.rmtree(workdir, ignore_errors=True)
             on_install_error("Could not start update installer worker.")
 
     def _update_restart(self, target: str) -> None:

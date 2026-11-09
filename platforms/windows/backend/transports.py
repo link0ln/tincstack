@@ -326,11 +326,12 @@ def host_no_direct(host_text: str) -> bool:
     """Return True if `DirectConnect = no` is set in `host_text`."""
     if not host_text:
         return False
+    res = False
     for m in _HOST_DIRECT_RE.finditer(host_text):
         b = _as_bool(m.group(1))
         if b is not None:
-            return not b
-    return False
+            res = not b
+    return res
 
 
 def set_host_no_direct(host_text: str, no_direct: bool) -> str:

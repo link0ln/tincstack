@@ -218,6 +218,8 @@ static void dnsrefresh_state_path(char *buf, size_t len) {
 	snprintf(buf, len, "%s" SLASH "cache" SLASH "dnsrefresh.state", confbase);
 }
 
+static bool dnsrefresh_is_name(const char *s);
+
 static void dnsrefresh_load_state(dnsrefresh_job_t **jobs) {
 	char path[PATH_MAX];
 	dnsrefresh_state_path(path, sizeof(path));
@@ -245,11 +247,14 @@ static void dnsrefresh_load_state(dnsrefresh_job_t **jobs) {
 		job->node_name = xstrdup(node_name);
 		job->hostname = xstrdup(hostname);
 		job->port = xstrdup(portstr);
-		sockaddr_t sa = str2sockaddr(addrstr, portstr);
 
-		if(sa.sa.sa_family != AF_UNKNOWN) {
-			job->last_good = sa;
-			job->has_last_good = true;
+		if(!dnsrefresh_is_name(addrstr)) {
+			sockaddr_t sa = str2sockaddr(addrstr, portstr);
+
+			if(sa.sa.sa_family != AF_UNKNOWN) {
+				job->last_good = sa;
+				job->has_last_good = true;
+			}
 		}
 
 		job->next = *jobs;
@@ -929,6 +934,7 @@ void dnsrefresh_reload(void) {
 	});
 
 	dnsrefresh_rebuild();
+	dnsrefresh_queue_batch();
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "dnsrefresh: interval is now %d s", dnsrefresh_interval);
 }
 

@@ -1178,49 +1178,59 @@ void try_outgoing_connections(void) {
 	/* Make sure there is one outgoing_t in the list for each ConnectTo. */
 
 	for(config_t *cfg = lookup_config(&config_tree, "ConnectTo"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
-		char *name;
-		get_config_string(cfg, &name);
+		char *raw = NULL;
+		get_config_string(cfg, &raw);
 
-		if(!check_id(name)) {
-			logger(DEBUG_ALWAYS, LOG_ERR,
-			       "Invalid name for outgoing connection in %s line %d",
-			       cfg->file, cfg->line);
-			free(name);
+		if(!raw) {
 			continue;
 		}
 
-		if(!strcmp(name, myself->name) || node_is_blocked(name)) {
-			free(name);
-			continue;
-		}
+		char *save = NULL;
 
-		bool found = false;
+		for(char *name = strtok_r(raw, " \t,;", &save); name; name = strtok_r(NULL, " \t,;", &save)) {
+			if(!*name) {
+				continue;
+			}
 
-		for list_each(outgoing_t, outgoing, &outgoing_list) {
-			if(!strcmp(outgoing->node->name, name)) {
-				found = true;
-				outgoing->timeout = 0;
+			if(!check_id(name)) {
+				logger(DEBUG_ALWAYS, LOG_ERR,
+				       "Invalid name for outgoing connection in %s line %d",
+				       cfg->file, cfg->line);
+				continue;
+			}
+
+			if(!strcmp(name, myself->name) || node_is_blocked(name)) {
+				continue;
+			}
+
+			bool found = false;
+
+			for list_each(outgoing_t, outgoing, &outgoing_list) {
+				if(!strcmp(outgoing->node->name, name)) {
+					found = true;
+					outgoing->timeout = 0;
+					outgoing->from_config = true;
+					break;
+				}
+			}
+
+			if(!found) {
+				outgoing_t *outgoing = xzalloc(sizeof(*outgoing));
+				node_t *n = lookup_node(name);
+
+				if(!n) {
+					n = new_node(name);
+					node_add(n);
+				}
+
+				outgoing->node = n;
 				outgoing->from_config = true;
-				break;
+				list_insert_tail(&outgoing_list, outgoing);
+				setup_outgoing_connection(outgoing, true);
 			}
 		}
 
-		if(!found) {
-			outgoing_t *outgoing = xzalloc(sizeof(*outgoing));
-			node_t *n = lookup_node(name);
-
-			if(!n) {
-				n = new_node(name);
-				node_add(n);
-			}
-
-			outgoing->node = n;
-			outgoing->from_config = true;
-			list_insert_tail(&outgoing_list, outgoing);
-			setup_outgoing_connection(outgoing, true);
-		}
-
-		free(name);
+		free(raw);
 	}
 
 	/* Terminate any connections whose outgoing_t is to be deleted. */

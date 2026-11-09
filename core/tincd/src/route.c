@@ -447,8 +447,30 @@ static uint16_t effective_node_mtu(const node_t *n) {
 	return mtu;
 }
 
+static bool node_leg_mtu_converged(const node_t *n) {
+	if(!n || n == myself) {
+		return true;
+	}
+
+	const node_t *via = (n->via == myself) ? n->nexthop : n->via;
+
+	if(!via || via == myself || !via->status.udp_confirmed || via->mtuprobes >= 0) {
+		return false;
+	}
+
+	if(!n->status.udp_confirmed && n->mtu == MTU) {
+		return false;
+	}
+
+	return true;
+}
+
 static void clamp_mss(const node_t *source, const node_t *dest, const node_t *via, vpn_packet_t *packet) {
-	if(!source || !dest || !(((via ? via->options : 0) | dest->options) & OPTION_CLAMP_MSS)) {
+	if(!source || !dest || !(((via ? via->options : 0) | source->options | dest->options) & OPTION_CLAMP_MSS)) {
+		return;
+	}
+
+	if(packet->len < ether_size + 20) {
 		return;
 	}
 
@@ -460,12 +482,11 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 	}
 
 	/* On TCP-only links (e.g. https) or while UDP PMTU discovery has not yet
-	   converged, n->mtu starts at 1518 (MSS 1464 >= 1460), which leaves 1500B
-	   TCP segments unclamped. Cap provisional/TCP-only MSS calculation at 1400
-	   (MSS 1346) so inner TCP segments always fit any tunnel carrier without
-	   forcing multi-hop relays onto the meta stream. */
-	if(mtu > 1400 && (!via || !via->status.udp_confirmed || via->mtuprobes >= 0 ||
-	                  (!dest->status.udp_confirmed && dest->mtu == MTU))) {
+	   converged on either leg, n->mtu starts at 1518 (MSS 1464 >= 1460), which
+	   leaves 1500B TCP segments unclamped. Cap provisional/TCP-only MSS
+	   calculation at 1400 (MSS 1346) so inner TCP segments always fit any
+	   tunnel carrier without forcing multi-hop relays onto the meta stream. */
+	if(mtu > 1400 && (!node_leg_mtu_converged(source) || !node_leg_mtu_converged(dest))) {
 		mtu = 1400;
 	}
 
@@ -474,35 +495,85 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 	uint16_t type = DATA(packet)[12] << 8 | DATA(packet)[13];
 
 	if(type == ETH_P_8021Q) {
+		if(packet->len < 18 + 20) {
+			return;
+		}
+
 		start += 4;
 		type = DATA(packet)[16] << 8 | DATA(packet)[17];
 	}
 
-	/* IP in IP (RFC 2003) packet */
-	if(type == ETH_P_IP && DATA(packet)[start + 9] == 4) {
-		start += 20;
-	}
+	if(type == ETH_P_IP) {
+		if(packet->len < start + 20) {
+			return;
+		}
 
-	if(packet->len <= start + 20) {
-		return;
-	}
+		/* IP in IP (RFC 2003) outer header */
+		if(DATA(packet)[start + 9] == 4) {
+			size_t outer_ihl = (size_t)(DATA(packet)[start] & 0x0f) * 4;
 
-	if(type == ETH_P_IP && DATA(packet)[start + 9] == 6) {
-		start += (DATA(packet)[start] & 0xf) * 4;
-	} else if(type == ETH_P_IPV6 && DATA(packet)[start + 6] == 6) {
+			if((DATA(packet)[start] >> 4) != 4 || outer_ihl < 20 || packet->len < start + outer_ihl + 20) {
+				return;
+			}
+
+			start += outer_ihl;
+		}
+
+		if(DATA(packet)[start + 9] != 6) {
+			return;
+		}
+
+		size_t ihl = (size_t)(DATA(packet)[start] & 0x0f) * 4;
+
+		if((DATA(packet)[start] >> 4) != 4 || ihl < 20 || packet->len < start + ihl + 20) {
+			return;
+		}
+
+		start += ihl;
+	} else if(type == ETH_P_IPV6) {
+		if(packet->len < start + 40 + 20) {
+			return;
+		}
+
+		uint8_t nh = DATA(packet)[start + 6];
 		start += 40;
+
+		for(int ext = 0; ext < 8 && (nh == 0 || nh == 43 || nh == 60); ext++) {
+			if(packet->len < start + 8) {
+				return;
+			}
+
+			size_t extlen = ((size_t)DATA(packet)[start + 1] + 1) * 8;
+
+			if(packet->len < start + extlen + 20) {
+				return;
+			}
+
+			nh = DATA(packet)[start];
+			start += extlen;
+		}
+
+		if(nh != 6) {
+			return;
+		}
 	} else {
 		return;
 	}
 
-	if(packet->len <= start + 20) {
+	if(packet->len < start + 20) {
 		return;
 	}
 
 	/* Use data offset field to calculate length of options field */
-	int len = ((DATA(packet)[start + 12] >> 4) - 5) * 4;
+	int doff = DATA(packet)[start + 12] >> 4;
 
-	if(packet->len < start + 20 + len) {
+	if(doff <= 5) {
+		return;
+	}
+
+	int len = (doff - 5) * 4;
+
+	if(packet->len < start + 20 + (size_t)len) {
 		return;
 	}
 

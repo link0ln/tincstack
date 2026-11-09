@@ -139,3 +139,13 @@ def test_apply_now_refuses_a_bad_nexthop_before_netsh(monkeypatch):
     ok, msg = routes.apply_now("gnet", "192.168.1.0/24", "gw")
     assert not ok and "not an IP address" in msg
     assert calls == []
+
+
+def test_weighted_subnets_parse_cleanly():
+    assert str(routes.parse_subnet("192.168.10.0/24#10")) == "192.168.10.0/24"
+    assert str(routes.parse_subnet("10.8.179.4#5")) == "10.8.179.4/32"
+    assert routes.routable("192.168.10.0/24#10")
+    assert not routes.routable("10.8.179.4#5")
+    assert routes.is_full_tunnel("0.0.0.0/0#10")
+    assert not routes.routable("0.0.0.0/0#10")
+

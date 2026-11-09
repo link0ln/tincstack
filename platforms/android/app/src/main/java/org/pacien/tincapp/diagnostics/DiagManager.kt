@@ -78,16 +78,21 @@ object DiagManager {
   private const val PREF_PORT = "port"
 
   val STATUS_BITS = listOf(
-    0x0001 to "visited",
+    0x0001 to "unused_active",
     0x0002 to "validkey",
-    0x0004 to "active",
-    0x0008 to "waitingforkey",
+    0x0004 to "waitingforkey",
+    0x0008 to "visited",
     0x0010 to "reachable",
     0x0020 to "indirect",
     0x0040 to "sptps",
     0x0080 to "udp_confirmed",
-    0x0100 to "send_info",
-    0x0200 to " validkey_in",
+    0x0100 to "send_locally",
+    0x0200 to "udppacket",
+    0x0400 to "validkey_in",
+    0x0800 to "has_address",
+    0x1000 to "ping_sent",
+    0x2000 to "sptps_route_stale",
+    0x4000 to "udp_addr_confirmed",
     0x8000 to "no_direct",
   )
 
@@ -2010,6 +2015,9 @@ object DiagManager {
             mapOf("PreferredTransports" to valToSet, "PreferredTransport" to null),
             createIfMissing = true,
           )
+          if (carrier != "auto") {
+            yaml.ensureConnectToIfDialable(stanza, peer)
+          }
           runTincCli(targetNet, 3500L, "reload")
           runTincCli(targetNet, 3500L, "disconnect", peer)
           runTincCli(targetNet, 3500L, "retry")
@@ -2055,7 +2063,7 @@ object DiagManager {
           val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
           val stanza = yaml.resolveNetwork(targetNet)
           yaml.setHostText(stanza, host, content)
-          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() && it != host }
+          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() && it != host }
           yaml.setOptions(stanza, mapOf("BlockedNodes" to blocked.ifEmpty { null }))
           runTincCli(targetNet, 3500L, "reload")
           true to mapOf("ok" to true, "message" to "Saved host '$host'")
@@ -2068,9 +2076,9 @@ object DiagManager {
           val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
           val stanza = yaml.resolveNetwork(targetNet)
           yaml.removeHost(stanza, host)
-          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
           if (host !in blocked) blocked.add(host)
-          val ct = yaml.optionValues(stanza, "ConnectTo").filter { it.trim() != host }
+          val ct = yaml.optionValues(stanza, "ConnectTo").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() && it != host }
           yaml.setOptions(stanza, mapOf("BlockedNodes" to blocked, "ConnectTo" to ct.ifEmpty { null }))
           runTincCli(targetNet, 3500L, "reload")
           true to mapOf("ok" to true, "message" to "Deleted and blocked host '$host'")
@@ -2080,8 +2088,8 @@ object DiagManager {
           val stanza = yaml.resolveNetwork(targetNet)
           val trStr = (payload["transports"]?.toString() ?: "").trim()
           val prefStr = (payload["preferred_transports"]?.toString() ?: "").trim()
-          val trList = trStr.split(',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
-          val prefList = prefStr.split(',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
+          val trList = trStr.split(Regex("[\\s,;]+")).map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
+          val prefList = prefStr.split(Regex("[\\s,;]+")).map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
           val updates = mutableMapOf<String, List<String>?>(
             "Transports" to trList,
             "PreferredTransports" to prefList,

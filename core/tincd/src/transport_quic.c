@@ -302,12 +302,23 @@ static void quic_reap(void *data) {
 	(void)data;
 	timeout_del(&quic_reaper);
 
+	list_t victims = {
+		.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+	};
+
 	for list_each(quic_session_t, s, &quic_sessions) {
-		if(s->dead) {
-			connection_t *c = s->c;
+		if(s->dead && s->c) {
+			list_insert_tail(&victims, s->c);
+		}
+	}
+
+	for list_each(connection_t, c, &victims) {
+		if(connection_is_live(c)) {
 			terminate_connection(c, c->edge);
 		}
 	}
+
+	list_empty_list(&victims);
 }
 
 static void schedule_reap(void) {
@@ -411,6 +422,11 @@ static void learn_pin(quic_session_t *s) {
 
 	s->pin_pending = false;
 	logger(DEBUG_ALWAYS, LOG_NOTICE, "quic: SPTPS authenticated %s; pinning TlsFingerprint %s", s->c->name, s->tls.peer_fp_hex);
+
+	if(s->c->node) {
+		free(s->c->node->tls_fingerprint);
+		s->c->node->tls_fingerprint = xstrdup(s->tls.peer_fp_hex);
+	}
 
 	if(!replace_config_file(s->c->name, "TlsFingerprint", s->tls.peer_fp_hex)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "quic: could not store the TlsFingerprint of %s", s->c->name);
@@ -1930,7 +1946,12 @@ static void quic_accept(listen_socket_t *ls, const uint8_t *buf, size_t len, con
 	}
 
 	quic_session_t *s = new_session(c, ls->udp.fd, (size_t)sock, addr, true);
-	s->local = ls->sa;
+
+	if(ls->sa.sa.sa_family == addr->sa.sa_family) {
+		s->local = ls->sa;
+	} else if(addr->sa.sa_family == AF_INET && ls->sa.sa.sa_family == AF_INET6) {
+		s->local.in.sin_port = ls->sa.in6.sin6_port;
+	}
 
 	if(!quic_tls_session_init(&s->tls, true, get_conn, &s->tls, alpn ? alpn : QUIC_ALPN_DEFAULT, NULL, NULL)) {
 		free(alpn);
@@ -2456,6 +2477,12 @@ bool quic_send(connection_t *c) {
 		tx_append_data(s, c->outbuf.data + c->outbuf.offset, avail);
 		buffer_read(&c->outbuf, avail);
 		c->transport_outbuf_len = (size_t)quic_txq_unacked(&s->tx);
+
+		if(c->transport_outbuf_len > maxoutbufsize) {
+			logger(DEBUG_CONNECTIONS, LOG_ERR, "Output buffer overflow while sending meta data to %s (%s)", c->name, c->hostname);
+			quic_fail(s, true);
+			return false;
+		}
 	}
 
 	if(!s->reading) {
