@@ -34,6 +34,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "obfs.h"
 
 int maxoutbufsize = 0;
 int mtu_info_interval = 5;
@@ -306,6 +307,33 @@ bool udp_info_h(connection_t *c, const char *request) {
 
 /* Transmitting MTU information */
 
+static int clamp_single_hop_mtu(const node_t *hop, int mtu) {
+	if(!hop || hop == myself) {
+		return mtu;
+	}
+
+	if(hop->minmtu == hop->maxmtu && hop->minmtu >= MINMTU) {
+		mtu = MIN(mtu, hop->minmtu);
+	} else if(hop->maxmtu >= MINMTU && hop->maxmtu < MTU) {
+		mtu = MIN(mtu, hop->maxmtu);
+	}
+
+	if(hop->connection && hop->connection->transport && hop->connection->transport->send_datagram) {
+		mtu = MIN(mtu, 1119);
+	}
+
+	size_t obfs_ovh = obfs_link_wire_overhead((node_t *)hop);
+
+	if(obfs_ovh > 0) {
+		size_t sptps_ovh = SPTPS_DATAGRAM_OVERHEAD + (((hop->options >> 24) >= 4) ? 2 * sizeof(node_id_t) : 0);
+		if(1500 > 28 + sptps_ovh + obfs_ovh + MINMTU) {
+			mtu = MIN(mtu, (int)(1500 - 28 - sptps_ovh - obfs_ovh));
+		}
+	}
+
+	return mtu;
+}
+
 static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
 	if(!n || n == myself) {
 		return mtu;
@@ -313,8 +341,8 @@ static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
 
 	const node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
-	if(n->minmtu == n->maxmtu && n->minmtu >= MINMTU && n->via == myself && n->nexthop == n) {
-		mtu = MIN(mtu, n->minmtu);
+	if(n->via == myself && n->nexthop == n) {
+		mtu = clamp_single_hop_mtu(n, mtu);
 	} else if(via && via->minmtu == via->maxmtu && via->minmtu >= MINMTU) {
 		mtu = MIN(mtu, via->minmtu);
 	} else if(via && via->nexthop && via->nexthop->minmtu == via->nexthop->maxmtu && via->nexthop->minmtu >= MINMTU) {
@@ -327,13 +355,12 @@ static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
 		mtu = MIN(mtu, 1119);
 	}
 
-	if(via && via != myself && via->connection && via->connection->transport && via->connection->transport->send_datagram) {
-		mtu = MIN(mtu, 1119);
+	if(via && via != myself) {
+		mtu = clamp_single_hop_mtu(via, mtu);
 	}
 
-	if(n->nexthop && n->nexthop != myself && (!via || via == myself || via == n->nexthop || !via->status.udp_confirmed || via->minmtu < MINMTU) &&
-	                n->nexthop->connection && n->nexthop->connection->transport && n->nexthop->connection->transport->send_datagram) {
-		mtu = MIN(mtu, 1119);
+	if(n->nexthop && n->nexthop != myself && (!via || via == myself || via == n->nexthop || !via->status.udp_confirmed || via->minmtu < MINMTU)) {
+		mtu = clamp_single_hop_mtu(n->nexthop, mtu);
 	}
 
 	if(mtu < MINMTU) {

@@ -37,6 +37,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "obfs.h"
 
 rmode_t routing_mode = RMODE_ROUTER;
 fmode_t forwarding_mode = FMODE_INTERNAL;
@@ -403,6 +404,42 @@ static bool do_decrement_ttl(node_t *source, vpn_packet_t *packet) {
 	}
 }
 
+static uint16_t clamp_hop_carrier_mtu(const node_t *hop, uint16_t mtu) {
+	if(!hop || hop == myself) {
+		return mtu;
+	}
+
+	if(hop->mtu < mtu) {
+		mtu = hop->mtu;
+	}
+
+	if(hop->status.udp_confirmed && hop->minmtu == hop->maxmtu && hop->minmtu > 0 && hop->minmtu < mtu) {
+		mtu = hop->minmtu;
+	} else if(hop->maxmtu >= MINMTU && hop->maxmtu < MTU && hop->maxmtu < mtu) {
+		mtu = hop->maxmtu;
+	}
+
+	if(hop->connection && hop->connection->transport && hop->connection->transport->send_datagram && mtu > 1119) {
+		mtu = 1119;
+	}
+
+	size_t obfs_ovh = obfs_link_wire_overhead((node_t *)hop);
+
+	if(obfs_ovh > 0) {
+		size_t sptps_ovh = SPTPS_DATAGRAM_OVERHEAD + (((hop->options >> 24) >= 4) ? 2 * sizeof(node_id_t) : 0);
+
+		if(1500 > 28 + sptps_ovh + obfs_ovh + MINMTU) {
+			uint16_t obfs_cap = (uint16_t)(1500 - 28 - sptps_ovh - obfs_ovh);
+
+			if(mtu > obfs_cap) {
+				mtu = obfs_cap;
+			}
+		}
+	}
+
+	return mtu;
+}
+
 static uint16_t effective_node_mtu(const node_t *n) {
 	if(!n) {
 		return MTU;
@@ -417,31 +454,11 @@ static uint16_t effective_node_mtu(const node_t *n) {
 	const node_t *via = (n->via == myself) ? n->nexthop : n->via;
 
 	if(via && via != myself) {
-		if(via->mtu < mtu) {
-			mtu = via->mtu;
-		}
-
-		if(via->status.udp_confirmed && via->minmtu == via->maxmtu && via->minmtu > 0 && via->minmtu < mtu) {
-			mtu = via->minmtu;
-		}
-
-		if(via->connection && via->connection->transport && via->connection->transport->send_datagram && mtu > 1119) {
-			mtu = 1119;
-		}
+		mtu = clamp_hop_carrier_mtu(via, mtu);
 	}
 
 	if(n->nexthop && n->nexthop != myself && (!via || !via->status.udp_confirmed || via->minmtu == 0)) {
-		if(n->nexthop->mtu < mtu) {
-			mtu = n->nexthop->mtu;
-		}
-
-		if(n->nexthop->status.udp_confirmed && n->nexthop->minmtu == n->nexthop->maxmtu && n->nexthop->minmtu > 0 && n->nexthop->minmtu < mtu) {
-			mtu = n->nexthop->minmtu;
-		}
-
-		if(n->nexthop->connection && n->nexthop->connection->transport && n->nexthop->connection->transport->send_datagram && mtu > 1119) {
-			mtu = 1119;
-		}
+		mtu = clamp_hop_carrier_mtu(n->nexthop, mtu);
 	}
 
 	return mtu;

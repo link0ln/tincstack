@@ -51,6 +51,7 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "transport_quic.h"
 #include "obfs.h"
 
 /* ---- configuration ------------------------------------------------------- */
@@ -2141,19 +2142,26 @@ static void obfs_listen_read(void *data, int flags) {
 	(void)flags;
 	listen_socket_t *ls = data;
 	uint8_t buf[MAXSIZE];
-	sockaddr_t addr;
-	socklen_t addrlen = sizeof(addr);
-	ssize_t len = recvfrom(ls->udp.fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
 
-	if(len <= 0) {
-		if(len < 0 && !sockwouldblock(sockerrno)) {
-			logger(DEBUG_TRAFFIC, LOG_WARNING, "obfs: receive on the ObfsPort socket failed: %s", sockstrerror(sockerrno));
+	quic_batch_begin();
+
+	for(int i = 0; i < 64; i++) {
+		sockaddr_t addr;
+		socklen_t addrlen = sizeof(addr);
+		ssize_t len = recvfrom(ls->udp.fd, (void *)buf, sizeof(buf), 0, &addr.sa, &addrlen);
+
+		if(len <= 0) {
+			if(len < 0 && !sockwouldblock(sockerrno)) {
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "obfs: receive on the ObfsPort socket failed: %s", sockstrerror(sockerrno));
+			}
+
+			break;
 		}
 
-		return;
+		obfs_udp_try(ls, buf, (size_t)len, &addr);
 	}
 
-	obfs_udp_try(ls, buf, (size_t)len, &addr);
+	quic_batch_end();
 }
 
 static void obfs_listen_setup(void) {
@@ -2388,6 +2396,10 @@ void dseal_learn(node_t *n, const char *token) {
 
 				if(n->minmtu > cap) {
 					n->minmtu = cap;
+				}
+
+				if(n->mtu > cap) {
+					n->mtu = cap;
 				}
 			}
 		}

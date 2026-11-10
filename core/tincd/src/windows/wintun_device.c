@@ -41,6 +41,7 @@
 #include "../utils.h"
 #include "../xalloc.h"
 #include "../zeroconf.h"
+#include "../transport_quic.h"
 #include "wintun_device.h"
 
 /* ---- Wintun API (loaded dynamically from wintun.dll) ----------------------
@@ -489,6 +490,8 @@ static bool setup_device(void) {
 }
 
 static void read_from_wintun(void) {
+	quic_batch_begin();
+
 	for(int count = 0; count < WINTUN_MAX_BATCH; count++) {
 		DWORD size = 0;
 		BYTE *ippkt = WintunReceivePacket(session, &size);
@@ -501,6 +504,7 @@ static void read_from_wintun(void) {
 				logger(DEBUG_ALWAYS, LOG_ERR, "Error reading from %s: %s",
 				       device_info, winerror(e));
 
+			quic_batch_end();
 			return;
 		}
 
@@ -527,6 +531,8 @@ static void read_from_wintun(void) {
 
 		WintunReleaseReceivePacket(session, ippkt);
 	}
+
+	quic_batch_end();
 
 	/* Yield to the event loop so sockets and timers (pings, control commands)
 	   are serviced under heavy tunnel load, then immediately continue draining. */

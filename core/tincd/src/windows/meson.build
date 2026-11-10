@@ -1,6 +1,6 @@
 check_headers += 'w32api.h'
 
-win_common_libs = ['ws2_32', 'iphlpapi', 'threads']
+win_common_libs = ['ws2_32', 'iphlpapi', 'winmm', 'threads']
 
 if opt_harden and cc_name != 'msvc'
   win_common_libs += 'ssp'

@@ -19,6 +19,7 @@
 
 #include "../system.h"
 
+#include <mmsystem.h>
 #include <assert.h>
 
 #include "../event.h"
@@ -116,8 +117,21 @@ void io_del(io_t *io) {
 	io->cb = NULL;
 }
 
+static DWORD tv_to_timeout_ms(const struct timeval *tv) {
+	if(!tv) {
+		return WSA_INFINITE;
+	}
+
+	if(tv->tv_sec < 0 || (tv->tv_sec == 0 && tv->tv_usec <= 0)) {
+		return 0;
+	}
+
+	return (DWORD)(tv->tv_sec * 1000 + (tv->tv_usec + 999) / 1000);
+}
+
 bool event_loop(void) {
 	running = true;
+	timeBeginPeriod(1);
 
 	assert(WSA_WAIT_EVENT_0 == 0);
 
@@ -129,7 +143,7 @@ bool event_loop(void) {
 			break;
 		}
 
-		DWORD timeout_ms = tv ? (DWORD)(tv->tv_sec * 1000 + tv->tv_usec / 1000 + 1) : WSA_INFINITE;
+		DWORD timeout_ms = tv_to_timeout_ms(tv);
 
 		if(!event_count) {
 			Sleep(timeout_ms);
@@ -171,7 +185,7 @@ bool event_loop(void) {
 				break;
 			}
 
-			timeout_ms = tv ? (DWORD)(tv->tv_sec * 1000 + tv->tv_usec / 1000 + 1) : WSA_INFINITE;
+			timeout_ms = tv_to_timeout_ms(tv);
 		}
 
 		WSAEVENT events[WSA_MAXIMUM_WAIT_EVENTS];
@@ -257,6 +271,7 @@ bool event_loop(void) {
 		}
 	}
 
+	timeEndPeriod(1);
 	return true;
 }
 

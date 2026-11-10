@@ -1807,6 +1807,8 @@ static void quic_arm_timer(quic_session_t *s) {
 		(long)(usec % 1000000ULL)   /* tv_usec: suseconds_t, long on Windows */
 	};
 
+	gettimeofday(&now, NULL);
+
 	if(s->timer.cb) {
 		timeout_set(&s->timer, &tv);
 	} else {
@@ -2136,15 +2138,16 @@ static void quic_client_read(void *data, int flags) {
 		session_read_pkt(s, buf, (size_t)len, &addr);
 		nread++;
 
-		if((nread & 15) == 0 && !s->dead) {
-			quic_flush(s);
+		if(!s->dead) {
+			s->flush_pending = true;
+
+			if(s->dgram_n >= QUIC_DGRAM_QUEUE - QUIC_FLUSH_BATCH) {
+				quic_flush(s);
+			}
 		}
 	}
 
-	if((nread & 15) != 0 && !s->dead) {
-		quic_flush(s);
-	}
-
+	(void)nread;
 	quic_batch_end();
 }
 
@@ -2192,7 +2195,7 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 				s->flush_pending = true;
 				s->rx_unflushed++;
 
-				if(s->rx_unflushed >= QUIC_FLUSH_BATCH) {
+				if(s->dgram_n >= QUIC_DGRAM_QUEUE - QUIC_FLUSH_BATCH) {
 					quic_flush(s);
 				}
 			}

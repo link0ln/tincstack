@@ -157,6 +157,13 @@ static void try_fix_mtu(node_t *n) {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Fixing MTU of %s (%s) to %d after %d probes", n->name, n->hostname, n->mtu, n->mtuprobes);
 		n->mtuprobes = -1;
 		n->last_large_udp_rx = now.tv_sec;
+
+		for splay_each(node_t, peer, &node_tree) {
+			if(peer != myself && peer != n && peer->status.reachable) {
+				send_mtu_info(n, peer, n->mtu);
+				send_mtu_info(peer, n, peer->mtu);
+			}
+		}
 	}
 }
 
@@ -1843,8 +1850,12 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 			return true;
 		}
 
-		if(from != myself && type != SPTPS_HANDSHAKE && origlen > relay->minmtu && relay->minmtu >= MINMTU) {
-			send_mtu_info(to, from, relay->minmtu);
+		if(type != SPTPS_HANDSHAKE && origlen > relay->minmtu && relay->minmtu >= MINMTU) {
+			if(from != myself) {
+				send_mtu_info(to, from, relay->minmtu);
+			} else if(to->mtu > relay->minmtu) {
+				to->mtu = relay->minmtu;
+			}
 		}
 
 		return send_sptps_data_meta(to, from, type, data, len);
@@ -3757,23 +3768,30 @@ void handle_incoming_vpn_data(void *data, int flags) {
 
 #else
 	vpn_packet_t pkt;
-	sockaddr_t addr = {0};
-	socklen_t addrlen = sizeof(addr);
 
-	pkt.offset = 0;
-	ssize_t len = recvfrom(ls->udp.fd, (void *)DATA(&pkt), MAXSIZE, 0, &addr.sa, &addrlen);
+	quic_batch_begin();
 
-	if(len <= 0 || (size_t)len > MAXSIZE) {
-		if(!sockwouldblock(sockerrno)) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Receiving packet failed: %s", sockstrerror(sockerrno));
+	for(int i = 0; i < 64; i++) {
+		sockaddr_t addr = {0};
+		socklen_t addrlen = sizeof(addr);
+
+		pkt.offset = 0;
+		ssize_t len = recvfrom(ls->udp.fd, (void *)DATA(&pkt), MAXSIZE, 0, &addr.sa, &addrlen);
+
+		if(len <= 0 || (size_t)len > MAXSIZE) {
+			if(len < 0 && !sockwouldblock(sockerrno)) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Receiving packet failed: %s", sockstrerror(sockerrno));
+			}
+
+			break;
 		}
 
-		return;
+		pkt.len = len;
+
+		handle_incoming_vpn_packet(ls, &pkt, &addr);
 	}
 
-	pkt.len = len;
-
-	handle_incoming_vpn_packet(ls, &pkt, &addr);
+	quic_batch_end();
 
 #endif
 }
