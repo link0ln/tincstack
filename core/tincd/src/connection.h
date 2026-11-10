@@ -66,6 +66,8 @@ typedef union connection_status_t {
 		bool udp_fallback: 1;           /* 1 if dialled via UdpMetaFallback onto a confirmed UDP flow */
 		bool custom_weight: 1;          /* 1 if Weight was explicitly configured in tinc.conf or hosts/ */
 		bool multipath_sub: 1;          /* 1 if secondary parallel connection in node_t->connections */
+		bool no_tarpit: 1;              /* 1 if closed cleanly (e.g. glare tie-break), never tarpit */
+		bool we_dialled: 1;             /* 1 if this connection was originally initiated by us */
 	};
 	uint32_t value;
 } connection_status_t;

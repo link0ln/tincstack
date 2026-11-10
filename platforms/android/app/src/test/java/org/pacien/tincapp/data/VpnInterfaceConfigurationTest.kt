@@ -31,7 +31,7 @@ class VpnInterfaceConfigurationTest {
   @get:Rule
   val tmp = TemporaryFolder()
 
-  private fun file(text: String): File = tmp.newFile("tinc.yaml").apply { writeText(text) }
+  private fun file(text: String): File = File(tmp.newFolder(), "tinc.yaml").apply { writeText(text) }
 
   @Test
   fun explicitAndroidKeysAreRead() {
@@ -144,6 +144,37 @@ class VpnInterfaceConfigurationTest {
       |    options:
       |      AllowApplication: ${org.pacien.tincapp.BuildConfig.APPLICATION_ID}
       |""".trimMargin()), "n")
+  }
+
+  @Test
+  fun bareIpv4AddressesIpv6PoolAndUnmaskedRoutesAreNormalizedSafely() {
+    // 1. Bare IPv4 InterfaceAddress + unmasked InterfaceRoute
+    val cfg1 = VpnInterfaceConfiguration.fromTincYaml(file("""
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      AddressPool: 10.77.0.5/16
+      |      InterfaceAddress: 10.77.1.9
+      |      InterfaceRoute: 192.168.1.5/24
+      |""".trimMargin()), "mynet")
+    assertEquals(listOf(CidrAddress("10.77.1.9", 16)), cfg1.addresses)
+    assertEquals(listOf(CidrAddress("192.168.1.0", 24)), cfg1.routes)
+
+    // 2. IPv6 AddressPool must NOT apply /64 prefix to an IPv4 /32 Subnet, and non-/32 LAN
+    //    subnets advertised by own host must NOT become own TUN interface addresses.
+    val cfg2 = VpnInterfaceConfiguration.fromTincYaml(file("""
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      AddressPool: fd00:beef::/64
+      |    hosts:
+      |      phone: |
+      |        Subnet = 10.165.0.5
+      |        Subnet = 192.168.50.0/24
+      |""".trimMargin()), "mynet")
+    assertEquals(listOf(CidrAddress("10.165.0.5", 32)), cfg2.addresses)
   }
 
   companion object {

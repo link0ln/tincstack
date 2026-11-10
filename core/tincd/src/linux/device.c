@@ -70,6 +70,8 @@ static bool setup_device(void) {
 
 	if(type && strcasecmp(type, "tun") && strcasecmp(type, "tap")) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Unknown device type %s!", type);
+		close(device_fd);
+		device_fd = -1;
 		return false;
 	}
 
@@ -110,6 +112,8 @@ static bool setup_device(void) {
 		iface = xstrdup(ifrname);
 	} else {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not create a tun/tap interface from %s: %s", device, strerror(errno));
+		close(device_fd);
+		device_fd = -1;
 		return false;
 	}
 

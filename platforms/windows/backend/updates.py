@@ -25,14 +25,18 @@ import http.client
 import json
 import os
 import re
+import secrets
 import socket
 import ssl
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
 import zipfile
-from typing import Callable
+from typing import Callable, Iterable
+
+import paths
 
 API = "https://api.github.com/repos/link0ln/tincstack/releases/latest"
 CHECK_MIN_SECS = 3 * 60 * 60          # the owner's cap: never poll more often
@@ -53,6 +57,7 @@ class Release:
         self.notes = notes
         self.zip_name = zip_name or f"tincstack-{tag}-windows-x86_64.zip"
         self.zip_digest = zip_digest
+        self.verified_exe_sha256: str = ""
 
 
 def format_network_error(exc: BaseException, context: str = "") -> str:
@@ -395,8 +400,14 @@ def fetch(
         progress_cb(zsize, zsize, f"Extracting {rel.version} installer…")
 
     exe = os.path.join(workdir, "tincmgr.exe")
+    exe_part = exe + ".part"
     inner_exe_sha: str | None = None
+    actual_exe_sha = ""
     try:
+        try:
+            os.unlink(exe_part)
+        except FileNotFoundError:
+            pass
         with zipfile.ZipFile(zpath) as z:
             names = [
                 n for n in z.namelist()
@@ -414,12 +425,26 @@ def fetch(
                 with z.open(sums_names[0]) as sf:
                     inner_sums = _parse_sums_lines(sf.read().decode("utf-8", "replace"))
                     inner_exe_sha = inner_sums.get("tincmgr.exe")
-            with z.open(names[0]) as src, open(exe, "wb") as dst:
-                while True:
-                    chunk = src.read(1 << 20)
-                    if not chunk:
-                        break
-                    dst.write(chunk)
+            fd = paths.open_private_new(exe_part)
+            h_exe = hashlib.sha256()
+            try:
+                with z.open(names[0]) as src, os.fdopen(fd, "wb") as dst:
+                    while True:
+                        chunk = src.read(1 << 20)
+                        if not chunk:
+                            break
+                        h_exe.update(chunk)
+                        dst.write(chunk)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                os.replace(exe_part, exe)
+            except BaseException:
+                try:
+                    os.unlink(exe_part)
+                except OSError:
+                    pass
+                raise
+            actual_exe_sha = h_exe.hexdigest().lower()
     except zipfile.BadZipFile as e:
         cleanup_files()
         raise ValueError(f"downloaded archive is corrupted ({e})") from e
@@ -427,7 +452,7 @@ def fetch(
     if not os.path.isfile(exe):
         cleanup_files()
         raise ValueError("tincmgr.exe did not extract")
-    if inner_exe_sha and sha(exe) != inner_exe_sha:
+    if inner_exe_sha and actual_exe_sha != inner_exe_sha.lower():
         os.unlink(exe)
         cleanup_files()
         raise ValueError("extracted tincmgr.exe does not match inner SHA256SUMS")
@@ -435,35 +460,168 @@ def fetch(
         os.unlink(exe)
         cleanup_files()
         raise ValueError("release provides neither SHA256SUMS nor asset digest")
+    ok_sig, sig_err = verify_authenticode(exe)
+    if not ok_sig:
+        os.unlink(exe)
+        cleanup_files()
+        raise ValueError(f"Authenticode verification failed: {sig_err}")
+    rel.verified_exe_sha256 = (inner_exe_sha or actual_exe_sha).lower()
+    try:
+        paths.write_private(exe + ".sha256", (rel.verified_exe_sha256 + "\n").encode("utf-8"))
+    except OSError:
+        pass
     return exe, zpath
 
 
-def cleanup_old_workdirs(max_age_secs: float = 3600.0) -> None:
-    """Remove leftover tincmgr-update-* temp directories from earlier updates."""
-    import shutil
-    tmp = tempfile.gettempdir()
-    now = time.time()
+def verify_authenticode(exe_path: str) -> tuple[bool, str]:
+    """Verify Windows Authenticode signature on `exe_path`.
+    If the binary carries an embedded signature, it MUST validate cleanly.
+    Unsigned binaries are permitted unless TINCMGR_REQUIRE_AUTHENTICODE=1."""
+    require_sig = os.environ.get("TINCMGR_REQUIRE_AUTHENTICODE", "").strip() == "1"
+    if sys.platform != "win32":
+        return (False, "Authenticode check unavailable off Windows") if require_sig else (True, "")
     try:
-        entries = os.listdir(tmp)
+        import ctypes
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        class WINTRUST_FILE_INFO(ctypes.Structure):
+            _fields_ = [
+                ("cbStruct", wintypes.DWORD),
+                ("pcwszFilePath", wintypes.LPCWSTR),
+                ("hFile", wintypes.HANDLE),
+                ("pgKnownSubject", ctypes.c_void_p),
+            ]
+
+        class WINTRUST_DATA(ctypes.Structure):
+            _fields_ = [
+                ("cbStruct", wintypes.DWORD),
+                ("pPolicyCallbackData", ctypes.c_void_p),
+                ("pSIPClientData", ctypes.c_void_p),
+                ("dwUIChoice", wintypes.DWORD),
+                ("fdwRevocationChecks", wintypes.DWORD),
+                ("dwUnionChoice", wintypes.DWORD),
+                ("pFile", ctypes.POINTER(WINTRUST_FILE_INFO)),
+                ("dwStateAction", wintypes.DWORD),
+                ("hWVTStateData", wintypes.HANDLE),
+                ("pwszURLReference", wintypes.LPCWSTR),
+                ("dwProvFlags", wintypes.DWORD),
+                ("dwUIContext", wintypes.DWORD),
+                ("pSignatureSettings", ctypes.c_void_p),
+            ]
+
+        wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+        wintrust.WinVerifyTrust.argtypes = [wintypes.HWND, ctypes.POINTER(GUID), ctypes.POINTER(WINTRUST_DATA)]
+        wintrust.WinVerifyTrust.restype = ctypes.c_ulong
+
+        action_generic_verify_v2 = GUID(
+            0x00AAC56B, 0xCD44, 0x11D0,
+            (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE),
+        )
+        fi = WINTRUST_FILE_INFO(ctypes.sizeof(WINTRUST_FILE_INFO), os.path.abspath(exe_path), None, None)
+        wd = WINTRUST_DATA()
+        wd.cbStruct = ctypes.sizeof(WINTRUST_DATA)
+        wd.dwUIChoice = 2            # WTD_UI_NONE
+        wd.fdwRevocationChecks = 0   # WTD_REVOKE_NONE (avoid offline stall)
+        wd.dwUnionChoice = 1         # WTD_CHOICE_FILE
+        wd.pFile = ctypes.pointer(fi)
+        wd.dwStateAction = 0         # WTD_STATEACTION_IGNORE
+        wd.dwProvFlags = 0x00000010  # WTD_CACHE_ONLY_URL_RETRIEVAL
+
+        status = int(wintrust.WinVerifyTrust(None, ctypes.byref(action_generic_verify_v2), ctypes.byref(wd)))
+        if status == 0:
+            return True, "valid Authenticode signature"
+        trust_e_nosignature = 0x800B0100
+        if status == trust_e_nosignature and not require_sig:
+            return True, "unsigned"
+        return False, f"WinVerifyTrust failed ({status:#010x})"
+    except Exception as e:
+        return (False, str(e)) if require_sig else (True, "")
+
+
+def verify_staged_exe(exe_path: str, expected_sha256: str) -> bool:
+    """Re-verify that `exe_path` is a regular file matching `expected_sha256`."""
+    exp = (expected_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", exp):
+        return False
+    if not exe_path or os.path.islink(exe_path) or not os.path.isfile(exe_path):
+        return False
+    try:
+        return paths.sha256_file(exe_path).lower() == exp
     except OSError:
-        return
-    for name in entries:
-        if not name.startswith("tincmgr-update-"):
-            continue
-        p = os.path.join(tmp, name)
+        return False
+
+
+def create_staging_dir(base_dir: str = "", elevated: bool = False) -> str:
+    """Create a protected update-staging directory (never in world/user-writable
+    %TEMP% when elevated). Uses paths.mkdir_private() so on Windows an elevated
+    staging dir gets `O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)`."""
+    candidates: list[str] = []
+    if elevated:
+        prot = paths.protected_dir()
+        if prot:
+            candidates.append(os.path.join(prot, "update-staging"))
+        if base_dir:
+            candidates.append(os.path.join(os.path.abspath(base_dir), "update-staging"))
+    else:
+        if base_dir:
+            candidates.append(os.path.join(os.path.abspath(base_dir), "update-staging"))
+        candidates.append(os.path.join(paths.local_appdata_dir(), "update-staging"))
+    last_err: OSError | None = None
+    for root in candidates:
         try:
-            if not os.path.isdir(p):
-                continue
-            newest = os.path.getmtime(p)
-            for child in os.listdir(p):
-                try:
-                    newest = max(newest, os.path.getmtime(os.path.join(p, child)))
-                except OSError:
-                    pass
-            if (now - newest) >= max_age_secs:
-                shutil.rmtree(p, ignore_errors=True)
+            paths.mkdir_private(root)
+            sub = os.path.join(root, f"tincmgr-update-{os.getpid()}-{secrets.token_hex(6)}")
+            return paths.mkdir_private(sub)
+        except OSError as e:
+            last_err = e
+    if last_err is not None:
+        raise last_err
+    raise OSError("could not create a private update-staging directory")
+
+
+def cleanup_old_workdirs(max_age_secs: float = 3600.0,
+                         extra_roots: Iterable[str] = ()) -> None:
+    """Remove leftover tincmgr-update-* staging directories from earlier updates."""
+    import shutil
+    roots = [tempfile.gettempdir()]
+    for r in extra_roots:
+        if r and r not in roots:
+            roots.append(r)
+    prot = paths.protected_dir()
+    if prot:
+        roots.append(os.path.join(prot, "update-staging"))
+    roots.append(os.path.join(paths.local_appdata_dir(), "update-staging"))
+    now = time.time()
+    for root in roots:
+        try:
+            entries = os.listdir(root)
         except OSError:
-            pass
+            continue
+        for name in entries:
+            if not name.startswith("tincmgr-update-"):
+                continue
+            p = os.path.join(root, name)
+            try:
+                if os.path.islink(p) or not os.path.isdir(p):
+                    continue
+                newest = os.path.getmtime(p)
+                for child in os.listdir(p):
+                    try:
+                        newest = max(newest, os.path.getmtime(os.path.join(p, child)))
+                    except OSError:
+                        pass
+                if (now - newest) >= max_age_secs:
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
 
 
 def marker_path(state_dir: str) -> str:

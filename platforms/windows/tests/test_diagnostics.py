@@ -3,16 +3,21 @@ anomaly detection, ActiveProber, DiagWebServer HTTP API, and DiagnosticsDialog."
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import socket
+import stat
+import sys
 import textwrap
+import urllib.error
 import urllib.request
 
 import pytest
 
 import diagnostics
 import yaml_config
+from diag_webui import DIAG_WEBUI_HTML
 from tinc_control import Edge, NetworkSnapshot, Node, TincControl, decode_status
 
 
@@ -224,36 +229,125 @@ def test_diag_web_server_http_api(tmp_path):
     prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
     srv = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
 
-    # Server is strictly OFF by default
+    # Server is strictly OFF by default, and persistent random password is generated & reused
     assert not srv.enabled
+    pwd = srv.get_password()
+    assert len(pwd) == 16
+    assert diagnostics.ensure_diag_password(str(tmp_path)) == pwd
+    assert diagnostics.load_diag_settings(str(tmp_path))["password"] == pwd
+    if sys.platform != "win32":
+        st_mode = stat.S_IMODE(os.stat(tmp_path / "diag_settings.json").st_mode)
+        assert st_mode == 0o600
 
     port = _free_port()
     ok, _ = srv.start(port)
     assert ok
     assert srv.enabled
     assert srv.port == port
+    assert diagnostics.live_diag_port(str(tmp_path)) == port
+    assert srv.get_password() == pwd
 
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    auth_hdrs = {"Content-Type": "application/json", "X-Diag-Password": pwd}
     try:
-        # 1. GET / serves the Single-Page WebUI HTML
+        # 0a. Unauthenticated GET / serves the self-contained login page, NOT the WebUI
         with opener.open(f"http://127.0.0.1:{port}/", timeout=3.0) as resp:
+            login_html = resp.read().decode("utf-8")
+            assert "login-form" in login_html
+            assert "/api/login" in login_html
+            assert "In-Tunnel" not in login_html
+
+        # 0b. Unauthenticated GET /api/overview returns 401 JSON
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            opener.open(f"http://127.0.0.1:{port}/api/overview?net=vpn1", timeout=3.0)
+        assert ei.value.code == 401
+        err_body = json.loads(ei.value.read().decode("utf-8"))
+        assert err_body["ok"] is False and err_body["auth_required"] is True
+
+        # 0c. POST /api/login rejects wrong password (401) and issues HttpOnly session cookie on right password
+        bad_login = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/login",
+            data=json.dumps({"password": "wrong-password"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei_bad:
+            opener.open(bad_login, timeout=3.0)
+        assert ei_bad.value.code == 401
+
+        good_login = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/login",
+            data=json.dumps({"password": pwd}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{port}"},
+            method="POST",
+        )
+        with opener.open(good_login, timeout=3.0) as resp:
+            set_cookie = resp.headers.get("Set-Cookie") or ""
+            assert "tinc_diag_sid=" in set_cookie
+            assert "HttpOnly" in set_cookie and "SameSite=Strict" in set_cookie
+            cookie_pair = set_cookie.split(";", 1)[0]
+
+        # 1. Cookie-authenticated GET / serves the Single-Page WebUI HTML
+        req_root = urllib.request.Request(
+            f"http://127.0.0.1:{port}/",
+            headers={"Cookie": cookie_pair},
+        )
+        with opener.open(req_root, timeout=3.0) as resp:
             html = resp.read().decode("utf-8")
             assert "tincstack" in html
             assert "In-Tunnel" in html
+            assert "logoutDiag" in html
 
-        # 2. GET /api/overview returns snapshot, nodes, series, incidents
-        with opener.open(f"http://127.0.0.1:{port}/api/overview?net=vpn1", timeout=3.0) as resp:
-            ov = json.loads(resp.read().decode("utf-8"))
-            assert ov["ok"] is True
-            assert ov["current_net"] == "vpn1"
-            assert ov["my_vpn_ip"] == "10.200.0.2"
-            assert any(n["name"] == "ruvds" and n["transport"] == "quic" for n in ov["nodes"])
+        # 1b. Cookie-authenticated POST without Origin is rejected (CSRF protection -> 403),
+        #     while POST with matching Origin succeeds, and /api/logout revokes the session!
+        csrf_req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/mark",
+            data=json.dumps({"net": "vpn1", "note": "missing origin"}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Cookie": cookie_pair},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei_csrf:
+            opener.open(csrf_req, timeout=3.0)
+        assert ei_csrf.value.code == 403
+
+        logout_req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/logout",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": cookie_pair,
+                "Origin": f"http://127.0.0.1:{port}",
+            },
+            method="POST",
+        )
+        with opener.open(logout_req, timeout=3.0) as resp:
+            assert json.loads(resp.read().decode("utf-8"))["ok"] is True
+
+        # Revoked cookie can no longer access /api/overview
+        revoked_req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/overview?net=vpn1",
+            headers={"Cookie": cookie_pair},
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei_rev:
+            opener.open(revoked_req, timeout=3.0)
+        assert ei_rev.value.code == 401
+
+        # 2. GET /api/overview with Bearer / Basic / X-Diag-Password returns snapshot, nodes, series, incidents
+        basic_tok = base64.b64encode(f"admin:{pwd}".encode("utf-8")).decode("ascii")
+        for hdr in ({"Authorization": f"Bearer {pwd}"}, {"Authorization": f"Basic {basic_tok}"}, {"X-Diag-Password": pwd}):
+            req_ov = urllib.request.Request(f"http://127.0.0.1:{port}/api/overview?net=vpn1", headers=hdr)
+            with opener.open(req_ov, timeout=3.0) as resp:
+                ov = json.loads(resp.read().decode("utf-8"))
+                assert ov["ok"] is True
+                assert ov["current_net"] == "vpn1"
+                assert ov["my_vpn_ip"] == "10.200.0.2"
+                assert any(n["name"] == "ruvds" and n["transport"] == "quic" for n in ov["nodes"])
 
         # 3. POST /api/mark records a user lag marker
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/mark",
             data=json.dumps({"net": "vpn1", "note": "Lag spike during test"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=auth_hdrs,
             method="POST",
         )
         with opener.open(req, timeout=3.0) as resp:
@@ -265,7 +359,7 @@ def test_diag_web_server_http_api(tmp_path):
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/probe",
             data=json.dumps({"net": "vpn1", "kind": "in_tunnel_ping", "dst_ip": "ruvds", "count": 2, "size": 56}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=auth_hdrs,
             method="POST",
         )
         with opener.open(req, timeout=3.0) as resp:
@@ -277,7 +371,7 @@ def test_diag_web_server_http_api(tmp_path):
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/action",
             data=json.dumps({"net": "vpn1", "action": "peer_transport", "peer": "ruvds", "transport": "obfs"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=auth_hdrs,
             method="POST",
         )
         with opener.open(req, timeout=3.0) as resp:
@@ -295,14 +389,22 @@ def test_diag_web_server_http_api(tmp_path):
             collector=col,
             kind="GUI_EXCEPTION",
         )
-        with opener.open(f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=crash", timeout=3.0) as resp:
+        req_clogs = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=crash",
+            headers={"X-Diag-Password": pwd},
+        )
+        with opener.open(req_clogs, timeout=3.0) as resp:
             clogs = json.loads(resp.read().decode("utf-8"))
             assert clogs["ok"] is True
             assert clogs["has_crashes"] is True
             assert "Simulated protocol switch exception" in clogs["text"]
             assert "RuntimeError: test crash" in clogs["text"]
 
-        with opener.open(f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=app", timeout=3.0) as resp:
+        req_alogs = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=app",
+            headers={"X-Diag-Password": pwd},
+        )
+        with opener.open(req_alogs, timeout=3.0) as resp:
             alogs = json.loads(resp.read().decode("utf-8"))
             assert alogs["ok"] is True
             assert "Test app log entry" in alogs["text"]
@@ -310,19 +412,27 @@ def test_diag_web_server_http_api(tmp_path):
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/action",
             data=json.dumps({"net": "vpn1", "action": "clear_crash_log"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=auth_hdrs,
             method="POST",
         )
         with opener.open(req, timeout=3.0) as resp:
             cres = json.loads(resp.read().decode("utf-8"))
             assert cres["ok"] is True
 
-        with opener.open(f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=crash", timeout=3.0) as resp:
+        req_clogs2 = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/logs?net=vpn1&source=crash",
+            headers={"X-Diag-Password": pwd},
+        )
+        with opener.open(req_clogs2, timeout=3.0) as resp:
             clogs2 = json.loads(resp.read().decode("utf-8"))
             assert clogs2["has_crashes"] is False
 
         # 7. GET /api/export returns full diagnostic bundle with redacted secrets
-        with opener.open(f"http://127.0.0.1:{port}/api/export?net=vpn1", timeout=3.0) as resp:
+        req_exp = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/export?net=vpn1",
+            headers={"X-Diag-Password": pwd},
+        )
+        with opener.open(req_exp, timeout=3.0) as resp:
             bundle = json.loads(resp.read().decode("utf-8"))
             assert "overview" in bundle
             assert "logs" in bundle
@@ -330,6 +440,194 @@ def test_diag_web_server_http_api(tmp_path):
     finally:
         srv.stop()
         assert not srv.enabled
+        assert diagnostics.live_diag_port(str(tmp_path)) == 0
+
+    # Password is reused across server / app restarts
+    srv2 = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
+    assert srv2.get_password() == pwd
+
+
+def test_diag_yaml_redaction_and_per_network_restore(tmp_path):
+    """WL-01: structured YAML redaction hides multi-line PEM keys/tokens while keeping
+    public tls_cert, and save_raw_yaml restores secrets per-network without mixing them."""
+    yaml_path = str(tmp_path / "tinc.yaml")
+    yaml_config.save_text(
+        yaml_path,
+        textwrap.dedent("""\
+            networks:
+              vpnA:
+                options:
+                  Name: nodeA
+                  Port: 655
+                  CloudflareToken: cf-secret-token-AAA
+                  Ed25519PrivateKey: inline-ed-priv-AAA
+                keys:
+                  ed25519_priv: |
+                    -----BEGIN ED25519 PRIVATE KEY-----
+                    SECRET_ED_LINE_AAA
+                    -----END ED25519 PRIVATE KEY-----
+                  rsa_priv: |
+                    -----BEGIN RSA PRIVATE KEY-----
+                    SECRET_RSA_LINE_AAA
+                    -----END RSA PRIVATE KEY-----
+                  tls_key: |
+                    -----BEGIN PRIVATE KEY-----
+                    SECRET_TLS_KEY_AAA
+                    -----END PRIVATE KEY-----
+                  acme_account: |
+                    -----BEGIN EC PRIVATE KEY-----
+                    SECRET_ACME_AAA
+                    -----END EC PRIVATE KEY-----
+                  tls_cert: |
+                    -----BEGIN CERTIFICATE-----
+                    PUBLIC_CERT_AAA
+                    -----END CERTIFICATE-----
+              vpnB:
+                options:
+                  Name: nodeB
+                  Port: 656
+                  CloudflareToken: cf-secret-token-BBB
+                  PrivateKey: inline-rsa-priv-BBB
+                keys:
+                  ed25519_priv: |
+                    -----BEGIN ED25519 PRIVATE KEY-----
+                    SECRET_ED_LINE_BBB
+                    -----END ED25519 PRIVATE KEY-----
+            """),
+    )
+    app_cfg = yaml_config.load(yaml_path)
+    tc = TincControl(tinc_exe="tinc", yaml_path=yaml_path, runner=lambda c, t: (0, "", ""))
+    col = diagnostics.TelemetryCollector(str(tmp_path))
+    prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
+    srv = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
+
+    cfg_view = srv.build_config("vpnA")
+    raw_redacted = cfg_view["raw_yaml"]
+    for leaked in (
+        "SECRET_ED_LINE_AAA",
+        "SECRET_RSA_LINE_AAA",
+        "SECRET_TLS_KEY_AAA",
+        "SECRET_ACME_AAA",
+        "SECRET_ED_LINE_BBB",
+        "cf-secret-token-AAA",
+        "cf-secret-token-BBB",
+        "inline-ed-priv-AAA",
+        "inline-rsa-priv-BBB",
+    ):
+        assert leaked not in raw_redacted
+        assert leaked not in json.dumps(cfg_view["options"])
+    assert "PUBLIC_CERT_AAA" in raw_redacted
+    assert cfg_view["options"]["CloudflareToken"] == "***REDACTED***"
+
+    edited_yaml = raw_redacted.replace("Port: 655", "Port: 1655")
+    ok, msg, _ = srv.default_action_handler("vpnA", "save_raw_yaml", {"raw_yaml": edited_yaml})
+    assert ok, msg
+
+    saved = yaml_config.load(yaml_path)
+    assert saved.net("vpnA").options["Port"] == 1655
+    assert saved.net("vpnA").options["CloudflareToken"] == "cf-secret-token-AAA"
+    assert saved.net("vpnB").options["CloudflareToken"] == "cf-secret-token-BBB"
+    assert "SECRET_ED_LINE_AAA" in saved.net("vpnA").keys["ed25519_priv"]
+    assert "SECRET_TLS_KEY_AAA" in saved.net("vpnA").keys["tls_key"]
+    assert "SECRET_ACME_AAA" in saved.net("vpnA").keys["acme_account"]
+    assert "SECRET_ED_LINE_BBB" in saved.net("vpnB").keys["ed25519_priv"]
+
+
+def test_diag_host_origin_and_net_traversal_guards(tmp_path):
+    """WL-04 & WL-06: DNS-rebinding Host check (including IPv6 [::1]), Origin check,
+    and strict `net` traversal validation."""
+    yaml_path = str(tmp_path / "tinc.yaml")
+    yaml_config.save_text(yaml_path, "networks:\n  vpn1:\n    options:\n      Name: book\n")
+    app_cfg = yaml_config.load(yaml_path)
+    tc = TincControl(tinc_exe="tinc", yaml_path=yaml_path, runner=lambda c, t: (0, "", ""))
+    col = diagnostics.TelemetryCollector(str(tmp_path))
+    prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
+    srv = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
+    pwd = srv.get_password()
+
+    with pytest.raises(ValueError):
+        col.record_user_mark("../traversal", "nope")
+    with pytest.raises(ValueError):
+        srv.build_logs("../traversal")
+
+    port = _free_port()
+    ok, _ = srv.start(port)
+    assert ok
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        # DNS rebinding Host rejected on GET (403)
+        req_rebind = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/overview?net=vpn1",
+            headers={"Host": f"evil.rebind.test:{port}", "X-Diag-Password": pwd},
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei_host:
+            opener.open(req_rebind, timeout=3.0)
+        assert ei_host.value.code == 403
+
+        # IPv6 bracketed Host [::1]:port is accepted (200)
+        req_v6 = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/overview?net=vpn1",
+            headers={"Host": f"[::1]:{port}", "X-Diag-Password": pwd},
+        )
+        with opener.open(req_v6, timeout=3.0) as resp:
+            assert json.loads(resp.read().decode("utf-8"))["ok"] is True
+
+        # Untrusted Origin rejected on POST (403)
+        req_bad_origin = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/mark",
+            data=json.dumps({"net": "vpn1", "note": "x"}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Diag-Password": pwd,
+                "Origin": "http://evil.example",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei_orig:
+            opener.open(req_bad_origin, timeout=3.0)
+        assert ei_orig.value.code == 403
+
+        # Traversal or unknown network name rejected with HTTP 400
+        for bad_net in ("../etc", "..", "unknown_net"):
+            req_bad_net = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/logs?net={bad_net}",
+                headers={"X-Diag-Password": pwd},
+            )
+            with pytest.raises(urllib.error.HTTPError) as ei_net:
+                opener.open(req_bad_net, timeout=3.0)
+            assert ei_net.value.code == 400
+    finally:
+        srv.stop()
+
+
+def test_diag_webui_no_inline_xss_and_probe_host_validation(tmp_path):
+    """WL-05 & WL-13: WebUI avoids inline JS string interpolations, and ActiveProber
+    rejects option-flag / whitespace injection in probe targets."""
+    for unsafe_pattern in (
+        "setPeerTransport('${",
+        "togglePeerDirect('${",
+        "editPeerHost('${",
+        "showPeerInfo('${",
+        "savePeerHost('${",
+        "deletePeerHost('${",
+        "reconnectPeer('${",
+        "toggleRoute('${",
+        "toggleFullTunnel('${",
+    ):
+        assert unsafe_pattern not in DIAG_WEBUI_HTML
+
+    for valid in ("1.1.1.1", "2001:4860:4860::8888", "[2001:db8::1]", "vpn.example.com", "my-node"):
+        assert diagnostics.is_valid_probe_host(valid), valid
+    for invalid in ("", "-w", "/t", "8.8.8.8 -t", "127.0.0.1\nx", "123.456", "bad..host"):
+        assert not diagnostics.is_valid_probe_host(invalid), invalid
+
+    yaml_path = str(tmp_path / "tinc.yaml")
+    yaml_config.save_text(yaml_path, "networks:\n  vpn1:\n    options:\n      Name: book\n")
+    app_cfg = yaml_config.load(yaml_path)
+    tc = TincControl(tinc_exe="tinc", yaml_path=yaml_path, runner=lambda c, t: (0, "", ""))
+    prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
+    assert prober.run_probe("vpn1", "out-ping", {"target": "-t"})["ok"] is False
+    assert prober.run_probe("vpn1", "out-trace", {"target": "/d"})["ok"] is False
 
 
 def test_diagnostics_dialog_qt(tmp_path):
@@ -348,6 +646,14 @@ def test_diagnostics_dialog_qt(tmp_path):
 
     port = _free_port()
     dlg = DiagnosticsDialog(None, srv, col, "vpn1", skip_confirm=True)
+    assert dlg.pass_edit.text() == srv.get_password()
+    assert len(dlg.pass_edit.text()) == 16
+    assert dlg.pass_edit.echoMode() == QtWidgets.QLineEdit.Password
+    dlg.show_pass_btn.click()
+    assert dlg.pass_edit.echoMode() == QtWidgets.QLineEdit.Normal
+    dlg.show_pass_btn.click()
+    assert dlg.pass_edit.echoMode() == QtWidgets.QLineEdit.Password
+
     dlg.port_spin.setValue(port)
     dlg.toggle_server()
     assert srv.enabled
@@ -356,3 +662,4 @@ def test_diagnostics_dialog_qt(tmp_path):
     assert dlg.inc_table.rowCount() == 1
     dlg.toggle_server()
     assert not srv.enabled
+    srv.stop(wait=True)

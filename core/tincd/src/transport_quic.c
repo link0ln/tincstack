@@ -51,6 +51,7 @@
 #include "list.h"
 #include "logger.h"
 #include "meta.h"
+#include "multipath.h"
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
@@ -153,7 +154,6 @@ typedef struct quic_session_t {
 		h3_req_fields_t *fields;        /* decoded; NULL if not (yet) */
 		bool hdr_seen, hdr_bad;
 		bool hdr_blocked;       /* HEADERS whole, waiting for the dynamic table */
-		bool respond_pending;   /* answer as soon as they are decoded */
 		uint8_t *resp;          /* HEADERS + DATA; one allocation, never moved,
 		                           kept until the session ends */
 		size_t resp_len, resp_sent;
@@ -210,7 +210,7 @@ static list_t quic_sessions = {
 static timeout_t quic_reaper;
 static uint8_t static_secret[32];       /* stateless-reset token secret */
 static bool quic_ready;
-static bool quic_batch_mode;
+static int quic_batch_depth = 0;
 
 /* QuicPort: an optional extra UDP listener (e.g. 443 for HTTP/3 plausibility).
    Default = the tinc port, i.e. the shared listen socket and no extra socket.
@@ -608,6 +608,12 @@ static void req_decoy_fetched(void *data, char *resp, size_t len) {
 	struct quic_req *q = data;
 	quic_session_t *s = q->owner;
 	q->fetch = NULL;
+
+	if(!s || s->dead || !s->conn) {
+		free(resp);
+		return;
+	}
+
 	q->resp = h3_from_http1(resp, len, true, &q->resp_len, NULL);
 	free(resp);
 
@@ -620,12 +626,7 @@ static void req_decoy_fetched(void *data, char *resp, size_t len) {
 }
 
 static void req_respond_decoy(quic_session_t *s, int i) {
-	if(s->req[i].responded) {
-		return;
-	}
-
-	if(s->req[i].hdr_blocked) {
-		s->req[i].respond_pending = true;       /* once its HEADERS decode */
+	if(s->req[i].responded || s->req[i].hdr_blocked) {
 		return;
 	}
 
@@ -1545,6 +1546,7 @@ static void quic_flush(quic_session_t *s) {
 	bool prefer_stream = false;
 	bool dgram_deferred = false;
 	bool write_more = false;
+	bool sent_any = false;
 
 	for(;;) {
 		uint8_t *buf = pkts[npkts];
@@ -1750,19 +1752,23 @@ static void quic_flush(quic_session_t *s) {
 
 		if(npkts >= QUIC_FLUSH_BATCH) {
 			quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
+			sent_any = true;
 			npkts = 0;
 		}
 	}
 
 	if(npkts > 0) {
 		quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
+		sent_any = true;
 	}
 
 	if(s->c) {
 		s->c->transport_outbuf_len = (size_t)quic_txq_unacked(&s->tx);
 	}
 
-	ngtcp2_conn_update_pkt_tx_time(s->conn, ts);
+	if(sent_any) {
+		ngtcp2_conn_update_pkt_tx_time(s->conn, ts);
+	}
 	quic_arm_timer(s);
 }
 
@@ -1833,7 +1839,11 @@ static quic_session_t *new_session(connection_t *c, int fd, size_t sock, const s
 	s->c = c;
 	s->fd = fd;
 	s->sock = sock;
-	s->local = listen_socket[sock].sa;
+	if(listen_sockets > 0 && sock < (size_t)listen_sockets) {
+		s->local = listen_socket[sock].sa;
+	} else {
+		s->local.sa.sa_family = peer->sa.sa_family;
+	}
 	s->peer = *peer;
 	s->is_server = is_server;
 	s->stream_id = -1;
@@ -2188,7 +2198,7 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 	/* A client session reads its own ephemeral socket (quic_client_read);
 	   its connection ids never arrive on a listening socket legitimately. */
 	if(!s->own_socket) {
-		if(quic_batch_mode) {
+		if(quic_batch_depth > 0) {
 			session_read_pkt(s, buf, len, &addr);
 
 			if(!s->dead) {
@@ -2208,11 +2218,13 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 }
 
 void quic_batch_begin(void) {
-	quic_batch_mode = true;
+	quic_batch_depth++;
 }
 
 void quic_batch_end(void) {
-	quic_batch_mode = false;
+	if(quic_batch_depth <= 0 || --quic_batch_depth > 0) {
+		return;
+	}
 
 	for list_each(quic_session_t, s, &quic_sessions) {
 		if(s->flush_pending && !s->dead) {
@@ -2277,6 +2289,116 @@ static char *choose_sni(connection_t *c) {
 	return addr;
 }
 
+static int open_quic_uplink_socket(const sockaddr_t *peer, int uplink_idx) {
+	int af = peer->sa.sa_family;
+	int fd = socket(af, SOCK_DGRAM, IPPROTO_UDP);
+
+	if(fd < 0) {
+		return -1;
+	}
+
+#ifdef FD_CLOEXEC
+	fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+
+#ifdef O_NONBLOCK
+	{
+		int flags = fcntl(fd, F_GETFL);
+
+		if(flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+			closesocket(fd);
+			return -1;
+		}
+	}
+#elif defined(HAVE_WINDOWS) || defined(WIN32)
+	{
+		unsigned long arg = 1;
+
+		if(ioctlsocket(fd, FIONBIO, &arg) != 0) {
+			closesocket(fd);
+			return -1;
+		}
+
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+		BOOL new_behavior = FALSE;
+		DWORD bytes_returned = 0;
+		WSAIoctl(fd, SIO_UDP_CONNRESET, &new_behavior, sizeof(new_behavior), NULL, 0, &bytes_returned, NULL, NULL);
+	}
+#endif
+
+#if defined(IPV6_V6ONLY)
+	if(af == AF_INET6) {
+		int option = 1;
+		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (void *)&option, sizeof(option));
+	}
+#endif
+
+#if defined(IP_DONTFRAG) && !defined(IP_DONTFRAGMENT)
+#define IP_DONTFRAGMENT IP_DONTFRAG
+#endif
+
+	if(myself && (myself->options & OPTION_PMTU_DISCOVERY)) {
+#if defined(IP_MTU_DISCOVER) && defined(IP_PMTUDISC_DO)
+		if(af == AF_INET) {
+			int option = IP_PMTUDISC_DO;
+			setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, (void *)&option, sizeof(option));
+		}
+#elif defined(IP_DONTFRAGMENT)
+		if(af == AF_INET) {
+			int option = 1;
+			setsockopt(fd, IPPROTO_IP, IP_DONTFRAGMENT, (void *)&option, sizeof(option));
+		}
+#endif
+#if defined(IPV6_MTU_DISCOVER) && defined(IPV6_PMTUDISC_DO)
+		if(af == AF_INET6) {
+			int option = IPV6_PMTUDISC_DO;
+			setsockopt(fd, IPPROTO_IPV6, IPV6_MTU_DISCOVER, (void *)&option, sizeof(option));
+		}
+#elif defined(IPV6_DONTFRAG)
+		if(af == AF_INET6) {
+			int option = 1;
+			setsockopt(fd, IPPROTO_IPV6, IPV6_DONTFRAG, (void *)&option, sizeof(option));
+		}
+#endif
+	}
+
+	if(!multipath_bind_socket(fd, af, uplink_idx)) {
+		closesocket(fd);
+		return -1;
+	}
+
+	bool already_bound = false;
+
+	if(uplink_idx >= 0 && uplink_idx < MAX_UPLINKS && multipath_uplinks[uplink_idx].in_use) {
+		if((af == AF_INET && multipath_uplinks[uplink_idx].have_v4) ||
+		                (af == AF_INET6 && multipath_uplinks[uplink_idx].have_v6)) {
+			already_bound = true;
+		}
+	}
+
+	if(!already_bound) {
+		sockaddr_t any = {0};
+
+		if(af == AF_INET) {
+			any.in.sin_family = AF_INET;
+			any.in.sin_addr.s_addr = INADDR_ANY;
+			any.in.sin_port = 0;
+		} else if(af == AF_INET6) {
+			any.in6.sin6_family = AF_INET6;
+			any.in6.sin6_port = 0;
+		}
+
+		if(bind(fd, &any.sa, SALEN(any.sa)) < 0) {
+			closesocket(fd);
+			return -1;
+		}
+	}
+
+	return fd;
+}
+
 bool quic_dial(connection_t *c) {
 	if(!quic_ready) {
 		return false;
@@ -2299,8 +2421,9 @@ bool quic_dial(connection_t *c) {
 	exit_configuration(tree);
 
 	int sock = pick_socket(&c->address);
+	bool has_uplink = c->uplink_idx >= 0 && c->uplink_idx < MAX_UPLINKS && multipath_uplinks[c->uplink_idx].in_use;
 
-	if(sock < 0) {
+	if(sock < 0 && !has_uplink) {
 		logger(DEBUG_CONNECTIONS, LOG_ERR, "quic: no UDP socket for the address family of %s (%s)", c->name, c->hostname);
 		return false;
 	}
@@ -2347,33 +2470,28 @@ bool quic_dial(connection_t *c) {
 	   in the source port of every packet, which no browser does
 	   (testing/fingerprint, 2026-09-23). Same local address as the listener,
 	   so BindToAddress still decides the interface. */
-	sockaddr_t local = listen_socket[sock].sa;
+	sockaddr_t local = {0};
+	int fd = -1;
 
-	if(c->uplink_idx >= 0 && c->uplink_idx < MAX_UPLINKS && multipath_uplinks[c->uplink_idx].in_use) {
-		if(peer.sa.sa_family == AF_INET && multipath_uplinks[c->uplink_idx].have_v4) {
-			local = multipath_uplinks[c->uplink_idx].local_v4;
-		} else if(peer.sa.sa_family == AF_INET6 && multipath_uplinks[c->uplink_idx].have_v6) {
-			local = multipath_uplinks[c->uplink_idx].local_v6;
+	if(c->uplink_idx >= 0) {
+		fd = open_quic_uplink_socket(&peer, c->uplink_idx);
+	} else {
+		local = listen_socket[sock].sa;
+
+		if(local.sa.sa_family == AF_INET) {
+			local.in.sin_port = 0;
+		} else if(local.sa.sa_family == AF_INET6) {
+			local.in6.sin6_port = 0;
 		}
-	}
 
-	if(local.sa.sa_family == AF_INET) {
-		local.in.sin_port = 0;
-	} else if(local.sa.sa_family == AF_INET6) {
-		local.in6.sin6_port = 0;
+		fd = setup_vpn_in_socket(&local);
 	}
-
-	int fd = setup_vpn_in_socket(&local);
 
 	if(fd < 0) {
 		logger(DEBUG_CONNECTIONS, LOG_ERR, "quic: could not open a socket to dial %s", c->name);
 		free(alpn);
 		free(sni);
 		return false;
-	}
-
-	if(c->uplink_idx >= 0) {
-		multipath_bind_socket(fd, 0, c->uplink_idx);
 	}
 
 	socklen_t locallen = sizeof(local);
@@ -2387,7 +2505,7 @@ bool quic_dial(connection_t *c) {
 	}
 
 	sockaddrunmap(&local);
-	quic_session_t *s = new_session(c, fd, (size_t)sock, &peer, false);
+	quic_session_t *s = new_session(c, fd, sock >= 0 ? (size_t)sock : 0, &peer, false);
 	s->local = local;
 	s->own_socket = true;
 	io_add(&s->own_io, quic_client_read, s, fd, IO_READ);
@@ -2480,8 +2598,9 @@ bool quic_send(connection_t *c) {
 		tx_append_data(s, c->outbuf.data + c->outbuf.offset, avail);
 		buffer_read(&c->outbuf, avail);
 		c->transport_outbuf_len = (size_t)quic_txq_unacked(&s->tx);
+		size_t outbuf_ceiling = maxoutbufsize > 0 ? (size_t)maxoutbufsize : (16U * 1024U * 1024U);
 
-		if(c->transport_outbuf_len > maxoutbufsize) {
+		if(c->transport_outbuf_len > outbuf_ceiling) {
 			logger(DEBUG_CONNECTIONS, LOG_ERR, "Output buffer overflow while sending meta data to %s (%s)", c->name, c->hostname);
 			quic_fail(s, true);
 			return false;
@@ -2505,13 +2624,17 @@ static size_t dgram_room(quic_session_t *s) {
 }
 
 bool quic_send_datagram(connection_t *c, const void *buf, size_t len, size_t *excess) {
+	if(excess) {
+		*excess = 0;
+	}
+
 	quic_session_t *s = c->transport_data;
 
 	if(!s || s->dead || !s->conn) {
 		return false;
 	}
 
-	if(s->stream_id < 0) {
+	if(s->stream_id < 0 || (!s->is_server && !s->dgram_marked)) {
 		return false;
 	}
 
@@ -2520,12 +2643,19 @@ bool quic_send_datagram(connection_t *c, const void *buf, size_t len, size_t *ex
 	size_t qlen = h3_varint_put(qsid, (uint64_t)s->stream_id / 4);
 	size_t room = dgram_room(s);
 
+	if(room == 0) {
+		return false;
+	}
+
 	if(room > QUIC_MAX_DGRAM) {
 		room = QUIC_MAX_DGRAM;
 	}
 
 	if(len + qlen > room) {
-		*excess = len + qlen - room;
+		if(excess) {
+			*excess = len + qlen - room;
+		}
+
 		return false; /* caller treats it like EMSGSIZE -> reduce_mtu */
 	}
 
@@ -2544,7 +2674,7 @@ bool quic_send_datagram(connection_t *c, const void *buf, size_t len, size_t *ex
 	s->dgram_n++;
 
 	if(!s->reading) {
-		if(quic_batch_mode) {
+		if(quic_batch_depth > 0) {
 			s->flush_pending = true;
 		} else {
 			quic_flush(s);
@@ -2876,6 +3006,7 @@ void quic_exit(void) {
 	}
 
 	quic_listens = 0;
+	quic_batch_depth = 0;
 	quic_tls_free_server_cert();
 	quic_tls_global_deinit();
 	quic_ready = false;

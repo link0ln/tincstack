@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import secrets
 import stat
 import sys
@@ -130,15 +131,32 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
-def _coerce(v: str) -> Any:
-    """'yes'/'no' -> bool, integers -> int, else the trimmed string."""
+_STR_OPTIONS = frozenset(k.lower() for k in (
+    "Name", "Interface", "WintunInterface", "WintunAddress", "InterfaceAddress",
+    "InterfaceRoute", "AddressPool", "ConnectTo", "NoDirectNodes", "BlockedNodes",
+    "HttpsSni", "QuicSni", "QuicAlpn", "CertDomain", "CloudflareToken",
+    "CloudflareApi", "AcmeContact", "AcmeDirectory", "AcmeCaFile",
+    "Device", "DeviceType", "Mode", "AddressFamily", "Broadcast", "Forwarding",
+    "SingleFlow", "MultipathMode", "MultipathInterface", "ScriptsInterpreter",
+    "ScriptsExtension", "HttpsDecoyRoot", "HttpsDecoyUpstream", "TlsCert", "TlsKey",
+    "ObfsInitMagicHeader", "ObfsTransportMagicHeader", "Proxy",
+    "Ed25519PrivateKey", "Ed25519PrivateKeyFile", "PrivateKey", "PrivateKeyFile",
+))
+_INT_RE = re.compile(r"(?:0|-?[1-9]\d*)")
+
+
+def _coerce(v: str, key: str = "") -> Any:
+    """'yes'/'no' -> bool, canonical integers -> int, else the trimmed string.
+    String-typed options stay str even when their value looks like bool/int."""
     s = v.strip()
+    if key and key.strip().lower() in _STR_OPTIONS:
+        return s
     low = s.lower()
     if low in ("yes", "true"):
         return True
     if low in ("no", "false"):
         return False
-    if s.lstrip("-").isdigit():
+    if _INT_RE.fullmatch(s):
         try:
             return int(s)
         except ValueError:
@@ -163,7 +181,7 @@ def conf_to_options(text: str) -> dict:
     opts: dict = {}
     for k in order:
         vals = multi[k]
-        opts[k] = _coerce(vals[0]) if len(vals) == 1 else [_coerce(x) for x in vals]
+        opts[k] = _coerce(vals[0], k) if len(vals) == 1 else [_coerce(x, k) for x in vals]
     return opts
 
 
@@ -372,7 +390,52 @@ def diff_documents(old: dict, new: dict, path: tuple = ()) -> dict[tuple, Any]:
     return patch
 
 
-def apply_patch(doc: dict, patch: dict[tuple, Any]) -> dict:
+_HOST_LEARNED_KV_SPECS = (
+    ("Ed25519PublicKey", re.compile(r"^[ \t]*Ed25519PublicKey[ \t]*=[ \t]*(.+?)[ \t]*$", re.IGNORECASE | re.MULTILINE)),
+    ("TlsFingerprint", re.compile(r"^[ \t]*TlsFingerprint[ \t]*=[ \t]*(.+?)[ \t]*$", re.IGNORECASE | re.MULTILINE)),
+)
+_HOST_RSA_PEM_RE = re.compile(
+    r"-----BEGIN RSA PUBLIC KEY-----.*?-----END RSA PUBLIC KEY-----",
+    re.DOTALL,
+)
+
+
+def merge_learned_host_keys(base_text: str, disk_text: str, wanted_text: str) -> str:
+    """Preserve daemon-learned host identity lines (Ed25519PublicKey,
+    TlsFingerprint, RSA PUBLIC KEY) added or updated on disk since `base_text`
+    when the user did not explicitly change that key in `wanted_text`."""
+    if not disk_text or disk_text == base_text:
+        return wanted_text
+    trailing_nl = wanted_text.endswith("\n")
+    out = wanted_text.rstrip("\n")
+    for canon, rx in _HOST_LEARNED_KV_SPECS:
+        b_m = rx.search(base_text or "")
+        d_m = rx.search(disk_text)
+        w_m = rx.search(out)
+        b_val = b_m.group(1) if b_m else None
+        d_val = d_m.group(1) if d_m else None
+        w_val = w_m.group(1) if w_m else None
+        if d_val and d_val != b_val and w_val == b_val:
+            line = f"{canon} = {d_val}"
+            if w_m:
+                out = rx.sub(lambda _m, ln=line: ln, out, count=1)
+            else:
+                out = f"{out}\n{line}" if out else line
+    b_rsa = _HOST_RSA_PEM_RE.search(base_text or "")
+    d_rsa = _HOST_RSA_PEM_RE.search(disk_text)
+    w_rsa = _HOST_RSA_PEM_RE.search(out)
+    b_pem = b_rsa.group(0).strip() if b_rsa else None
+    d_pem = d_rsa.group(0).strip() if d_rsa else None
+    w_pem = w_rsa.group(0).strip() if w_rsa else None
+    if d_pem and d_pem != b_pem and w_pem == b_pem:
+        if w_rsa:
+            out = _HOST_RSA_PEM_RE.sub(lambda _m, pem=d_pem: pem, out, count=1)
+        else:
+            out = f"{out}\n{d_pem}" if out else d_pem
+    return (out + "\n") if trailing_nl and out else out
+
+
+def apply_patch(doc: dict, patch: dict[tuple, Any], baseline: dict | None = None) -> dict:
     doc = copy.deepcopy(doc)
     for p, v in patch.items():
         node = doc
@@ -385,7 +448,17 @@ def apply_patch(doc: dict, patch: dict[tuple, Any]) -> dict:
         if v is DELETE:
             node.pop(p[-1], None)
         else:
-            node[p[-1]] = copy.deepcopy(v)
+            val = copy.deepcopy(v)
+            if (len(p) == 4 and p[0] == "networks" and p[2] == "hosts"
+                    and isinstance(val, str)):
+                disk_host = node.get(p[-1])
+                base_host = ""
+                if isinstance(baseline, dict):
+                    base_host = ((((baseline.get("networks") or {}).get(p[1]) or {})
+                                  .get("hosts") or {}).get(p[3]) or "")
+                if isinstance(disk_host, str):
+                    val = merge_learned_host_keys(str(base_host), disk_host, val)
+            node[p[-1]] = val
     return doc
 
 
@@ -464,7 +537,7 @@ def save(app: AppConfig, path: str | None = None) -> str:
         patch = diff_documents(app.baseline, wanted)
         with _file_lock(target):
             current = read_document(target)          # the daemon may have written meanwhile
-            merged = apply_patch(current, patch) if patch else current
+            merged = apply_patch(current, patch, app.baseline) if patch else current
             if patch or not os.path.exists(target):
                 atomic_write_text(target, dump_text(merged))
         # absorb what the daemon wrote so the model (and the next diff) start from

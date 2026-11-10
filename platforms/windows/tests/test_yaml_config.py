@@ -244,3 +244,68 @@ def test_save_text_validates(tmp_path):
     assert not cfg.exists()
     yc.save_text(str(cfg), "networks: {}")
     assert cfg.read_text() == "networks: {}\n"
+
+
+def test_conf_to_options_preserves_string_options_and_leading_zeros():
+    """WL-23: string-valued options and leading-zero / double-minus tokens must
+    stay `str` rather than coercing to bool or int."""
+    opts = yc.conf_to_options(textwrap.dedent("""\
+        Name = true
+        HttpsSni = no
+        CloudflareToken = 007
+        Interface = 123
+        Port = 655
+        AutoConnect = yes
+        CustomCode = 007
+        WeirdVal = --5
+    """))
+    assert opts["Name"] == "true" and isinstance(opts["Name"], str)
+    assert opts["HttpsSni"] == "no" and isinstance(opts["HttpsSni"], str)
+    assert opts["CloudflareToken"] == "007" and isinstance(opts["CloudflareToken"], str)
+    assert opts["Interface"] == "123" and isinstance(opts["Interface"], str)
+    assert opts["Port"] == 655 and isinstance(opts["Port"], int)
+    assert opts["AutoConnect"] is True
+    assert opts["CustomCode"] == "007" and isinstance(opts["CustomCode"], str)
+    assert opts["WeirdVal"] == "--5" and isinstance(opts["WeirdVal"], str)
+
+
+def test_save_preserves_daemon_learned_host_keys_on_gui_host_edit(tmp_path):
+    """WL-11: when the daemon appends Ed25519PublicKey / TlsFingerprint to a
+    host record on disk after GUI load, editing that host in the GUI must not
+    clobber the daemon-learned keys."""
+    cfg = tmp_path / "tinc.yaml"
+    cfg.write_text(textwrap.dedent("""\
+        networks:
+          demo:
+            options:
+              Name: demobook
+            hosts:
+              hubA: |
+                Address = 1.2.3.4
+                Subnet = 10.99.0.2/32
+        """))
+    app = yc.load(str(cfg))
+
+    # Daemon learns peer's Ed25519PublicKey and rotated TlsFingerprint on disk
+    cfg.write_text(textwrap.dedent("""\
+        networks:
+          demo:
+            options:
+              Name: demobook
+            hosts:
+              hubA: |
+                Address = 1.2.3.4
+                Subnet = 10.99.0.2/32
+                Ed25519PublicKey = LEARNED_ED25519_KEY
+                TlsFingerprint = LEARNED_TLS_PIN
+        """))
+
+    # User edits Address in GUI based on the older in-memory host text
+    app.net("demo").hosts["hubA"] = "Address = 5.6.7.8\nSubnet = 10.99.0.2/32"
+    yc.save(app)
+
+    reloaded = yc.load(str(cfg)).net("demo").hosts["hubA"]
+    assert "Address = 5.6.7.8" in reloaded
+    assert "Ed25519PublicKey = LEARNED_ED25519_KEY" in reloaded
+    assert "TlsFingerprint = LEARNED_TLS_PIN" in reloaded
+

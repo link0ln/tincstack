@@ -18,8 +18,38 @@ fi
 
 cd "$(dirname "$0")"
 
-# The value compose would use: the environment first, then .env.
-dotenv() { [[ ! -f .env ]] || sed -n "s/^$1=//p" .env | tail -n 1; }
+# The value compose would use: the environment first, then .env (stripping CR,
+# optional `export`, surrounding quotes, inline `#` comments, and whitespace).
+dotenv() {
+    local key=$1 line rest val=""
+    [[ -f .env ]] || return 0
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}
+        line=${line#"${line%%[![:space:]]*}"}
+        [[ -z $line || $line == \#* ]] && continue
+        if [[ $line == export[[:space:]]* ]]; then
+            line=${line#export}
+            line=${line#"${line%%[![:space:]]*}"}
+        fi
+        [[ $line == "$key"* ]] || continue
+        rest=${line#"$key"}
+        rest=${rest#"${rest%%[![:space:]]*}"}
+        [[ $rest == =* ]] || continue
+        rest=${rest#=}
+        rest=${rest#"${rest%%[![:space:]]*}"}
+        if [[ $rest == \"* ]]; then
+            rest=${rest#\"}
+            val=${rest%%\"*}
+        elif [[ $rest == \'* ]]; then
+            rest=${rest#\'}
+            val=${rest%%\'*}
+        else
+            val=${rest%%#*}
+            val=${val%"${val##*[![:space:]]}"}
+        fi
+    done < .env
+    printf '%s' "$val"
+}
 port=${PORT-$(dotenv PORT)}
 
 if [[ -z $port || $port == 0 ]]; then
@@ -29,13 +59,25 @@ if [[ -z $port || $port == 0 ]]; then
         *:compose.leaf.yml:*) ;;
         *) files=$files:compose.leaf.yml ;;
     esac
-    if [[ -f .env ]] && grep -q '^COMPOSE_FILE=' .env; then
-        grep -v '^COMPOSE_FILE=' .env > .env.tmp || true
-        printf 'COMPOSE_FILE=%s\n' "$files" >> .env.tmp
-        mv -f .env.tmp .env
+    if [[ -f .env ]]; then
+        (
+            umask 077
+            rm -f .env.tmp
+            grep -Ev '^[[:space:]]*(export[[:space:]]+)?COMPOSE_FILE[[:space:]]*=' .env > .env.tmp || true
+            chmod --reference=.env .env.tmp 2>/dev/null || chmod 0600 .env.tmp
+            if [[ -s .env.tmp && -n "$(tail -c 1 .env.tmp)" ]]; then
+                printf '\n' >> .env.tmp
+            fi
+            printf 'COMPOSE_FILE=%s\n' "$files" >> .env.tmp
+            mv -f .env.tmp .env
+        )
     else
-        [[ ! -s .env || -z $(tail -c 1 .env) ]] || echo >> .env
-        printf 'COMPOSE_FILE=%s\n' "$files" >> .env
+        (
+            umask 077
+            printf 'COMPOSE_FILE=%s\n' "$files" > .env.tmp
+            chmod 0600 .env.tmp
+            mv -f .env.tmp .env
+        )
     fi
     echo "join.sh: PORT unset, this node only dials out: no host ports published (COMPOSE_FILE=$files, kept in .env)" >&2
     if [[ -n ${COMPOSE_FILE:-} && ${COMPOSE_FILE} != "$files" ]]; then

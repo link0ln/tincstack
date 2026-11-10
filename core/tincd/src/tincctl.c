@@ -186,6 +186,7 @@ static void usage(bool status) {
 		        "  purge                      Purge unreachable nodes\n"
 		        "  debug N                    Set debug level\n"
 		        "  retry                      Retry all outgoing connections\n"
+		        "  connect NODE               Attempt to establish a meta connection with NODE\n"
 		        "  disconnect NODE            Close meta connection with NODE\n"
 #ifdef HAVE_CURSES
 		        "  top                        Show real-time statistics\n"
@@ -504,20 +505,39 @@ error:
 
 char buffer[4096];
 size_t blen = 0;
+static char rxbuf[32768];
+static size_t rxlen = 0;
+
+static void sync_legacy_buffer(void) {
+	blen = rxlen < sizeof(buffer) ? rxlen : sizeof(buffer);
+
+	if(blen) {
+		memcpy(buffer, rxbuf, blen);
+	}
+}
+
+static void reset_rx_buffer(void) {
+	rxlen = 0;
+	blen = 0;
+}
 
 bool recvline(int fd, char *line, size_t len) {
 	char *newline = NULL;
 
-	if(!fd) {
+	if(fd < 0 || !line || !len) {
 		return false;
 	}
 
-	while(!(newline = memchr(buffer, '\n', blen))) {
+	while(!(newline = memchr(rxbuf, '\n', rxlen))) {
+		if(rxlen >= sizeof(rxbuf)) {
+			return false;
+		}
+
 		if(!wait_socket_recv(fd)) {
 			return false;
 		}
 
-		ssize_t nrecv = recv(fd, buffer + blen, sizeof(buffer) - blen, 0);
+		ssize_t nrecv = recv(fd, rxbuf + rxlen, sizeof(rxbuf) - rxlen, 0);
 
 		if(nrecv == -1 && sockerrno == EINTR) {
 			continue;
@@ -525,40 +545,54 @@ bool recvline(int fd, char *line, size_t len) {
 			return false;
 		}
 
-		blen += nrecv;
+		rxlen += (size_t)nrecv;
+		sync_legacy_buffer();
 	}
 
-	if((size_t)(newline - buffer) >= len) {
+	size_t linelen = (size_t)(newline - rxbuf);
+
+	if(linelen >= len) {
 		return false;
 	}
 
-	len = newline - buffer;
-
-	memcpy(line, buffer, len);
-	line[len] = 0;
-	memmove(buffer, newline + 1, blen - len - 1);
-	blen -= len + 1;
+	memcpy(line, rxbuf, linelen);
+	line[linelen] = 0;
+	memmove(rxbuf, newline + 1, rxlen - linelen - 1);
+	rxlen -= linelen + 1;
+	sync_legacy_buffer();
 
 	return true;
 }
 
 static bool recvdata(int fd, char *data, size_t len) {
-	while(blen < len) {
-		ssize_t nrecv = recv(fd, buffer + blen, sizeof(buffer) - blen, 0);
+	if(fd < 0) {
+		return false;
+	}
+
+	size_t copied = 0;
+
+	if(rxlen > 0 && len > 0) {
+		size_t take = rxlen < len ? rxlen : len;
+		memcpy(data, rxbuf, take);
+		memmove(rxbuf, rxbuf + take, rxlen - take);
+		rxlen -= take;
+		copied = take;
+	}
+
+	while(copied < len) {
+		ssize_t nrecv = recv(fd, data + copied, len - copied, 0);
 
 		if(nrecv == -1 && sockerrno == EINTR) {
 			continue;
 		} else if(nrecv <= 0) {
+			sync_legacy_buffer();
 			return false;
 		}
 
-		blen += nrecv;
+		copied += (size_t)nrecv;
 	}
 
-	memcpy(data, buffer, len);
-	memmove(buffer, buffer + len, blen - len);
-	blen -= len;
-
+	sync_legacy_buffer();
 	return true;
 }
 
@@ -628,12 +662,12 @@ static void pcap(int fd, FILE *out, uint32_t snaplen) {
 	fwrite(&header, sizeof(header), 1, out);
 	fflush(out);
 
-	char line[32];
+	char hdr[128];
 
-	while(recvline(fd, line, sizeof(line))) {
+	while(recvline(fd, hdr, sizeof(hdr))) {
 		int code, req;
 		unsigned long len;
-		int n = sscanf(line, "%d %d %lu", &code, &req, &len);
+		int n = sscanf(hdr, "%d %d %lu", &code, &req, &len);
 		gettimeofday(&tv, NULL);
 
 		if(n != 3 || code != CONTROL || req != REQ_PCAP || len > sizeof(data)) {
@@ -657,12 +691,12 @@ static void pcap(int fd, FILE *out, uint32_t snaplen) {
 static void log_control(int fd, FILE *out, int level, bool use_color) {
 	sendline(fd, "%d %d %d %d", CONTROL, REQ_LOG, level, use_color);
 
-	char data[1024];
-	char line[32];
+	char data[16384];
+	char hdr[128];
 
-	while(recvline(fd, line, sizeof(line))) {
+	while(recvline(fd, hdr, sizeof(hdr))) {
 		int code, req, len;
-		int n = sscanf(line, "%d %d %d", &code, &req, &len);
+		int n = sscanf(hdr, "%d %d %d", &code, &req, &len);
 
 		if(n != 3 || code != CONTROL || req != REQ_LOG || len < 0 || (size_t)len > sizeof(data)) {
 			break;
@@ -690,6 +724,7 @@ static bool stop_tincd(void) {
 	}
 
 	closesocket(fd);
+	reset_rx_buffer();
 	pid = 0;
 	fd = -1;
 
@@ -753,6 +788,17 @@ exit:
 }
 #endif
 
+static void reload_configuration_control(void) {
+	if(!connect_tincd(false)) {
+		return;
+	}
+
+	if(sendline(fd, "%d %d", CONTROL, REQ_RELOAD)) {
+		char reply[256];
+		recvline(fd, reply, sizeof(reply));
+	}
+}
+
 bool connect_tincd(bool verbose) {
 	if(fd >= 0) {
 		fd_set r;
@@ -763,11 +809,14 @@ bool connect_tincd(bool verbose) {
 		if(select(fd + 1, &r, NULL, NULL, &tv)) {
 			fprintf(stderr, "Previous connection to tincd lost, reconnecting.\n");
 			closesocket(fd);
+			reset_rx_buffer();
 			fd = -1;
 		} else {
 			return true;
 		}
 	}
+
+	reset_rx_buffer();
 
 	pidfile_t *pidfile = read_pidfile();
 
@@ -1167,8 +1216,8 @@ static int dump_invitations(void) {
 
 		char *eol = buf + strlen(buf);
 
-		while(strchr("\t \r\n", *--eol)) {
-			*eol = 0;
+		while(eol > buf && (eol[-1] == '\t' || eol[-1] == ' ' || eol[-1] == '\r' || eol[-1] == '\n')) {
+			*--eol = 0;
 		}
 
 		if(strncmp(buf, "Name = ", 7) || !check_id(buf + 7)) {
@@ -1248,9 +1297,11 @@ static int cmd_dump(int argc, char *argv[]) {
 		printf("digraph {\n");
 	}
 
-	while(recvline(fd, line, sizeof(line))) {
+	char dumpline[16384];
+
+	while(recvline(fd, dumpline, sizeof(dumpline))) {
 		char node1[4096], node2[4096];
-		int n = sscanf(line, "%d %d %4095s %4095s", &code, &req, node1, node2);
+		int n = sscanf(dumpline, "%d %d %4095s %4095s", &code, &req, node1, node2);
 
 		if(n == 2) {
 			if(do_graph && req == REQ_DUMP_NODES) {
@@ -1290,10 +1341,10 @@ static int cmd_dump(int argc, char *argv[]) {
 
 		switch(req) {
 		case REQ_DUMP_NODES: {
-			int n = sscanf(line, "%*d %*d %4095s %4095s %4095s port %4095s %d %d %d %d %x %"PRIx32" %4095s %4095s %d %hd %hd %hd %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %4095s", node, id, host, port, &cipher, &digest, &maclength, &compression, &options, &status.value, nexthop, via, &distance, &pmtu, &minmtu, &maxmtu, &last_state_change, &udp_ping_rtt, &in_packets, &in_bytes, &out_packets, &out_bytes, transports);
+			int n = sscanf(dumpline, "%*d %*d %4095s %4095s %4095s port %4095s %d %d %d %d %x %"PRIx32" %4095s %4095s %d %hd %hd %hd %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %4095s", node, id, host, port, &cipher, &digest, &maclength, &compression, &options, &status.value, nexthop, via, &distance, &pmtu, &minmtu, &maxmtu, &last_state_change, &udp_ping_rtt, &in_packets, &in_bytes, &out_packets, &out_bytes, transports);
 
 			if(n < 22) {
-				fprintf(stderr, "Unable to parse node dump from tincd: %s\n", line);
+				fprintf(stderr, "Unable to parse node dump from tincd: %s\n", dumpline);
 				return 1;
 			}
 
@@ -1331,7 +1382,7 @@ static int cmd_dump(int argc, char *argv[]) {
 		break;
 
 		case REQ_DUMP_EDGES: {
-			int n = sscanf(line, "%*d %*d %4095s %4095s %4095s port %4095s %4095s port %4095s %x %d", from, to, host, port, local_host, local_port, &options, &weight);
+			int n = sscanf(dumpline, "%*d %*d %4095s %4095s %4095s port %4095s %4095s port %4095s %x %d", from, to, host, port, local_host, local_port, &options, &weight);
 
 			if(n != 8) {
 				fprintf(stderr, "Unable to parse edge dump from tincd.\n");
@@ -1353,7 +1404,7 @@ static int cmd_dump(int argc, char *argv[]) {
 		break;
 
 		case REQ_DUMP_SUBNETS: {
-			int n = sscanf(line, "%*d %*d %4095s %4095s", subnet, node);
+			int n = sscanf(dumpline, "%*d %*d %4095s %4095s", subnet, node);
 
 			if(n != 2) {
 				fprintf(stderr, "Unable to parse subnet dump from tincd.\n");
@@ -1366,7 +1417,7 @@ static int cmd_dump(int argc, char *argv[]) {
 
 		case REQ_DUMP_CONNECTIONS: {
 			char carrier[4096] = "plain";
-			int n = sscanf(line, "%*d %*d %4095s %4095s port %4095s %x %d %x %4095s", node, host, port, &options, &socket, &status.value, carrier);
+			int n = sscanf(dumpline, "%*d %*d %4095s %4095s port %4095s %x %d %x %4095s", node, host, port, &options, &socket, &status.value, carrier);
 
 			if(n < 6) {
 				fprintf(stderr, "Unable to parse connection dump from tincd.\n");
@@ -1575,6 +1626,7 @@ static int cmd_log(int argc, char *argv[]) {
 #endif
 
 	closesocket(fd);
+	reset_rx_buffer();
 	fd = -1;
 	return 0;
 }
@@ -2190,9 +2242,7 @@ static int cmd_config_script(script_action_t action, const char *name, const cha
 	}
 
 	// Silently try notifying a running tincd of changes.
-	if(connect_tincd(false)) {
-		sendline(fd, "%d %d", CONTROL, REQ_RELOAD);
-	}
+	reload_configuration_control();
 
 	return 0;
 }
@@ -2661,9 +2711,7 @@ static int cmd_config(int argc, char *argv[]) {
 		}
 
 		// Silently try notifying a running tincd of changes.
-		if(connect_tincd(false)) {
-			sendline(fd, "%d %d", CONTROL, REQ_RELOAD);
-		}
+		reload_configuration_control();
 
 		return 0;
 	}
@@ -2697,9 +2745,7 @@ static int cmd_config(int argc, char *argv[]) {
 	}
 
 	// Silently try notifying a running tincd of changes.
-	if(connect_tincd(false)) {
-		sendline(fd, "%d %d", CONTROL, REQ_RELOAD);
-	}
+	reload_configuration_control();
 
 	return 0;
 }
@@ -3221,9 +3267,7 @@ static int cmd_edit(int argc, char *argv[]) {
 	}
 
 	// Silently try notifying a running tincd of changes.
-	if(connect_tincd(false)) {
-		sendline(fd, "%d %d", CONTROL, REQ_RELOAD);
-	}
+	reload_configuration_control();
 
 	return 0;
 }
@@ -3426,6 +3470,7 @@ static int switch_network(char *name) {
 
 	if(fd >= 0) {
 		closesocket(fd);
+		reset_rx_buffer();
 		fd = -1;
 	}
 

@@ -24,6 +24,10 @@
 
 #include "system.h"
 
+#ifdef HAVE_WINDOWS
+#include <io.h>
+#endif
+
 #include "splay_tree.h"
 #include "connection.h"
 #include "conf.h"
@@ -253,8 +257,8 @@ config_t *parse_config_line(char *line, const char *fname, int lineno) {
 
 	eol = line + strlen(line);
 
-	while(strchr("\t ", *--eol)) {
-		*eol = '\0';
+	while(eol > line && (eol[-1] == ' ' || eol[-1] == '\t' || eol[-1] == '\r')) {
+		*--eol = '\0';
 	}
 
 	size_t len = strcspn(value, "\t =");
@@ -390,24 +394,26 @@ bool read_config_file(splay_tree_t *config_tree, const char *fname, bool verbose
 
 		lineno++;
 
-		if(!*line || *line == '#') {
+		char *trimmed = line + strspn(line, " \t");
+
+		if(!*trimmed || *trimmed == '#') {
 			continue;
 		}
 
 		if(ignore) {
-			if(!strncmp(line, "-----END", 8)) {
+			if(!strncmp(trimmed, "-----END", 8)) {
 				ignore = false;
 			}
 
 			continue;
 		}
 
-		if(!strncmp(line, "-----BEGIN", 10)) {
+		if(!strncmp(trimmed, "-----BEGIN", 10)) {
 			ignore = true;
 			continue;
 		}
 
-		cfg = parse_config_line(line, fname, lineno);
+		cfg = parse_config_line(trimmed, fname, lineno);
 
 		if(!cfg) {
 			break;
@@ -634,6 +640,22 @@ bool replace_config_file(const char *name, const char *key, const char *value) {
 	FILE *out = fopen(tmpname, "wb");
 	bool ok = out && fputs(updated, out) >= 0;
 
+	if(ok && fflush(out) != 0) {
+		ok = false;
+	}
+
+	if(ok) {
+#ifdef HAVE_WINDOWS
+		if(_commit(_fileno(out)) != 0) {
+			ok = false;
+		}
+#else
+		if(fsync(fileno(out)) != 0) {
+			ok = false;
+		}
+#endif
+	}
+
 	if(out && fclose(out)) {
 		ok = false;
 	}
@@ -641,18 +663,18 @@ bool replace_config_file(const char *name, const char *key, const char *value) {
 	free(updated);
 
 #ifdef HAVE_WINDOWS
-	/* rename() does not replace an existing file there. */
-	if(ok) {
-		remove(fname);
+	if(!ok || !MoveFileExA(tmpname, fname, MOVEFILE_REPLACE_EXISTING)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Cannot update %s: %s", fname, strerror(errno));
+		remove(tmpname);
+		return false;
 	}
-
-#endif
-
+#else
 	if(!ok || rename(tmpname, fname)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Cannot update %s: %s", fname, strerror(errno));
 		remove(tmpname);
 		return false;
 	}
+#endif
 
 	return true;
 }

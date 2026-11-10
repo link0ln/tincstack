@@ -87,6 +87,13 @@ tests = {
   'multipath': {
     'code': 'test_multipath.c',
   },
+  'sptps_seqno': {
+    'code': 'test_sptps_seqno.c',
+  },
+  'key_quorum': {
+    'code': 'test_key_quorum.c',
+    'mock': ['send_request', 'send_req_key'],
+  },
 }
 
 # httpc.c is compiled only with OpenSSL (it is the ACME client's transport).

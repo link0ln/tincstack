@@ -150,11 +150,13 @@ typedef struct node_t {
 	time_t last_udp_rx;                     /* timestamp of last received UDP packet or probe reply */
 	char *pending_pubkey;                   /* candidate Ed25519 pubkey (base64) awaiting mesh quorum */
 	time_t pending_pubkey_time;             /* timestamp when quorum round started */
+	char quorum_nonce[33];                  /* 32-char hex nonce binding current quorum round */
 	uint32_t quorum_asked_peers;            /* number of reachable peers queried in current round */
 	uint32_t quorum_votes_new;              /* peers confirming pending_pubkey */
 	uint32_t quorum_votes_old;              /* peers reporting a different key */
 	uint32_t quorum_direct_new;             /* direct graph neighbors of this node confirming pending_pubkey */
 	uint32_t quorum_verified_old;           /* peers with active verified edge/SPTPS under old key */
+	list_t quorum_voters;                   /* names of peers that already cast a verified vote in current round */
 	struct node_t *quorum_voted_for;        /* target node this peer last cast a quorum vote for */
 	time_t quorum_voted_at;                 /* round timestamp of that vote (deduplication) */
 	bool remote_no_direct;                  /* true if peer signaled that direct connections with it are forbidden */
@@ -186,5 +188,7 @@ extern bool node_is_blocked(const char *name);
 extern void setup_blocked_nodes(void);
 extern bool node_is_no_direct(const char *name);
 extern void setup_no_direct_nodes(void);
+extern bool dnsrefresh_active(void);
+extern size_t dnsrefresh_lookup_async(node_t *n, const char *host, const char *port, sockaddr_t *out, size_t max_out);
 
 #endif

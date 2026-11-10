@@ -41,6 +41,36 @@ static ssize_t MIN(ssize_t x, ssize_t y) {
 }
 #endif
 
+#define CONTROL_OUTBUF_CEILING (4U * 1024U * 1024U)
+#define PEER_OUTBUF_DEFAULT_CEILING (16U * 1024U * 1024U)
+
+static bool connection_outbuf_exceeded(connection_t *c, size_t add_len) {
+	size_t out_pending = c->outbuf.len > c->outbuf.offset ? c->outbuf.len - c->outbuf.offset : 0;
+	size_t queued = out_pending + c->transport_outbuf_len;
+
+	if(c->status.control) {
+		if((c->status.pcap || c->status.log) && queued + add_len > CONTROL_OUTBUF_CEILING) {
+			c->status.remove_unused = true;
+			return true;
+		}
+
+		return false;
+	}
+
+	size_t ceiling = maxoutbufsize > 0 ? (size_t)maxoutbufsize : PEER_OUTBUF_DEFAULT_CEILING;
+
+	if(ceiling < 256U * 1024U) {
+		ceiling = 256U * 1024U;
+	}
+
+	if(queued + add_len > ceiling) {
+		c->status.remove_unused = true;
+		return true;
+	}
+
+	return false;
+}
+
 bool send_meta_sptps(void *handle, uint8_t type, const void *buffer, size_t length) {
 	(void)type;
 	connection_t *c = handle;
@@ -48,6 +78,10 @@ bool send_meta_sptps(void *handle, uint8_t type, const void *buffer, size_t leng
 	if(!c) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "send_meta_sptps() called with NULL pointer!");
 		abort();
+	}
+
+	if(connection_outbuf_exceeded(c, length)) {
+		return false;
 	}
 
 	buffer_add(&c->outbuf, buffer, length);
@@ -60,6 +94,10 @@ bool send_meta(connection_t *c, const void *buffer, size_t length) {
 	if(!c) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "send_meta() called with NULL pointer!");
 		abort();
+	}
+
+	if(connection_outbuf_exceeded(c, length)) {
+		return false;
 	}
 
 	logger(DEBUG_META, LOG_DEBUG, "Sending %lu bytes of metadata to %s (%s)",
@@ -103,6 +141,10 @@ void send_meta_raw(connection_t *c, const void *buffer, size_t length) {
 	if(!c) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "send_meta() called with NULL pointer!");
 		abort();
+	}
+
+	if(connection_outbuf_exceeded(c, length)) {
+		return;
 	}
 
 	logger(DEBUG_META, LOG_DEBUG, "Sending %lu bytes of raw metadata to %s (%s)",
@@ -150,6 +192,10 @@ bool receive_meta_sptps(void *handle, uint8_t type, const void *vdata, uint16_t 
 
 		receive_tcppacket(c, data, length);
 		c->tcplen = 0;
+		return true;
+	}
+
+	if(!length) {
 		return true;
 	}
 
@@ -209,6 +255,10 @@ bool receive_meta(connection_t *c) {
 bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 	char *endp;
 
+	if(inlen <= 0) {
+		return true;
+	}
+
 	buffer_compact(&c->inbuf, MAXBUFSIZE);
 
 	if(MAXBUFSIZE <= c->inbuf.len) {
@@ -220,8 +270,9 @@ bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 	   delivering stream bytes (e.g. a heavy SPTPS_PACKET burst on https
 	   ahead of the peer's PONG in the same TCP stream), refresh the ping
 	   deadline so timeout_handler does not kill a live, actively-receiving
-	   link for head-of-line delay. */
-	if(inlen > 0 && (c->edge || c->status.active) && c->status.pinged) {
+	   link for head-of-line delay -- unless our own outbuf is wedged over
+	   its safety ceiling by a stalled peer. */
+	if(inlen > 0 && (c->edge || c->status.active) && c->status.pinged && !c->status.remove_unused) {
 		c->last_ping_time = now.tv_sec;
 	}
 
@@ -253,7 +304,7 @@ bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 			size_t len = sptps_receive_data(&c->sptps, bufp, inlen);
 
 			if(!len) {
-				if(!c->status.invitation && !c->edge && !c->status.active && c->name) {
+				if(!c->status.invitation && !c->status.no_tarpit && !c->edge && !c->status.active && c->name) {
 					node_t *n = lookup_node(c->name);
 
 					if(n && n->status.reachable) {
@@ -344,7 +395,7 @@ bool receive_meta_bytes(connection_t *c, char *bufp, ssize_t inlen) {
 				bool result = receive_request(c, request);
 
 				if(!result) {
-					if(!c->status.invitation && !c->edge && !c->status.active && c->name) {
+					if(!c->status.invitation && !c->status.no_tarpit && !c->edge && !c->status.active && c->name) {
 						node_t *peer = lookup_node(c->name);
 
 						if(peer && peer != myself && peer->status.reachable) {

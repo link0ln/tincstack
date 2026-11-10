@@ -80,6 +80,8 @@ typedef struct sptps {
 	chacha_poly1305_ctx_t *incipher;
 	chacha_poly1305_ctx_t *prev_incipher;
 	uint32_t inseqno;
+	uint64_t inseq_abs;
+	uint64_t in_key_packets;
 	uint32_t received;
 	unsigned int replaywin;
 	unsigned int farfuture;
@@ -88,6 +90,7 @@ typedef struct sptps {
 	bool outstate;
 	chacha_poly1305_ctx_t *outcipher;
 	uint32_t outseqno;
+	uint64_t out_key_packets;
 
 	ecdsa_t *mykey;
 	ecdsa_t *hiskey;

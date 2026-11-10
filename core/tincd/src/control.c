@@ -103,6 +103,63 @@ bool control_h(connection_t *c, const char *request) {
 		int result = reload_configuration();
 		return control_return(c, REQ_RELOAD, result);
 
+	case REQ_CONNECT: {
+		char name[MAX_STRING_SIZE];
+		bool found = false;
+
+		if(sscanf(request, "%*d %*d " MAX_STRING, name) != 1 || !check_id(name)) {
+			return control_return(c, REQ_CONNECT, -1);
+		}
+
+		if(!strcmp(name, myself->name) || node_is_blocked(name)) {
+			return control_return(c, REQ_CONNECT, -2);
+		}
+
+		for list_each(outgoing_t, outgoing, &outgoing_list) {
+			if(outgoing->node && !strcmp(outgoing->node->name, name)) {
+				found = true;
+				outgoing->timeout = 0;
+
+				if(outgoing->ev.cb) {
+					timeout_set(&outgoing->ev, &(struct timeval) {
+						0, 0
+					});
+				} else {
+					bool in_progress = false;
+
+					for list_each(connection_t, other, &connection_list) {
+						if(other->outgoing == outgoing) {
+							in_progress = true;
+							break;
+						}
+					}
+
+					if(!in_progress && !outgoing->node->connection) {
+						setup_outgoing_connection(outgoing, true);
+					}
+				}
+
+				break;
+			}
+		}
+
+		if(!found) {
+			outgoing_t *outgoing = xzalloc(sizeof(*outgoing));
+			node_t *n = lookup_node(name);
+
+			if(!n) {
+				n = new_node(name);
+				node_add(n);
+			}
+
+			outgoing->node = n;
+			list_insert_tail(&outgoing_list, outgoing);
+			setup_outgoing_connection(outgoing, true);
+		}
+
+		return control_ok(c, REQ_CONNECT);
+	}
+
 	case REQ_DISCONNECT: {
 		char name[MAX_STRING_SIZE];
 		bool found = false;

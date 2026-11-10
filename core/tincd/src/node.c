@@ -391,6 +391,7 @@ void setup_no_direct_nodes(void) {
 				n->mtuprobes = 0;
 				n->minmtu = 0;
 				n->maxmtu = MTU;
+				n->mtu = MTU;
 				timeout_del(&n->udp_ping_timeout);
 				changed = true;
 			}
@@ -416,6 +417,10 @@ void setup_no_direct_nodes(void) {
 	}
 }
 
+static void free_quorum_voter_str(const void *p) {
+	free((void *)p);
+}
+
 node_t *new_node(const char *name) {
 	node_t *n = xzalloc(sizeof(*n));
 
@@ -425,6 +430,7 @@ node_t *new_node(const char *name) {
 
 	init_subnet_tree(&n->subnet_tree);
 	init_edge_tree(&n->edge_tree);
+	n->quorum_voters.delete = free_quorum_voter_str;
 
 	n->mtu = MTU;
 	n->maxmtu = MTU;
@@ -443,6 +449,7 @@ void free_node(node_t *n) {
 	splay_empty_tree(&n->subnet_tree);
 	splay_empty_tree(&n->edge_tree);
 	list_empty_list(&n->connections);
+	list_empty_list(&n->quorum_voters);
 
 	sockaddrfree(&n->address);
 
@@ -617,6 +624,7 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 		n->mtuprobes = 0;
 		n->minmtu = 0;
 		n->maxmtu = MTU;
+		n->mtu = MTU;
 	}
 }
 

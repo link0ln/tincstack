@@ -386,9 +386,15 @@ class TincControl:
             snap.error = err.strip() or "tinc dump nodes failed (network running?)"
             return snap
         snap.nodes = self.parse_nodes(out)
-        _, eout, _ = self._run(net, "dump", "edges")
+        rc_e, eout, eerr = self._run(net, "dump", "edges")
+        if rc_e != 0:
+            snap.error = eerr.strip() or "tinc dump edges failed"
+            return snap
         snap.edges = self.parse_edges(eout)
-        _, sout, _ = self._run(net, "dump", "subnets")
+        rc_s, sout, serr = self._run(net, "dump", "subnets")
+        if rc_s != 0:
+            snap.error = serr.strip() or "tinc dump subnets failed"
+            return snap
         snap.subnets = self.parse_subnets(sout)
         _, cout, _ = self._run(net, "dump", "connections")
         snap.connections = self.parse_connections(cout)

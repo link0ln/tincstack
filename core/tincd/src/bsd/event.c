@@ -120,14 +120,22 @@ bool event_loop(void) {
 	while(running) {
 		struct timeval diff;
 		struct timeval *tv = timeout_execute(&diff);
+
+		if(!running) {
+			break;
+		}
+
 		struct kevent events[MAX_EVENTS_PER_LOOP];
+		struct timespec ts;
+		const struct timespec *tsp = NULL;
 
-		const struct timespec ts = {
-			.tv_sec = tv->tv_sec,
-			.tv_nsec = tv->tv_usec * 1000,
-		};
+		if(tv) {
+			ts.tv_sec = tv->tv_sec;
+			ts.tv_nsec = tv->tv_usec * 1000;
+			tsp = &ts;
+		}
 
-		int n = kevent(kq, NULL, 0, events, MAX_EVENTS_PER_LOOP, &ts);
+		int n = kevent(kq, NULL, 0, events, MAX_EVENTS_PER_LOOP, tsp);
 
 		if(n < 0) {
 			if(sockwouldblock(sockerrno)) {
@@ -157,7 +165,7 @@ bool event_loop(void) {
 				continue;
 			}
 
-			if(curgen != io_tree.generation) {
+			if(!running || curgen != io_tree.generation) {
 				break;
 			}
 		}

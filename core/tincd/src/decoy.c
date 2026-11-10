@@ -1861,23 +1861,49 @@ static size_t dechunk(uint8_t *b, size_t len) {
 	size_t in = 0, out = 0;
 
 	while(in < len) {
-		char *e;
-		unsigned long n = strtoul((char *)b + in, &e, 16);
 		const uint8_t *nl = memchr(b + in, '\n', len - in);
 
-		if(!nl || (uint8_t *)e == b + in || !n) {
+		if(!nl) {
 			break;
 		}
 
-		in = (size_t)(nl - b) + 1;
+		size_t hlen = (size_t)(nl - (b + in));
+		size_t copy_len = 0;
 
-		if(n > len - in) {
-			n = len - in;
+		while(copy_len < hlen && copy_len < 63 &&
+		      b[in + copy_len] != ';' && b[in + copy_len] != '\r' && b[in + copy_len] != '\n') {
+			copy_len++;
 		}
 
-		memmove(b + out, b + in, n);
-		out += n;
-		in += n;
+		char hdr[64];
+		memcpy(hdr, b + in, copy_len);
+		hdr[copy_len] = 0;
+
+		char *e = NULL;
+		errno = 0;
+		unsigned long sz = strtoul(hdr, &e, 16);
+
+		if(e <= hdr || errno == ERANGE || !sz) {
+			break;
+		}
+
+		while(*e == ' ' || *e == '\t') {
+			e++;
+		}
+
+		if(*e != '\0') {
+			break;
+		}
+
+		size_t pos = (size_t)(nl - b) + 1;
+
+		if(sz > len - pos) {
+			sz = len - pos;
+		}
+
+		memmove(b + out, b + pos, sz);
+		out += sz;
+		in = pos + sz;
 
 		while(in < len && (b[in] == '\r' || b[in] == '\n')) {
 			in++;
@@ -1989,13 +2015,20 @@ static bool answer_from_upstream(const decoy_request_t *r, const decoy_origin_t 
 
 	size_t blen = (size_t)(end - body);
 	a->body = xmalloc(blen + 1);
-	memcpy(a->body, body, blen);
+
+	if(blen) {
+		memcpy(a->body, body, blen);
+	}
+
+	a->body[blen] = 0;
 
 	if(chunked) {
 		blen = dechunk(a->body, blen);
 	} else if(clen >= 0 && (size_t) clen < blen) {
 		blen = (size_t) clen;
 	}
+
+	a->body[blen] = 0;
 
 	a->blen = blen;
 	a->content_length = chunked ? -1 : clen;
@@ -2343,57 +2376,7 @@ static const transport_t decoy_plain_transport = {
 	.close = plain_close,
 };
 
-static void plain_respond(plain_decoy_t *p);
-
-static void plain_write(plain_decoy_t *p) {
-	connection_t *c = p->c;
-
-	while(p->woff < p->wlen) {
-		ssize_t n = send(c->socket, p->resp + p->woff, p->wlen - p->woff, 0);
-
-		if(n > 0) {
-			p->woff += (size_t) n;
-			/* nginx's send_timeout: 60 s without progress, not 60 s in all */
-			c->last_ping_time = now.tv_sec;
-			continue;
-		}
-
-		if(n < 0 && sockwouldblock(sockerrno)) {
-			/* The client is not reading: wait for write readiness (M5-8);
-			   the web-front timeout reaps it if it never does. */
-			io_set(&c->io, IO_WRITE);
-			return;
-		}
-
-		logger(DEBUG_CONNECTIONS, LOG_INFO, "Decoy: plain-HTTP probe from %s went away mid-response", c->hostname);
-		terminate_connection(c, false);
-		return;
-	}
-
-	logger(DEBUG_CONNECTIONS, LOG_INFO, "Served the decoy to a plain-HTTP probe from %s", c->hostname);
-
-	if(!decoy_keeps_alive(p->resp, p->wlen)) {
-		terminate_connection(c, false);
-		return;
-	}
-
-	/* Keep-alive, as the response said: wait for the next request, for
-	   nginx's keepalive_timeout (the web-front reaper counts from
-	   last_ping_time with the header timeout). */
-	free(p->resp);
-	p->resp = NULL;
-	p->wlen = p->woff = 0;
-	p->rlen = decoy_next_request(p->req, p->rlen);
-	p->req[p->rlen] = 0;
-	p->state = PS_READ_REQ;
-	c->last_ping_time = now.tv_sec + DECOY_KEEPALIVE_TIMEOUT - DECOY_HEADER_TIMEOUT;
-	io_set(&c->io, IO_READ);
-
-	if(p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) {
-		plain_respond(p); /* a pipelined request is already here */
-	}
-}
-
+static void plain_pump(plain_decoy_t *p);
 
 bool decoy_keeps_alive(const char *resp, size_t len) {
 	static const char ka[] = "\r\nConnection: keep-alive\r\n";
@@ -2409,82 +2392,143 @@ bool decoy_keeps_alive(const char *resp, size_t len) {
 	return end && mem_has(resp, (size_t)(end - resp), ka, sizeof(ka) - 1);
 }
 
-static void plain_start_write(plain_decoy_t *p, char *resp, size_t len) {
+static void plain_prepare_write(plain_decoy_t *p, char *resp, size_t len) {
+	free(p->resp);
 	p->resp = resp;
 	p->wlen = len;
 	p->woff = 0;
 	p->state = PS_WRITE;
-	plain_write(p);
 }
 
 static void plain_fetched(void *data, char *resp, size_t len) {
 	plain_decoy_t *p = data;
-	p->fetch = NULL;
-	plain_start_write(p, resp, len);
-}
 
-static void plain_respond(plain_decoy_t *p) {
-	if(p->on_tls_port) {
-		size_t len = 0;
-		char *resp = respond_plain_on_tls(p->req, p->rlen, &len);
-		plain_start_write(p, resp, len);
+	if(!p || !p->c) {
+		free(resp);
 		return;
 	}
 
-	decoy_origin_t at;
-	decoy_origin_of(p->c->socket, false, &at);
-	p->state = PS_FETCHING;
-	io_set(&p->c->io, 0); /* nothing to do on the client socket meanwhile */
-	p->fetch = decoy_fetch_start(p->req, p->rlen, &at, plain_fetched, p);
-
-	if(!p->fetch) {
-		size_t len = 0;
-		char *resp = decoy_respond(p->req, p->rlen, &at, &len);
-		plain_start_write(p, resp, len);
-	}
+	p->fetch = NULL;
+	plain_prepare_write(p, resp, len);
+	plain_pump(p);
 }
 
-static void plain_read(plain_decoy_t *p) {
-	connection_t *c = p->c;
-
+/* Drive PS_READ_REQ <-> PS_WRITE iteratively so pipelined HTTP/1.1 keep-alive
+   requests on the plain-HTTP decoy front never recurse on the call stack. */
+static void plain_pump(plain_decoy_t *p) {
 	for(;;) {
-		if(p->rlen >= sizeof(p->req) - 1) {
-			break; /* head too long: answer what we have */
+		if(!p || !p->c) {
+			return;
 		}
 
-		ssize_t n = recv(c->socket, p->req + p->rlen, sizeof(p->req) - 1 - p->rlen, 0);
+		connection_t *c = p->c;
 
-		if(n > 0) {
-			p->rlen += (size_t) n;
+		if(p->state == PS_READ_REQ) {
+			bool have_req = (p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) ||
+			                (p->rlen > 0 && decoy_request_refused(p->req, p->rlen)) ||
+			                (p->rlen >= sizeof(p->req) - 1);
+
+			while(!have_req) {
+				ssize_t n = recv(c->socket, p->req + p->rlen, sizeof(p->req) - 1 - p->rlen, 0);
+
+				if(n > 0) {
+					p->rlen += (size_t) n;
+					p->req[p->rlen] = 0;
+
+					/* nginx answers a request line it cannot parse at once, without
+					   waiting for the rest of a head that will never come. */
+					if((p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) ||
+					   decoy_request_refused(p->req, p->rlen) ||
+					   p->rlen >= sizeof(p->req) - 1) {
+						have_req = true;
+					}
+
+					continue;
+				}
+
+				if(n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR)) {
+					io_set(&c->io, IO_READ);
+					return; /* wait for the rest of the head */
+				}
+
+				if(n == 0 && p->rlen) {
+					have_req = true; /* client shut its side after a headless request */
+					break;
+				}
+
+				terminate_connection(c, false);
+				return;
+			}
+
 			p->req[p->rlen] = 0;
 
-			if(p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) {
-				break;
+			if(p->on_tls_port) {
+				size_t len = 0;
+				char *resp = respond_plain_on_tls(p->req, p->rlen, &len);
+				plain_prepare_write(p, resp, len);
+			} else {
+				decoy_origin_t at;
+				decoy_origin_of(c->socket, false, &at);
+				p->state = PS_FETCHING;
+				io_set(&c->io, 0); /* nothing to do on the client socket meanwhile */
+				p->fetch = decoy_fetch_start(p->req, p->rlen, &at, plain_fetched, p);
+
+				if(p->fetch) {
+					return;
+				}
+
+				size_t len = 0;
+				char *resp = decoy_respond(p->req, p->rlen, &at, &len);
+				plain_prepare_write(p, resp, len);
+			}
+		}
+
+		if(p->state == PS_WRITE) {
+			while(p->woff < p->wlen) {
+				ssize_t n = send(c->socket, p->resp + p->woff, p->wlen - p->woff, 0);
+
+				if(n > 0) {
+					p->woff += (size_t) n;
+					/* nginx's send_timeout: 60 s without progress, not 60 s in all */
+					c->last_ping_time = now.tv_sec;
+					continue;
+				}
+
+				if(n < 0 && (sockwouldblock(sockerrno) || sockerrno == EINTR)) {
+					/* The client is not reading: wait for write readiness (M5-8);
+					   the web-front timeout reaps it if it never does. */
+					io_set(&c->io, IO_WRITE);
+					return;
+				}
+
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "Decoy: plain-HTTP probe from %s went away mid-response", c->hostname);
+				terminate_connection(c, false);
+				return;
 			}
 
-			/* nginx answers a request line it cannot parse at once, without
-			   waiting for the rest of a head that will never come. */
-			if(decoy_request_refused(p->req, p->rlen)) {
-				break;
+			logger(DEBUG_CONNECTIONS, LOG_INFO, "Served the decoy to a plain-HTTP probe from %s", c->hostname);
+
+			if(!decoy_keeps_alive(p->resp, p->wlen)) {
+				terminate_connection(c, false);
+				return;
 			}
 
+			/* Keep-alive, as the response said: wait for the next request, for
+			   nginx's keepalive_timeout (the web-front reaper counts from
+			   last_ping_time with the header timeout). */
+			free(p->resp);
+			p->resp = NULL;
+			p->wlen = p->woff = 0;
+			p->rlen = decoy_next_request(p->req, p->rlen);
+			p->req[p->rlen] = 0;
+			p->state = PS_READ_REQ;
+			c->last_ping_time = now.tv_sec + DECOY_KEEPALIVE_TIMEOUT - DECOY_HEADER_TIMEOUT;
+			io_set(&c->io, IO_READ);
 			continue;
 		}
 
-		if(n < 0 && sockwouldblock(sockerrno)) {
-			return; /* wait for the rest of the head */
-		}
-
-		if(n == 0 && p->rlen) {
-			break; /* client shut its side after a headless request */
-		}
-
-		terminate_connection(c, false);
 		return;
 	}
-
-	p->req[p->rlen] = 0;
-	plain_respond(p);
 }
 
 static void plain_io(void *data, int flags) {
@@ -2497,12 +2541,12 @@ static void plain_io(void *data, int flags) {
 
 	switch(p->state) {
 	case PS_READ_REQ:
-		plain_read(p);
+		plain_pump(p);
 		return;
 
 	case PS_WRITE:
 		if(flags & IO_WRITE) {
-			plain_write(p);
+			plain_pump(p);
 		}
 
 		return;
@@ -2526,7 +2570,7 @@ static void serve_plain(connection_t *c, bool on_tls_port) {
 	io_add(&c->io, plain_io, c, c->socket, IO_READ);
 
 	/* The peeked bytes are already in the socket: read them now. */
-	plain_read(p);
+	plain_pump(p);
 }
 
 void decoy_serve_plain(connection_t *c) {

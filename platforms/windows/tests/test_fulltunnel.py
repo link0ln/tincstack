@@ -469,3 +469,102 @@ def test_weighted_default_route_is_accepted_by_exit_ready():
     assert ok and reason == ""
 
 
+def test_remote_split_or_wide_subnets_never_suppress_endpoint_pinning():
+    """WL-03: remote peers announcing 0.0.0.0/1 + 128.0.0.0/1 (or wide prefixes
+    covering peer public IPs) must never block /32 physical gateway pinning."""
+    s = FakeSystem()
+    t = tunnel(s)
+    snap = snapshot()
+    snap.subnets.extend([
+        Subnet("0.0.0.0/1", "euvds"),
+        Subnet("128.0.0.0/1", "euvds"),
+        Subnet("80.0.0.0/8", "ruvds2"),
+    ])
+    snap.attach_subnets()
+    opts = dict(OPTIONS, InterfaceRoute="80.0.0.0/8 10.8.179.1")
+    t.step(snap, opts, HOSTS, OWN)
+    assert "80.87.200.39/32" in pinned(s)
+    assert "88.218.122.166/32" in pinned(s)
+    assert "203.0.113.50/32" in pinned(s)
+    assert t.state == "active via euvds"
+
+
+def test_second_split_route_failure_rolls_back_first_half():
+    """WL-09: if adding 128.0.0.0/1 fails after 0.0.0.0/1 succeeded, 0.0.0.0/1
+    must be deleted immediately so traffic is never half-routed."""
+    s = FakeSystem()
+    s.fail["128.0.0.0/1"] = "Access is denied."
+    t = tunnel(s)
+    t.step(snapshot(), OPTIONS, HOSTS, OWN)
+    assert t.split_if is None
+    assert s.prefixes_on(TUN) == []
+    assert t.state.startswith("not applied: adding 128.0.0.0/1")
+
+
+def test_cached_connect_to_skips_dns_while_split_active_and_bounds_timeout():
+    """WL-08: while split routes are active, cached ConnectTo hostnames are not
+    re-queried over a potentially dead tunnel, and hung DNS times out."""
+    s = FakeSystem()
+    now = [100.0]
+    t = ft.FullTunnel(
+        net="tincstack", exit_node="euvds", aliases=["tincstack"],
+        system=s, clock=lambda: now[0], resolve_timeout=0.05,
+    )
+    hosts = {"ruvds2": "Address = ruvds.example 8443\n"}
+    t.step(snapshot(), OPTIONS, hosts, OWN)
+    assert t.split_if == TUN
+    assert s.resolved == ["ruvds.example"]
+
+    # Advance past RESOLVE_TTL while split_if is active: must reuse cached IP without calling resolve()
+    now[0] += ft.RESOLVE_TTL + 10.0
+    t.step(snapshot(), OPTIONS, hosts, OWN)
+    assert s.resolved == ["ruvds.example"]
+    assert "80.87.200.39/32" in pinned(s)
+
+    # Verify _resolve_with_timeout aborts a hung resolver promptly
+    with pytest.raises(OSError, match="timed out"):
+        ft._resolve_with_timeout(lambda _h: time.sleep(1.0) or ["1.2.3.4"], "hung.example", 0.05)
+
+
+def test_ipv6_leak_guard_installed_when_system_supports_ipv6():
+    """WL-08: when System.supports_ipv6() is True and no IPv6 default route is
+    configured, ::/1 and 8000::/1 are installed on the tunnel adapter and cleaned on stop."""
+    class V6System(FakeSystem):
+        def supports_ipv6(self):
+            return True
+
+    s = V6System()
+    t = tunnel(s)
+    t.step(snapshot(), OPTIONS, HOSTS, OWN)
+    assert s.prefixes_on(TUN) == ["0.0.0.0/1", "128.0.0.0/1", "8000::/1", "::/1"]
+    t.stop()
+    assert s.prefixes_on(TUN) == []
+
+
+def test_same_ifindex_nexthop_change_and_crash_journal_cleanup(tmp_path):
+    """WL-14: changing gateway nexthop on the same interface updates /32 pins,
+    and cleanup_journal removes orphaned split routes + pins after an unclean exit."""
+    jpath = str(tmp_path / "tincstack-ft-journal.json")
+    s = FakeSystem()
+    t = ft.FullTunnel(net="tincstack", exit_node="euvds", aliases=["tincstack"],
+                      system=s, journal_path=jpath)
+    t.step(snapshot(), OPTIONS, HOSTS, OWN)
+    assert any(r.prefix == "80.87.200.39/32" and r.nexthop == "192.168.1.1" for r in s.table)
+
+    # Same ifindex PHYS (7), new router IP 192.168.1.254
+    s.table = [
+        Route("0.0.0.0/0", "192.168.1.254", PHYS, 35) if r.prefix == "0.0.0.0/0" else r
+        for r in s.table
+    ]
+    t.step(snapshot(), OPTIONS, HOSTS, OWN)
+    pin_routes = [r for r in s.table if r.prefix == "80.87.200.39/32" and r.ifindex == PHYS]
+    assert len(pin_routes) == 1 and pin_routes[0].nexthop == "192.168.1.254"
+
+    # Simulate crash recovery from journal on a new session
+    cleaned = ft.cleanup_journal(jpath, s, ["tincstack"])
+    assert cleaned
+    assert s.prefixes_on(TUN) == []
+    assert pinned(s) == []
+
+
+

@@ -137,4 +137,51 @@ class AppUpdaterTest {
     )
     AppUpdater.expectedApkSha256(rel) { sumsContent.toByteArray(Charsets.UTF_8) }
   }
+
+  @Test
+  fun findAssetsRejectsPlainHttpUrls() {
+    val httpApkJson = """
+      {
+        "tag_name": "v0.5.14",
+        "draft": false,
+        "prerelease": false,
+        "body": "",
+        "assets": [
+          {"name": "tincstack-v0.5.14.apk", "browser_download_url": "http://x/tincstack-v0.5.14.apk", "digest": "sha256:${"a".repeat(64)}"}
+        ]
+      }
+    """.trimIndent()
+    assertNull(AppUpdater.findAssets(httpApkJson))
+  }
+
+  @Test(expected = IOException::class)
+  fun expectedApkSha256RejectsMismatchBetweenSumsAndAssetDigest() {
+    val apkSha = "c".repeat(64)
+    val sumsContent = "$apkSha  tincstack-v0.5.14.apk\n"
+    val sumsSha = AppUpdater.sha256Bytes(sumsContent.toByteArray(Charsets.UTF_8))
+    val rel = AppUpdater.Release(
+      tag = "v0.5.14",
+      version = "v0.5.14",
+      apkName = "tincstack-v0.5.14.apk",
+      apkUrl = "https://x/tincstack-v0.5.14.apk",
+      sumsUrl = "https://x/SHA256SUMS",
+      apkDigest = "sha256:" + "d".repeat(64),
+      notes = "## Checksums\n\nSHA256SUMS: $sumsSha\n",
+    )
+    AppUpdater.expectedApkSha256(rel) { sumsContent.toByteArray(Charsets.UTF_8) }
+  }
+
+  @Test(expected = IOException::class)
+  fun expectedApkSha256RejectsMalformedAssetDigest() {
+    val rel = AppUpdater.Release(
+      tag = "v0.5.14",
+      version = "v0.5.14",
+      apkName = "tincstack-v0.5.14.apk",
+      apkUrl = "https://x/tincstack-v0.5.14.apk",
+      sumsUrl = "",
+      apkDigest = "sha256:not-a-valid-64-char-hex",
+      notes = "",
+    )
+    AppUpdater.expectedApkSha256(rel) { ByteArray(0) }
+  }
 }

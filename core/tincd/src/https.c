@@ -260,6 +260,8 @@ void https_close(connection_t *c) {
 		return;
 	}
 
+	s->state = HS_DYING;
+
 	if(s->ssl) {
 		/* Send close_notify before the socket goes so the peer's SSL_read()
 		   lands in the logged ZERO_RETURN path ("closed the TLS session")
@@ -788,6 +790,10 @@ bool https_send(connection_t *c) {
 static void https_flush(connection_t *c) {
 	https_session_t *s = c->transport_data;
 
+	if(!s || s->state != HS_ESTABLISHED) {
+		return;
+	}
+
 	while(c->outbuf.len > c->outbuf.offset) {
 		ERR_clear_error();
 		int n = SSL_write(s->ssl, c->outbuf.data + c->outbuf.offset, (int)(c->outbuf.len - c->outbuf.offset));
@@ -837,6 +843,10 @@ static void https_flush(connection_t *c) {
 }
 
 static void established_read(https_session_t *s) {
+	if(!s || s->state != HS_ESTABLISHED) {
+		return;
+	}
+
 	connection_t *c = s->c;
 	char buf[MAXBUFSIZE];
 
@@ -847,12 +857,17 @@ static void established_read(https_session_t *s) {
 
 		if(n > 0) {
 			if(!receive_meta_bytes(c, buf, n)) {
-				c->status.tarpit = false;
-				terminate_connection(c, c->edge);
+				if(c->transport_data == s) {
+					c->status.tarpit = false;
+					s->state = HS_DYING;
+					set_io(s, 0);
+					https_schedule_reap();
+				}
+
 				return;
 			}
 
-			if(s->state != HS_ESTABLISHED) {
+			if(c->transport_data != s || s->state != HS_ESTABLISHED) {
 				return;
 			}
 
@@ -902,7 +917,9 @@ static void established_read(https_session_t *s) {
 			logger(DEBUG_CONNECTIONS, LOG_NOTICE, "https: read from %s (%s) failed: %s; closing", c->name, c->hostname, why);
 		}
 
-		terminate_connection(c, c->edge);
+		s->state = HS_DYING;
+		set_io(s, 0);
+		https_schedule_reap();
 		return;
 	}
 }
@@ -955,124 +972,142 @@ static void drive_tls_handshake(https_session_t *s) {
 	}
 }
 
-static void server_read_request(https_session_t *s);
+static void server_pump(https_session_t *s);
 
-/* The decoy is out. Like nginx: keep the connection for the next request
-   when the response said keep-alive, else send close_notify and close
-   (measured: nginx sends the alert before its FIN; a bare FIN is not what
-   a web server does). */
-static void decoy_written(https_session_t *s) {
-	if(s->decoy_keep_alive) {
-		s->rlen = decoy_next_request(s->rbuf, s->rlen);
-		s->rbuf[s->rlen] = 0;
-		s->state = HS_SERVER_READ_REQ;
-		s->c->last_ping_time = now.tv_sec + DECOY_KEEPALIVE_TIMEOUT - DECOY_HEADER_TIMEOUT;
-		set_io(s, IO_READ);
-		server_read_request(s);        /* a pipelined request may be buffered */
-		return;
-	}
-
-	if(!SSL_in_init(s->ssl)) {
-		SSL_shutdown(s->ssl);
-	}
-	ERR_clear_error();
-	terminate_connection(s->c, false);
-}
-
-static void write_decoy(https_session_t *s, char *resp, size_t resplen) {
+static void prepare_decoy_write(https_session_t *s, char *resp, size_t resplen) {
 	set_wbuf(s, resp, resplen);
 	s->decoy_keep_alive = decoy_keeps_alive(resp, resplen);
 	free(resp);
 	s->state = HS_SERVER_WRITE_DECOY;
 	logger(DEBUG_CONNECTIONS, LOG_INFO, "https: serving the decoy to a TLS probe from %s", s->c->hostname);
-
-	int f = flush_wbuf(s);
-
-	if(f == 1) {
-		decoy_written(s);
-	} else if(f < 0) {
-		fail(s);
-	}
 }
 
 static void decoy_fetched(void *data, char *resp, size_t resplen) {
 	https_session_t *s = data;
+
+	if(!s || s->state == HS_DYING) {
+		free(resp);
+		return;
+	}
+
 	s->fetch = NULL;
-	write_decoy(s, resp, resplen);
+	prepare_decoy_write(s, resp, resplen);
+	server_pump(s);
 }
 
-static void serve_decoy(https_session_t *s) {
-	const char *req = s->rbuf ? s->rbuf : "";
+/* Drive HS_SERVER_READ_REQ <-> HS_SERVER_WRITE_DECOY iteratively so pipelined
+   HTTP/1.1 keep-alive decoy requests never recurse on the call stack. */
+static void server_pump(https_session_t *s) {
+	for(;;) {
+		if(!s || s->state == HS_DYING) {
+			return;
+		}
 
-	/* With HttpsDecoyUpstream set the fetch is asynchronous (M5-1): the loop
-	   keeps running; nothing happens on this socket until the callback. */
-	decoy_origin_t at;
-	decoy_origin_of(s->c->socket, true, &at);
-	s->state = HS_SERVER_FETCH_DECOY;
-	set_io(s, 0);
-	s->fetch = decoy_fetch_start(req, s->rlen, &at, decoy_fetched, s);
+		if(s->state == HS_SERVER_READ_REQ) {
+			int r = read_head(s);
 
-	if(s->fetch) {
+			if(r == 0) {
+				return;
+			}
+
+			if(r < 0) {
+				fail(s);
+				return;
+			}
+
+			char *name = NULL;
+
+			if(verify_client_auth(s, &name)) {
+				/* Authenticated tinc peer: answer 101 and switch to the meta stream. */
+				free(s->c->name);
+				s->c->name = name;
+
+				char accept[64];
+				build_ws_accept(s->rbuf, accept, sizeof(accept));
+
+				char resp[256];
+				int rl = snprintf(resp, sizeof(resp),
+				                  "HTTP/1.1 101 Switching Protocols\r\n"
+				                  "Upgrade: websocket\r\n"
+				                  "Connection: Upgrade\r\n"
+				                  "Sec-WebSocket-Accept: %s\r\n"
+				                  "\r\n",
+				                  accept);
+				set_wbuf(s, resp, (size_t) rl);
+				s->established_after_write = true;
+				s->state = HS_SERVER_WRITE;
+
+				logger(DEBUG_CONNECTIONS, LOG_NOTICE, "https: authenticated peer %s (%s) over TLS", s->c->name, s->c->hostname);
+
+				int f = flush_wbuf(s);
+
+				if(f == 1) {
+					become_established(s);
+				} else if(f < 0) {
+					fail(s);
+				}
+
+				return;
+			}
+
+			const char *req = s->rbuf ? s->rbuf : "";
+
+			/* With HttpsDecoyUpstream set the fetch is asynchronous (M5-1): the loop
+			   keeps running; nothing happens on this socket until the callback. */
+			decoy_origin_t at;
+			decoy_origin_of(s->c->socket, true, &at);
+			s->state = HS_SERVER_FETCH_DECOY;
+			set_io(s, 0);
+			s->fetch = decoy_fetch_start(req, s->rlen, &at, decoy_fetched, s);
+
+			if(s->fetch) {
+				return;
+			}
+
+			size_t resplen = 0;
+			char *resp = decoy_respond(req, s->rlen, &at, &resplen);
+			prepare_decoy_write(s, resp, resplen);
+		}
+
+		if(s->state == HS_SERVER_WRITE_DECOY) {
+			int f = flush_wbuf(s);
+
+			if(f == 0) {
+				return;
+			}
+
+			if(f < 0) {
+				fail(s);
+				return;
+			}
+
+			/* The decoy is out. Like nginx: keep the connection for the next request
+			   when the response said keep-alive, else send close_notify and close
+			   (measured: nginx sends the alert before its FIN; a bare FIN is not what
+			   a web server does). */
+			if(!s->decoy_keep_alive) {
+				if(!SSL_in_init(s->ssl)) {
+					SSL_shutdown(s->ssl);
+				}
+				ERR_clear_error();
+				terminate_connection(s->c, false);
+				return;
+			}
+
+			if(s->rbuf) {
+				s->rlen = decoy_next_request(s->rbuf, s->rlen);
+				s->rbuf[s->rlen] = 0;
+			} else {
+				s->rlen = 0;
+			}
+
+			s->state = HS_SERVER_READ_REQ;
+			s->c->last_ping_time = now.tv_sec + DECOY_KEEPALIVE_TIMEOUT - DECOY_HEADER_TIMEOUT;
+			set_io(s, IO_READ);
+			continue;
+		}
+
 		return;
-	}
-
-	size_t resplen = 0;
-	char *resp = decoy_respond(req, s->rlen, &at, &resplen);
-	write_decoy(s, resp, resplen);
-}
-
-static void server_handle_request(https_session_t *s);
-
-static void server_read_request(https_session_t *s) {
-	int r = read_head(s);
-
-	if(r == 0) {
-		return;
-	}
-
-	if(r < 0) {
-		fail(s);
-		return;
-	}
-
-	server_handle_request(s);
-}
-
-static void server_handle_request(https_session_t *s) {
-	char *name = NULL;
-
-	if(!verify_client_auth(s, &name)) {
-		serve_decoy(s);
-		return;
-	}
-
-	/* Authenticated tinc peer: answer 101 and switch to the meta stream. */
-	free(s->c->name);
-	s->c->name = name;
-
-	char accept[64];
-	build_ws_accept(s->rbuf, accept, sizeof(accept));
-
-	char resp[256];
-	int rl = snprintf(resp, sizeof(resp),
-	                  "HTTP/1.1 101 Switching Protocols\r\n"
-	                  "Upgrade: websocket\r\n"
-	                  "Connection: Upgrade\r\n"
-	                  "Sec-WebSocket-Accept: %s\r\n"
-	                  "\r\n",
-	                  accept);
-	set_wbuf(s, resp, (size_t) rl);
-	s->established_after_write = true;
-	s->state = HS_SERVER_WRITE;
-
-	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "https: authenticated peer %s (%s) over TLS", s->c->name, s->c->hostname);
-
-	int f = flush_wbuf(s);
-
-	if(f == 1) {
-		become_established(s);
-	} else if(f < 0) {
-		fail(s);
 	}
 }
 
@@ -1189,7 +1224,8 @@ static void https_io(void *data, int flags) {
 		return;
 
 	case HS_SERVER_READ_REQ:
-		server_read_request(s);
+	case HS_SERVER_WRITE_DECOY:
+		server_pump(s);
 		return;
 
 	case HS_SERVER_WRITE: {
@@ -1207,31 +1243,19 @@ static void https_io(void *data, int flags) {
 	case HS_SERVER_FETCH_DECOY:
 		return; /* io interest is off; the fetch callback resumes us */
 
-	case HS_SERVER_WRITE_DECOY: {
-		int f = flush_wbuf(s);
-
-		if(f == 1) {
-			decoy_written(s);
-		} else if(f < 0) {
-			fail(s);
-		}
-
-		return;
-	}
-
 	case HS_ESTABLISHED:
 		if(flags & IO_WRITE) {
 			if(s->read_wants_write) {
 				established_read(s);
 
-				if(s->state != HS_ESTABLISHED) {
+				if(c->transport_data != s || s->state != HS_ESTABLISHED) {
 					return;
 				}
 			}
 
 			https_flush(c);
 
-			if(s->state != HS_ESTABLISHED) {
+			if(c->transport_data != s || s->state != HS_ESTABLISHED) {
 				return;
 			}
 		}
@@ -1239,7 +1263,7 @@ static void https_io(void *data, int flags) {
 		if(flags & IO_READ) {
 			established_read(s);
 
-			if(s->state != HS_ESTABLISHED) {
+			if(c->transport_data != s || s->state != HS_ESTABLISHED) {
 				return;
 			}
 

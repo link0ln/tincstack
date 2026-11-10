@@ -223,6 +223,94 @@ class TincYamlTest {
     assertTrue(y.hostText("mynet", "hub")!!.contains("IndirectData = yes"))
   }
 
+  @Test
+  fun preservesBooleanNamedNodesAndSpecialYamlOptionScalars() {
+    val doc = """
+      |networks:
+      |  no:
+      |    options:
+      |      Name: no
+      |    hosts:
+      |      no: |
+      |        Subnet = 10.165.0.10/32
+      |      off: |
+      |        Subnet = 10.165.0.11/32
+      |""".trimMargin()
+    val f = yamlFile(doc)
+    val y = TincYaml(f)
+
+    assertEquals(listOf("no"), y.networkNames())
+    assertEquals("no", y.optionValue("no", "Name"))
+    assertEquals(listOf("no", "off"), y.hostNames("no"))
+    assertTrue(y.hostText("no", "no")!!.contains("10.165.0.10/32"))
+    assertTrue(y.hostText("no", "off")!!.contains("10.165.0.11/32"))
+
+    // Updating a boolean-named host and special-character options round-trips cleanly
+    y.setHostMultiVars("no", "on", mapOf("Address" to listOf("198.51.100.77")), createIfMissing = true)
+    y.setOptions(
+      "no",
+      mapOf(
+        "CommentLike" to listOf("val # not a comment", "host: port", "[brackets]", "off"),
+      ),
+    )
+    assertEquals(listOf("no", "off", "on"), y.hostNames("no"))
+    assertEquals("198.51.100.77", PeerConfig("on", y.hostText("no", "on")!!).address)
+    assertEquals(
+      listOf("val # not a comment", "host: port", "[brackets]", "off"),
+      y.optionValues("no", "CommentLike"),
+    )
+
+    y.removeHost("no", "off")
+    assertEquals(listOf("no", "on"), y.hostNames("no"))
+  }
+
+  @Test
+  fun preservesConcurrentlyLearnedTofuKeysAndCommitsBatchAtomically() {
+    val f = yamlFile(DAEMON_DOC)
+    val y = TincYaml(f)
+    y.setHostText("mynet", "peerB", "Address = 198.51.100.20\nPort = 655\n")
+
+    // User opens peerB in editor (snapshot before daemon learned TOFU keys)
+    val staleRawSnapshot = y.readRawText().replace("Port: 655", "Port: 9655")
+    val staleEditorSnapshot = "Address = 198.51.100.99\nPort = 8443\n"
+
+    // Daemon concurrently persists TOFU Ed25519PublicKey and TlsFingerprint to disk
+    y.setHostMultiVars(
+      "mynet",
+      "peerB",
+      mapOf(
+        "Ed25519PublicKey" to listOf("LEARNED_TOFU_ED_KEY"),
+        "TlsFingerprint" to listOf("sha256:abcdef0123456789"),
+      ),
+    )
+
+    // 1. User saves stale raw YAML -> learned TOFU keys must survive!
+    y.writeRawText(staleRawSnapshot)
+    assertEquals("9655", y.optionValue("mynet", "Port"))
+    assertTrue(y.hostText("mynet", "peerB")!!.contains("Ed25519PublicKey = LEARNED_TOFU_ED_KEY"))
+    assertTrue(y.hostText("mynet", "peerB")!!.contains("TlsFingerprint = sha256:abcdef0123456789"))
+
+    // 2. User saves edited host text -> learned TOFU keys must also survive!
+    y.setHostText("mynet", "peerB", staleEditorSnapshot)
+    val mergedHost = y.hostText("mynet", "peerB")!!
+    assertTrue(mergedHost.contains("Address = 198.51.100.99"))
+    assertTrue(mergedHost.contains("Port = 8443"))
+    assertTrue(mergedHost.contains("Ed25519PublicKey = LEARNED_TOFU_ED_KEY"))
+    assertTrue(mergedHost.contains("TlsFingerprint = sha256:abcdef0123456789"))
+
+    // BatchEditor rollback on exception leaves file untouched
+    val beforeFailedBatch = f.readText()
+    try {
+      y.editBatch {
+        removeHost("mynet", "peerB")
+        setOptions("mynet", mapOf("BlockedNodes" to listOf("peerB")))
+        throw IllegalStateException("simulated failure mid-batch")
+      }
+    } catch (_: IllegalStateException) {
+    }
+    assertEquals(beforeFailedBatch, f.readText())
+  }
+
   companion object {
     /** What `tincd -c tinc.yaml -n mynet` materialises from `Name: nodeA` (keys shortened). */
     val DAEMON_DOC = """

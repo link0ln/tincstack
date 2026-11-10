@@ -26,7 +26,10 @@ import java.io.FileNotFoundException
 /**
  * @author euxane
  *
- * @implNote Logs and PID files are stored in the cache directory for automatic collection.
+ * @implNote Live daemon PID files and UNIX control sockets live under
+ * `noBackupFilesDir` so Android OS cache sweeps under storage pressure never
+ * delete active control sockets while the VPN is running; logs and disposable
+ * update staging stay in `cacheDir`.
  *
  * Layout of a network `<net>` (one directory per network under `networks/`):
  *
@@ -52,9 +55,10 @@ object AppPaths {
 
   private fun privateCacheDir() = context.cacheDir!!
   private fun privateFilesDir() = context.filesDir
+  private fun privateNoBackupDir() = context.noBackupFilesDir ?: File(privateFilesDir(), "nobackup")
   private fun binDir() = File(context.applicationInfo.nativeLibraryDir)
 
-  fun runtimeDir() = withDir(File(privateCacheDir(), APP_TINC_RUNTIME_DIR))
+  fun runtimeDir() = withDir(File(privateNoBackupDir(), APP_TINC_RUNTIME_DIR))
   fun logsDir() = withDir(File(privateCacheDir(), APP_LOGS_DIR))
   fun updatesDir() = withDir(File(privateCacheDir(), APP_UPDATES_DIR))
   fun confDir() = withDir(File(privateFilesDir(), APP_TINC_NETWORKS_DIR))

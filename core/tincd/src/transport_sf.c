@@ -51,10 +51,13 @@
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "multipath.h"
 #include "obfs.h"
 
 #define SF_CID_LEN 8
 #define SF_WINDOW 32            /* segments in flight */
+#define SF_MSS ((uint32_t)SF_MAX_PAYLOAD)
+#define SF_MAX_CWND ((uint32_t)(SF_WINDOW * 2 * SF_MAX_PAYLOAD))
 #define SF_RTO_INITIAL_MS 500
 #define SF_RTO_MAX_MS 4000
 #define SF_SYN_RETRIES 3        /* dial: 0.5 + 1 + 2 s before falling back to the next carrier */
@@ -95,6 +98,7 @@ typedef struct sf_session_t {
 	uint8_t cid[SF_CID_LEN];
 	sockaddr_t peer;
 	size_t sock;            /* index into listen_socket[] whose UDP socket carries this flow */
+	int rx_fd;              /* inbound/uplink UDP fd when outside listen_socket[] */
 	obfs_link_t *obfs;      /* non-NULL: every frame of this flow is sealed by the obfs carrier */
 	bool initiator;
 	bool established;       /* the peer has acknowledged something (or, as acceptor, sent the SYN) */
@@ -106,6 +110,8 @@ typedef struct sf_session_t {
 	uint32_t snd_nxt;       /* next stream offset to send */
 	uint32_t rcv_nxt;       /* next stream offset expected from the peer */
 	uint32_t recover_seq;   /* snd_nxt when loss recovery started */
+	uint32_t cwnd;          /* congestion window in bytes */
+	uint32_t ssthresh;      /* slow-start threshold in bytes */
 
 	list_t inflight;        /* sf_segment_t, oldest first */
 	list_t ooo;             /* out-of-order received sf_segment_t, sorted by seq */
@@ -145,11 +151,27 @@ static uint32_t get32(const uint8_t *p) {
 	return ntohl(v);
 }
 
+static size_t sf_resolve_sock(const listen_socket_t *ls, const sockaddr_t *addr) {
+	if(listen_sockets > 0 && ls >= listen_socket && ls < listen_socket + listen_sockets) {
+		return (size_t)(ls - listen_socket);
+	}
+
+	if(addr) {
+		for(int i = 0; i < listen_sockets; i++) {
+			if(listen_socket[i].sa.sa.sa_family == addr->sa.sa_family) {
+				return (size_t)i;
+			}
+		}
+	}
+
+	return 0;
+}
+
 /* Returns false ONLY when the datagram could not be put on the wire because it
    does not fit the path (EMSGSIZE). Every other outcome -- sent, would block,
    any other socket error -- is true, so the caller only reacts to the one case
    retransmission can never fix. */
-static sf_send_t sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init) {
+static sf_send_t sf_send_raw(int uplink_idx, int rx_fd, size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init) {
 	uint8_t frame[SF_HDR_LEN + SF_MAX_PAYLOAD];
 
 	memcpy(frame, sf_magic, SF_MAGIC_LEN);
@@ -182,10 +204,31 @@ static sf_send_t sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t 
 		outlen = slen;
 	}
 
-	int send_fd = obfs ? obfs_pick_socket(peer) : -1;
+	int send_fd = -1;
+
+	if(uplink_idx >= 0) {
+		int ufd = multipath_get_udp_fd(uplink_idx, peer->sa.sa_family, -1);
+
+		if(ufd >= 0) {
+			send_fd = ufd;
+		}
+	}
+
+	if(send_fd < 0 && obfs) {
+		send_fd = obfs_pick_socket(peer);
+	}
+
+	if(send_fd < 0 && rx_fd >= 0 && multipath_owns_udp_fd(rx_fd)) {
+		send_fd = rx_fd;
+	}
+
+	if(send_fd < 0 && listen_sockets > 0) {
+		size_t idx = sock < (size_t)listen_sockets ? sock : 0;
+		send_fd = listen_socket[idx].udp.fd;
+	}
 
 	if(send_fd < 0) {
-		send_fd = listen_socket[sock].udp.fd;
+		return SF_SEND_UNREACHABLE;
 	}
 
 	if(sendto(send_fd, (void *)out, outlen, 0, &peer->sa, SALEN(peer->sa)) < 0 && !sockwouldblock(sockerrno)) {
@@ -213,7 +256,8 @@ static sf_send_t sf_send_raw(size_t sock, const sockaddr_t *peer, const uint8_t 
 static void sf_schedule_reap(void);
 
 static void sf_send_frame(sf_session_t *s, uint8_t type, uint8_t flags, uint32_t seq, const void *payload, size_t len) {
-	sf_send_t r = sf_send_raw(s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established);
+	int up_idx = s->c ? s->c->uplink_idx : -1;
+	sf_send_t r = sf_send_raw(up_idx, s->rx_fd, s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established);
 
 	/* A refusal is evidence about the path and is remembered; anything the
 	   kernel accepted clears it, so only an unbroken run of refusals counts
@@ -323,6 +367,11 @@ static void sf_rto_handler(void *data) {
 		return;
 	}
 
+	uint32_t flight = s->snd_nxt - s->snd_una;
+	uint32_t half = flight / 2;
+	s->ssthresh = half > 2 * SF_MSS ? half : 2 * SF_MSS;
+	s->cwnd = 2 * SF_MSS;
+	s->dupacks = 0;
 	s->retries++;
 	s->in_recovery = true;
 	s->recover_seq = s->snd_nxt;
@@ -406,7 +455,8 @@ bool sf_send(connection_t *c) {
 		return false;
 	}
 
-	while(c->outbuf.len > c->outbuf.offset && s->inflight.count < SF_WINDOW && !s->dead) {
+	while(c->outbuf.len > c->outbuf.offset && s->inflight.count < SF_WINDOW &&
+	                (s->inflight.count == 0 || (uint32_t)(s->snd_nxt - s->snd_una) < s->cwnd) && !s->dead) {
 		uint32_t limit = sf_payload_limit(s);
 		uint32_t avail = c->outbuf.len - c->outbuf.offset;
 		uint32_t n = avail < limit ? avail : limit;
@@ -441,7 +491,7 @@ bool sf_send(connection_t *c) {
 	return true;
 }
 
-static void sf_process_ack(sf_session_t *s, uint32_t ack) {
+static void sf_process_ack(sf_session_t *s, uint32_t ack, bool is_pure_ack) {
 	int32_t adv = (int32_t)(ack - s->snd_una);
 
 	if(adv > 0 && (int32_t)(ack - s->snd_nxt) <= 0) {
@@ -451,7 +501,6 @@ static void sf_process_ack(sf_session_t *s, uint32_t ack) {
 		}
 		s->established = true;
 		s->retries = 0;
-		s->dupacks = 0;
 		s->rto_ms = SF_RTO_INITIAL_MS;
 		s->hard_errors = 0;   /* the peer answered: whatever the kernel said, this path works */
 
@@ -472,10 +521,32 @@ static void sf_process_ack(sf_session_t *s, uint32_t ack) {
 		if(s->in_recovery) {
 			if(!s->inflight.count || (int32_t)(ack - s->recover_seq) >= 0) {
 				s->in_recovery = false;
+				s->dupacks = 0;
+				s->cwnd = s->ssthresh;
 			} else {
 				/* NewReno partial ACK: another segment in the recovery window
-				   was lost too; retransmit the new head immediately. */
+				   was lost too; deflate cwnd (+ 1 MSS) and retransmit the new head once. */
+				uint32_t acked = (uint32_t)adv;
+				s->cwnd = (s->cwnd > acked ? s->cwnd - acked : 0) + SF_MSS;
+				if(s->cwnd < SF_MSS) {
+					s->cwnd = SF_MSS;
+				}
 				sf_retransmit_head(s);
+			}
+		} else {
+			s->dupacks = 0;
+			uint32_t acked = (uint32_t)adv;
+
+			if(s->cwnd < s->ssthresh) {
+				uint32_t grow = acked < SF_MSS ? acked : SF_MSS;
+				s->cwnd += grow;
+			} else {
+				uint32_t inc = (SF_MSS * acked) / (s->cwnd ? s->cwnd : SF_MSS);
+				s->cwnd += inc ? inc : 1;
+			}
+
+			if(s->cwnd > SF_WINDOW * SF_MSS) {
+				s->cwnd = SF_WINDOW * SF_MSS;
 			}
 		}
 
@@ -486,14 +557,47 @@ static void sf_process_ack(sf_session_t *s, uint32_t ack) {
 		}
 
 		/* The window opened: push whatever is still queued. */
-		sf_send(s->c);
-	} else if(adv == 0 && s->inflight.count) {
-		if(++s->dupacks >= 3) {
-			s->dupacks = 0;
-			s->in_recovery = true;
-			s->recover_seq = s->snd_nxt;
-			logger(DEBUG_TRAFFIC, LOG_DEBUG, "Single-flow fast retransmit to %s (%s)", s->c->name, s->c->hostname);
-			sf_retransmit_head(s);
+		if(!s->dead && s->c) {
+			sf_send(s->c);
+		}
+	} else if(is_pure_ack && adv == 0 && s->inflight.count > 0) {
+		s->dupacks++;
+
+		if(!s->in_recovery) {
+			if(s->dupacks == 3) {
+				uint32_t flight = s->snd_nxt - s->snd_una;
+				uint32_t half = (s->cwnd < flight ? s->cwnd : flight) / 2;
+
+				if(half < 2 * SF_MSS) {
+					half = 2 * SF_MSS;
+				}
+
+				s->ssthresh = half;
+				s->in_recovery = true;
+				s->recover_seq = s->snd_nxt;
+				s->cwnd = s->ssthresh + 3 * SF_MSS;
+
+				if(s->cwnd > SF_MAX_CWND) {
+					s->cwnd = SF_MAX_CWND;
+				}
+
+				logger(DEBUG_TRAFFIC, LOG_DEBUG, "Single-flow fast retransmit to %s (%s)", s->c->name, s->c->hostname);
+				sf_retransmit_head(s);
+
+				if(!s->dead && s->c) {
+					sf_send(s->c);
+				}
+			}
+		} else {
+			if(s->cwnd + SF_MSS <= SF_MAX_CWND) {
+				s->cwnd += SF_MSS;
+			} else {
+				s->cwnd = SF_MAX_CWND;
+			}
+
+			if(!s->dead && s->c) {
+				sf_send(s->c);
+			}
 		}
 	}
 }
@@ -514,9 +618,12 @@ static sf_session_t *new_session(connection_t *c, size_t sock, const sockaddr_t 
 	sf_session_t *s = xzalloc(sizeof(*s));
 	s->c = c;
 	s->sock = sock;
+	s->rx_fd = -1;
 	s->peer = *peer;
 	s->initiator = initiator;
 	s->rto_ms = SF_RTO_INITIAL_MS;
+	s->cwnd = 10 * SF_MSS;
+	s->ssthresh = SF_WINDOW * SF_MSS;
 	s->inflight.delete = (list_action_t)free;
 	s->ooo.delete = (list_action_t)free;
 	c->transport_data = s;
@@ -527,13 +634,16 @@ static sf_session_t *new_session(connection_t *c, size_t sock, const sockaddr_t 
 
 static bool sf_dial_generic(connection_t *c, obfs_link_t *obfs) {
 	int sock = sf_pick_socket(&c->address);
+	int ufd = (c->uplink_idx >= 0) ? multipath_get_udp_fd(c->uplink_idx, c->address.sa.sa_family, -1) : -1;
+	int ofd = (ufd < 0 && obfs) ? obfs_pick_socket(&c->address) : -1;
 
-	if(sock < 0) {
+	if(sock < 0 && ufd < 0 && ofd < 0) {
 		logger(DEBUG_CONNECTIONS, LOG_ERR, "No UDP socket with the address family of %s (%s) for a single-flow dial", c->name, c->hostname);
 		return false;
 	}
 
-	sf_session_t *s = new_session(c, (size_t)sock, &c->address, true);
+	sf_session_t *s = new_session(c, sock >= 0 ? (size_t)sock : 0, &c->address, true);
+	s->rx_fd = ufd >= 0 ? ufd : ofd;
 	s->obfs = obfs;
 	randomize(s->cid, SF_CID_LEN);
 
@@ -587,7 +697,9 @@ static sf_session_t *sf_accept(listen_socket_t *ls, const uint8_t *cid, const so
 	c->transport = transport_get(obfs ? TRANSPORT_OBFS : TRANSPORT_SF);
 	c->allow_request = ID;
 
-	sf_session_t *s = new_session(c, (size_t)(ls - listen_socket), addr, false);
+	size_t sock_idx = sf_resolve_sock(ls, addr);
+	sf_session_t *s = new_session(c, sock_idx, addr, false);
+	s->rx_fd = ls ? ls->udp.fd : -1;
 	memcpy(s->cid, cid, SF_CID_LEN);
 	s->obfs = obfs;
 	s->established = true;
@@ -597,7 +709,7 @@ static sf_session_t *sf_accept(listen_socket_t *ls, const uint8_t *cid, const so
 	if(obfs) {
 		/* Answer with junk of our own around the handshake, then continue
 		   over the obfs-sealed flow. */
-		obfs_send_junk((size_t)(ls - listen_socket), addr);
+		obfs_send_junk(sock_idx, addr);
 	}
 
 	logger(DEBUG_CONNECTIONS, LOG_NOTICE, "Connection from %s (%s UDP)", c->hostname, obfs ? "obfuscated single-flow" : "single-flow");
@@ -628,9 +740,23 @@ bool sf_local_address(connection_t *c, sockaddr_t *sa) {
 		return false;
 	}
 
-	int fd = s->obfs ? obfs_pick_socket(&s->peer) : -1;
+	int fd = (c->uplink_idx >= 0) ? multipath_get_udp_fd(c->uplink_idx, s->peer.sa.sa_family, -1) : -1;
+
+	if(fd < 0 && s->obfs) {
+		fd = obfs_pick_socket(&s->peer);
+	}
+
+	if(fd < 0 && s->rx_fd >= 0 && multipath_owns_udp_fd(s->rx_fd)) {
+		fd = s->rx_fd;
+	}
+
+	if(fd < 0 && listen_sockets > 0) {
+		size_t idx = s->sock < (size_t)listen_sockets ? s->sock : 0;
+		fd = listen_socket[idx].udp.fd;
+	}
+
 	if(fd < 0) {
-		fd = listen_socket[s->sock].udp.fd;
+		return false;
 	}
 
 	socklen_t salen = sizeof(*sa);
@@ -796,7 +922,7 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 
 			if(type != SF_TYPE_RESET && now.tv_sec != last_reset) {
 				last_reset = now.tv_sec;
-				sf_send_raw(ls - listen_socket, &addr, cid, SF_TYPE_RESET, 0, 0, 0, NULL, 0, obfs, true);
+				sf_send_raw(-1, ls ? ls->udp.fd : -1, sf_resolve_sock(ls, &addr), &addr, cid, SF_TYPE_RESET, 0, 0, 0, NULL, 0, obfs, true);
 			}
 
 			return;
@@ -807,7 +933,8 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 			   obfs_accept(); accept NAT source-port rebinding or roaming
 			   without dropping the session. */
 			s->peer = addr;
-			s->sock = (size_t)(ls - listen_socket);
+			s->sock = sf_resolve_sock(ls, &addr);
+			s->rx_fd = ls ? ls->udp.fd : -1;
 
 			if(s->c) {
 				s->c->address = addr;
@@ -841,7 +968,7 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 
 	switch(type) {
 	case SF_TYPE_DATA: {
-		sf_process_ack(s, ack);
+		sf_process_ack(s, ack, false);
 
 		if(s->dead) {
 			return;
@@ -875,7 +1002,7 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 	}
 
 	case SF_TYPE_ACK:
-		sf_process_ack(s, ack);
+		sf_process_ack(s, ack, plen == 0);
 		return;
 
 	case SF_TYPE_CLOSE:

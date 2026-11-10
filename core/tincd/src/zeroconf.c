@@ -126,7 +126,7 @@ bool zeroconf_pool_parse(const char *pool, uint32_t *network, int *prefix) {
 		return false;
 	}
 
-	uint32_t addr = (a << 24) | (b << 16) | (c << 8) | d;
+	uint32_t addr = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | (uint32_t)d;
 	uint32_t mask = 0xffffffffu << (32 - bits);
 	*network = addr & mask;
 	*prefix = (int)bits;
@@ -186,15 +186,26 @@ static bool zeroconf_pool_next_free_host(yamlconf_t *yc, const char *net, const 
 						v++;
 					}
 
-					unsigned int a, b, c, d;
+					unsigned int a, b, c, d, bits = 32;
+					int parsed = sscanf(v, "%u.%u.%u.%u/%u", &a, &b, &c, &d, &bits);
 
-					if(sscanf(v, "%u.%u.%u.%u", &a, &b, &c, &d) == 4 &&
-					   a <= 255 && b <= 255 && c <= 255 && d <= 255) {
-						uint32_t ip = (a << 24) | (b << 16) | (c << 8) | d;
+					if(parsed >= 4 &&
+					   a <= 255 && b <= 255 && c <= 255 && d <= 255 &&
+					   (parsed == 4 || bits <= 32)) {
+						uint32_t ip = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | (uint32_t)d;
 
-						if(ip == cand) {
-							taken = true;
-							break;
+						if(bits == 32) {
+							if(ip == cand) {
+								taken = true;
+								break;
+							}
+						} else if(bits >= 24 || (bits >= 20 && bits >= (unsigned int)prefix)) {
+							uint32_t smask = 0xffffffffu << (32 - bits);
+
+							if((cand & smask) == (ip & smask)) {
+								taken = true;
+								break;
+							}
 						}
 					}
 				}
@@ -458,6 +469,25 @@ static size_t managed_count;
 /* Side files already reported (see known_scripts). */
 static char **noted_scripts;
 static size_t noted_count;
+static bool zeroconf_atexit_registered;
+
+static void zeroconf_atexit_cleanup(void) {
+	for(size_t i = 0; i < managed_count; i++) {
+		free(managed_scripts[i]);
+	}
+
+	free(managed_scripts);
+	managed_scripts = NULL;
+	managed_count = 0;
+
+	for(size_t i = 0; i < noted_count; i++) {
+		free(noted_scripts[i]);
+	}
+
+	free(noted_scripts);
+	noted_scripts = NULL;
+	noted_count = 0;
+}
 
 static bool in_list(char **list, size_t n, const char *name) {
 	for(size_t i = 0; i < n; i++) {
@@ -472,6 +502,11 @@ static bool in_list(char **list, size_t n, const char *name) {
 static void list_add(char ***list, size_t *n, const char *name) {
 	if(in_list(*list, *n, name)) {
 		return;
+	}
+
+	if(!zeroconf_atexit_registered) {
+		atexit(zeroconf_atexit_cleanup);
+		zeroconf_atexit_registered = true;
 	}
 
 	*list = xrealloc(*list, (*n + 1) * sizeof(**list));
@@ -798,17 +833,29 @@ static bool zeroconf_materialise_locked(bool reread) {
 	/* --- scalar defaults --- */
 	/* Port: a founding node (nothing to ConnectTo) is the rendezvous for its
 	   invitees, so it keeps tinc's standard port; a node that dials out gets
-	   an ephemeral port (fresh NAT mapping per start). */
+	   an ephemeral port (fresh NAT mapping per start). Respect an existing
+	   list-valued option or a Port line already present in hosts.<name>. */
+	char *existing_host = yamlconf_host_text(yc, netname, name);
+	bool host_has_port = host_text_has(existing_host, "Port", NULL);
+	free(existing_host);
+
 	const char *port_default = yamlconf_has_option(yc, netname, "ConnectTo") ? "0" : "655";
 	const struct {
 		const char *key, *value;
+		bool skip;
 	} defaults[] = {
-		{"Mode", "router"},
-		{"Port", port_default},
+		{"Mode", "router", false},
+		{"Port", port_default, host_has_port},
 	};
 
 	for(size_t i = 0; i < sizeof(defaults) / sizeof(*defaults); i++) {
-		if(!yamlconf_get_option(yc, netname, defaults[i].key)) {
+		if(defaults[i].skip) {
+			continue;
+		}
+
+		const char *cur = yamlconf_get_option(yc, netname, defaults[i].key);
+
+		if(!yamlconf_has_option(yc, netname, defaults[i].key) || (cur && !*cur)) {
 			yamlconf_set_option(yc, netname, defaults[i].key, defaults[i].value);
 			changed = true;
 			NOTE("%s=%s ", defaults[i].key, defaults[i].value);
@@ -941,6 +988,7 @@ static bool zeroconf_materialise_locked(bool reread) {
 		}
 
 		yamlconf_set_key_pem(yc, netname, "ed25519_priv", pem);
+		memzero(pem, strlen(pem));
 		free(pem);
 		changed = true;
 		NOTE("ed25519_priv ");
@@ -1014,6 +1062,7 @@ static bool zeroconf_materialise_locked(bool reread) {
 
 			if(pem) {
 				yamlconf_set_key_pem(yc, netname, "rsa_priv", pem);
+				memzero(pem, strlen(pem));
 				free(pem);
 				changed = true;
 				NOTE("rsa_priv ");

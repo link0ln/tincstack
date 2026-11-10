@@ -58,6 +58,21 @@ object Tincd {
       .withOption("option", "Device=@$device")
     val process = Executor.run(cmd)
     activeProcess = process
+    try {
+      process.outputStream.close()
+    } catch (_: Exception) {
+    }
+    Executor.runAsyncTask {
+      try {
+        process.inputStream.use { ins ->
+          val buf = ByteArray(1024)
+          while (ins.read(buf) >= 0) {
+            // drain stdout so pipe never blocks
+          }
+        }
+      } catch (_: Exception) {
+      }
+    }
     val stderrFuture = Executor.supplyAsyncTask {
       process.errorStream.bufferedReader().use { it.readLines() }
     }
@@ -77,11 +92,7 @@ object Tincd {
 
   fun killForcefully() {
     val p = activeProcess ?: return
-    try {
-      p.destroyForcibly()
-    } catch (_: Exception) {
-      try { p.destroy() } catch (_: Exception) {}
-    }
+    Executor.destroyProcessForcibly(p)
   }
 
   private fun trimLog(log: File) {

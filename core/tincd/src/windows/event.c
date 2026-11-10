@@ -26,6 +26,7 @@
 #include "../logger.h"
 #include "../utils.h"
 #include "../net.h"
+#include "../xalloc.h"
 
 static bool running = false;
 static DWORD event_count = 0;
@@ -129,7 +130,75 @@ static DWORD tv_to_timeout_ms(const struct timeval *tv) {
 	return (DWORD)(tv->tv_sec * 1000 + (tv->tv_usec + 999) / 1000);
 }
 
+static bool dispatch_event_batch(WSAEVENT *events, io_t **io_map, DWORD batch_len, DWORD wait_ms, unsigned int curgen, bool *dispatched) {
+	for(DWORD event_offset = 0; event_offset < batch_len && running;) {
+		DWORD result = WSAWaitForMultipleEvents(batch_len - event_offset, &events[event_offset], FALSE, wait_ms, FALSE);
+
+		if(result == WSA_WAIT_TIMEOUT) {
+			break;
+		}
+
+		if(result == WSA_WAIT_FAILED || result >= batch_len - event_offset) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "WSAWaitForMultipleEvents failed: %s", winerror(WSAGetLastError()));
+			break;
+		}
+
+		if(dispatched) {
+			*dispatched = true;
+		}
+
+		gettimeofday(&now, NULL);
+
+		/* Look up io in the map by index. */
+		DWORD fired_index = result + event_offset;
+		io_t *io = io_map[fired_index];
+
+		if(io->fd == -1) {
+			io->cb(io->data, 0);
+
+			if(!running || curgen != io_tree.generation) {
+				return false;
+			}
+		} else {
+			WSANETWORKEVENTS network_events;
+
+			if(WSAEnumNetworkEvents(io->fd, io->event, &network_events) != 0) {
+				logger(DEBUG_ALWAYS, LOG_WARNING, "WSAEnumNetworkEvents failed on fd %d: %s", io->fd, winerror(WSAGetLastError()));
+				event_offset = fired_index + 1;
+				wait_ms = 0;
+				continue;
+			}
+
+			if((network_events.lNetworkEvents & READ_EVENTS) && (io->flags & IO_READ)) {
+				io->cb(io->data, IO_READ);
+
+				if(!running || curgen != io_tree.generation) {
+					return false;
+				}
+			}
+
+			if((network_events.lNetworkEvents & WRITE_EVENTS) && (io->flags & IO_WRITE)) {
+				io->cb(io->data, IO_WRITE);
+
+				if(!running || curgen != io_tree.generation) {
+					return false;
+				}
+			}
+		}
+
+		/* Continue checking the rest of the events. */
+		event_offset = fired_index + 1;
+
+		/* Just poll the next time through. */
+		wait_ms = 0;
+	}
+
+	return true;
+}
+
 bool event_loop(void) {
+	static size_t rr_offset = 0;
+
 	running = true;
 	timeBeginPeriod(1);
 
@@ -188,86 +257,82 @@ bool event_loop(void) {
 			timeout_ms = tv_to_timeout_ms(tv);
 		}
 
-		WSAEVENT events[WSA_MAXIMUM_WAIT_EVENTS];
-		io_t *io_map[WSA_MAXIMUM_WAIT_EVENTS];
-		DWORD event_index = 0;
+		if(!event_count) {
+			continue;
+		}
+
+		io_t *stack_ios[256];
+		io_t **all_ios = (event_count <= 256) ? stack_ios : xmalloc(event_count * sizeof(*all_ios));
+		size_t total_ios = 0;
 
 		for splay_each(io_t, io, &io_tree) {
-			if(event_index >= WSA_MAXIMUM_WAIT_EVENTS) {
-				break;
+			if(total_ios < event_count) {
+				all_ios[total_ios++] = io;
+			}
+		}
+
+		if(!total_ios) {
+			if(all_ios != stack_ios) {
+				free(all_ios);
 			}
 
-			events[event_index] = io->event;
-			io_map[event_index] = io;
-			event_index++;
+			continue;
 		}
 
-		if(event_count > WSA_MAXIMUM_WAIT_EVENTS && timeout_ms > 50) {
-			timeout_ms = 50;
-		}
+		size_t start_off = rr_offset % total_ios;
+		rr_offset = (start_off + WSA_MAXIMUM_WAIT_EVENTS) % total_ios;
 
 		/*
 		 * If the generation number changes due to event addition
 		 * or removal by a callback we restart the loop.
 		 */
 		curgen = io_tree.generation;
+		WSAEVENT events[WSA_MAXIMUM_WAIT_EVENTS];
+		io_t *io_map[WSA_MAXIMUM_WAIT_EVENTS];
+		bool secondary_dispatched = false;
+		bool intact = true;
 
-		for(DWORD event_offset = 0; event_offset < event_index && running;) {
-			DWORD result = WSAWaitForMultipleEvents(event_index - event_offset, &events[event_offset], FALSE, timeout_ms, FALSE);
+		/* When > 63 handles exist, do non-blocking (0 ms) sweeps over all
+		   secondary batches first so handles beyond index 63 are never starved. */
+		if(total_ios > WSA_MAXIMUM_WAIT_EVENTS - 1) {
+			for(size_t batch_base = WSA_MAXIMUM_WAIT_EVENTS; batch_base < total_ios && running; batch_base += WSA_MAXIMUM_WAIT_EVENTS) {
+				DWORD batch_len = (DWORD)((total_ios - batch_base > WSA_MAXIMUM_WAIT_EVENTS)
+				                          ? WSA_MAXIMUM_WAIT_EVENTS
+				                          : (total_ios - batch_base));
 
-			if(result == WSA_WAIT_TIMEOUT) {
-				break;
-			}
+				for(DWORD i = 0; i < batch_len; i++) {
+					io_t *io = all_ios[(start_off + batch_base + i) % total_ios];
+					events[i] = io->event;
+					io_map[i] = io;
+				}
 
-			if(result == WSA_WAIT_FAILED || result >= event_index - event_offset) {
-				logger(DEBUG_ALWAYS, LOG_WARNING, "WSAWaitForMultipleEvents failed: %s", winerror(WSAGetLastError()));
-				break;
-			}
-
-			gettimeofday(&now, NULL);
-
-			/* Look up io in the map by index. */
-			DWORD fired_index = result + event_offset;
-			io_t *io = io_map[fired_index];
-
-			if(io->fd == -1) {
-				io->cb(io->data, 0);
-
-				if(!running || curgen != io_tree.generation) {
+				if(!dispatch_event_batch(events, io_map, batch_len, 0, curgen, &secondary_dispatched)) {
+					intact = false;
 					break;
 				}
-			} else {
-				WSANETWORKEVENTS network_events;
-
-				if(WSAEnumNetworkEvents(io->fd, io->event, &network_events) != 0) {
-					logger(DEBUG_ALWAYS, LOG_WARNING, "WSAEnumNetworkEvents failed on fd %d: %s", io->fd, winerror(WSAGetLastError()));
-					event_offset = fired_index + 1;
-					timeout_ms = 0;
-					continue;
-				}
-
-				if((network_events.lNetworkEvents & READ_EVENTS) && (io->flags & IO_READ)) {
-					io->cb(io->data, IO_READ);
-
-					if(!running || curgen != io_tree.generation) {
-						break;
-					}
-				}
-
-				if((network_events.lNetworkEvents & WRITE_EVENTS) && (io->flags & IO_WRITE)) {
-					io->cb(io->data, IO_WRITE);
-
-					if(!running || curgen != io_tree.generation) {
-						break;
-					}
-				}
 			}
 
-			/* Continue checking the rest of the events. */
-			event_offset = fired_index + 1;
+			if(secondary_dispatched) {
+				timeout_ms = 0;
+			} else if(timeout_ms > 10) {
+				timeout_ms = 10;
+			}
+		}
 
-			/* Just poll the next time through. */
-			timeout_ms = 0;
+		if(intact && running) {
+			DWORD primary_len = (DWORD)((total_ios > WSA_MAXIMUM_WAIT_EVENTS) ? WSA_MAXIMUM_WAIT_EVENTS : total_ios);
+
+			for(DWORD i = 0; i < primary_len; i++) {
+				io_t *io = all_ios[(start_off + i) % total_ios];
+				events[i] = io->event;
+				io_map[i] = io;
+			}
+
+			dispatch_event_batch(events, io_map, primary_len, timeout_ms, curgen, NULL);
+		}
+
+		if(all_ios != stack_ios) {
+			free(all_ios);
 		}
 	}
 

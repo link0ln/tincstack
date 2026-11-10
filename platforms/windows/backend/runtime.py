@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-from typing import IO
+from typing import Callable, IO
 
 import fulltunnel
 import paths
@@ -147,10 +147,14 @@ class LogSink(threading.Thread):
 class Runtime:
     def __init__(self, app: AppConfig, log_max_bytes: int = LOG_MAX_BYTES,
                  log_backups: int = LOG_BACKUPS, ft_system: "fulltunnel.System | None" = None,
-                 ft_interval: float = fulltunnel.INTERVAL) -> None:
+                 ft_interval: float = fulltunnel.INTERVAL,
+                 load_error: str = "",
+                 diag_port_fn: Callable[[], int] | None = None) -> None:
         self.app = app
         self.yaml = os.path.abspath(app.path)
         self.base = os.path.dirname(self.yaml)
+        self.load_error = load_error
+        self.diag_port_fn = diag_port_fn
         self.log_max_bytes = log_max_bytes
         self.log_backups = log_backups
         self._procs: dict[str, subprocess.Popen] = {}
@@ -166,21 +170,110 @@ class Runtime:
         self._ft_interval = ft_interval
         self._ensure_bins()
 
-    def _kill_orphan_daemons(self) -> None:
-        """On Windows, kill any orphaned tincd.exe processes left over from a
-        previous session whose pidfile was lost or overwritten, provided no
-        network managed by this Runtime currently has a live or running daemon."""
-        if sys.platform != "win32":
-            return
-        all_nets = list(set(self._procs) | set(self.app.networks))
-        if any(self.has_live_process(n) or self.is_running(n) for n in all_nets):
-            return
+    @staticmethod
+    def _read_pidfile_pid(pid_file: str) -> int | None:
         try:
-            subprocess.run(["taskkill", "/F", "/IM", "tincd.exe"],
-                           capture_output=True, text=True, timeout=5.0,
-                           stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
-        except Exception:
-            pass
+            with open(pid_file, "r", encoding="utf-8", errors="replace") as f:
+                tok = (f.read().split() or [""])[0]
+            pid = int(tok)
+            return pid if pid > 0 else None
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_tincd_pid(pid: int) -> bool:
+        if pid <= 0 or pid == os.getpid():
+            return False
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+                k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                k32.OpenProcess.restype = wintypes.HANDLE
+                k32.QueryFullProcessImageNameW.argtypes = [
+                    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+                ]
+                k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+                k32.CloseHandle.argtypes = [wintypes.HANDLE]
+                h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+                if h:
+                    try:
+                        sz = wintypes.DWORD(1024)
+                        buf = ctypes.create_unicode_buffer(1024)
+                        if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(sz)):
+                            return os.path.basename(buf.value).lower() == "tincd.exe"
+                    finally:
+                        k32.CloseHandle(h)
+            except Exception:
+                pass
+            try:
+                p = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, timeout=3.0,
+                    stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+                )
+                return "tincd.exe" in (p.stdout or "").lower()
+            except Exception:
+                return False
+        try:
+            with open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="replace") as f:
+                return f.read().strip() == "tincd"
+        except OSError:
+            return False
+
+    @classmethod
+    def _terminate_tincd_pid(cls, pid: int) -> bool:
+        if not cls._is_tincd_pid(pid):
+            return False
+        if sys.platform == "win32":
+            try:
+                p = subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    capture_output=True, text=True, timeout=5.0,
+                    stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+                )
+                return p.returncode == 0
+            except Exception:
+                return False
+        try:
+            import signal
+            os.kill(pid, signal.SIGTERM)
+            return True
+        except OSError:
+            return False
+
+    def _kill_orphan_daemons(self, net_name: str | None = None) -> None:
+        """Terminate only stale `tincd` PIDs recorded in `<runtime_dir(net)>/pid`
+        for networks confirmed NOT responding on their control socket. Never uses
+        a global image kill and never kills anything when `load_error` is set."""
+        if self.load_error or getattr(self.app, "load_error", ""):
+            return
+        if net_name:
+            nets = [net_name]
+        else:
+            nets = list(dict.fromkeys(list(self._procs) + list(self.app.networks)))
+            if os.path.isdir(self.base):
+                try:
+                    for entry in os.listdir(self.base):
+                        if entry not in nets and os.path.isfile(os.path.join(self.base, entry, "pid")):
+                            nets.append(entry)
+                except OSError:
+                    pass
+        for n in nets:
+            pid_file = os.path.join(self.runtime_dir(n), "pid")
+            if not os.path.isfile(pid_file):
+                continue
+            if self.has_live_process(n) or self.is_running(n):
+                continue
+            pid = self._read_pidfile_pid(pid_file)
+            if pid is not None:
+                self._terminate_tincd_pid(pid)
+            if pid is None or not self._is_tincd_pid(pid):
+                try:
+                    os.remove(pid_file)
+                except OSError:
+                    pass
 
     def _stage_all(self, names: list[str], bindir: str, b) -> None:
         for n in names:
@@ -298,9 +391,8 @@ class Runtime:
                 return True, "already running"
             self.stop(net_name)
         else:
-            # Ensure no orphan tincd.exe processes (whose pidfile was lost by an
-            # older build) linger in the background and fight our connection.
-            self._kill_orphan_daemons()
+            # Clean up any stale pidfile / wedged tincd recorded for THIS network.
+            self._kill_orphan_daemons(net_name)
         # No key check here: the core materialises Name/keys/pool on first start
         # (M1 zero-config) — an empty network stanza is a valid starting point.
         # pre-allow tincd (stable path) through the firewall so Windows doesn't
@@ -342,14 +434,26 @@ class Runtime:
                 return True, "started"
         return True, "started (control not yet responding)"
 
+    def _live_diag_port(self) -> int:
+        if self.diag_port_fn is not None:
+            try:
+                return max(0, int(self.diag_port_fn() or 0))
+            except Exception:
+                return 0
+        try:
+            import diagnostics
+            return diagnostics.live_diag_port(self.base)
+        except Exception:
+            return 0
+
     def _sync_diag_port(self, net_name: str) -> None:
+        port = self._live_diag_port()
+
         def _bg() -> None:
             try:
-                import diagnostics
-                cfg = diagnostics.load_diag_settings(self.base)
-                if cfg.get("enabled"):
-                    port = int(cfg.get("port") or diagnostics.DEFAULT_DIAG_PORT)
-                    self._tinc(net_name, "diag-port", str(port), timeout=3.0)
+                TincControl(tinc_exe=self.tinc, yaml_path=self.yaml).diag_port(
+                    net_name, port, timeout=3.0
+                )
             except Exception:
                 pass
 
@@ -423,7 +527,7 @@ class Runtime:
         sink = self._sinks.pop(net_name, None)
         if sink:
             sink.join(timeout=2)
-        self._kill_orphan_daemons()
+        self._kill_orphan_daemons(net_name)
         return (not self.is_running(net_name)), "stopped"
 
     def restart(self, net_name: str) -> tuple[bool, str]:
@@ -435,6 +539,9 @@ class Runtime:
     def _ft_sys(self) -> "fulltunnel.System | None":
         return self._ft_system if self._ft_system is not None else fulltunnel.system()
 
+    def full_tunnel_journal_path(self, net_name: str) -> str:
+        return os.path.join(self.runtime_dir(net_name), "fulltunnel.json")
+
     def _daemon_alive(self, net_name: str) -> bool:
         return self.has_live_process(net_name) or self.is_running(net_name)
 
@@ -444,48 +551,67 @@ class Runtime:
         if m is not None:
             m.stop()
 
+    def full_tunnel_exit(self, net_name: str) -> str:
+        """Exit node currently maintained for `net_name`, or '' when off."""
+        with self._ft_lock:
+            m = self._ft.get(net_name)
+        return m.exit_node if m else ""
+
     def full_tunnel_sync(self, net_name: str) -> str:
         """Make the maintainer match the config: running while `full_tunnel`
         names an exit node and the daemon runs, stopped (split routes and pins
         removed) otherwise. Safe to call from any thread, and cheap when
         nothing changes. Returns a line for the status bar."""
-        nc = self.app.net(net_name)
-        want = nc.full_tunnel if nc else ""
-        with self._ft_lock:
-            cur = self._ft.get(net_name)
-        if cur is not None and cur.exit_node != want:
-            self._full_tunnel_off(net_name)
-            cur = None
-        if not want:
-            return "full tunnel off"
-        if cur is not None:
-            return f"full tunnel via {want}: {cur.ft.state}"
-        system = self._ft_sys()
-        if system is None:
-            return f"full tunnel via {want} saved; routes are only applied on Windows"
-        if not self._daemon_alive(net_name):
-            return f"full tunnel via {want} saved; applied when '{net_name}' starts"
-        ft = fulltunnel.FullTunnel(net=net_name, exit_node=want,
-                                   aliases=routes.adapter_aliases(nc.options, net_name),
-                                   system=system)
-        tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
-
-        def config() -> tuple[dict, dict, str]:
+        with self._op_lock:
             with yaml_config._MEM_LOCK:
-                cfg = self.app.net(net_name)
-                if cfg is None:
-                    return {}, {}, ""
-                return dict(cfg.options), dict(cfg.hosts), cfg.node_name
+                nc = self.app.net(net_name)
+                want = nc.full_tunnel if nc else ""
+                opts_snap = dict(nc.options) if nc else {}
+            jpath = self.full_tunnel_journal_path(net_name)
+            aliases = routes.adapter_aliases(opts_snap, net_name)
+            with self._ft_lock:
+                cur = self._ft.get(net_name)
+            if cur is not None and cur.exit_node != want:
+                self._full_tunnel_off(net_name)
+                cur = None
+            if not want:
+                if os.path.isfile(jpath):
+                    for line in fulltunnel.cleanup_journal(jpath, self._ft_sys(), aliases):
+                        self._log_line(net_name, f"[tincmgr] {line}")
+                return "full tunnel off"
+            if cur is not None:
+                return f"full tunnel via {want}: {cur.ft.state}"
+            system = self._ft_sys()
+            if system is None:
+                return f"full tunnel via {want} saved; routes are only applied on Windows"
+            if not self._daemon_alive(net_name):
+                return f"full tunnel via {want} saved; applied when '{net_name}' starts"
+            if os.path.isfile(jpath):
+                for line in fulltunnel.cleanup_journal(jpath, system, aliases):
+                    self._log_line(net_name, f"[tincmgr] {line}")
+            os.makedirs(self.runtime_dir(net_name), exist_ok=True)
+            ft = fulltunnel.FullTunnel(net=net_name, exit_node=want,
+                                       aliases=aliases,
+                                       system=system,
+                                       journal_path=jpath)
+            tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
 
-        m = fulltunnel.Maintainer(ft, lambda: tc.snapshot(net_name), config,
-                                  lambda line: self._log_line(net_name, f"[tincmgr] {line}"),
-                                  interval=self._ft_interval)
-        with self._ft_lock:
-            if net_name in self._ft:          # another thread won the race
-                return f"full tunnel via {want}: {self._ft[net_name].ft.state}"
-            self._ft[net_name] = m
-        m.start()
-        return f"full tunnel via {want}: starting"
+            def config() -> tuple[dict, dict, str]:
+                with yaml_config._MEM_LOCK:
+                    cfg = self.app.net(net_name)
+                    if cfg is None:
+                        return {}, {}, ""
+                    return dict(cfg.options), dict(cfg.hosts), cfg.node_name
+
+            m = fulltunnel.Maintainer(ft, lambda: tc.snapshot(net_name), config,
+                                      lambda line: self._log_line(net_name, f"[tincmgr] {line}"),
+                                      interval=self._ft_interval)
+            with self._ft_lock:
+                if net_name in self._ft:          # another thread won the race
+                    return f"full tunnel via {want}: {self._ft[net_name].ft.state}"
+                self._ft[net_name] = m
+            m.start()
+            return f"full tunnel via {want}: starting"
 
     def full_tunnel_state(self, net_name: str) -> str:
         """What the maintainer is doing right now, '' when it is not running."""
@@ -516,16 +642,23 @@ class Runtime:
 
     # -- key generation: generate in a throwaway dir, fold PEM + self host into the YAML --
     def generate_keys(self, net_name: str, bits: int = 0) -> tuple[bool, str]:
-        nc = self.app.net(net_name)
-        if not nc:
-            return False, f"network '{net_name}' not in config"
-        if not nc.node_name:
+        with yaml_config._MEM_LOCK:
+            nc = self.app.net(net_name)
+            if not nc:
+                return False, f"network '{net_name}' not in config"
+            node_name = nc.node_name
+        if not node_name:
             return False, "set the network's Name option before generating keys"
-        tmp = tempfile.mkdtemp(prefix="tincmgr_keys_")
+        os.makedirs(self.base or ".", exist_ok=True)
+        tmp = paths.mkdir_private(
+            os.path.join(self.base or ".", f".tincmgr_keys_{os.getpid()}_{secrets.token_hex(6)}")
+        )
         try:
             os.makedirs(os.path.join(tmp, "hosts"), exist_ok=True)
-            with open(os.path.join(tmp, "tinc.conf"), "w", encoding="utf-8") as f:
-                f.write(f"Name = {nc.node_name}\n")
+            paths.write_private(
+                os.path.join(tmp, "tinc.conf"),
+                f"Name = {node_name}\n".encode("utf-8"),
+            )
             args = [self.tinc, "-n", net_name, "-c", tmp, "generate-keys"]
             if bits:
                 args.append(str(bits))
@@ -533,18 +666,26 @@ class Runtime:
                                timeout=60, creationflags=_NO_WINDOW)
             if p.returncode != 0:
                 return False, (p.stdout + p.stderr).strip()[:200]
+            new_keys: dict[str, str] = {}
             for ykey, fname in (("ed25519_priv", "ed25519_key.priv"), ("rsa_priv", "rsa_key.priv")):
                 fp = os.path.join(tmp, fname)
                 if os.path.isfile(fp):
                     with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                        nc.keys[ykey] = f.read().rstrip("\n")
+                        new_keys[ykey] = f.read().rstrip("\n")
             # fold the freshly generated PUBLIC keys into our self host file but
             # KEEP its existing Subnet/Address/Port (generate emits pubkeys only)
-            sh = os.path.join(tmp, "hosts", nc.node_name)
+            fresh_host: str | None = None
+            sh = os.path.join(tmp, "hosts", node_name)
             if os.path.isfile(sh):
                 with open(sh, "r", encoding="utf-8", errors="replace") as f:
-                    fresh = f.read()
-                nc.hosts[nc.node_name] = merge_pubkeys(nc.hosts.get(nc.node_name, ""), fresh)
+                    fresh_host = f.read()
+            with yaml_config._MEM_LOCK:
+                nc = self.app.net(net_name)
+                if not nc:
+                    return False, f"network '{net_name}' not in config"
+                nc.keys.update(new_keys)
+                if fresh_host is not None:
+                    nc.hosts[node_name] = merge_pubkeys(nc.hosts.get(node_name, ""), fresh_host)
             return True, "keys generated"
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

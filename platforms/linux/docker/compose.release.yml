@@ -48,6 +48,8 @@ services:
       # https/quic, OBFS_PORT or PORT for obfs, PORT for sf/plain). Host port
       # 443 taken by a web server: set FRONT_PORT to a free one (8443). A router
       # that forwards another external port to it: set FRONT_PORT_PUBLIC.
+      # Separate OBFS_PORT (UDP): add `:compose.obfs.yml` to COMPOSE_FILE so
+      # Docker also publishes `${OBFS_PORT}:${OBFS_PORT}/udp` on the host.
       - "${FRONT_PORT:-443}:${FRONT_PORT:-443}/tcp"
       - "${FRONT_PORT:-443}:${FRONT_PORT:-443}/udp"
     volumes:

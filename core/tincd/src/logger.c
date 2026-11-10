@@ -206,6 +206,12 @@ static void real_logger(debug_t level, int priority, const char *message) {
 				continue;
 			}
 
+			size_t out_pending = c->outbuf.len > c->outbuf.offset ? c->outbuf.len - c->outbuf.offset : 0;
+
+			if(out_pending + c->transport_outbuf_len > 4U * 1024U * 1024U) {
+				continue;
+			}
+
 			if(format_pretty(pretty, sizeof(pretty), priority, message, c->status.log_color, &pretty_colorized)) {
 				msglen = strlen(pretty);
 			}

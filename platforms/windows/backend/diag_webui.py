@@ -215,6 +215,7 @@ textarea.code-editor {
       <input type="checkbox" id="auto-refresh" checked> Авто (2.5с)
     </label>
     <button class="sm" onclick="refreshAll()">🔄 Обновить</button>
+    <button class="sm" onclick="logoutDiag()" title="Выйти из веб-панели диагностики">🚪 Выйти</button>
   </div>
 </header>
 
@@ -585,7 +586,11 @@ function switchTab(tab, btn) {
 }
 
 async function apiGet(path) {
-  const r = await fetch(path, {cache: "no-store"});
+  const r = await fetch(path, {cache: "no-store", credentials: "same-origin"});
+  if (r.status === 401) {
+    window.location.reload();
+    throw new Error("Authentication required");
+  }
   if (!r.ok) throw new Error("HTTP " + r.status);
   return await r.json();
 }
@@ -594,9 +599,26 @@ async function apiPost(path, body) {
   const r = await fetch(path, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
+    credentials: "same-origin",
     body: JSON.stringify(body || {})
   });
+  if (r.status === 401) {
+    window.location.reload();
+    throw new Error("Authentication required");
+  }
   return await r.json();
+}
+
+async function logoutDiag() {
+  try {
+    await fetch("/api/logout", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      credentials: "same-origin",
+      body: "{}"
+    });
+  } catch (_) {}
+  window.location.reload();
 }
 
 function onNetworkChange() {
@@ -628,19 +650,22 @@ function renderOverview(d) {
   const sel = document.getElementById("net-select");
   const nets = d.networks || [];
   if (sel.options.length !== nets.length || Array.from(sel.options).some((o,i) => o.value !== nets[i])) {
-    sel.innerHTML = nets.map(n => `<option value="${n}" ${n===d.net?'selected':''}>${n}</option>`).join("");
+    sel.innerHTML = nets.map(n => `<option value="${esc(n)}" ${n===d.net?'selected':''}>${esc(n)}</option>`).join("");
   }
 
   // Fleet links
-  const port = d.diag_port || location.port || 8655;
+  const port = parseInt(d.diag_port || location.port || 8655, 10) || 8655;
   const nodes = d.nodes || [];
   const fleetHtml = nodes.filter(n => n.vpn_address).map(n => {
-    const isLocalSelf = n.is_self && (location.hostname === "127.0.0.1" || location.hostname === "localhost");
-    const url = isLocalSelf ? `http://127.0.0.1:${port}/` : `http://${n.vpn_address}:${port}/`;
+    const rawIp = String(n.vpn_address || "").split("/")[0].trim();
+    if (!/^[0-9a-fA-F:.]+$/.test(rawIp)) return "";
+    const hostPart = rawIp.includes(":") ? `[${rawIp}]` : rawIp;
+    const isLocalSelf = n.is_self && (location.hostname === "127.0.0.1" || location.hostname === "localhost" || location.hostname === "::1");
+    const url = isLocalSelf ? `http://127.0.0.1:${port}/` : `http://${hostPart}:${port}/`;
     const cls = n.is_self ? "fleet-link self" : "fleet-link";
     const dot = n.is_self ? "★" : (n.reachable ? "🟢" : "⚪");
-    return `<a class="${cls}" href="${url}" target="_blank" title="Открыть диагностическую панель ${n.name} (${url})">${dot} <b>${n.name}</b> <code>${n.vpn_address}</code></a>`;
-  }).join("");
+    return `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="Открыть диагностическую панель ${esc(n.name)} (${esc(url)})">${dot} <b>${esc(n.name)}</b> <code>${esc(n.vpn_address)}</code></a>`;
+  }).filter(Boolean).join("");
   document.getElementById("fleet-links").innerHTML = fleetHtml || "<span style='color:var(--muted)'>Нет нод с известным VPN IP</span>";
 
   // Top stat cards
@@ -722,14 +747,14 @@ function renderPeersTable(d) {
 
     const trBadge = n.transport ? `<span class="badge purple">${esc(n.transport)}</span>` : "—";
     const pref = n.preferred_transport || "auto";
-    const selHtml = n.is_self ? "—" : `<select onchange="setPeerTransport('${safeName}', this.value)">
-      ${choices.map(c => `<option value="${c}" ${c===pref?'selected':''}>${c === 'auto' ? 'auto' : '📌 ' + c}</option>`).join("")}
+    const selHtml = n.is_self ? "—" : `<select class="peer-transport-sel" data-peer="${safeName}">
+      ${choices.map(c => `<option value="${esc(c)}" ${c===pref?'selected':''}>${c === 'auto' ? 'auto' : '📌 ' + esc(c)}</option>`).join("")}
     </select>`;
 
     const isNoDirect = Boolean(n.no_direct || (n.status && n.status.no_direct));
     const directCell = n.is_self ? "—" : (isNoDirect
-      ? `<button class="sm warn-btn" onclick="togglePeerDirect('${safeName}', false)" title="Прямой коннект к ${safeName} запрещён (NoDirectNodes). Трафик идёт только в обход через релей. Нажмите, чтобы разрешить прямой коннект.">🚫 Только релей</button>`
-      : `<button class="sm" style="border-color:rgba(34,197,94,0.4);color:#4ade80;" onclick="togglePeerDirect('${safeName}', true)" title="Прямой коннект к ${safeName} разрешён. Нажмите, чтобы запретить прямой коннект и пустить трафик через релей.">✓ Разрешён</button>`);
+      ? `<button class="sm warn-btn" data-peer-action="toggle-direct" data-peer="${safeName}" data-no-direct="false" title="Прямой коннект к ${safeName} запрещён (NoDirectNodes). Трафик идёт только в обход через релей. Нажмите, чтобы разрешить прямой коннект.">🚫 Только релей</button>`
+      : `<button class="sm" style="border-color:rgba(34,197,94,0.4);color:#4ade80;" data-peer-action="toggle-direct" data-peer="${safeName}" data-no-direct="true" title="Прямой коннект к ${safeName} разрешён. Нажмите, чтобы запретить прямой коннект и пустить трафик через релей.">✓ Разрешён</button>`);
 
     const flags = [];
     if (n.status) {
@@ -741,11 +766,11 @@ function renderPeersTable(d) {
     }
     if (isNoDirect) flags.push("🚫no_direct");
 
-    const actions = n.is_self ? `<button class="sm" onclick="editPeerHost('${safeName}')">✏️ Host</button>` : `
-      <button class="sm" onclick="showPeerInfo('${safeName}')" title="tinc info">ℹ️ Info</button>
-      <button class="sm" onclick="editPeerHost('${safeName}')" title="Редактировать конфиг хоста">✏️ Host</button>
-      <button class="sm warn-btn" onclick="runAction('peer_reconnect', {peer:'${safeName}'})" title="Переподключить ноду">🔌 Reconnect</button>
-      <button class="sm" onclick="quickPingPeer('${esc(n.vpn_address)}', '${safeName}')" title="Ping внутри VPN">📡 Ping</button>
+    const actions = n.is_self ? `<button class="sm" data-peer-action="edit-host" data-peer="${safeName}">✏️ Host</button>` : `
+      <button class="sm" data-peer-action="info" data-peer="${safeName}" title="tinc info">ℹ️ Info</button>
+      <button class="sm" data-peer-action="edit-host" data-peer="${safeName}" title="Редактировать конфиг хоста">✏️ Host</button>
+      <button class="sm warn-btn" data-peer-action="reconnect" data-peer="${safeName}" title="Переподключить ноду">🔌 Reconnect</button>
+      <button class="sm" data-peer-action="ping" data-peer="${safeName}" data-vpn-ip="${esc(n.vpn_address || "")}" title="Ping внутри VPN">📡 Ping</button>
     `;
 
     const rowStyle = (!n.is_self && isNoDirect) ? ` style="background:rgba(245,158,11,0.10);"` : "";
@@ -757,6 +782,9 @@ function renderPeersTable(d) {
       (n.via && n.via !== n.name ? `via <b>${esc(n.via)}</b>` : esc(n.nexthop || "—"))
     );
 
+    const rttNum = Number(n.rtt || 0);
+    const pmtuNum = Number(n.pmtu || 0);
+
     return `<tr${rowStyle}>
       <td>${nameHtml}</td>
       <td><code>${esc(n.vpn_address || "—")}</code></td>
@@ -766,8 +794,8 @@ function renderPeersTable(d) {
       <td>${trBadge}</td>
       <td>${selHtml}</td>
       <td>${viaCell}</td>
-      <td>${n.rtt > 0 ? n.rtt.toFixed(1) + " ms" : "—"}</td>
-      <td>${n.pmtu > 0 ? `${n.pmtu} <span style="color:var(--muted)">(${n.pmtu_min}..${n.pmtu_max})</span>` : "—"}</td>
+      <td>${rttNum > 0 ? rttNum.toFixed(1) + " ms" : "—"}</td>
+      <td>${pmtuNum > 0 ? `${esc(pmtuNum)} <span style="color:var(--muted)">(${esc(n.pmtu_min)}..${esc(n.pmtu_max)})</span>` : "—"}</td>
       <td>↓${fmtBytes(n.rx_bytes)} / ↑${fmtBytes(n.tx_bytes)}</td>
       <td><span style="font-size:11.5px;color:var(--muted);">${flags.join(" ") || "—"}</span></td>
       <td><code>${esc((n.subnets || []).join(", ") || "—")}</code></td>
@@ -779,17 +807,21 @@ function renderPeersTable(d) {
 function populateProbeDropdowns(d) {
   const nodes = (d.nodes || []).filter(n => !n.is_self);
   const vpnSel = document.getElementById("probe-vpn-peer");
-  if (vpnSel.options.length !== nodes.length + 1) {
+  const vpnNodes = nodes.filter(n => n.vpn_address);
+  if (vpnSel.options.length !== vpnNodes.length + 1) {
     vpnSel.innerHTML = `<option value="">— Выберите ноду —</option>` +
-      nodes.filter(n => n.vpn_address).map(n => `<option value="${n.vpn_address}">${n.name} (${n.vpn_address})</option>`).join("");
-    if (!document.getElementById("probe-vpn-ip").value && nodes[0] && nodes[0].vpn_address) {
-      document.getElementById("probe-vpn-ip").value = nodes[0].vpn_address;
+      vpnNodes.map(n => `<option value="${esc(n.vpn_address)}">${esc(n.name)} (${esc(n.vpn_address)})</option>`).join("");
+    if (!document.getElementById("probe-vpn-ip").value && vpnNodes[0] && vpnNodes[0].vpn_address) {
+      document.getElementById("probe-vpn-ip").value = vpnNodes[0].vpn_address;
     }
   }
   const extSel = document.getElementById("probe-ext-peer");
   if (extSel.options.length !== nodes.length + 1) {
     extSel.innerHTML = `<option value="">— Выберите ноду —</option>` +
-      nodes.map(n => `<option value="${n.name}" data-addr="${n.configured_address || n.address || ''}">${n.name} (${n.configured_address || n.address || '—'})</option>`).join("");
+      nodes.map(n => {
+        const addr = n.configured_address || n.address || "";
+        return `<option value="${esc(n.name)}" data-addr="${esc(addr)}">${esc(n.name)} (${esc(addr || "—")})</option>`;
+      }).join("");
     if (!document.getElementById("probe-ext-host").value && nodes[0]) {
       document.getElementById("probe-ext-host").value = nodes[0].configured_address || nodes[0].address || "";
     }
@@ -971,10 +1003,16 @@ async function editPeerHost(peer) {
     <p style="color:var(--muted);font-size:12px;margin-top:0;">Опции хоста (Address, Port, QuicPort, HttpsPort, ObfsPort, Subnet, PreferredTransports и ключи):</p>
     <textarea id="modal-host-text" class="code-editor" style="min-height:240px;"></textarea>
     <div class="row" style="margin-top:10px;">
-      <button class="primary" onclick="savePeerHost('${esc(peer)}')">💾 Сохранить хост и перезагрузить tincd</button>
+      <button class="primary" id="modal-save-host-btn" data-peer="${esc(peer)}">💾 Сохранить хост и перезагрузить tincd</button>
     </div>
   `;
   document.getElementById("modal-host-text").value = bodyText;
+  const saveBtn = document.getElementById("modal-save-host-btn");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", function() {
+      savePeerHost(this.dataset.peer || "");
+    });
+  }
   document.getElementById("modal-backdrop").style.display = "flex";
 }
 
@@ -999,7 +1037,7 @@ async function loadConfigTab() {
   const ftSel = document.getElementById("cfg-full-tunnel");
   const peers = (STATE.overview && STATE.overview.nodes || []).filter(n => !n.is_self);
   ftSel.innerHTML = `<option value="">Выключено (только подсети VPN)</option>` +
-    peers.map(n => `<option value="${n.name}" ${cfg.full_tunnel===n.name?'selected':''}>Весь трафик (0.0.0.0/0) через ${n.name}</option>`).join("");
+    peers.map(n => `<option value="${esc(n.name)}" ${cfg.full_tunnel===n.name?'selected':''}>Весь трафик (0.0.0.0/0) через ${esc(n.name)}</option>`).join("");
 
   const androidBox = document.getElementById("android-extra-settings");
   if (STATE.overview && STATE.overview.platform === "android") {
@@ -1068,6 +1106,33 @@ function renderLogText() {
   const el = document.getElementById("log-console");
   el.textContent = filtered.join("\n") || "(пусто)";
   el.scrollTop = el.scrollHeight;
+}
+
+const peersTbodyEl = document.getElementById("peers-tbody");
+if (peersTbodyEl) {
+  peersTbodyEl.addEventListener("change", (ev) => {
+    const sel = ev.target.closest("select.peer-transport-sel");
+    if (sel && sel.dataset.peer) {
+      setPeerTransport(sel.dataset.peer, sel.value);
+    }
+  });
+  peersTbodyEl.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-peer-action]");
+    if (!btn) return;
+    const peer = btn.dataset.peer || "";
+    const act = btn.dataset.peerAction || "";
+    if (act === "toggle-direct") {
+      togglePeerDirect(peer, btn.dataset.noDirect === "true");
+    } else if (act === "edit-host") {
+      editPeerHost(peer);
+    } else if (act === "info") {
+      showPeerInfo(peer);
+    } else if (act === "reconnect") {
+      runAction("peer_reconnect", {peer});
+    } else if (act === "ping") {
+      quickPingPeer(btn.dataset.vpnIp || "", peer);
+    }
+  });
 }
 
 setInterval(() => {

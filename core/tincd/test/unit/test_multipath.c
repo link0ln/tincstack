@@ -27,8 +27,16 @@ static void test_multipath_mode_parse_and_name(void **state) {
 static void test_multipath_flow_hash_deterministic(void **state) {
 	(void)state;
 	vpn_packet_t pkt1 = {0}, pkt2 = {0};
-	/* Synthetic IPv4 TCP packet (src 10.0.0.1:12345 -> dst 10.0.0.2:443) */
-	uint8_t raw[40] = {
+	/* Synthetic 14-byte Ethernet/pseudo-Ethernet header + IPv4 TCP packet
+	   (src 10.0.0.1:12345 -> dst 10.0.0.2:443). Every vpn_packet_t in tincd
+	   carries a 14-byte header at DATA(pkt)[0..13] in both RMODE_ROUTER and
+	   RMODE_SWITCH. */
+	uint8_t raw[14 + 40] = {
+		/* 14-byte L2 / pseudo-L2 header */
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x08, 0x00,
+		/* 40-byte IPv4 + TCP header */
 		0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00,
 		0x40, 0x06, 0x00, 0x00, 10, 0, 0, 1,
 		10, 0, 0, 2,
@@ -39,17 +47,20 @@ static void test_multipath_flow_hash_deterministic(void **state) {
 	memcpy(DATA(&pkt1), raw, sizeof(raw));
 	pkt1.len = sizeof(raw);
 
-	/* Same 5-tuple, different TCP seq number -> must produce identical flow hash */
+	/* Same 5-tuple, different TCP seq number AND different uninitialized L2 MAC
+	   bytes -> must produce identical flow hash in RMODE_ROUTER! */
 	memcpy(DATA(&pkt2), raw, sizeof(raw));
 	pkt2.len = sizeof(raw);
-	DATA(&pkt2)[27] = 0x99;
+	DATA(&pkt2)[0] = 0xde;
+	DATA(&pkt2)[5] = 0xad;
+	DATA(&pkt2)[14 + 27] = 0x99;
 
 	uint32_t h1 = multipath_flow_hash(&pkt1);
 	uint32_t h2 = multipath_flow_hash(&pkt2);
 	assert_int_equal(h1, h2);
 
-	/* Different source port -> different flow hash */
-	DATA(&pkt2)[20] = 0x40;
+	/* Different TCP source port -> different flow hash */
+	DATA(&pkt2)[14 + 20] = 0x40;
 	uint32_t h3 = multipath_flow_hash(&pkt2);
 	assert_int_not_equal(h1, h3);
 }

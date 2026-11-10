@@ -125,6 +125,10 @@ static ecdsa_t *ecdsa_from_graph(char *name) {
 bool send_id(connection_t *c) {
 	gettimeofday(&c->start, NULL);
 
+	if(c->outgoing || c->status.multipath_sub) {
+		c->status.we_dialled = true;
+	}
+
 	int minor = 0;
 
 	if(experimental) {
@@ -604,6 +608,35 @@ bool id_h(connection_t *c, const char *request) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Peer %s (%s) uses incompatible version %d.%d",
 		       c->name, c->hostname, c->protocol_major, c->protocol_minor);
 		return false;
+	}
+
+	/* Simultaneous dial glare tie-break on our outgoing leg: if we already have
+	   a freshly activated peer-initiated connection to `c->name' on a carrier at
+	   least as good as this dial, and the peer has the lexicographically smaller
+	   name (`strcmp(c->name, myself->name) < 0', matching `ack_h()'), keep the
+	   existing peer-initiated connection and close this duplicate without tarpit. */
+	if(c->outgoing && !c->status.multipath_sub && strcmp(myself->name, c->name) != 0) {
+		node_t *existing_n = lookup_node(c->name);
+
+		if(existing_n && existing_n->connection &&
+		                existing_n->connection->status.active && existing_n->connection->edge &&
+		                now.tv_sec - existing_n->connection->activated_at <= 5 &&
+		                !existing_n->connection->status.we_dialled &&
+		                !transport_outranks_connection(c->outgoing, existing_n->connection) &&
+		                strcmp(c->name, myself->name) < 0) {
+			logger(DEBUG_CONNECTIONS, LOG_DEBUG,
+			       "Simultaneous connection with %s (%s) during ID, keeping existing connection (glare tie-break)",
+			       c->name, c->hostname);
+
+			if(!existing_n->connection->outgoing) {
+				existing_n->connection->outgoing = c->outgoing;
+				transport_candidate_activated(existing_n->connection->outgoing, existing_n->connection);
+			}
+
+			c->outgoing = NULL;
+			c->status.no_tarpit = true;
+			return false;
+		}
 	}
 
 	if(bypass_security) {
@@ -1290,7 +1323,8 @@ bool ack_h(connection_t *c, const char *request) {
 
 	/* Did *we* dial this link? The dedup below may hand us an outgoing_t that
 	   belongs to a link the peer opened, which is a different thing. */
-	const bool we_dialled = (c->outgoing != NULL || (c->status.multipath_sub && *hismp == '\0'));
+	const bool we_dialled = (c->status.we_dialled || c->outgoing != NULL || (c->status.multipath_sub && *hismp == '\0'));
+	c->status.we_dialled = we_dialled;
 
 	/* Check if we already have a node_t for him */
 
@@ -1319,7 +1353,7 @@ bool ack_h(connection_t *c, const char *request) {
 				   by us while the other was dialled by the peer on an equal-rank
 				   carrier, both sides keep the link dialled by the lexicographically
 				   smaller node name instead of killing each other's link. */
-				bool existing_we_dialled = (n->connection->outgoing != NULL);
+				bool existing_we_dialled = (n->connection->status.we_dialled || n->connection->outgoing != NULL);
 				bool peer_outranks = n->connection->outgoing && transport_outranks_connection(n->connection->outgoing, c);
 
 				if(!carrier_upgrade && !peer_outranks &&
@@ -1327,7 +1361,7 @@ bool ack_h(connection_t *c, const char *request) {
 				                now.tv_sec - n->connection->activated_at <= 5 &&
 				                we_dialled != existing_we_dialled &&
 				                strcmp(myself->name, n->name) != 0) {
-					bool keep_existing = (strcmp(myself->name, n->name) < 0) ? !we_dialled : we_dialled;
+					bool keep_existing = we_dialled ? (strcmp(n->name, myself->name) < 0) : (strcmp(myself->name, n->name) < 0);
 
 					if(keep_existing) {
 						logger(DEBUG_CONNECTIONS, LOG_DEBUG,
@@ -1343,6 +1377,7 @@ bool ack_h(connection_t *c, const char *request) {
 							c->outgoing = NULL;
 						}
 
+						c->status.no_tarpit = true;
 						return false;
 					}
 				}
@@ -1379,6 +1414,7 @@ bool ack_h(connection_t *c, const char *request) {
 				for list_each(connection_t, sec, &old_secondaries) {
 					if(connection_is_live(sec)) {
 						sec->status.multipath_sub = false;
+						sec->status.no_tarpit = true;
 						sec->edge = NULL;
 						terminate_connection(sec, false);
 					}
@@ -1387,6 +1423,7 @@ bool ack_h(connection_t *c, const char *request) {
 				list_empty_list(&old_secondaries);
 
 				if(connection_is_live(old_primary)) {
+					old_primary->status.no_tarpit = true;
 					terminate_connection(old_primary, false);
 				}
 

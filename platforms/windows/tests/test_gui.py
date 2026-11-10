@@ -817,5 +817,86 @@ def test_update_banner_progress_bar_hides_button_and_recovers_on_error(window, m
     assert warnings and "timed out" in warnings[-1][2]
 
 
+def test_full_tunnel_rapid_off_toggle_not_dropped_while_worker_busy(window_with_peer, monkeypatch):
+    """WL-07: toggling full tunnel OFF while the ON worker is still running
+    must queue via WorkerPool(rerun=True) and run full_tunnel_sync again."""
+    w = window_with_peer
+    gate = threading.Event()
+    observed: list[str] = []
+
+    def slow_sync(net: str) -> str:
+        cur = w.app.net(net).full_tunnel
+        observed.append(cur)
+        if len(observed) == 1:
+            gate.wait(timeout=5.0)
+        return f"full tunnel via {cur}: starting" if cur else "full tunnel off"
+
+    monkeypatch.setattr(w.rt, "full_tunnel_sync", slow_sync)
+    monkeypatch.setattr(w.rt, "full_tunnel_state", lambda net: "")
+
+    # Turn ON -> starts first worker, held at `gate`
+    _route_buttons(w, "gw")[FULL].click()
+    assert wait_until(lambda: len(observed) == 1)
+    assert w.pool.busy("fulltunnel-demo")
+
+    # Immediately turn OFF while first worker is still busy
+    _route_buttons(w, "gw")[FULL].click()
+    assert yc.load(w.app.path).net("demo").full_tunnel == ""
+    gate.set()
+
+    assert wait_until(lambda: len(observed) >= 2 and observed[-1] == "")
+    assert wait_until(lambda: not w.pool.busy("fulltunnel-demo"))
+
+
+def test_start_refreshes_materialized_zeroconf_identity_and_del_net_clears_wanted(qapp, tmp_path, monkeypatch):
+    """WL-11 & WL-17: starting a zero-config network refreshes materialized
+    Name/hosts from disk into GUI tabs, and deleting a network clears _wanted_running."""
+    monkeypatch.setenv("TINCSTACK_BIN_DIR", str(tmp_path / "nobin"))
+    cfg = tmp_path / "tinc.yaml"
+    cfg.write_text("networks:\n  znet: {}\n")
+    fake = FakeTinc(str(cfg), running=False)
+    w = tincmgr.MainWindow(str(cfg), runner=fake, autostart=False)
+    try:
+        w.admin = True
+
+        def fake_start(net: str):
+            # Simulate tincd zero-config materializing Name + self host on disk
+            yc.save_text(
+                str(cfg),
+                textwrap.dedent("""\
+                    networks:
+                      znet:
+                        options:
+                          Name: auto-node
+                          Port: 655
+                        hosts:
+                          auto-node: |
+                            Ed25519PublicKey = ZZZZ
+                            Subnet = 10.77.0.1/32
+                """),
+            )
+            fake.running = True
+            return True, "started"
+
+        monkeypatch.setattr(w.rt, "start", fake_start)
+        monkeypatch.setattr(w.rt, "stop", lambda net: (True, "stopped"))
+        w._start()
+        assert wait_until(lambda: w.app.net("znet").node_name == "auto-node")
+        assert "auto-node" in [w.network.nodes.item(i).data(0x0100) for i in range(w.network.nodes.count())]
+        assert w._wanted_running.get("znet") is True
+
+        # Deleting the network removes it from _wanted_running as well
+        monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(lambda *a, **k: QtWidgets.QMessageBox.Yes))
+        w._del_net()
+        assert "znet" not in w._wanted_running
+        assert "znet" not in w.app.networks
+    finally:
+        w.timer.stop()
+        w.pool.wait_all()
+        w.deleteLater()
+        QtWidgets.QApplication.processEvents()
+
+
+
 
 

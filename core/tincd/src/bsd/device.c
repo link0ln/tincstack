@@ -85,6 +85,16 @@ static bool setup_utun(void) {
 		return false;
 	}
 
+	int flags = fcntl(device_fd, F_GETFL);
+
+	if(flags >= 0 && !(flags & O_NONBLOCK)) {
+		fcntl(device_fd, F_SETFL, flags | O_NONBLOCK);
+	}
+
+#ifdef FD_CLOEXEC
+	fcntl(device_fd, F_SETFD, FD_CLOEXEC);
+#endif
+
 	struct ctl_info info;
 
 	memset(&info, 0, sizeof(info));
@@ -93,17 +103,28 @@ static bool setup_utun(void) {
 
 	if(ioctl(device_fd, CTLIOCGINFO, &info) == -1) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "ioctl(CTLIOCGINFO) failed: %s", strerror(errno));
+		close(device_fd);
+		device_fd = -1;
 		return false;
 	}
 
 	long unit = -1;
-	char *p = strstr(device, "utun"), *e = NULL;
+	const char *p = device ? strstr(device, "utun") : NULL;
 
 	if(p) {
-		unit = strtol(p + 4, &e, 10);
+		p += 4;
 
-		if(!e) {
-			unit = -1;
+		if(*p != '\0') {
+			char *e = NULL;
+			errno = 0;
+			unit = strtol(p, &e, 10);
+
+			if(errno || e == p || *e != '\0' || unit < 0 || unit > 65534) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Invalid utun device name %s!", device);
+				close(device_fd);
+				device_fd = -1;
+				return false;
+			}
 		}
 	}
 
@@ -112,11 +133,13 @@ static bool setup_utun(void) {
 		.sc_len = sizeof(sc),
 		.sc_family = AF_SYSTEM,
 		.ss_sysaddr = AF_SYS_CONTROL,
-		.sc_unit = unit + 1,
+		.sc_unit = (uint32_t)(unit + 1),
 	};
 
 	if(connect(device_fd, (struct sockaddr *)&sc, sizeof(sc)) == -1) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not connect utun socket: %s\n", strerror(errno));
+		close(device_fd);
+		device_fd = -1;
 		return false;
 	}
 
@@ -140,7 +163,7 @@ static bool setup_device(void) {
 
 	// Find out if it's supposed to be a tun or a tap device
 
-	char *type;
+	char *type = NULL;
 
 	if(get_config_string(lookup_config(&config_tree, "DeviceType"), &type)) {
 		if(!strcasecmp(type, "tun"))
@@ -156,6 +179,7 @@ static bool setup_device(void) {
 		else if(!strcasecmp(type, "vmnet-host")
 		                || !strcasecmp(type, "vmnet-shared")
 		                || !strcasecmp(type, "vmnet-bridged")) {
+			free(device);
 			device = xstrdup(type);
 			device_type = DEVICE_TYPE_VMNET;
 			get_config_string(lookup_config(&config_tree, "VmnetAddr"), &macos_vmnet_addr);
@@ -179,8 +203,11 @@ static bool setup_device(void) {
 			device_type = DEVICE_TYPE_TAP;
 		} else {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Unknown device type %s!", type);
+			free(type);
 			return false;
 		}
+
+		free(type);
 	} else {
 #ifdef HAVE_NET_IF_UTUN_H
 
@@ -295,6 +322,8 @@ static bool setup_device(void) {
 
 			if(ioctl(device_fd, TUNSIFHEAD, &zero, sizeof(zero)) == -1) {
 				logger(DEBUG_ALWAYS, LOG_ERR, "System call `%s' failed: %s", "ioctl", strerror(errno));
+				close(device_fd);
+				device_fd = -1;
 				return false;
 			}
 		}
@@ -317,6 +346,8 @@ static bool setup_device(void) {
 
 			if(ioctl(device_fd, TUNSIFHEAD, &one, sizeof(one)) == -1) {
 				logger(DEBUG_ALWAYS, LOG_ERR, "System call `%s' failed: %s", "ioctl", strerror(errno));
+				close(device_fd);
+				device_fd = -1;
 				return false;
 			}
 		}

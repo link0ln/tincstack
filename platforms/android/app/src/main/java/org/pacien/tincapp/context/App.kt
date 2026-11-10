@@ -28,6 +28,7 @@ import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.R
 import org.pacien.tincapp.commands.Join
 import org.pacien.tincapp.data.Networks
+import org.pacien.tincapp.diagnostics.DiagManager
 import org.pacien.tincapp.service.ConnectionState
 import org.pacien.tincapp.service.TincVpnService
 import org.pacien.tincapp.service.VpnStatus
@@ -42,6 +43,9 @@ class App : Application() {
     super.onCreate()
     appContext = applicationContext
     AppLogger.configure()
+
+    // Ensure a persistent random password exists for the Diagnostic WebUI from first launch.
+    DiagManager.ensurePassword(this)
 
     val logger = LoggerFactory.getLogger(this.javaClass)
     setupCrashHandler(logger)

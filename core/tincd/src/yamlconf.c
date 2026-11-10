@@ -145,24 +145,200 @@ typedef struct {
 	bool error;
 } parser_t;
 
-static yval_t *parse_flow_seq(const char *s) {       /* "[a, b, c]" */
+static int hexval(char c);
+static char *parse_dq_scalar(const char *s);
+static char *parse_sq_scalar(const char *s);
+
+/* Strip a YAML trailing `# ...` comment in place, respecting single- and
+   double-quoted regions. Per YAML 1.2, `#` starts a comment only at the
+   beginning of the token (`p == raw`) or after whitespace (`' '` / `'\t'`),
+   so unquoted tinc values such as `10.0.0.1/32#10` stay intact. */
+static void strip_yaml_comment(char *raw) {
+	bool in_sq = false;
+	bool in_dq = false;
+
+	for(char *p = raw; *p; p++) {
+		if(in_sq) {
+			if(*p == '\'') {
+				if(p[1] == '\'') {
+					p++;
+				} else {
+					in_sq = false;
+				}
+			}
+
+			continue;
+		}
+
+		if(in_dq) {
+			if(*p == '\\' && p[1]) {
+				p++;
+			} else if(*p == '"') {
+				in_dq = false;
+			}
+
+			continue;
+		}
+
+		if(*p == '\'') {
+			in_sq = true;
+		} else if(*p == '"') {
+			in_dq = true;
+		} else if(*p == '#' && (p == raw || p[-1] == ' ' || p[-1] == '\t')) {
+			*p = 0;
+			return;
+		}
+	}
+}
+
+static bool is_block_scalar_header(const char *rest, bool *folded) {
+	if(rest[0] != '|' && rest[0] != '>') {
+		return false;
+	}
+
+	*folded = (rest[0] == '>');
+	const char *q = rest + 1;
+
+	while(*q == '-' || *q == '+' || (*q >= '1' && *q <= '9')) {
+		q++;
+	}
+
+	while(*q == ' ' || *q == '\t') {
+		q++;
+	}
+
+	return *q == 0 || *q == '#';
+}
+
+static yval_t *parse_flow_seq(const char *s, bool *err) {       /* "[a, b, c]" */
 	yval_t *seq = yval_new(Y_SEQ);
 	const char *p = strchr(s, '[');
-	if(!p) return seq;
+
+	if(!p) {
+		if(err) {
+			*err = true;
+		}
+
+		return seq;
+	}
+
 	p++;
-	while(*p && *p != ']') {
-		size_t len = strcspn(p, ",]");
+
+	for(;;) {
+		while(*p == ' ' || *p == '\t') {
+			p++;
+		}
+
+		if(!*p) {
+			if(err) {
+				*err = true;
+			}
+
+			break;
+		}
+
+		if(*p == ']') {
+			p++;
+			break;
+		}
+
+		const char *start = p;
+		bool in_sq = false;
+		bool in_dq = false;
+
+		while(*p) {
+			if(in_sq) {
+				if(*p == '\'') {
+					if(p[1] == '\'') {
+						p += 2;
+						continue;
+					}
+
+					in_sq = false;
+				}
+
+				p++;
+				continue;
+			}
+
+			if(in_dq) {
+				if(*p == '\\' && p[1]) {
+					p += 2;
+					continue;
+				}
+
+				if(*p == '"') {
+					in_dq = false;
+				}
+
+				p++;
+				continue;
+			}
+
+			if(*p == '\'') {
+				in_sq = true;
+				p++;
+			} else if(*p == '"') {
+				in_dq = true;
+				p++;
+			} else if(*p == ',' || *p == ']') {
+				break;
+			} else {
+				p++;
+			}
+		}
+
+		if(in_sq || in_dq || !*p) {
+			if(err) {
+				*err = true;
+			}
+
+			break;
+		}
+
+		size_t len = (size_t)(p - start);
 		char *buf = malloc(len + 1);
-		memcpy(buf, p, len);
+		memcpy(buf, start, len);
 		buf[len] = 0;
-		p += len;
+		strip_yaml_comment(buf);
 		char *t = trim(buf);
 		yval_t *it = yval_new(Y_SCALAR);
-		it->scalar = strdup(unquote(t));
+
+		if(t[0] == '"') {
+			it->scalar = parse_dq_scalar(t);
+		} else if(t[0] == '\'') {
+			it->scalar = parse_sq_scalar(t);
+		} else {
+			it->scalar = strdup(unquote(t));
+		}
+
 		seq_add(seq, it);
 		free(buf);
-		if(*p == ',') p++;
+
+		if(*p == ',') {
+			p++;
+
+			while(*p == ' ' || *p == '\t') {
+				p++;
+			}
+
+			if(*p == ']') {
+				p++;
+				break;
+			}
+		}
 	}
+
+	while(*p == ' ' || *p == '\t') {
+		p++;
+	}
+
+	if(*p && *p != '#') {
+		if(err) {
+			*err = true;
+		}
+	}
+
 	return seq;
 }
 
@@ -175,14 +351,16 @@ static bool line_is_blank(const line_t *ln) {
 	return ln->raw[0] == 0 || leading_spaces(ln->raw) == (int) strlen(ln->raw);
 }
 
-static yval_t *parse_block_scalar(parser_t *p, int parent_indent) {
+static yval_t *parse_block_scalar(parser_t *p, int parent_indent, bool folded) {
 	/* Collect every line more indented than the parent (blank lines
 	   included) and dedent by the smallest indentation among them, so a
 	   value whose first line is itself indented survives a round trip. The
-	   header's chomping/indentation indicators (|-, |+, |2) are accepted and
-	   ignored: trailing newlines are always stripped. */
-	size_t j = next_sig(p, p->i);
+	   header's chomping/indentation indicators (|-, |+, |2, >-) are accepted
+	   and trailing newlines are stripped. */
+	size_t j = p->i;
+	while(j < p->n && line_is_blank(&p->lines[j])) j++;
 	if(j >= p->n || p->lines[j].indent <= parent_indent) {
+		p->i = j;
 		yval_t *v = yval_new(Y_SCALAR); v->scalar = strdup(""); return v;
 	}
 	size_t end = p->i;
@@ -197,15 +375,35 @@ static yval_t *parse_block_scalar(parser_t *p, int parent_indent) {
 	char *acc = strdup("");
 	size_t acclen = 0;
 	bool first = true;
+	bool prev_blank = false;
+	bool prev_more_indented = false;
 	for(; p->i < end; p->i++) {
 		line_t *ln = &p->lines[p->i];
-		const char *content = line_is_blank(ln) ? "" : ln->raw + base;
+		bool blank = line_is_blank(ln);
+		bool more_ind = !blank && ln->indent > base;
+		const char *content = blank ? "" : ln->raw + base;
 		size_t clen = strlen(content);
 		acc = realloc(acc, acclen + clen + 2);
-		if(!first) acc[acclen++] = '\n';
+		if(!first) {
+			if(!folded) {
+				acc[acclen++] = '\n';
+			} else if(blank) {
+				if(prev_blank || prev_more_indented) {
+					acc[acclen++] = '\n';
+				}
+			} else if(prev_blank || more_ind || prev_more_indented) {
+				acc[acclen++] = '\n';
+			} else {
+				acc[acclen++] = ' ';
+			}
+		}
 		memcpy(acc + acclen, content, clen);
 		acclen += clen; acc[acclen] = 0;
-		first = false;
+		if(!blank || !first) {
+			first = false;
+		}
+		prev_blank = blank;
+		prev_more_indented = more_ind;
 	}
 	/* strip trailing newlines (chomp) */
 	while(acclen && acc[acclen - 1] == '\n') acc[--acclen] = 0;
@@ -312,6 +510,33 @@ static char *parse_dq_scalar(const char *s) {
 	return out;
 }
 
+/* Parse a single-quoted YAML scalar, where '' escapes a literal '. */
+static char *parse_sq_scalar(const char *s) {
+	if(*s == '\'') {
+		s++;
+	}
+
+	char *out = malloc(strlen(s) + 1);
+	size_t k = 0;
+
+	while(*s) {
+		if(*s == '\'') {
+			if(s[1] == '\'') {
+				out[k++] = '\'';
+				s += 2;
+				continue;
+			}
+
+			break;
+		}
+
+		out[k++] = *s++;
+	}
+
+	out[k] = 0;
+	return out;
+}
+
 /* Store key/val, replacing an existing key in place (last one wins, the
    way PyYAML builds a dict) so a GUI and the daemon agree on the value. */
 static void map_put_or_replace(yval_t *m, char *key, yval_t *val) {
@@ -337,7 +562,7 @@ static yval_t *parse_map(parser_t *p, int indent) {
 		char *line = p->lines[p->i].raw + indent;
 		char *key;
 		char *colon;
-		char *dqkey = NULL;
+		char *qkey = NULL;
 		if(line[0] == '"') {
 			/* "quoted key": the emitter writes keys this way when they
 			   contain ':' or other characters a plain key cannot hold. */
@@ -346,19 +571,36 @@ static yval_t *parse_map(parser_t *p, int indent) {
 			if(!*end) { p->error = true; break; }
 			colon = end + 1 + strspn(end + 1, " \t");
 			if(*colon != ':') { p->error = true; break; }
-			*end = 0;
-			dqkey = parse_dq_scalar(line + 1);
-			key = dqkey;
+			qkey = parse_dq_scalar(line);
+			key = qkey;
+		} else if(line[0] == '\'') {
+			/* 'single-quoted key': '' inside single quotes is an escaped '. */
+			char *end = line + 1;
+			while(*end) {
+				if(*end == '\'') {
+					if(end[1] == '\'') { end += 2; continue; }
+					break;
+				}
+				end++;
+			}
+			if(!*end) { p->error = true; break; }
+			colon = end + 1 + strspn(end + 1, " \t");
+			if(*colon != ':') { p->error = true; break; }
+			qkey = parse_sq_scalar(line);
+			key = qkey;
 		} else {
 			colon = strchr(line, ':');
 			if(!colon) { p->error = true; break; }          /* not "key: ..." */
 			*colon = 0;
 			key = trim(line);
 		}
-		if(!*key || strlen(key) > YAML_MAX_KEY) { free(dqkey); p->error = true; break; }
-		char *rest = trim(colon + 1);
+		if(!*key || strlen(key) > YAML_MAX_KEY) { free(qkey); p->error = true; break; }
+		char *raw_rest = colon + 1;
+		strip_yaml_comment(raw_rest);
+		char *rest = trim(raw_rest);
 		p->i++;
 		yval_t *val;
+		bool folded = false;
 		if(rest[0] == 0) {
 			size_t k = next_sig(p, p->i);
 			const char *kl = k < p->n ? p->lines[k].raw + indent : NULL;
@@ -375,20 +617,23 @@ static yval_t *parse_map(parser_t *p, int indent) {
 				val = parse_seq(p, indent);
 			}
 			else { val = yval_new(Y_SCALAR); val->scalar = strdup(""); }
-		} else if(rest[0] == '|') {
-			val = parse_block_scalar(p, indent);
+		} else if(is_block_scalar_header(rest, &folded)) {
+			val = parse_block_scalar(p, indent, folded);
 		} else if(rest[0] == '"') {
 			val = yval_new(Y_SCALAR);
 			val->scalar = parse_dq_scalar(rest);
+		} else if(rest[0] == '\'') {
+			val = yval_new(Y_SCALAR);
+			val->scalar = parse_sq_scalar(rest);
 		} else if(rest[0] == '[') {
-			val = parse_flow_seq(rest);
+			val = parse_flow_seq(rest, &p->error);
 		} else if(!strcmp(rest, "{}")) {
 			val = yval_new(Y_MAP);
 		} else {
 			val = yval_new(Y_SCALAR);
 			val->scalar = strdup(unquote(rest));
 		}
-		map_put_or_replace(map, dqkey ? dqkey : strdup(key), val);
+		map_put_or_replace(map, qkey ? qkey : strdup(key), val);
 	}
 	return map;
 }
@@ -402,7 +647,9 @@ static yval_t *parse_seq(parser_t *p, int indent) {
 		char *line = p->lines[j].raw + indent;
 		if(line[0] != '-') break;
 		p->i = j;
-		char *item = trim(line + 1);
+		char *raw_item = line + 1;
+		strip_yaml_comment(raw_item);
+		char *item = trim(raw_item);
 		yval_t *val;
 		if(item[0] == 0) {
 			p->i++;
@@ -411,6 +658,13 @@ static yval_t *parse_seq(parser_t *p, int indent) {
 			p->i++;
 			val = yval_new(Y_SCALAR);
 			val->scalar = parse_dq_scalar(item);
+		} else if(item[0] == '\'') {
+			p->i++;
+			val = yval_new(Y_SCALAR);
+			val->scalar = parse_sq_scalar(item);
+		} else if(item[0] == '[') {
+			p->i++;
+			val = parse_flow_seq(item, &p->error);
 		} else {
 			p->i++;
 			val = yval_new(Y_SCALAR);
@@ -673,11 +927,27 @@ FILE *yamlconf_content_fp(const char *content) {
 
 /* ---- public: load -------------------------------------------------------- */
 
+static void yamlconf_atexit_cleanup(void) {
+	yamlconf_unlock();
+	yamlconf_free(yamlconf_global);
+	yamlconf_global = NULL;
+	free(yamlconf_path);
+	yamlconf_path = NULL;
+}
+
 bool yamlconf_is_yaml_path(const char *path) {
 	if(!path) return false;
 	size_t n = strlen(path);
-	return (n > 5 && !strcasecmp(path + n - 5, ".yaml")) ||
-	       (n > 4 && !strcasecmp(path + n - 4, ".yml"));
+	bool is_yaml = (n > 5 && !strcasecmp(path + n - 5, ".yaml")) ||
+	               (n > 4 && !strcasecmp(path + n - 4, ".yml"));
+	if(is_yaml) {
+		static bool atexit_registered = false;
+		if(!atexit_registered) {
+			atexit_registered = true;
+			atexit(yamlconf_atexit_cleanup);
+		}
+	}
+	return is_yaml;
 }
 
 #define YAML_MAX_FILE (64u * 1024u * 1024u)   /* refuse anything larger */
@@ -691,8 +961,14 @@ static char *read_file(const char *path) {
 	char *buf = malloc((size_t) sz + 1);
 	if(!buf) { fclose(f); return NULL; }
 	size_t rd = fread(buf, 1, (size_t) sz, f);
-	buf[rd] = 0;
+	bool err = ferror(f) != 0;
 	fclose(f);
+	if(err || rd != (size_t) sz || memchr(buf, '\0', rd)) {
+		free(buf);
+		errno = EINVAL;
+		return NULL;
+	}
+	buf[rd] = 0;
 	return buf;
 }
 

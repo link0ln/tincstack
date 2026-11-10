@@ -470,6 +470,8 @@ int setup_udp_socket(const sockaddr_t *sa, bool shared) {
    peers dial by a fixed port must NOT call this. It is therefore gated by the
    UDPRebindOnWake option and only triggered on the wake-from-sleep path. */
 void rebind_udp_sockets(void) {
+	uint16_t shared_port = 0;
+
 	for(int i = 0; i < listen_sockets; i++) {
 		listen_socket_t *sock = &listen_socket[i];
 
@@ -478,22 +480,71 @@ void rebind_udp_sockets(void) {
 
 		if(sock->udp.fd >= 0) {
 			closesocket(sock->udp.fd);
+			sock->udp.fd = -1;
 		}
 
-		/* Reuse the bound address family/host but request a fresh port (0). */
+		/* Reuse the bound address family/host but request a fresh port (0),
+		   sharing the first rebound port across dual-stack sockets if free. */
 		sockaddr_t sa = sock->sa;
 
 		if(sa.sa.sa_family == AF_INET) {
-			sa.in.sin_port = 0;
+			sa.in.sin_port = htons(shared_port);
 		} else if(sa.sa.sa_family == AF_INET6) {
-			sa.in6.sin6_port = 0;
+			sa.in6.sin6_port = htons(shared_port);
 		}
 
 		int udp_fd = setup_vpn_in_socket(&sa);
 
+		if(udp_fd < 0 && shared_port != 0) {
+			if(sa.sa.sa_family == AF_INET) {
+				sa.in.sin_port = 0;
+			} else if(sa.sa.sa_family == AF_INET6) {
+				sa.in6.sin6_port = 0;
+			}
+
+			udp_fd = setup_vpn_in_socket(&sa);
+		}
+
 		if(udp_fd < 0) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Could not rebind UDP socket %d to a fresh port", i);
 			continue;
+		}
+
+		sockaddr_t bound_sa;
+		memset(&bound_sa, 0, sizeof(bound_sa));
+		socklen_t bound_len = sizeof(bound_sa);
+
+		if(getsockname(udp_fd, &bound_sa.sa, &bound_len) == 0) {
+			uint16_t bound_port = 0;
+
+			if(bound_sa.sa.sa_family == AF_INET) {
+				bound_port = ntohs(bound_sa.in.sin_port);
+
+				if(sock->sa.sa.sa_family == AF_INET) {
+					sock->sa.in.sin_port = bound_sa.in.sin_port;
+				}
+			} else if(bound_sa.sa.sa_family == AF_INET6) {
+				bound_port = ntohs(bound_sa.in6.sin6_port);
+
+				if(sock->sa.sa.sa_family == AF_INET6) {
+					sock->sa.in6.sin6_port = bound_sa.in6.sin6_port;
+				}
+			}
+
+			if(bound_port != 0 && shared_port == 0) {
+				shared_port = bound_port;
+				char *new_port = int_to_str(bound_port);
+
+				if(!myport.udp || strcmp(myport.udp, new_port) != 0) {
+					if(myport.udp != myport.tcp) {
+						free(myport.udp);
+					}
+
+					myport.udp = new_port;
+				} else {
+					free(new_port);
+				}
+			}
 		}
 
 		io_add(&sock->udp, handle_incoming_vpn_data, sock, udp_fd, IO_READ);

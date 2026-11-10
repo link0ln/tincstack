@@ -87,12 +87,12 @@ static bool address_routes_via_vpn_uncached(const sockaddr_t *sa) {
 
 			for splay_each(subnet_t, s, &myself->subnet_tree) {
 				if(local.sa.sa_family == AF_INET && s->type == SUBNET_IPV4) {
-					if(!memcmp(&local.in.sin_addr, &s->net.ipv4.address, sizeof(ipv4_t))) {
+					if(!maskcmp(&local.in.sin_addr, &s->net.ipv4.address, s->net.ipv4.prefixlength)) {
 						via_self = true;
 						break;
 					}
 				} else if(local.sa.sa_family == AF_INET6 && s->type == SUBNET_IPV6) {
-					if(!memcmp(&local.in6.sin6_addr, &s->net.ipv6.address, sizeof(ipv6_t))) {
+					if(!maskcmp(&local.in6.sin6_addr, &s->net.ipv6.address, s->net.ipv6.prefixlength)) {
 						via_self = true;
 						break;
 					}
@@ -102,29 +102,8 @@ static bool address_routes_via_vpn_uncached(const sockaddr_t *sa) {
 
 		closesocket(fd);
 
-		if(via_self) {
-			return true;
-		}
-
-		/* If the kernel routes `sa' out of a physical interface (not our VPN
-		   tunnel) whose IP is on the same /24 (IPv4) or /64 (IPv6) local LAN
-		   as `sa', `sa' is directly on-link on our local network even if a
-		   broad InterfaceRoute covering that LAN prefix exists in tinc.yaml. */
 		if(got_local) {
-			if(local.sa.sa_family == AF_INET && sa->sa.sa_family == AF_INET) {
-				uint32_t lip = ntohl(local.in.sin_addr.s_addr);
-				uint32_t dip = ntohl(sa->in.sin_addr.s_addr);
-
-				if(lip != 0 && (lip >> 24) != 127 && (lip & 0xffffff00u) == (dip & 0xffffff00u)) {
-					return false;
-				}
-			} else if(local.sa.sa_family == AF_INET6 && sa->sa.sa_family == AF_INET6) {
-				if(!IN6_IS_ADDR_UNSPECIFIED(&local.in6.sin6_addr) &&
-				                !IN6_IS_ADDR_LOOPBACK(&local.in6.sin6_addr) &&
-				                !memcmp(&local.in6.sin6_addr, &sa->in6.sin6_addr, 8)) {
-					return false;
-				}
-			}
+			return via_self;
 		}
 	}
 
@@ -406,28 +385,73 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 
 		if(cache->ai) {
 			free_known_addresses(cache->ai);
+			cache->ai = NULL;
+			cache->aip = NULL;
 		}
 
-		cache->aip = cache->ai = str2addrinfo(address, port, SOCK_STREAM);
+		sockaddr_t literal = str2sockaddr(address, port);
 
-		if(cache->ai) {
-			struct addrinfo *ai = NULL;
-
-			for(; cache->aip; cache->aip = cache->aip->ai_next) {
-				struct addrinfo *oai = ai;
-
-				ai = xzalloc(sizeof(*ai));
-				ai->ai_family = cache->aip->ai_family;
-				ai->ai_socktype = cache->aip->ai_socktype;
-				ai->ai_protocol = cache->aip->ai_protocol;
-				ai->ai_addrlen = cache->aip->ai_addrlen;
+		if(literal.sa.sa_family != AF_UNKNOWN) {
+			if(addressfamily == AF_UNSPEC || literal.sa.sa_family == addressfamily) {
+				struct addrinfo *ai = xzalloc(sizeof(*ai));
+				ai->ai_family = literal.sa.sa_family;
+				ai->ai_socktype = SOCK_STREAM;
+				ai->ai_protocol = IPPROTO_TCP;
+				ai->ai_addrlen = SALEN(literal.sa);
 				ai->ai_addr = xmalloc(ai->ai_addrlen);
-				memcpy(ai->ai_addr, cache->aip->ai_addr, ai->ai_addrlen);
-				ai->ai_next = oai;
+				memcpy(ai->ai_addr, &literal, ai->ai_addrlen);
+				cache->aip = cache->ai = ai;
 			}
+		} else {
+			sockaddrfree(&literal);
 
-			freeaddrinfo(cache->ai);
-			cache->aip = cache->ai = ai;
+			if(dnsrefresh_active()) {
+				sockaddr_t async_addrs[16];
+				size_t n_async = dnsrefresh_lookup_async(cache->node, address, port, async_addrs, 16);
+				struct addrinfo *ai = NULL;
+
+				for(size_t i = n_async; i > 0; i--) {
+					const sockaddr_t *src = &async_addrs[i - 1];
+
+					if(addressfamily != AF_UNSPEC && src->sa.sa_family != addressfamily) {
+						continue;
+					}
+
+					struct addrinfo *oai = ai;
+					ai = xzalloc(sizeof(*ai));
+					ai->ai_family = src->sa.sa_family;
+					ai->ai_socktype = SOCK_STREAM;
+					ai->ai_protocol = IPPROTO_TCP;
+					ai->ai_addrlen = SALEN(src->sa);
+					ai->ai_addr = xmalloc(ai->ai_addrlen);
+					memcpy(ai->ai_addr, src, ai->ai_addrlen);
+					ai->ai_next = oai;
+				}
+
+				cache->aip = cache->ai = ai;
+			} else {
+				cache->aip = cache->ai = str2addrinfo(address, port, SOCK_STREAM);
+
+				if(cache->ai) {
+					struct addrinfo *ai = NULL;
+
+					for(; cache->aip; cache->aip = cache->aip->ai_next) {
+						struct addrinfo *oai = ai;
+
+						ai = xzalloc(sizeof(*ai));
+						ai->ai_family = cache->aip->ai_family;
+						ai->ai_socktype = cache->aip->ai_socktype;
+						ai->ai_protocol = cache->aip->ai_protocol;
+						ai->ai_addrlen = cache->aip->ai_addrlen;
+						ai->ai_addr = xmalloc(ai->ai_addrlen);
+						memcpy(ai->ai_addr, cache->aip->ai_addr, ai->ai_addrlen);
+						ai->ai_next = oai;
+					}
+
+					freeaddrinfo(cache->ai);
+					cache->aip = cache->ai = ai;
+				}
+			}
 		}
 
 		free(address);

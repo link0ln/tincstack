@@ -209,6 +209,10 @@ void terminate_connection(connection_t *c, bool report) {
 	   if this was a single-flow link, send a CLOSE before the socket goes. */
 	transport_connection_close(c);
 
+	if(c->status.no_tarpit) {
+		c->status.tarpit = false;
+	}
+
 	connection_del(c);
 
 	/* Check if this was our outgoing connection */
@@ -318,13 +322,36 @@ static void timeout_handler(void *data) {
 	};
 
 	for list_each(connection_t, c, &connection_list) {
-		if(!c->status.control) {
-			list_insert_tail(&conn_snapshot, c);
-		}
+		list_insert_tail(&conn_snapshot, c);
+	}
+
+	size_t peer_ceiling = maxoutbufsize > 0 ? (size_t)maxoutbufsize : (16U * 1024U * 1024U);
+
+	if(peer_ceiling < 256U * 1024U) {
+		peer_ceiling = 256U * 1024U;
 	}
 
 	for list_each(connection_t, c, &conn_snapshot) {
-		if(!connection_is_live(c) || c->status.control) {
+		if(!connection_is_live(c)) {
+			continue;
+		}
+
+		size_t out_pending = c->outbuf.len > c->outbuf.offset ? c->outbuf.len - c->outbuf.offset : 0;
+		size_t queued = out_pending + c->transport_outbuf_len;
+
+		if(c->status.control) {
+			if((c->status.pcap || c->status.log) && (c->status.remove_unused || queued > 4U * 1024U * 1024U)) {
+				logger(DEBUG_CONNECTIONS, LOG_WARNING, "Closing stalled control stream (%lu bytes queued)", (unsigned long)queued);
+				terminate_connection(c, false);
+			}
+
+			continue;
+		}
+
+		if(c->status.remove_unused || queued > peer_ceiling) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Output buffer ceiling exceeded (%lu bytes) for %s (%s), closing stalled connection",
+			       (unsigned long)queued, c->name, c->hostname);
+			terminate_connection(c, c->edge);
 			continue;
 		}
 
@@ -464,7 +491,7 @@ static void periodic_handler(void *data) {
 
 void handle_meta_connection_data(connection_t *c) {
 	if(!receive_meta(c)) {
-		if(!c->status.control) {
+		if(!c->status.control && !c->status.no_tarpit) {
 			c->status.tarpit = true;
 		}
 

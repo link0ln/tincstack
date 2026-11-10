@@ -344,22 +344,36 @@ static void route_ipv6_unreachable(node_t *source, vpn_packet_t *packet, length_
 }
 
 static bool do_decrement_ttl(node_t *source, vpn_packet_t *packet) {
+	if(!checklength(source, packet, ether_size)) {
+		return false;
+	}
+
 	uint16_t type = DATA(packet)[12] << 8 | DATA(packet)[13];
 	length_t ethlen = ether_size;
 
 	if(type == ETH_P_8021Q) {
+		if(!checklength(source, packet, ether_size + 4)) {
+			return false;
+		}
+
 		type = DATA(packet)[16] << 8 | DATA(packet)[17];
 		ethlen += 4;
 	}
 
 	switch(type) {
-	case ETH_P_IP:
+	case ETH_P_IP: {
 		if(!checklength(source, packet, ethlen + ip_size)) {
 			return false;
 		}
 
+		size_t ihl = (size_t)(DATA(packet)[ethlen] & 0x0f) * 4;
+
+		if(ihl < ip_size || !checklength(source, packet, ethlen + (length_t)ihl)) {
+			return false;
+		}
+
 		if(DATA(packet)[ethlen + 8] <= 1) {
-			if(DATA(packet)[ethlen + 11] != IPPROTO_ICMP || DATA(packet)[ethlen + 32] != ICMP_TIME_EXCEEDED) {
+			if(DATA(packet)[ethlen + 9] != IPPROTO_ICMP || (size_t)packet->len < (size_t)ethlen + ihl + 1 || DATA(packet)[ethlen + ihl] != ICMP_TIME_EXCEEDED) {
 				route_ipv4_unreachable(source, packet, ethlen, ICMP_TIME_EXCEEDED, ICMP_EXC_TTL);
 			}
 
@@ -381,6 +395,7 @@ static bool do_decrement_ttl(node_t *source, vpn_packet_t *packet) {
 		DATA(packet)[ethlen + 11] = checksum & 0xff;
 
 		return true;
+	}
 
 	case ETH_P_IPV6:
 		if(!checklength(source, packet, ethlen + ip6_size)) {
@@ -388,7 +403,7 @@ static bool do_decrement_ttl(node_t *source, vpn_packet_t *packet) {
 		}
 
 		if(DATA(packet)[ethlen + 7] <= 1) {
-			if(DATA(packet)[ethlen + 6] != IPPROTO_ICMPV6 || DATA(packet)[ethlen + 40] != ICMP6_TIME_EXCEEDED) {
+			if(DATA(packet)[ethlen + 6] != IPPROTO_ICMPV6 || (size_t)packet->len < (size_t)ethlen + ip6_size + 1 || DATA(packet)[ethlen + ip6_size] != ICMP6_TIME_EXCEEDED) {
 				route_ipv6_unreachable(source, packet, ethlen, ICMP6_TIME_EXCEEDED, ICMP6_TIME_EXCEED_TRANSIT);
 			}
 
@@ -482,6 +497,18 @@ static bool node_leg_mtu_converged(const node_t *n) {
 	return true;
 }
 
+static size_t wire_eth_overhead(const node_t *n) {
+	if(routing_mode == RMODE_ROUTER) {
+		bool uses_sptps = (!n || n == myself) ? experimental : n->status.sptps;
+
+		if(uses_sptps) {
+			return 0;
+		}
+	}
+
+	return ether_size;
+}
+
 static void clamp_mss(const node_t *source, const node_t *dest, const node_t *via, vpn_packet_t *packet) {
 	if(!source || !dest || !(((via ? via->options : 0) | source->options | dest->options) & OPTION_CLAMP_MSS)) {
 		return;
@@ -491,8 +518,10 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 		return;
 	}
 
-	uint16_t mtu = effective_node_mtu(source);
-	uint16_t dest_mtu = effective_node_mtu(dest);
+	size_t src_pad = ether_size - wire_eth_overhead(source);
+	size_t dst_pad = ether_size - wire_eth_overhead(dest);
+	uint16_t mtu = (uint16_t)(effective_node_mtu(source) + src_pad);
+	uint16_t dest_mtu = (uint16_t)(effective_node_mtu(dest) + dst_pad);
 
 	if(dest_mtu < mtu) {
 		mtu = dest_mtu;
@@ -503,8 +532,12 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 	   leaves 1500B TCP segments unclamped. Cap provisional/TCP-only MSS
 	   calculation at 1400 (MSS 1346) so inner TCP segments always fit any
 	   tunnel carrier without forcing multi-hop relays onto the meta stream. */
-	if(mtu > 1400 && (!node_leg_mtu_converged(source) || !node_leg_mtu_converged(dest))) {
-		mtu = 1400;
+	uint16_t prov_src = (uint16_t)(1400 + src_pad);
+	uint16_t prov_dst = (uint16_t)(1400 + dst_pad);
+	uint16_t prov_cap = prov_src < prov_dst ? prov_src : prov_dst;
+
+	if(mtu > prov_cap && (!node_leg_mtu_converged(source) || !node_leg_mtu_converged(dest))) {
+		mtu = prov_cap;
 	}
 
 	/* Find TCP header */
@@ -622,13 +655,13 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 			break;
 		}
 
-		if(mtu <= start + 20) {
+		if((size_t)mtu <= start + 20) {
 			break;
 		}
 
 		/* Found it */
 		uint16_t oldmss = DATA(packet)[start + 22 + i] << 8 | DATA(packet)[start + 23 + i];
-		uint16_t newmss = mtu - start - 20;
+		uint16_t newmss = (uint16_t)((size_t)mtu - start - 20);
 		uint32_t csum = DATA(packet)[start + 16] << 8 | DATA(packet)[start + 17];
 
 		if(oldmss <= newmss) {
@@ -874,9 +907,12 @@ static void route_ipv4(node_t *source, vpn_packet_t *packet) {
 	}
 
 	uint16_t path_mtu = effective_node_mtu(subnet->owner);
+	size_t wire_eth = wire_eth_overhead(subnet->owner);
+	uint16_t ip_mtu = ((size_t)path_mtu > wire_eth + 576) ? (uint16_t)((size_t)path_mtu - wire_eth) : 576;
+	uint16_t frame_mtu = (uint16_t)(ip_mtu + ether_size);
 
-	if(via && packet->len > MAX(path_mtu, 590) && via != myself) {
-		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, path_mtu);
+	if(via && packet->len > frame_mtu && via != myself) {
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, (int)(packet->len - ether_size), ip_mtu);
 
 		/* RFC 9000 §14.1 requires QUIC Initial UDP datagrams to be at least
 		   1200 bytes (1228 B IPv4, 1242 B with Ethernet header) with DF=1.
@@ -884,14 +920,14 @@ static void route_ipv4(node_t *source, vpn_packet_t *packet) {
 		   inner IPv4 MTU (e.g. quic at 1119 B frame / 1105 B IPv4), returning
 		   ICMP_FRAG_NEEDED (mtu = 1105) deadlocks QUIC/HTTP3 (YouTube, Cronet).
 		   Transparently fragment user UDP packets across the tunnel when
-		   path_mtu < 1294 so the exit/peer kernel reassembles them cleanly. */
+		   ip_mtu < 1280 so the exit/peer kernel reassembles them cleanly. */
 		bool is_udp = (DATA(packet)[23] == IPPROTO_UDP) && !diag_is_probe_ipv4(packet);
 
-		if((DATA(packet)[20] & 0x40) && (!is_udp || path_mtu >= 1294)) {
-			packet->len = MAX(path_mtu, 590);
+		if((DATA(packet)[20] & 0x40) && (!is_udp || ip_mtu >= 1280)) {
+			packet->len = frame_mtu;
 			route_ipv4_unreachable(source, packet, ether_size, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED);
 		} else {
-			fragment_ipv4_packet(subnet->owner, packet, ether_size, path_mtu);
+			fragment_ipv4_packet(subnet->owner, packet, ether_size, frame_mtu);
 		}
 
 		return;
@@ -983,10 +1019,13 @@ static void route_ipv6(node_t *source, vpn_packet_t *packet) {
 	}
 
 	uint16_t path_mtu = effective_node_mtu(subnet->owner);
+	size_t wire_eth = wire_eth_overhead(subnet->owner);
+	uint16_t ip6_mtu = ((size_t)path_mtu > wire_eth + 1280) ? (uint16_t)((size_t)path_mtu - wire_eth) : 1280;
+	uint16_t frame_mtu = (uint16_t)(ip6_mtu + ether_size);
 
-	if(via && packet->len > MAX(path_mtu, 1294) && via != myself) {
-		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, packet->len, path_mtu);
-		packet->len = MAX(path_mtu, 1294);
+	if(via && packet->len > frame_mtu && via != myself) {
+		logger(DEBUG_TRAFFIC, LOG_INFO, "Packet for %s (%s) length %d larger than MTU %d", subnet->owner->name, subnet->owner->hostname, (int)(packet->len - ether_size), ip6_mtu);
+		packet->len = frame_mtu;
 		route_ipv6_unreachable(source, packet, ether_size, ICMP6_PACKET_TOO_BIG, 0);
 		return;
 	}

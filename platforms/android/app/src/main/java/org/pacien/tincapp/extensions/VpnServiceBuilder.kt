@@ -50,11 +50,27 @@ object VpnServiceBuilder {
     throw IllegalArgumentException("${e.message}: $cidr")
   }
 
+  internal fun maskNetworkAddress(addr: InetAddress, prefix: Int): InetAddress {
+    val bytes = addr.address
+    val maxPrefix = bytes.size * 8
+    if (prefix < 0 || prefix > maxPrefix) {
+      throw IllegalArgumentException("Invalid prefix length $prefix")
+    }
+    for (i in bytes.indices) {
+      val keep = (prefix - i * 8).coerceIn(0, 8)
+      bytes[i] = (bytes[i].toInt() and (0xff shl (8 - keep)) and 0xff).toByte()
+    }
+    return InetAddress.getByAddress(bytes)
+  }
+
   private fun VpnService.Builder.addAddress(cidr: CidrAddress): VpnService.Builder =
     exceptWithCidr(cidr) { addAddress(numericAddress(cidr.address), cidr.prefix) }
 
   private fun VpnService.Builder.addRoute(cidr: CidrAddress): VpnService.Builder =
-    exceptWithCidr(cidr) { addRoute(numericAddress(cidr.address), cidr.prefix) }
+    exceptWithCidr(cidr) {
+      val netAddr = maskNetworkAddress(numericAddress(cidr.address), cidr.prefix)
+      addRoute(netAddr, cidr.prefix)
+    }
 
   private fun VpnService.Builder.allowBypass(allow: Boolean): VpnService.Builder =
     if (allow) allowBypass() else this

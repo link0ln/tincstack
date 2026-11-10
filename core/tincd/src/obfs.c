@@ -52,6 +52,7 @@
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
 #include "transport_quic.h"
+#include "multipath.h"
 #include "obfs.h"
 
 /* ---- configuration ------------------------------------------------------- */
@@ -158,8 +159,10 @@ struct obfs_link_t {
 	bool active;               /* an obfs flow to this node is up */
 	sockaddr_t addr;           /* last verified peer UDP address (fast-path match) */
 	bool have_addr;
+	int addr_rx_fd;            /* UDP socket fd associated with addr */
 	sockaddr_t alt_addrs[OBFS_ALT_ADDRS]; /* secondary multipath peer UDP addresses */
 	bool have_alt_addr[OBFS_ALT_ADDRS];
+	int alt_rx_fd[OBFS_ALT_ADDRS];        /* UDP socket fd per secondary peer address */
 	int alt_addr_next;
 	int rx_fd;                 /* UDP socket fd this link's flow arrived on / dials from */
 
@@ -201,6 +204,38 @@ static listen_socket_t obfs_listen[MAXSOCKETS];
 static int obfs_listens;
 static int obfs_port_option; /* operator's ObfsPort (dial fallback), else 0 */
 
+static bool obfs_fd_is_obfs_listen(int fd) {
+	if(fd < 0) {
+		return false;
+	}
+
+	for(int i = 0; i < obfs_listens; i++) {
+		if(obfs_listen[i].udp.fd == fd) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool obfs_fd_is_valid(int fd) {
+	if(fd < 0) {
+		return false;
+	}
+
+	if(obfs_fd_is_obfs_listen(fd)) {
+		return true;
+	}
+
+	for(int i = 0; i < listen_sockets; i++) {
+		if(listen_socket[i].udp.fd == fd) {
+			return true;
+		}
+	}
+
+	return multipath_owns_udp_fd(fd);
+}
+
 int obfs_pick_socket(const sockaddr_t *sa) {
 	if(!sa) {
 		return -1;
@@ -210,33 +245,21 @@ int obfs_pick_socket(const sockaddr_t *sa) {
 	sockaddrunmap(&a);
 
 	for list_each(obfs_link_t, l, &obfs_links) {
-		if(l->rx_fd < 0) {
-			continue;
-		}
+		int fd = -1;
 
-		bool match = l->have_addr && !sockaddrcmp(&a, &l->addr);
-
-		if(!match) {
+		if(l->have_addr && !sockaddrcmp(&a, &l->addr)) {
+			fd = l->addr_rx_fd >= 0 ? l->addr_rx_fd : l->rx_fd;
+		} else {
 			for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
 				if(l->have_alt_addr[i] && !sockaddrcmp(&a, &l->alt_addrs[i])) {
-					match = true;
+					fd = l->alt_rx_fd[i] >= 0 ? l->alt_rx_fd[i] : l->rx_fd;
 					break;
 				}
 			}
 		}
 
-		if(match) {
-			for(int i = 0; i < obfs_listens; i++) {
-				if(obfs_listen[i].udp.fd == l->rx_fd) {
-					return l->rx_fd;
-				}
-			}
-
-			for(int i = 0; i < listen_sockets; i++) {
-				if(listen_socket[i].udp.fd == l->rx_fd) {
-					return l->rx_fd;
-				}
-			}
+		if(obfs_fd_is_valid(fd)) {
+			return fd;
 		}
 	}
 
@@ -418,6 +441,10 @@ obfs_link_t *obfs_link_for_node(node_t *n) {
 	obfs_link_t *l = xzalloc(sizeof(*l));
 	l->node = n;
 	l->i_am_lo = i_am_lo;
+	l->addr_rx_fd = -1;
+	for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
+		l->alt_rx_fd[i] = -1;
+	}
 	l->rx_fd = -1;
 	memcpy(l->base, base, sizeof(l->base));
 	memset(base, 0, sizeof(base));
@@ -466,7 +493,11 @@ void obfs_link_reset_for_test(node_t *n) {
 		if(l->node == n) {
 			l->active = false;
 			l->have_addr = false;
+			l->addr_rx_fd = -1;
 			memset(l->have_alt_addr, 0, sizeof(l->have_alt_addr));
+			for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
+				l->alt_rx_fd[i] = -1;
+			}
 			l->alt_addr_next = 0;
 			l->rx_fd = -1;
 			keyset_free(&l->sess);
@@ -553,47 +584,83 @@ void obfs_link_force_v2_for_test(obfs_link_t *l, bool v2) {
 	l->peer_v3 = !v2;
 }
 
-void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr) {
+static void obfs_link_activate_fd(obfs_link_t *l, const sockaddr_t *addr, int fd, bool is_sf) {
 	l->active = true;
+
+	if(fd >= 0) {
+		if(l->rx_fd < 0 || is_sf || !obfs_fd_is_obfs_listen(l->rx_fd) ||
+		                obfs_fd_is_obfs_listen(fd) || multipath_owns_udp_fd(fd)) {
+			l->rx_fd = fd;
+		}
+	}
 
 	if(addr) {
 		sockaddr_t clean = *addr;
 		sockaddrunmap(&clean);
+		int eff_fd = fd >= 0 ? fd : l->rx_fd;
 
 		if(l->have_addr && sockaddrcmp(&clean, &l->addr)) {
-			/* Remember the previous address in alt_addrs so concurrent multipath
-			   flows from two NATs/interfaces both stay on the fast path. */
-			bool found = false;
-			bool was_alt = false;
+			/* Remember the previous address (and its rx_fd) in alt_addrs so concurrent
+			   multipath / Port / ObfsPort flows both stay on the fast path without
+			   clobbering each other's outbound socket. */
+			int prev_idx = -1;
+			int clean_idx = -1;
 
 			for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
 				if(l->have_alt_addr[i]) {
 					if(!sockaddrcmp(&l->addr, &l->alt_addrs[i])) {
-						found = true;
+						prev_idx = i;
 					}
 					if(!sockaddrcmp(&clean, &l->alt_addrs[i])) {
-						was_alt = true;
+						clean_idx = i;
 					}
 				}
 			}
 
-			if(!found) {
+			if(eff_fd < 0 && clean_idx >= 0) {
+				eff_fd = l->alt_rx_fd[clean_idx];
+			}
+
+			if(prev_idx >= 0) {
+				if(l->addr_rx_fd >= 0) {
+					l->alt_rx_fd[prev_idx] = l->addr_rx_fd;
+				}
+			} else {
 				int slot = l->alt_addr_next % OBFS_ALT_ADDRS;
 				l->alt_addrs[slot] = l->addr;
+				l->alt_rx_fd[slot] = l->addr_rx_fd;
 				l->have_alt_addr[slot] = true;
 				l->alt_addr_next = (slot + 1) % OBFS_ALT_ADDRS;
 			}
 
-			if(!was_alt) {
+			if(clean_idx >= 0 && eff_fd >= 0) {
+				l->alt_rx_fd[clean_idx] = eff_fd;
+			}
+
+			if(clean_idx < 0) {
 				l->have_budget = false;   /* genuinely new peer address: refresh cached budget */
 			}
+
+			l->addr = clean;
+			l->have_addr = true;
+			l->addr_rx_fd = eff_fd;
 		} else if(!l->have_addr) {
 			l->have_budget = false;
+			l->addr = clean;
+			l->have_addr = true;
+			l->addr_rx_fd = eff_fd;
+		} else if(eff_fd >= 0) {
+			if(!(obfs_fd_is_obfs_listen(l->addr_rx_fd) && !obfs_fd_is_obfs_listen(eff_fd) &&
+			                !multipath_owns_udp_fd(eff_fd) && !is_sf &&
+			                l->node && dseal_obfs_connected(l->node))) {
+				l->addr_rx_fd = eff_fd;
+			}
 		}
-
-		l->addr = clean;
-		l->have_addr = true;
 	}
+}
+
+void obfs_link_activate(obfs_link_t *l, const sockaddr_t *addr) {
+	obfs_link_activate_fd(l, addr, -1, false);
 }
 
 /* ---- path budget ---------------------------------------------------------
@@ -1367,10 +1434,33 @@ static obfs_send_t obfs_link_send(obfs_link_t *l, int override_fd, size_t sock, 
 		return OBFS_SEND_OK; /* it is an obfs link; dropping the datagram beats leaking it in the clear */
 	}
 
-	int send_fd = override_fd >= 0 ? override_fd : obfs_pick_socket(sa);
+	int send_fd = override_fd;
 
 	if(send_fd < 0) {
-		send_fd = listen_socket[sock].udp.fd;
+		int picked = obfs_pick_socket(sa);
+
+		if(obfs_fd_is_obfs_listen(picked) && (!to || !to->connection || !to->connection->status.we_dialled)) {
+			send_fd = picked;
+		} else {
+			int tx_up = multipath_get_tx_uplink(to);
+
+			if(tx_up >= 0) {
+				send_fd = multipath_get_udp_fd(tx_up, sa->sa.sa_family, -1);
+			}
+
+			if(send_fd < 0) {
+				send_fd = picked;
+			}
+		}
+	}
+
+	if(send_fd < 0 && listen_sockets > 0) {
+		size_t idx = sock < (size_t)listen_sockets ? sock : 0;
+		send_fd = listen_socket[idx].udp.fd;
+	}
+
+	if(send_fd < 0) {
+		return OBFS_SEND_ERR;
 	}
 
 	if(sendto(send_fd, (void *)frame, flen, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
@@ -1442,7 +1532,20 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 	int send_fd = obfs_pick_socket(addr);
 
 	if(send_fd < 0) {
-		send_fd = listen_socket[sock].udp.fd;
+		int tx_up = multipath_get_tx_uplink(NULL);
+
+		if(tx_up >= 0) {
+			send_fd = multipath_get_udp_fd(tx_up, addr->sa.sa_family, -1);
+		}
+	}
+
+	if(send_fd < 0 && listen_sockets > 0) {
+		size_t idx = sock < (size_t)listen_sockets ? sock : 0;
+		send_fd = listen_socket[idx].udp.fd;
+	}
+
+	if(send_fd < 0) {
+		return;
 	}
 
 	for(int i = 0; i < obfs_junk_count; i++) {
@@ -1472,8 +1575,8 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerlen, const sockaddr_t *addr, obfs_link_t *l) {
 	listen_socket_t *main_ls = ls;
 
-	if(ls < listen_socket || ls >= listen_socket + listen_sockets) {
-		main_ls = listen_sockets > 0 ? &listen_socket[0] : NULL;
+	if(!ls || ((ls < listen_socket || ls >= listen_socket + listen_sockets) && !multipath_owns_udp_fd(ls->udp.fd))) {
+		main_ls = listen_sockets > 0 ? &listen_socket[0] : ls;
 		for(int i = 0; i < listen_sockets; i++) {
 			if(listen_socket[i].sa.sa.sa_family == addr->sa.sa_family) {
 				main_ls = &listen_socket[i];
@@ -1555,8 +1658,12 @@ static bool obfs_opens_session(const uint8_t *inner, size_t innerlen) {
    node's UDP address moves only after SPTPS accepted a record. */
 #define OBFS_EPOCH_SILENCE 5
 
+static bool obfs_sess_protected(const obfs_link_t *l) {
+	return l && l->sess_tx_ready && l->node && l->node->connection && l->node->connection->status.active;
+}
+
 static bool obfs_epoch_restart(obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, const uint8_t *inner, size_t innerlen) {
-	if(ks != &l->boot) {
+	if(ks != &l->boot || obfs_sess_protected(l)) {
 		return false;
 	}
 
@@ -1622,15 +1729,27 @@ static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, 
 	}
 
 	ks->last_ok = now.tv_sec;
+	bool used_boot = (ks == &l->boot);
+	bool is_sf = innerlen >= SF_MAGIC_LEN && !memcmp(inner, sf_magic, SF_MAGIC_LEN);
+
+	if(used_boot && obfs_sess_protected(l)) {
+		/* While the peer's authenticated meta connection is alive and sess_tx_ready
+		   holds, never allow static boot-key packets to downgrade sess/version or
+		   overwrite the peer's endpoint or rx_fd. */
+		if(is_sf) {
+			return true;
+		}
+		return obfs_inject(ls, inner, innerlen, addr, NULL);
+	}
+
 	obfs_follow_version(l, ver);
-	if(ks == &l->boot && l->sess_tx_ready &&
+	if(used_boot && l->sess_tx_ready &&
 	                (obfs_opens_session(inner, innerlen) || now.tv_sec - l->sess_time >= 2)) {
 		obfs_link_demote_sess(l);
 		l->ack_sent = false;
 	}
 	l->rx_since_dial = true;
-	l->rx_fd = ls ? ls->udp.fd : -1;
-	obfs_link_activate(l, addr);
+	obfs_link_activate_fd(l, addr, ls ? ls->udp.fd : -1, is_sf);
 	return obfs_inject(ls, inner, innerlen, addr, l);
 }
 
@@ -1845,28 +1964,38 @@ bool obfs_dial(connection_t *c) {
 		}
 	}
 
-	if(sock < 0) {
-		logger(DEBUG_CONNECTIONS, LOG_ERR, "No UDP socket with the address family of %s for an obfs dial", c->name);
-		return false;
+	int dial_fd = -1;
+	int up_idx = c->uplink_idx >= 0 ? c->uplink_idx : multipath_get_tx_uplink(n);
+
+	if(up_idx >= 0) {
+		dial_fd = multipath_get_udp_fd(up_idx, c->address.sa.sa_family, -1);
 	}
 
-	l->rx_fd = listen_socket[sock].udp.fd;
-	if(!c->status.udp_fallback && obfs_listens > 0) {
+	if(dial_fd < 0 && !c->status.udp_fallback && obfs_listens > 0) {
 		for(int i = 0; i < obfs_listens; i++) {
 			if(obfs_listen[i].sa.sa.sa_family == c->address.sa.sa_family) {
-				l->rx_fd = obfs_listen[i].udp.fd;
+				dial_fd = obfs_listen[i].udp.fd;
 				break;
 			}
 		}
+	}
+
+	if(dial_fd < 0 && sock >= 0) {
+		dial_fd = listen_socket[sock].udp.fd;
+	}
+
+	if(dial_fd < 0) {
+		logger(DEBUG_CONNECTIONS, LOG_ERR, "No UDP socket with the address family of %s for an obfs dial", c->name);
+		return false;
 	}
 
 	if(!c->status.multipath_sub && !dseal_obfs_connected(n)) {
 		obfs_link_demote_sess(l);
 		l->ack_sent = false;
 	}
-	obfs_link_activate(l, &c->address);
+	obfs_link_activate_fd(l, &c->address, dial_fd, true);
 	l->rx_since_dial = false;
-	obfs_send_junk((size_t)sock, &c->address);
+	obfs_send_junk(sock >= 0 ? (size_t)sock : 0, &c->address);
 
 	return sf_dial_obfs(c, l);
 }
@@ -1951,7 +2080,11 @@ void obfs_close(connection_t *c) {
 	if(l && !superseded) {
 		l->active = false;
 		l->have_addr = false;
+		l->addr_rx_fd = -1;
 		memset(l->have_alt_addr, 0, sizeof(l->have_alt_addr));
+		for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
+			l->alt_rx_fd[i] = -1;
+		}
 		l->alt_addr_next = 0;
 		l->rx_fd = -1;
 	}
@@ -2368,6 +2501,12 @@ void dseal_learn(node_t *n, const char *token) {
 			if(l->node == n) {
 				l->active = false;
 				l->have_addr = false;
+				l->addr_rx_fd = -1;
+				memset(l->have_alt_addr, 0, sizeof(l->have_alt_addr));
+				for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
+					l->alt_rx_fd[i] = -1;
+				}
+				l->alt_addr_next = 0;
 				l->rx_fd = -1;
 				break;
 			}

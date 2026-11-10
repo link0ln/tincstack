@@ -103,7 +103,14 @@ class TincVpnService : VpnService() {
     if (state !is State.Idle) {
       log.warn("Service destroyed with a live session ({}): ending it.", state)
       setState(State.Idle)
-      worker.submit { endSession(null, TearDownReason.REVOKED, stopService = false, anySession = true) }.get(STOP_TIMEOUT_S, TimeUnit.SECONDS)
+      val tearDown = worker.submit {
+        endSession(null, TearDownReason.REVOKED, stopService = false, anySession = true)
+      }
+      try {
+        tearDown.get(300L, TimeUnit.MILLISECONDS)
+      } catch (_: Exception) {
+        // Tear-down continues asynchronously on worker without blocking the UI thread into an ANR
+      }
     }
     if (instance === this) instance = null
     super.onDestroy()

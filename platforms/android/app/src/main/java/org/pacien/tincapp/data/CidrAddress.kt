@@ -26,10 +26,36 @@ data class CidrAddress(val address: String, val prefix: Int) {
   companion object {
     private const val SEPARATOR = "/"
 
-    fun fromSlashSeparated(s: String) = try {
-      CidrAddress(s.substringBefore(SEPARATOR), Integer.parseInt(s.substringAfter(SEPARATOR)))
+    fun fromSlashSeparated(s: String): CidrAddress = try {
+      val trimmed = s.trim()
+      if (!trimmed.contains(SEPARATOR)) throw IllegalArgumentException("missing prefix separator")
+      val addr = trimmed.substringBefore(SEPARATOR).trim()
+      val prefix = Integer.parseInt(trimmed.substringAfter(SEPARATOR).trim())
+      val maxPrefix = if (addr.contains(':')) 128 else 32
+      if (addr.isEmpty() || prefix < 0 || prefix > maxPrefix) {
+        throw IllegalArgumentException("invalid address/prefix")
+      }
+      CidrAddress(addr, prefix)
     } catch (e: Exception) {
       throw TincYaml.InvalidConfigurationException("not an address/prefix: '$s'")
+    }
+
+    fun fromSlashSeparatedOrHost(
+      s: String,
+      defaultIpv4Prefix: Int = 32,
+      defaultIpv6Prefix: Int = 128,
+    ): CidrAddress {
+      val trimmed = s.trim()
+      if (trimmed.contains(SEPARATOR)) return fromSlashSeparated(trimmed)
+      if (trimmed.isEmpty()) {
+        throw TincYaml.InvalidConfigurationException("not an address/prefix: '$s'")
+      }
+      val prefix = if (trimmed.contains(':')) defaultIpv6Prefix else defaultIpv4Prefix
+      val maxPrefix = if (trimmed.contains(':')) 128 else 32
+      if (prefix < 0 || prefix > maxPrefix) {
+        throw TincYaml.InvalidConfigurationException("not an address/prefix: '$s'")
+      }
+      return CidrAddress(trimmed, prefix)
     }
   }
 

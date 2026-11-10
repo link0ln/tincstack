@@ -516,21 +516,39 @@ static bool load_or_generate(char **cert_pem, char **key_pem, const char **sourc
 
 		if(ylocked) {
 			yamlconf_reload_global();
-		}
 
-		yamlconf_set_key_pem(yamlconf_global, netname, "tls_cert", *cert_pem);
-		yamlconf_set_key_pem(yamlconf_global, netname, "tls_key", *key_pem);
+			const char *ec = yamlconf_key_pem(yamlconf_global, netname, "tls_cert");
+			const char *ek = yamlconf_key_pem(yamlconf_global, netname, "tls_key");
 
-		if(!yamlconf_save(yamlconf_global, yamlconf_path)) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Could not persist generated TLS certificate to `%s'", yamlconf_path);
-			/* Keep running with the in-memory cert; it will regenerate next
-			   start, changing the fingerprint. Warn loudly. */
-		} else {
-			logger(DEBUG_ALWAYS, LOG_NOTICE, "Generated a self-signed TLS certificate into `%s' [%s]", yamlconf_path, netname);
-		}
+			if(ec && ek) {
+				free(*cert_pem);
+				if(*key_pem) {
+					memzero(*key_pem, strlen(*key_pem));
+					free(*key_pem);
+				}
+				*cert_pem = xstrdup(ec);
+				*key_pem = xstrdup(ek);
+				yamlconf_unlock();
+				*source = "generated self-signed (YAML keys)";
+				return true;
+			}
 
-		if(ylocked) {
+			yamlconf_set_key_pem(yamlconf_global, netname, "tls_cert", *cert_pem);
+			yamlconf_set_key_pem(yamlconf_global, netname, "tls_key", *key_pem);
+
+			if(!yamlconf_save(yamlconf_global, yamlconf_path)) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Could not persist generated TLS certificate to `%s'", yamlconf_path);
+				/* Keep running with the in-memory cert; it will regenerate next
+				   start, changing the fingerprint. Warn loudly. */
+			} else {
+				logger(DEBUG_ALWAYS, LOG_NOTICE, "Generated a self-signed TLS certificate into `%s' [%s]", yamlconf_path, netname);
+			}
+
 			yamlconf_unlock();
+		} else {
+			yamlconf_set_key_pem(yamlconf_global, netname, "tls_cert", *cert_pem);
+			yamlconf_set_key_pem(yamlconf_global, netname, "tls_key", *key_pem);
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Could not lock `%s' to persist generated TLS certificate; keeping in memory only", yamlconf_path);
 		}
 
 		*source = "generated self-signed (YAML keys)";

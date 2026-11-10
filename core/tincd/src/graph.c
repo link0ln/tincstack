@@ -220,20 +220,24 @@ void sssp_bfs(void) {
 				}
 			}
 
-			if(e->to->status.visited
-			                && (!e->to->status.indirect || indirect)
-			                && (e->to->distance != n->distance + 1 || e->to->weighted_distance <= n->weighted_distance + step_weight)) {
-				continue;
+			int cand_dist = n->distance + 1;
+			int cand_weight = n->weighted_distance + step_weight;
+
+			if(e->to->status.visited) {
+				if(!e->to->status.indirect && indirect) {
+					continue;
+				}
+
+				if(e->to->status.indirect == indirect
+				                && (cand_dist > e->to->distance
+				                    || (cand_dist == e->to->distance && cand_weight >= e->to->weighted_distance))) {
+					continue;
+				}
 			}
 
-			// Only update nexthop if it doesn't increase the path length
-
-			if(!e->to->status.visited || (e->to->distance == n->distance + 1 && e->to->weighted_distance > n->weighted_distance + step_weight)) {
-				e->to->nexthop = (n->nexthop == myself) ? e->to : n->nexthop;
-				e->to->weighted_distance = n->weighted_distance + step_weight;
-				e->to->distance = n->distance + 1;
-			}
-
+			e->to->nexthop = (n == myself || n->nexthop == myself) ? e->to : n->nexthop;
+			e->to->weighted_distance = cand_weight;
+			e->to->distance = cand_dist;
 			e->to->status.visited = true;
 			e->to->status.indirect = indirect;
 			e->to->prevedge = e;
@@ -395,6 +399,7 @@ static void check_reachability(void) {
 
 			n->status.udp_confirmed = false;
 			n->status.udp_addr_confirmed = false;
+			n->mtu = MTU;
 			n->maxmtu = MTU;
 			n->maxrecentlen = 0;
 			n->minmtu = 0;

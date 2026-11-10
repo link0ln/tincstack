@@ -583,7 +583,7 @@ class MainActivity : BaseActivity() {
         val yaml = TincYaml(AppPaths.tincYamlFile(net))
         val s = Networks.summary(net)
         val mpMode = yaml.optionValue(s.stanza, "MultipathMode")?.trim()?.lowercase()
-          ?.takeIf { it in MULTIPATH_MODES } ?: "off"
+          ?.takeIf { it in MULTIPATH_MODES } ?: "failover"
         val mpConns = yaml.optionValue(s.stanza, "MultipathConnections")?.trim()?.toIntOrNull()
           ?.coerceIn(1, 8) ?: 1
         NetworkSettings(
@@ -629,7 +629,7 @@ class MainActivity : BaseActivity() {
 
     binding.transportRow.rowSummary.setText(Labels.transportName(s?.transport ?: Transport.PLAIN))
 
-    val mpMode = s?.multipathMode ?: "off"
+    val mpMode = s?.multipathMode ?: "failover"
     val mpConns = s?.multipathConnections ?: 1
     val mpTitle = getString(multipathModeTitle(mpMode))
     binding.multipathRow.rowSummary.text = if (mpMode == "off") {
@@ -679,9 +679,18 @@ class MainActivity : BaseActivity() {
       } else {
         "Status: OFF (disabled by default for security)\nLocal telemetry & anomaly detection are active."
       }
-      setPadding(0, 0, 0, pad / 2)
+      setPadding(0, 0, 0, pad / 3)
     }
     root.addView(statusText)
+
+    val diagPassword = DiagManager.ensurePassword(this)
+    val passwordText = android.widget.TextView(this).apply {
+      text = getString(R.string.diag_password_label_format, diagPassword)
+      typeface = android.graphics.Typeface.MONOSPACE
+      setTextIsSelectable(true)
+      setPadding(0, 0, 0, pad / 2)
+    }
+    root.addView(passwordText)
 
     val portInput = android.widget.EditText(this).apply {
       hint = "HTTP Port (1024–65535)"
@@ -696,24 +705,38 @@ class MainActivity : BaseActivity() {
     }
     root.addView(markInput)
 
-    val btnRow = android.widget.LinearLayout(this).apply {
+    val btnRowTop = android.widget.LinearLayout(this).apply {
       orientation = android.widget.LinearLayout.HORIZONTAL
-      setPadding(0, pad / 3, 0, pad / 3)
+      setPadding(0, pad / 3, 0, 0)
     }
-    val markBtn = android.widget.Button(this).apply {
-      text = getString(R.string.diag_action_mark_lag)
+    val copyPwdBtn = android.widget.Button(this).apply {
+      text = getString(R.string.diag_action_copy_password)
+      layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
     }
     val copyBtn = android.widget.Button(this).apply {
       text = getString(R.string.diag_action_copy_url)
+      layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    }
+    btnRowTop.addView(copyPwdBtn)
+    btnRowTop.addView(copyBtn)
+    root.addView(btnRowTop)
+
+    val btnRowBottom = android.widget.LinearLayout(this).apply {
+      orientation = android.widget.LinearLayout.HORIZONTAL
+      setPadding(0, 0, 0, pad / 3)
+    }
+    val markBtn = android.widget.Button(this).apply {
+      text = getString(R.string.diag_action_mark_lag)
+      layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
     }
     val openBtn = android.widget.Button(this).apply {
       text = getString(R.string.diag_action_open_webui)
       isEnabled = DiagManager.isEnabled()
+      layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
     }
-    btnRow.addView(markBtn)
-    btnRow.addView(copyBtn)
-    btnRow.addView(openBtn)
-    root.addView(btnRow)
+    btnRowBottom.addView(markBtn)
+    btnRowBottom.addView(openBtn)
+    root.addView(btnRowBottom)
 
     val recentTitle = android.widget.TextView(this).apply {
       val incs = if (net.isNotEmpty()) DiagManager.collector.getIncidents(net, limit = 6) else emptyList()
@@ -729,6 +752,13 @@ class MainActivity : BaseActivity() {
     root.addView(recentTitle)
 
     lateinit var dlg: androidx.appcompat.app.AlertDialog
+    copyPwdBtn.setOnClickListener {
+      val pwd = DiagManager.ensurePassword(this)
+      (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(
+        ClipData.newPlainText("Diagnostic Password", pwd),
+      )
+      notify(R.string.diag_password_copied)
+    }
     markBtn.setOnClickListener {
       if (net.isNotEmpty()) {
         val note = markInput.text?.toString().orEmpty()
@@ -990,7 +1020,7 @@ class MainActivity : BaseActivity() {
             yaml.setOptions(
               stanza,
               mapOf(
-                "MultipathMode" to if (chosenMode == "off") null else listOf(chosenMode),
+                "MultipathMode" to listOf(chosenMode),
                 "MultipathConnections" to if (chosenConns <= 1) null else listOf(chosenConns.toString()),
               ),
             )

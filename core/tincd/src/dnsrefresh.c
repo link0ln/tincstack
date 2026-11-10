@@ -62,6 +62,7 @@ typedef struct dnsrefresh_job_t {
 	bool has_last_good;
 	sockaddr_t *addrs;                       /* all addresses from latest resolution */
 	size_t naddrs;
+	time_t last_async_req;
 	struct dnsrefresh_job_t *next;
 } dnsrefresh_job_t;
 
@@ -181,6 +182,9 @@ static bool dnsrefresh_make_pair(void) {
 	nb = 1;
 	ioctlsocket(peer, FIONBIO, &nb);
 
+	SetHandleInformation((HANDLE)(uintptr_t)sock, HANDLE_FLAG_INHERIT, 0);
+	SetHandleInformation((HANDLE)(uintptr_t)peer, HANDLE_FLAG_INHERIT, 0);
+
 	dnsrefresh_pair[0] = (int)sock;
 	dnsrefresh_pair[1] = (int)peer;
 	return true;
@@ -196,8 +200,10 @@ static bool dnsrefresh_make_pair(void) {
 	   (a blocking read here froze the whole daemon after the first wake). */
 	for(int i = 0; i < 2; i++) {
 		int flags = fcntl(dnsrefresh_pair[i], F_GETFL, 0);
+		int fdflags = fcntl(dnsrefresh_pair[i], F_GETFD, 0);
 
-		if(flags < 0 || fcntl(dnsrefresh_pair[i], F_SETFL, flags | O_NONBLOCK) < 0) {
+		if(flags < 0 || fcntl(dnsrefresh_pair[i], F_SETFL, flags | O_NONBLOCK) < 0 ||
+		                fdflags < 0 || fcntl(dnsrefresh_pair[i], F_SETFD, fdflags | FD_CLOEXEC) < 0) {
 			closesocket(dnsrefresh_pair[0]);
 			closesocket(dnsrefresh_pair[1]);
 			dnsrefresh_pair[0] = dnsrefresh_pair[1] = -1;
@@ -293,11 +299,33 @@ static void dnsrefresh_save_state(dnsrefresh_job_t *jobs) {
 		free(portstr);
 	}
 
-	fclose(fp);
+	bool ok = fflush(fp) == 0;
 
+	if(fclose(fp) != 0) {
+		ok = false;
+	}
+
+	if(!ok) {
+		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Could not flush %s: %s", tmp, strerror(errno));
+		unlink(tmp);
+		return;
+	}
+
+#ifdef HAVE_WINDOWS
+	if(!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) {
+		unlink(path);
+
+		if(rename(tmp, path)) {
+			logger(DEBUG_CONNECTIONS, LOG_WARNING, "Could not rename %s: %s", tmp, strerror(errno));
+			unlink(tmp);
+		}
+	}
+#else
 	if(rename(tmp, path)) {
 		logger(DEBUG_CONNECTIONS, LOG_WARNING, "Could not rename %s: %s", tmp, strerror(errno));
+		unlink(tmp);
 	}
+#endif
 }
 
 /* ── worker thread ─────────────────────────────────────────────────────── */
@@ -367,6 +395,7 @@ static void *dnsrefresh_thread(void *arg) {
 			} else {
 				struct addrinfo hint = {0};
 				struct addrinfo *ai = NULL;
+				hint.ai_family = addressfamily;
 				hint.ai_socktype = SOCK_STREAM;
 				/* Resolve WITH the port: a port-0 sockaddr cannot be
 				   dialled, and the last-good endpoint must carry the
@@ -719,7 +748,27 @@ static void dnsrefresh_apply(dnsrefresh_result_t *r) {
 	   touched; relayed paths are the graph's business. */
 	node_t *n = lookup_node(r->node_name);
 
-	if(!n || !n->connection || !r->ok) {
+	if(!n || !r->ok) {
+		return;
+	}
+
+	if(!n->connection) {
+		if(n->address_cache) {
+			reset_address_cache(n->address_cache);
+		}
+
+		for list_each(outgoing_t, outgoing, &outgoing_list) {
+			if(outgoing->node == n) {
+				outgoing->timeout = 0;
+
+				if(outgoing->ev.cb) {
+					timeout_set(&outgoing->ev, &(struct timeval) {
+						0, 0
+					});
+				}
+			}
+		}
+
 		return;
 	}
 
@@ -949,4 +998,77 @@ const sockaddr_t *dnsrefresh_last_good(const char *node_name, const char *hostna
 	}
 
 	return NULL;
+}
+
+bool dnsrefresh_active(void) {
+	return dnsrefresh.started;
+}
+
+size_t dnsrefresh_lookup_async(node_t *n, const char *host, const char *port, sockaddr_t *out, size_t max_out) {
+	if(!dnsrefresh.started || !n || !host || !*host || !dnsrefresh_is_name(host)) {
+		return 0;
+	}
+
+	const char *use_port = (port && *port) ? port : "655";
+	dnsrefresh_job_t *job = NULL;
+
+	for(dnsrefresh_job_t *j = dnsrefresh_jobs; j; j = j->next) {
+		if(dnsrefresh_job_match(j, n->name, host)) {
+			job = j;
+			break;
+		}
+	}
+
+	if(!job) {
+		job = xzalloc(sizeof(*job));
+		job->node_name = xstrdup(n->name);
+		job->hostname = xstrdup(host);
+		job->port = xstrdup(use_port);
+		job->next = dnsrefresh_jobs;
+		dnsrefresh_jobs = job;
+	}
+
+	size_t copied = 0;
+
+	if(out && max_out > 0) {
+		if(job->addrs && job->naddrs > 0) {
+			for(size_t i = 0; i < job->naddrs && copied < max_out; i++) {
+				out[copied] = job->addrs[i];
+				sockaddr_setport(&out[copied], use_port);
+				copied++;
+			}
+		} else if(job->has_last_good) {
+			out[0] = job->last_good;
+			sockaddr_setport(&out[0], use_port);
+			copied = 1;
+		}
+	}
+
+	if(!job->naddrs || now.tv_sec - job->last_async_req >= 5) {
+		job->last_async_req = now.tv_sec;
+
+		pthread_mutex_lock(&dnsrefresh.mutex);
+		bool already_queued = false;
+
+		for(dnsrefresh_job_t *p = dnsrefresh.pending; p; p = p->next) {
+			if(dnsrefresh_job_match(p, n->name, host)) {
+				already_queued = true;
+				break;
+			}
+		}
+
+		if(!already_queued) {
+			dnsrefresh_job_t *req = xzalloc(sizeof(*req));
+			req->node_name = xstrdup(n->name);
+			req->hostname = xstrdup(host);
+			req->port = xstrdup(use_port);
+			req->next = dnsrefresh.pending;
+			dnsrefresh.pending = req;
+			pthread_cond_signal(&dnsrefresh.work);
+		}
+
+		pthread_mutex_unlock(&dnsrefresh.mutex);
+	}
+
+	return copied;
 }

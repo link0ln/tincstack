@@ -451,6 +451,10 @@ bool mtu_info_h(connection_t *c, const char *request) {
 		return true;
 	}
 
+	if(from == myself) {
+		return true;
+	}
+
 	if(!from->status.udp_confirmed) {
 		mtu = clamp_relay_leg_mtu(from, mtu);
 	}

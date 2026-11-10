@@ -97,6 +97,7 @@ static bool current_udp_rx_direct = false;
 static sockaddr_t current_probe_reply_addr;
 static int current_probe_reply_sock = -1;
 static const node_t *current_probe_reply_node = NULL;
+static const node_t *current_relay_rx_peer = NULL;
 static bool force_node_address = false;
 bool localdiscovery = true;
 bool low_power_mode = false;
@@ -247,6 +248,7 @@ static void udp_probe_timeout_handler(void *data) {
 	n->mtuprobes = 0;
 	n->minmtu = 0;
 	n->maxmtu = MTU;
+	n->mtu = MTU;
 }
 
 static void send_udp_probe_reply(node_t *n, vpn_packet_t *packet, length_t len) {
@@ -424,6 +426,11 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Increase in PMTU to %s (%s) detected, restarting PMTU discovery", n->name, n->hostname);
 		n->minmtu = len;
 		n->maxmtu = MTU;
+
+		if(n->mtu < len) {
+			n->mtu = len;
+		}
+
 		/* Set mtuprobes to 1 so that try_mtu() doesn't reset maxmtu */
 		n->mtuprobes = 1;
 		return;
@@ -453,7 +460,8 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 static length_t compress_packet_lz4(uint8_t *dest, length_t dest_len, const uint8_t *source, length_t len) {
 #ifdef HAVE_LZ4
 #ifdef HAVE_LZ4_BUILTIN
-	return LZ4_compress_fast_extState(&lz4_stream, (const char *) source, (char *) dest, len, dest_len, 0);
+	int ret = LZ4_compress_fast_extState(&lz4_stream, (const char *) source, (char *) dest, len, dest_len, 0);
+	return (ret > 0 && ret <= (int)dest_len) ? (length_t)ret : 0;
 #else
 
 	/* @FIXME: Put this in a better place, and free() it too. */
@@ -461,7 +469,8 @@ static length_t compress_packet_lz4(uint8_t *dest, length_t dest_len, const uint
 		lz4_state = xmalloc(LZ4_sizeofState());
 	}
 
-	return LZ4_compress_fast_extState(lz4_state, (const char *) source, (char *) dest, len, dest_len, 0);
+	int ret = LZ4_compress_fast_extState(lz4_state, (const char *) source, (char *) dest, len, dest_len, 0);
+	return (ret > 0 && ret <= (int)dest_len) ? (length_t)ret : 0;
 #endif /* HAVE_LZ4_BUILTIN */
 #endif /* HAVE_LZ4 */
 	return 0;
@@ -478,8 +487,8 @@ static length_t compress_packet_lzo(uint8_t *dest, length_t dest_len, const uint
 		result = lzo1x_1_compress(source, len, dest, &lzolen, lzo_wrkmem);
 	}
 
-	if(result == LZO_E_OK) {
-		return lzolen;
+	if(result == LZO_E_OK && lzolen <= (lzo_uint)dest_len) {
+		return (length_t)lzolen;
 	}
 
 #endif /* HAVE_LZO */
@@ -491,8 +500,8 @@ static length_t compress_packet_zlib(uint8_t *dest, length_t dest_len, const uin
 #ifdef HAVE_ZLIB
 	unsigned long result_len = dest_len;
 
-	if(compress2(dest, &result_len, source, len, level) == Z_OK) {
-		return result_len;
+	if(compress2(dest, &result_len, source, len, level) == Z_OK && result_len <= (unsigned long)dest_len) {
+		return (length_t)result_len;
 	}
 
 #endif /* HAVE_ZLIB */
@@ -539,9 +548,10 @@ static length_t uncompress_packet(uint8_t *dest, length_t dest_len, const uint8_
 	switch(level) {
 #ifdef HAVE_LZ4
 
-	case COMPRESS_LZ4:
-
-		return LZ4_decompress_safe((char *)source, (char *) dest, len, dest_len);
+	case COMPRESS_LZ4: {
+		int ret = LZ4_decompress_safe((const char *)source, (char *)dest, len, dest_len);
+		return (ret > 0 && ret <= (int)dest_len) ? (length_t)ret : 0;
+	}
 
 #endif
 #ifdef HAVE_LZO
@@ -550,8 +560,8 @@ static length_t uncompress_packet(uint8_t *dest, length_t dest_len, const uint8_
 	case COMPRESS_LZO_LO: {
 		lzo_uint lzo_len = dest_len;
 
-		if(lzo1x_decompress_safe(source, len, dest, &lzo_len, NULL) == LZO_E_OK) {
-			return lzo_len;
+		if(lzo1x_decompress_safe(source, len, dest, &lzo_len, NULL) == LZO_E_OK && lzo_len > 0 && lzo_len <= (lzo_uint)dest_len) {
+			return (length_t)lzo_len;
 		} else {
 			return 0;
 		}
@@ -583,8 +593,8 @@ static length_t uncompress_packet(uint8_t *dest, length_t dest_len, const uint8_
 		stream.avail_out = dest_len;
 		stream.total_out = 0;
 
-		if(inflate(&stream, Z_FINISH) == Z_STREAM_END) {
-			return stream.total_out;
+		if(inflate(&stream, Z_FINISH) == Z_STREAM_END && stream.total_out > 0 && stream.total_out <= (unsigned long)dest_len) {
+			return (length_t)stream.total_out;
 		} else {
 			return 0;
 		}
@@ -593,7 +603,7 @@ static length_t uncompress_packet(uint8_t *dest, length_t dest_len, const uint8_
 #endif
 
 	case COMPRESS_NONE:
-		if(dest_len >= len) {
+		if(len > 0 && dest_len >= len) {
 			memcpy(dest, source, len);
 			return len;
 		} else {
@@ -775,7 +785,7 @@ static bool receive_udppacket(node_t *n, vpn_packet_t *inpkt) {
 
 	if(cipher_active(n->incipher)) {
 		vpn_packet_t *outpkt = pkt[nextpkt++];
-		outlen = MAXSIZE;
+		outlen = MAXSIZE - outpkt->offset + sizeof(seqno_t);
 
 		if(!cipher_decrypt(n->incipher, SEQNO(inpkt), inpkt->len, SEQNO(outpkt), &outlen, true)) {
 			logger(DEBUG_TRAFFIC, LOG_DEBUG, "Error decrypting packet from %s (%s)", n->name, n->hostname);
@@ -787,6 +797,11 @@ static bool receive_udppacket(node_t *n, vpn_packet_t *inpkt) {
 	}
 
 	/* Check the sequence number */
+
+	if((size_t)inpkt->len < sizeof(seqno_t)) {
+		logger(DEBUG_TRAFFIC, LOG_DEBUG, "Got too short decrypted packet from %s (%s)", n->name, n->hostname);
+		return false;
+	}
 
 	seqno_t seqno;
 	memcpy(&seqno, SEQNO(inpkt), sizeof(seqno));
@@ -838,14 +853,15 @@ static bool receive_udppacket(node_t *n, vpn_packet_t *inpkt) {
 
 	if(n->incompression != COMPRESS_NONE) {
 		vpn_packet_t *outpkt = pkt[nextpkt++];
-		outpkt->len = uncompress_packet(DATA(outpkt), MAXSIZE - outpkt->offset, DATA(inpkt), inpkt->len, n->incompression);
+		length_t ulen = uncompress_packet(DATA(outpkt), MAXSIZE - outpkt->offset, DATA(inpkt), inpkt->len, n->incompression);
 
-		if(!outpkt->len) {
+		if(!ulen || (size_t)ulen > MAXSIZE - (size_t)outpkt->offset) {
 			logger(DEBUG_TRAFFIC, LOG_ERR, "Error while uncompressing packet from %s (%s)",
 			       n->name, n->hostname);
 			return false;
 		}
 
+		outpkt->len = ulen;
 		inpkt = outpkt;
 
 		if(origlen > MTU / 64 + 20) {
@@ -855,12 +871,21 @@ static bool receive_udppacket(node_t *n, vpn_packet_t *inpkt) {
 		}
 	}
 
+	if(inpkt->len < 14) {
+		logger(DEBUG_TRAFFIC, LOG_DEBUG, "Got too short uncompressed packet from %s (%s)", n->name, n->hostname);
+		return false;
+	}
+
 	if(inpkt->len > n->maxrecentlen) {
 		n->maxrecentlen = inpkt->len;
 	}
 
 	inpkt->priority = 0;
 	bool is_probe = !DATA(inpkt)[12] && !DATA(inpkt)[13];
+
+	if(is_probe && inpkt->len < MIN_PROBE_SIZE) {
+		memset(DATA(inpkt) + inpkt->len, 0, MIN_PROBE_SIZE - inpkt->len);
+	}
 	apply_incoming_udp_endpoint(n, is_probe && !DATA(inpkt)[0]);
 
 	if(is_probe) {
@@ -969,14 +994,21 @@ bool receive_tcppacket_sptps(connection_t *c, const char *data, size_t len) {
 
 	if(to != myself) {
 		size_t origlen = len > SPTPS_DATAGRAM_OVERHEAD ? len - SPTPS_DATAGRAM_OVERHEAD : 0;
-		node_t *relay = (to->via != myself && origlen <= to->via->minmtu) ? to->via : to->nexthop;
+		bool via_ok = to->via && to->via != myself && to->via->status.udp_confirmed &&
+		              to->via->minmtu > 0 && origlen > 0 && origlen <= (size_t)to->via->minmtu &&
+		              !node_tcponly(to->via) && (to->via == to || (to->via->options >> 24) >= 4);
+		node_t *relay = via_ok ? to->via : to->nexthop;
 
-		if(!relay || relay == myself || relay == c->node || relay == from) {
+		if(!relay || relay == myself || relay == c->node || relay == from ||
+		                (to->nexthop == c->node && !via_ok)) {
 			logger(DEBUG_TRAFFIC, LOG_ERR, "Routing loop relaying TCP SPTPS packet from %s to %s via %s!", from->name, to->name, relay ? relay->name : "(null)");
 			return true;
 		}
 
+		const node_t *prev_relay_peer = current_relay_rx_peer;
+		current_relay_rx_peer = c->node;
 		send_sptps_data(to, from, 0, data, len);
+		current_relay_rx_peer = prev_relay_peer;
 		try_tx(to, true);
 		return true;
 	}
@@ -1048,21 +1080,6 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 		}
 	}
 
-	vpn_packet_t outpkt;
-
-	if(n->outcompression != COMPRESS_NONE) {
-		outpkt.offset = 0;
-		length_t len = compress_packet(DATA(&outpkt) + offset, MAXSIZE - offset, DATA(origpkt) + offset, origpkt->len - offset, n->outcompression);
-
-		if(!len) {
-			logger(DEBUG_TRAFFIC, LOG_ERR, "Error while compressing packet to %s (%s)", n->name, n->hostname);
-		} else if(len < origpkt->len - offset) {
-			outpkt.len = len + offset;
-			origpkt = &outpkt;
-			type |= PKT_COMPRESSED;
-		}
-	}
-
 	/* If we have a direct metaconnection to n, and we can't use UDP, then
 	   don't bother with SPTPS and just use a "plaintext" PACKET message.
 	   We don't really care about end-to-end security since we're not
@@ -1085,18 +1102,59 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 			send_udp_probe_packet(n, n->maxmtu);
 		}
 
+		const uint8_t *payload = DATA(origpkt) + offset;
+		length_t payload_len = (length_t)(origpkt->len - offset);
+		uint8_t cbuf[MAXSIZE];
+
+		if(n->outcompression != COMPRESS_NONE) {
+			length_t clen = compress_packet(cbuf, (length_t)(sizeof(cbuf) - (size_t)offset), payload, payload_len, n->outcompression);
+
+			if(!clen) {
+				logger(DEBUG_TRAFFIC, LOG_ERR, "Error while compressing packet to %s (%s)", n->name, n->hostname);
+			} else if(clen < payload_len) {
+				payload = cbuf;
+				payload_len = clen;
+				type |= PKT_COMPRESSED;
+			}
+		}
+
 		multipath_current_tx_pkt = origpkt;
-		sptps_send_record(&n->sptps, type, DATA(origpkt) + offset, origpkt->len - offset);
+		sptps_send_record(&n->sptps, type, payload, payload_len);
 		multipath_current_tx_pkt = NULL;
 	}
 }
 
+static int resolve_listen_sock_idx(const listen_socket_t *ls, const sockaddr_t *addr) {
+	if(ls && listen_sockets > 0 && ls >= &listen_socket[0] && ls < &listen_socket[listen_sockets]) {
+		return (int)(ls - listen_socket);
+	}
+
+	if(addr && listen_sockets > 0) {
+		for(int i = 0; i < listen_sockets; i++) {
+			if(listen_socket[i].sa.sa.sa_family == addr->sa.sa_family) {
+				return i;
+			}
+		}
+	}
+
+	return 0;
+}
+
 static void adapt_socket(const sockaddr_t *sa, size_t *sock) {
+	if(listen_sockets <= 0) {
+		*sock = 0;
+		return;
+	}
+
+	if(*sock >= (size_t)listen_sockets) {
+		*sock = 0;
+	}
+
 	/* Make sure we have a suitable socket for the chosen address */
 	if(listen_socket[*sock].sa.sa.sa_family != sa->sa.sa_family) {
 		for(int i = 0; i < listen_sockets; i++) {
 			if(listen_socket[i].sa.sa.sa_family == sa->sa.sa_family) {
-				*sock = i;
+				*sock = (size_t)i;
 				break;
 			}
 		}
@@ -1396,12 +1454,14 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 					mut_n->mtuprobes = 0;
 					mut_n->minmtu = 0;
 					mut_n->maxmtu = MTU;
+					mut_n->mtu = MTU;
 				}
 
 				return;
 			}
 		}
 
+		adapt_socket(*sa, sock);
 		return;
 	}
 
@@ -1459,7 +1519,7 @@ static void choose_udp_address(const node_t *n, const sockaddr_t **sa, size_t *s
 
 	if(candidate) {
 		*sa = &candidate->address;
-		*sock = prng(listen_sockets);
+		*sock = listen_sockets > 0 ? (size_t)prng((uint32_t)listen_sockets) : 0;
 	} else {
 		choose_local_address(n, sa, sock);
 		return;
@@ -1488,7 +1548,7 @@ static void choose_local_address(const node_t *n, const sockaddr_t **sa, size_t 
 
 		if(cand && sockaddr_same_lan_as_myself(cand)) {
 			*sa = cand;
-			*sock = prng(listen_sockets);
+			*sock = listen_sockets > 0 ? (size_t)prng((uint32_t)listen_sockets) : 0;
 			adapt_socket(*sa, sock);
 			return;
 		}
@@ -1519,7 +1579,7 @@ static void choose_local_address(const node_t *n, const sockaddr_t **sa, size_t 
 
 	if(chosen) {
 		*sa = chosen;
-		*sock = prng(listen_sockets);
+		*sock = listen_sockets > 0 ? (size_t)prng((uint32_t)listen_sockets) : 0;
 		adapt_socket(*sa, sock);
 	}
 }
@@ -1635,7 +1695,7 @@ static void send_udppacket(node_t *n, vpn_packet_t *origpkt) {
 	/* Send the packet */
 
 	const sockaddr_t *sa = NULL;
-	size_t sock;
+	size_t sock = 0;
 
 	if(n->status.send_locally) {
 		choose_local_address(n, &sa, &sock);
@@ -1645,7 +1705,7 @@ static void send_udppacket(node_t *n, vpn_packet_t *origpkt) {
 		choose_udp_address(n, &sa, &sock);
 	}
 
-	if(!sa) {
+	if(!sa || listen_sockets <= 0 || sock >= (size_t)listen_sockets || listen_socket[sock].udp.fd < 0) {
 		goto end;
 	}
 
@@ -1698,7 +1758,13 @@ end:
    hop inside the meta connection (SPTPS_PACKET, or REQ_KEY/ANS_KEY for older
    hops and handshakes). */
 static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void *data, size_t len) {
-	if(!to || !to->nexthop) {
+	if(!to || !to->nexthop || to->nexthop == myself) {
+		return false;
+	}
+
+	if(from != myself && (to->nexthop == from || (current_relay_rx_peer && to->nexthop == current_relay_rx_peer))) {
+		logger(DEBUG_TRAFFIC, LOG_ERR, "Routing loop relaying SPTPS meta packet from %s to %s via %s!",
+		       from ? from->name : "(null)", to->name, to->nexthop->name);
 		return false;
 	}
 
@@ -1818,7 +1884,7 @@ static bool direct_udp_is_degraded(const node_t *n) {
 		return true;
 	}
 
-	if(n->smoothed_rtt_ms > 0 && n->distance == 2 && n->prevedge &&
+	if(n->smoothed_rtt_ms > 0 && n->distance == 2 && n->prevedge && n->prevedge->from == n->nexthop &&
 	                n->prevedge->weight_rtt_calibrated && n->nexthop->smoothed_rtt_ms > 0) {
 		int peer_relay_rtt = n->prevedge->weight >= 1000 ? n->prevedge->weight - 1000 : n->prevedge->weight;
 		int relay_rtt = n->nexthop->smoothed_rtt_ms + MAX(peer_relay_rtt, 1);
@@ -1832,25 +1898,41 @@ static bool direct_udp_is_degraded(const node_t *n) {
 }
 
 bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_t len) {
-	size_t origlen = len - SPTPS_DATAGRAM_OVERHEAD;
-	node_t *relay = (to->via != myself && (type == PKT_PROBE || origlen <= to->via->minmtu)) ? to->via : to->nexthop;
+	if(!to || !from) {
+		return false;
+	}
 
-	if(from == myself && relay == to && type != PKT_PROBE && type != SPTPS_HANDSHAKE && direct_udp_is_degraded(to)) {
+	size_t origlen = len > SPTPS_DATAGRAM_OVERHEAD ? len - SPTPS_DATAGRAM_OVERHEAD : 0;
+	bool is_handshake = (type >= SPTPS_HANDSHAKE);
+	bool via_udp_ok = to->via && to->via != myself &&
+	                  (type == PKT_PROBE ||
+	                   (!is_handshake && to->via->status.udp_confirmed && to->via->minmtu > 0 &&
+	                    origlen > 0 && origlen <= (size_t)to->via->minmtu));
+	node_t *relay = via_udp_ok ? to->via : to->nexthop;
+
+	if(from == myself && relay == to && type != PKT_PROBE && !is_handshake && direct_udp_is_degraded(to)) {
 		relay = to->nexthop;
+	}
+
+	if(!relay || relay == myself) {
+		return type == PKT_PROBE;
 	}
 
 	bool direct = from == myself && to == relay;
 	bool relay_supported = (relay->options >> 24) >= 4;
 	bool tcponly = node_tcponly(relay);
+	bool udp_ok = (type == PKT_PROBE) ||
+	              (!is_handshake && relay->status.udp_confirmed && relay->minmtu > 0 &&
+	               (direct || origlen > 0) && origlen <= (size_t)relay->minmtu);
 
-	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, this is a relay packet that the other node cannot understand, or this packet is larger than the MTU. */
+	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, this is a relay packet that the other node cannot understand, or UDP is unconfirmed / smaller than the packet. */
 
-	if(type == SPTPS_HANDSHAKE || tcponly || (!direct && !relay_supported) || (type != PKT_PROBE && origlen > relay->minmtu)) {
+	if(is_handshake || tcponly || (!direct && !relay_supported) || !udp_ok) {
 		if(type == PKT_PROBE) {
 			return true;
 		}
 
-		if(type != SPTPS_HANDSHAKE && origlen > relay->minmtu && relay->minmtu >= MINMTU) {
+		if(!is_handshake && relay->minmtu >= MINMTU && origlen > (size_t)relay->minmtu) {
 			if(from != myself) {
 				send_mtu_info(to, from, relay->minmtu);
 			} else if(to->mtu > relay->minmtu) {
@@ -1859,6 +1941,12 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 		}
 
 		return send_sptps_data_meta(to, from, type, data, len);
+	}
+
+	if(from != myself && (relay == from || (current_relay_rx_peer && relay == current_relay_rx_peer))) {
+		logger(DEBUG_TRAFFIC, LOG_ERR, "Routing loop relaying UDP SPTPS packet from %s to %s via %s!",
+		       from->name, to->name, relay->name);
+		return false;
 	}
 
 	size_t overhead = 0;
@@ -1891,7 +1979,7 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	buf_ptr += len;
 
 	const sockaddr_t *sa = NULL;
-	size_t sock;
+	size_t sock = 0;
 
 	if(relay->status.send_locally) {
 		choose_local_address(relay, &sa, &sock);
@@ -1936,7 +2024,10 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 				size_t excess = 0;
 
 				if(!target_c->transport->send_datagram(target_c, buf, (size_t)(buf_ptr - buf), &excess)) {
-					reduce_mtu(relay, (int)origlen - (int)(excess ? excess : 1));
+					if(excess > 0) {
+						int capped = (origlen > excess) ? (int)(origlen - excess) : MINMTU;
+						reduce_mtu(relay, capped);
+					}
 				} else {
 					sent_any = true;
 				}
@@ -1993,8 +2084,12 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 		for(int i = 0; i < npaths; i++) {
 			node_path_t *p = mp_paths[i];
 			const sockaddr_t *psa = &p->addr;
-			size_t psock = (p->sock_idx >= 0 && p->sock_idx < listen_sockets) ? (size_t)p->sock_idx : sock;
+			size_t psock = (p->sock_idx >= 0 && listen_sockets > 0 && p->sock_idx < listen_sockets) ? (size_t)p->sock_idx : sock;
 			int pfd = multipath_get_udp_fd(p->uplink_idx, psa->sa.sa_family, (int)psock);
+
+			if(pfd < 0) {
+				continue;
+			}
 
 			p->last_tx = now.tv_sec;
 			p->tx_packets++;
@@ -2049,6 +2144,10 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 		}
 
 		return true;
+	}
+
+	if(listen_sockets <= 0 || sock >= (size_t)listen_sockets || listen_socket[sock].udp.fd < 0) {
+		return handle_udp_send_error(relay, to, from, type, data, len);
 	}
 
 	/* obfs carrier: if the next hop is an obfs link, seal this SPTPS datagram
@@ -2160,8 +2259,16 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 			return true;
 		}
 
+		if(len < 14 || (size_t)len > MAXSIZE - (size_t)inpkt.offset) {
+			return false;
+		}
+
 		inpkt.len = len;
 		memcpy(DATA(&inpkt), data, len);
+
+		if(len < MIN_PROBE_SIZE) {
+			memset(DATA(&inpkt) + len, 0, MIN_PROBE_SIZE - len);
+		}
 
 		if(inpkt.len > from->maxrecentlen) {
 			from->maxrecentlen = inpkt.len;
@@ -2185,22 +2292,27 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	}
 
 	int offset = (type & PKT_MAC) ? 0 : 14;
+	const size_t max_payload = MAXSIZE - (size_t)inpkt.offset - (size_t)offset;
+
+	if(offset) {
+		memset(DATA(&inpkt), 0, (size_t)offset);
+	}
 
 	if(type & PKT_COMPRESSED) {
-		length_t ulen = uncompress_packet(DATA(&inpkt) + offset, MAXSIZE - inpkt.offset, (const uint8_t *)data, len, from->incompression);
+		length_t ulen = uncompress_packet(DATA(&inpkt) + offset, (length_t)max_payload, (const uint8_t *)data, len, from->incompression);
 
-		if(!ulen) {
+		if(!ulen || (size_t)ulen > max_payload) {
 			return false;
-		} else {
-			inpkt.len = ulen + offset;
 		}
 
-		if(inpkt.len > MAXSIZE) {
-			abort();
-		}
+		inpkt.len = (length_t)(ulen + offset);
 	} else {
+		if(!len || (size_t)len > max_payload) {
+			return false;
+		}
+
 		memcpy(DATA(&inpkt) + offset, data, len);
-		inpkt.len = len + offset;
+		inpkt.len = (length_t)(len + offset);
 	}
 
 	/* Generate the Ethernet packet type if necessary */
@@ -2646,6 +2758,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 			from->mtuprobes = 0;
 			from->minmtu = 0;
 			from->maxmtu = MTU;
+			from->mtu = MTU;
 			timeout_del(&from->udp_ping_timeout);
 			changed = true;
 		}
@@ -3583,15 +3696,19 @@ skip_harder:
 
 		if(to != myself) {
 			size_t origlen = pkt->len > SPTPS_DATAGRAM_OVERHEAD ? pkt->len - SPTPS_DATAGRAM_OVERHEAD : 0;
-			node_t *relay = (to->via != myself && origlen <= to->via->minmtu) ? to->via : to->nexthop;
+			bool via_ok = to->via && to->via != myself && to->via->status.udp_confirmed &&
+			              to->via->minmtu > 0 && origlen > 0 && origlen <= (size_t)to->via->minmtu &&
+			              !node_tcponly(to->via) && (to->via == to || (to->via->options >> 24) >= 4);
+			node_t *relay = via_ok ? to->via : to->nexthop;
 
-			if(!relay || relay == myself || relay == n || relay == from) {
+			if(!relay || relay == myself || relay == n || relay == from ||
+			                (to->nexthop == n && !via_ok)) {
 				logger(DEBUG_TRAFFIC, LOG_ERR, "Routing loop relaying UDP SPTPS packet from %s to %s via %s!", from->name, to->name, relay ? relay->name : "(null)");
 				return;
 			}
 
 			if(carrier_node && !via_carrier) {
-				n->sock = ls - listen_socket;
+				n->sock = (size_t)resolve_listen_sock_idx(ls, addr);
 
 				if(sockaddrcmp(addr, &n->address)) {
 					update_node_udp(n, addr);
@@ -3603,7 +3720,10 @@ skip_harder:
 			n->last_udp_rx = now.tv_sec;
 			n->udp_ping_unanswered = 0;
 
+			const node_t *prev_relay_peer = current_relay_rx_peer;
+			current_relay_rx_peer = n;
 			send_sptps_data(to, from, 0, DATA(pkt), pkt->len);
+			current_relay_rx_peer = prev_relay_peer;
 			try_tx(to, true);
 			return;
 		}
@@ -3614,7 +3734,7 @@ skip_harder:
 
 	if(direct && !via_carrier) {
 		current_udp_rx_addr = addr;
-		current_udp_rx_sock = (int)(ls - listen_socket);
+		current_udp_rx_sock = resolve_listen_sock_idx(ls, addr);
 		current_udp_rx_len = pkt->len;
 	} else {
 		current_udp_rx_addr = NULL;
@@ -3634,7 +3754,7 @@ skip_harder:
 	}
 
 	if(!direct || via_carrier) {
-		n->sock = ls - listen_socket;
+		n->sock = (size_t)resolve_listen_sock_idx(ls, addr);
 	}
 
 	/* If the packet went through a relay, help the sender find the appropriate MTU

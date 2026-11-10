@@ -91,11 +91,17 @@ static void scan_subnets(FILE *f, used_list_t *list, const char *owner, used_sou
 			value += strspn(value, " \t");
 		}
 
+		char *hash = strchr(value, '#');
+
+		if(hash) {
+			*hash = '\0';
+		}
+
 		rstrip(value);
 
 		subnet_t s = {0};
 
-		if(str2net(&s, value)) {
+		if(*value && str2net(&s, value)) {
 			used_add(list, &s, owner, source);
 		}
 	}
@@ -230,9 +236,15 @@ static void collect_live(used_list_t *list) {
 			continue;  /* "(broadcast)" subnets are not addresses */
 		}
 
+		char *hash = strchr(netstr, '#');
+
+		if(hash) {
+			*hash = '\0';
+		}
+
 		subnet_t s = {0};
 
-		if(str2net(&s, netstr)) {
+		if(*netstr && str2net(&s, netstr)) {
 			used_add(list, &s, owner, USED_LIVE);
 		}
 	}
@@ -242,18 +254,23 @@ bool pool_parse(const char *pool, uint32_t *network, int *prefix) {
 	return zeroconf_pool_parse(pool, network, prefix);
 }
 
-/* A Subnet reserves pool addresses only if it lies inside the pool. A
-   subnet wider than the pool (an exit node's 0.0.0.0/0, a site's /16) is a
-   route, not an address claim: counting it would let one host record --
-   or one authenticated peer announcing such a subnet -- mark the whole
-   pool as used and stop every further invitation. */
+/* A Subnet reserves pool addresses if it covers host/LAN addresses overlapping
+   the pool (up to /20 = 4096 addresses within the pool, and any /24../32 subnet
+   overlapping even a smaller pool). Very wide routes (0.0.0.0/0, /8, /16) are
+   routing announcements rather than host address claims: counting them would
+   mark the whole pool as used and stop every further invitation. */
 static bool inside_pool(const used_t *u, uint32_t network, int pool_prefix) {
-	if(u->prefix < pool_prefix) {
+	if(u->prefix < 20 || u->prefix > 32) {
 		return false;
 	}
 
-	uint32_t pool_mask = 0xffffffffu << (32 - pool_prefix);
-	return (u->address & pool_mask) == network;
+	if(u->prefix < 24 && u->prefix < pool_prefix) {
+		return false;
+	}
+
+	int shorter = u->prefix < pool_prefix ? u->prefix : pool_prefix;
+	uint32_t mask = shorter ? (0xffffffffu << (32 - shorter)) : 0;
+	return (u->address & mask) == (network & mask);
 }
 
 static const used_t *find_used(const used_list_t *list, uint32_t candidate, uint32_t network, int pool_prefix) {

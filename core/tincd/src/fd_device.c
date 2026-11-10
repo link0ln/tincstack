@@ -71,6 +71,11 @@ static int read_fd(int socket) {
 
 	cmsgptr = CMSG_FIRSTHDR(&msg);
 
+	if(!cmsgptr) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "No control message header received from Unix socket!");
+		return -1;
+	}
+
 	if(cmsgptr->cmsg_level != SOL_SOCKET) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Wrong CMSG level: %d, expected %d!",
 		       cmsgptr->cmsg_level, SOL_SOCKET);
@@ -89,7 +94,9 @@ static int read_fd(int socket) {
 		return -1;
 	}
 
-	return *(int *) CMSG_DATA(cmsgptr);
+	int received_fd = -1;
+	memcpy(&received_fd, CMSG_DATA(cmsgptr), sizeof(received_fd));
+	return received_fd;
 }
 
 static int receive_fd(struct unix_socket_addr socket_addr) {
@@ -170,6 +177,18 @@ static bool setup_device(void) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not open %s: %s!", device, strerror(errno));
 		return false;
 	}
+
+	int flags = fcntl(device_fd, F_GETFL);
+
+	if(flags >= 0 && !(flags & O_NONBLOCK)) {
+		if(fcntl(device_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Could not set O_NONBLOCK on fd/%d: %s!", device_fd, strerror(errno));
+		}
+	}
+
+#ifdef FD_CLOEXEC
+	fcntl(device_fd, F_SETFD, FD_CLOEXEC);
+#endif
 
 	logger(DEBUG_ALWAYS, LOG_INFO, "fd/%d adapter set up.", device_fd);
 

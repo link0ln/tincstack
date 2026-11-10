@@ -1,0 +1,13 @@
+# Override for a node with a dedicated OBFS_PORT (UDP).
+#
+# By default, the obfs carrier shares tinc's UDP port (PORT, 655 by default),
+# which docker-compose.yml and compose.release.yml already publish. When you
+# set OBFS_PORT to a separate UDP port (e.g. OBFS_PORT=8444 in .env), include
+# this override in COMPOSE_FILE so Docker publishes that UDP port on the host:
+#
+#   COMPOSE_FILE=docker-compose.yml:compose.obfs.yml docker compose up -d
+#   COMPOSE_FILE=compose.release.yml:compose.obfs.yml docker compose up -d
+services:
+  node:
+    ports:
+      - "${OBFS_PORT:?set OBFS_PORT in .env or environment}:${OBFS_PORT}/udp"

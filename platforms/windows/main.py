@@ -455,20 +455,23 @@ class PeersTab(QtWidgets.QWidget):
             return
         mode_str = "relay-only (no direct connect)" if no_direct else "direct connect allowed"
         diagnostics.log_app_event(f"Setting peer '{peer_name}' to {mode_str} on network '{net}'")
-        if os.path.exists(ctx.app.path):
-            try:
-                yaml_config.refresh_in_place(ctx.app, yaml_config.read_document(ctx.app.path))
-            except Exception:
-                pass
-        old_host = nc.hosts.get(peer_name, "")
-        old_opts = dict(nc.options)
-        new_host = transports.set_peer_no_direct(nc.options, old_host, peer_name, no_direct)
-        if peer_name in nc.hosts or new_host:
-            nc.hosts[peer_name] = new_host
-        if not ctx.save_config():
-            nc.options = old_opts
-            if peer_name in nc.hosts:
-                nc.hosts[peer_name] = old_host
+        with yaml_config._MEM_LOCK:
+            if os.path.exists(ctx.app.path):
+                try:
+                    yaml_config.refresh_in_place(ctx.app, yaml_config.read_document(ctx.app.path))
+                except Exception:
+                    pass
+            old_host = nc.hosts.get(peer_name, "")
+            old_opts = dict(nc.options)
+            new_host = transports.set_peer_no_direct(nc.options, old_host, peer_name, no_direct)
+            if peer_name in nc.hosts or new_host:
+                nc.hosts[peer_name] = new_host
+            saved_ok = ctx.save_config()
+            if not saved_ok:
+                nc.options = old_opts
+                if peer_name in nc.hosts:
+                    nc.hosts[peer_name] = old_host
+        if not saved_ok:
             self._pop_direct_cell(peer_name)
             if self._menu_open_count > 0:
                 self._deferred_table_refresh = True
@@ -778,12 +781,15 @@ class PeersTab(QtWidgets.QWidget):
         nc = ctx.app.net(net) if (ctx and net) else None
         if nc is None:
             return
-        prev = nc.full_tunnel
-        nc.full_tunnel = node.name if on else ""
         for k in list(self._route_cells):
             self._pop_route_cell(k)        # the previous exit's toggle changes too
-        if not ctx.save_config():
-            nc.full_tunnel = prev
+        with yaml_config._MEM_LOCK:
+            prev = nc.full_tunnel
+            nc.full_tunnel = node.name if on else ""
+            saved_ok = ctx.save_config()
+            if not saved_ok:
+                nc.full_tunnel = prev
+        if not saved_ok:
             self._table(self._snaps.get(net))
             return
         ctx.status(f"all traffic through {node.name}: applying…" if on else "full tunnel: turning off…")
@@ -793,7 +799,7 @@ class PeersTab(QtWidgets.QWidget):
             for k in list(self._route_cells):
                 self._pop_route_cell(k)
             self._table(self._snaps.get(net))
-        ctx.pool.run(ctx.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}", on_done=done,
+        ctx.pool.run(ctx.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}", rerun=True, on_done=done,
                      on_error=lambda m: ctx.status(f"full tunnel: {m}"))
         self._table(self._snaps.get(net))
 
@@ -1052,30 +1058,34 @@ class NetworkTab(QtWidgets.QWidget):
         name = self.host_name.text().strip()
         if not name:
             self.ctx.status("node name is empty"); return
-        nc.hosts[name] = self.host_edit.toPlainText().rstrip("\n")
-        blocked_list = [b for b in transports.parse_node_list(nc.options.get("BlockedNodes")) if b != name]
-        if blocked_list:
-            nc.options["BlockedNodes"] = blocked_list
-        else:
-            nc.options.pop("BlockedNodes", None)
-        self.ctx.save_config(f"saved host {name}"); self.reload()
+        with yaml_config._MEM_LOCK:
+            nc.hosts[name] = self.host_edit.toPlainText().rstrip("\n")
+            blocked_list = [b for b in transports.parse_node_list(nc.options.get("BlockedNodes")) if b != name]
+            if blocked_list:
+                nc.options["BlockedNodes"] = blocked_list
+            else:
+                nc.options.pop("BlockedNodes", None)
+            self.ctx.save_config(f"saved host {name}")
+        self.reload()
 
     def _del_host(self) -> None:
         nc = self.ctx.cur_netcfg(); name = self.host_name.text().strip()
         if not nc or name not in nc.hosts:
             return
         if QtWidgets.QMessageBox.question(self, "Delete node", f"Delete host '{name}'?") == QtWidgets.QMessageBox.Yes:
-            nc.hosts.pop(name, None)
-            ct_list = [c for c in transports.parse_node_list(nc.options.get("ConnectTo")) if c != name]
-            if ct_list:
-                nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
-            else:
-                nc.options.pop("ConnectTo", None)
-            blocked_list = transports.parse_node_list(nc.options.get("BlockedNodes"))
-            if name not in blocked_list:
-                blocked_list.append(name)
-            nc.options["BlockedNodes"] = blocked_list
-            self.ctx.save_config(f"deleted host {name}"); self.reload()
+            with yaml_config._MEM_LOCK:
+                nc.hosts.pop(name, None)
+                ct_list = [c for c in transports.parse_node_list(nc.options.get("ConnectTo")) if c != name]
+                if ct_list:
+                    nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
+                else:
+                    nc.options.pop("ConnectTo", None)
+                blocked_list = transports.parse_node_list(nc.options.get("BlockedNodes"))
+                if name not in blocked_list:
+                    blocked_list.append(name)
+                nc.options["BlockedNodes"] = blocked_list
+                self.ctx.save_config(f"deleted host {name}")
+            self.reload()
 
     def _import_host(self) -> None:
         nc = self.ctx.cur_netcfg()
@@ -1209,10 +1219,12 @@ class NetworkTab(QtWidgets.QWidget):
         if errs:
             self.ctx.status("not saved: " + "; ".join(errs))
             return
-        nc.options = new_opts
-        nc.autostart = self.autostart.isChecked()
-        nc.wintun_mtu = mtu
-        self.ctx.save_config("config saved (restart network to apply)")
+        with yaml_config._MEM_LOCK:
+            nc.options = new_opts
+            nc.autostart = self.autostart.isChecked()
+            nc.wintun_mtu = mtu
+            self.ctx.save_config("config saved (restart network to apply)")
+        self.reload()
         if hasattr(self.ctx, "transports"):
             self.ctx.transports.reload()
 
@@ -1290,6 +1302,8 @@ class TransportsTab(QtWidgets.QWidget):
 
 class MainWindow(QtWidgets.QMainWindow):
     _update_progress_sig = QtCore.Signal(int, int, str)
+    _diag_config_changed_sig = QtCore.Signal(str, str)
+    _diag_lifecycle_sig = QtCore.Signal(str, str, bool)
 
     def __init__(self, cfg_path: str, runner: Any = None, autostart: bool = True) -> None:
         super().__init__()
@@ -1300,13 +1314,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_autorestart: dict[str, float] = {}
         self.load_error = ""
         self.app = self._load(cfg_path)
-        self.rt = Runtime(self.app)
+        self.rt = Runtime(self.app, load_error=self.load_error)
         self.tc = TincControl(tinc_exe=self.rt.tinc, yaml_path=self.app.path, runner=runner)
+        diagnostics.ensure_diag_password(self.rt.base)
         self.diag_collector = diagnostics.TelemetryCollector(self.rt.base)
         self.diag_prober = diagnostics.ActiveProber(self.tc, lambda: self.app, self.rt.base)
         self.diag_server = diagnostics.DiagWebServer(
-            self.rt.base, self.tc, self.diag_collector, self.diag_prober, lambda: self.app, self.rt
+            self.rt.base,
+            self.tc,
+            self.diag_collector,
+            self.diag_prober,
+            lambda: self.app,
+            self.rt,
+            on_config_changed=lambda net, act: self._diag_config_changed_sig.emit(net, act),
+            on_lifecycle=lambda net, act, ok: self._diag_lifecycle_sig.emit(net, act, bool(ok)),
         )
+        self.rt.diag_port_fn = lambda: (self.diag_server.port if self.diag_server.enabled else 0)
+        self._diag_config_changed_sig.connect(self._on_diag_config_changed)
+        self._diag_lifecycle_sig.connect(self._on_diag_lifecycle)
         diagnostics.install_crash_handlers(
             self.rt.base, self.diag_collector, lambda: self.cur_net() or ""
         )
@@ -1468,6 +1493,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.tray.showMessage("tincmgr", "Elevation needed to change networks",
                                       QtWidgets.QSystemTrayIcon.Warning, 2500)
             return
+        self._wanted_running[name] = checked
         self._lifecycle(self.rt.start if checked else self.rt.stop, name, "start" if checked else "stop")
 
     def _quit_app(self) -> None:
@@ -1513,11 +1539,41 @@ class MainWindow(QtWidgets.QMainWindow):
         cur = self.cur_net()
         self.app = self._load(self.app.path)
         self.rt.app = self.app
+        self.rt.load_error = self.load_error
         self._show_load_error()
         self.reload_networks()
         if cur:
             self._select_net(cur)
         self._on_net_changed()
+
+    def _refresh_app_from_disk(self) -> None:
+        if self.load_error or not self.app.path or not os.path.isfile(self.app.path):
+            return
+        try:
+            with yaml_config._MEM_LOCK:
+                doc = yaml_config.read_document(self.app.path)
+                yaml_config.refresh_in_place(self.app, doc)
+        except ConfigError:
+            return
+        self.reload_networks()
+        if hasattr(self, "network"):
+            self.network.reload()
+        if hasattr(self, "transports"):
+            self.transports.reload()
+        if hasattr(self, "peers") and self.peers.net:
+            self.peers._table(self.peers._snaps.get(self.peers.net))
+
+    def _on_diag_config_changed(self, _net: str, _action: str) -> None:
+        self._refresh_app_from_disk()
+
+    def _on_diag_lifecycle(self, net: str, action: str, ok: bool) -> None:
+        if not net:
+            return
+        if action in ("start", "restart"):
+            self._wanted_running[net] = bool(ok)
+        elif action == "stop":
+            self._wanted_running[net] = False
+        self.peers.sample_async()
 
     def open_raw_yaml(self) -> None:
         dlg = RawYamlDialog(self, self.app.path, yaml_config.save_text, self.load_error)
@@ -1708,8 +1764,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # (its daemon outlived a previous manager, or was started elsewhere)
         for net, up in running.items():
             nc = self.app.net(net)
-            if up and self.admin and nc and nc.full_tunnel and not self.rt.full_tunnel_state(net):
-                self.pool.run(self.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}")
+            if up and self.admin and nc:
+                want_ft = (nc.full_tunnel or "").strip()
+                cur_ft = self.rt.full_tunnel_exit(net)
+                if want_ft != cur_ft or (want_ft and not self.rt.full_tunnel_state(net)):
+                    self.pool.run(self.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}", rerun=True)
             # If tincd exited unexpectedly while the network was supposed to be running,
             # automatically restart it so the user does not have to manually start it again.
             if (not up and self._wanted_running.get(net, False)
@@ -2015,15 +2074,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         cached = getattr(self, "_update_extracted", None)
         if cached is not None:
-            c_ver, c_extracted, c_workdir = cached
+            c_ver, c_extracted, c_workdir = cached[:3]
+            c_sha = cached[3] if len(cached) >= 4 else ""
+            valid_cached = False
             if c_ver == rel.version and os.path.isfile(c_extracted[0]):
+                sha_ref = (c_sha or getattr(rel, "verified_exe_sha256", "") or "").strip().lower()
+                if sha_ref and updates.verify_staged_exe(c_extracted[0], sha_ref):
+                    rel.verified_exe_sha256 = sha_ref
+                    valid_cached = True
+            if valid_cached:
                 self._update_run(rel, c_extracted, c_workdir)
                 return
             shutil.rmtree(c_workdir, ignore_errors=True)
             self._update_extracted = None
 
         self.status(f"Downloading {rel.version}…", hold_secs=120.0)
-        workdir = tempfile.mkdtemp(prefix="tincmgr-update-")
+        base_for_staging = os.path.dirname(os.path.abspath(self.app.path)) if self.app.path else self.rt.base
+        try:
+            workdir = updates.create_staging_dir(base_for_staging, elevated=self.admin)
+        except OSError as e:
+            self._update_failed(str(e))
+            return
 
         def do_fetch() -> tuple[str, str]:
             try:
@@ -2051,7 +2122,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 os.unlink(zpath)
         except OSError:
             pass
-        self._update_extracted = (rel.version, (exe, ""), workdir)
+        verified_sha = (getattr(rel, "verified_exe_sha256", "") or "").strip().lower()
+        if not verified_sha and os.path.isfile(exe):
+            try:
+                verified_sha = paths.sha256_file(exe).lower()
+                rel.verified_exe_sha256 = verified_sha
+            except OSError:
+                pass
+        self._update_extracted = (rel.version, (exe, ""), workdir, verified_sha)
         if _is_widget_alive(self._update_progress_bar):
             assert self._update_progress_bar is not None
             self._update_progress_bar.setRange(0, 0)
@@ -2076,6 +2154,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if not management.is_frozen():
                 raise OSError("only the built tincmgr.exe can update in place")
             management.check_downgrade(rel.version, management.installed_version())
+            expected_sha = (getattr(rel, "verified_exe_sha256", "") or "").strip().lower()
+            if not updates.verify_staged_exe(exe, expected_sha):
+                raise paths.IntegrityError("staged installer failed SHA-256 verification before launch")
             if hasattr(self, "diag_server"):
                 try:
                     self.diag_server.stop()
@@ -2087,7 +2168,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
             target = management.start_self_update(
-                exe, rel.version, caller_pid=os.getpid(), caller_exe=sys.executable
+                exe,
+                rel.version,
+                caller_pid=os.getpid(),
+                caller_exe=sys.executable,
+                expected_sha256=expected_sha,
             )
             return target
 
@@ -2214,6 +2299,7 @@ class MainWindow(QtWidgets.QMainWindow):
         def done(results: list[tuple[str, bool, str]]) -> None:
             for n, ok, _m in results:
                 self._wanted_running[n] = ok
+            self._refresh_app_from_disk()
             self.status("autostart: " + "; ".join(f"{n}: {m}" for n, _ok, m in results))
             self.peers.sample_async()
         self.pool.run(self.rt.start_autostart, tag="autostart", on_done=done,
@@ -2225,8 +2311,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def done(result: tuple[bool, str]) -> None:
             _ok, msg = result
-            if not _ok and label == "start":
+            if not _ok and label in ("start", "restart"):
                 self._wanted_running[net] = False
+            if label in ("start", "restart", "auto-restart"):
+                self._refresh_app_from_disk()
             diagnostics.log_app_event(f"Lifecycle '{label}' finished for '{net}': ok={_ok}, msg={msg}")
             self.status(f"{label} {net}: {msg}")
             self.peers.sample_async()
@@ -2317,8 +2405,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if QtWidgets.QMessageBox.question(self, "Remove network", f"Remove '{net}' from the config?") == QtWidgets.QMessageBox.Yes:
             if self._running.get(net) and self.admin:
                 self.pool.run(self.rt.stop, net, tag=f"life-{net}")
-            self.app.networks.pop(net, None)
+            with yaml_config._MEM_LOCK:
+                self.app.networks.pop(net, None)
             self._running.pop(net, None)
+            self._wanted_running.pop(net, None)
+            self._last_autorestart.pop(net, None)
             self.save_config(f"removed network {net}"); self.reload_networks()
 
     def _tick(self) -> None:
@@ -2343,6 +2434,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cert_timer.stop()
         if hasattr(self, "update_timer"):
             self.update_timer.stop()
+        self.pool.cancel_pending()
         if hasattr(self, "diag_server"):
             try:
                 self.diag_server.stop()

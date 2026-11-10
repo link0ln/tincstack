@@ -204,4 +204,23 @@ class VpnServiceBuilderTest {
       strings(cfg, "routes").map { it.substringBefore(" ") }
     )
   }
+
+  @Test
+  fun routesWithNonZeroHostBitsDoNotCrashBuilder() {
+    val cfg = config(builderFor("""
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      InterfaceAddress: 10.210.0.3
+      |      InterfaceRoute:
+      |        - 192.168.1.5/24
+      |        - fd00:1::abcd/64
+      |""".trimMargin()))
+    assertEquals(listOf("10.210.0.3/24"), strings(cfg, "addresses"))
+    assertEquals(
+      listOf("192.168.1.0/24", "fd00:1:0:0:0:0:0:0/64"),
+      strings(cfg, "routes").map { it.substringBefore(" ") },
+    )
+  }
 }

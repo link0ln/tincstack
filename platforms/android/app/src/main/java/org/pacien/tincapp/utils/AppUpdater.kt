@@ -96,7 +96,7 @@ object AppUpdater {
       val name = (a["name"] as? String).orEmpty()
       val url = (a["browser_download_url"] as? String).orEmpty()
       val digest = (a["digest"] as? String).orEmpty()
-      if (name.isEmpty() || url.isEmpty()) continue
+      if (name.isEmpty() || !isHttpsUrl(url)) continue
       if (name == "SHA256SUMS") {
         sumsUrl = url
       } else if (apkName.isEmpty() && !name.contains("UNSIGNED", ignoreCase = true) && APK_NAME_RE.matches(name)) {
@@ -166,29 +166,62 @@ object AppUpdater {
     return hex.lowercase().takeIf { it.length == 64 }
   }
 
+  private fun isHttpsUrl(url: String): Boolean =
+    url.trim().lowercase().startsWith("https://")
+
+  private fun requireHttpsUrl(url: String, label: String): String {
+    val trimmed = url.trim()
+    if (!isHttpsUrl(trimmed)) {
+      throw IOException("Refusing non-HTTPS $label URL: $trimmed")
+    }
+    return trimmed
+  }
+
+  private fun parseMetadataSha256(rawDigest: String): String? {
+    val trimmed = rawDigest.trim()
+    if (trimmed.isEmpty()) return null
+    if (!trimmed.lowercase().startsWith("sha256:")) {
+      throw IOException("Unsupported APK digest format in release metadata: $trimmed")
+    }
+    val digestHex = trimmed.substringAfter(':').trim().lowercase()
+    if (!HEX64_RE.matches(digestHex)) {
+      throw IOException("Malformed APK SHA-256 digest in release metadata")
+    }
+    return digestHex
+  }
+
   fun expectedApkSha256(
     rel: Release,
     sumsFetcher: (String) -> ByteArray = { httpGetBytes(it, 60_000) },
   ): String {
+    requireHttpsUrl(rel.apkUrl, "APK")
+    val safeName = File(rel.apkName).name
+    if (!APK_NAME_RE.matches(safeName)) {
+      throw IOException("Refusing invalid APK asset name: ${rel.apkName}")
+    }
+    val metadataSha = parseMetadataSha256(rel.apkDigest)
     if (rel.sumsUrl.isNotEmpty()) {
-      val sumsBytes = sumsFetcher(rel.sumsUrl)
+      val sumsUrl = requireHttpsUrl(rel.sumsUrl, "SHA256SUMS")
+      val sumsBytes = sumsFetcher(sumsUrl)
       val expectedSumsSha = extractNotesSumsSha256(rel.notes)
       if (expectedSumsSha != null) {
         val gotSumsSha = sha256Bytes(sumsBytes)
-        if (gotSumsSha != expectedSumsSha) {
+        if (!MessageDigest.isEqual(gotSumsSha.toByteArray(Charsets.US_ASCII), expectedSumsSha.toByteArray(Charsets.US_ASCII))) {
           throw IOException("SHA256SUMS does not match the digest in release notes")
         }
       }
       val sums = parseSums(sumsBytes.toString(Charsets.UTF_8))
-      val want = sums[rel.apkName]
-        ?: throw IOException("${rel.apkName} is not listed in SHA256SUMS")
+      val want = sums[safeName]
+        ?: throw IOException("$safeName is not listed in SHA256SUMS")
+      if (metadataSha != null && !MessageDigest.isEqual(want.toByteArray(Charsets.US_ASCII), metadataSha.toByteArray(Charsets.US_ASCII))) {
+        throw IOException("SHA256SUMS digest for $safeName disagrees with release asset digest")
+      }
       return want
     }
-    if (rel.apkDigest.lowercase().startsWith("sha256:")) {
-      val digestHex = rel.apkDigest.substringAfter(':').trim().lowercase()
-      if (HEX64_RE.matches(digestHex)) return digestHex
+    if (metadataSha != null) {
+      return metadataSha
     }
-    throw IOException("Release ${rel.version} provides no SHA-256 checksum for ${rel.apkName}")
+    throw IOException("Release ${rel.version} provides no SHA-256 checksum for $safeName")
   }
 
   fun fetchApk(
@@ -200,6 +233,9 @@ object AppUpdater {
       throw IOException("Could not create update directory ${destDir.absolutePath}")
     }
     val safeName = File(rel.apkName).name
+    if (!APK_NAME_RE.matches(safeName)) {
+      throw IOException("Refusing invalid APK asset name: ${rel.apkName}")
+    }
     val targetFile = File(destDir, safeName)
     val expectedSha = expectedApkSha256(rel)
 
@@ -208,17 +244,18 @@ object AppUpdater {
     }
 
     val partFile = File(destDir, "$safeName.part")
-    val conn = openConnection(rel.apkUrl, 600_000)
+    val conn = openConnection(requireHttpsUrl(rel.apkUrl, "APK"), 600_000)
     try {
       val total = conn.contentLengthLong
       val md = MessageDigest.getInstance("SHA-256")
+      var readSoFar = 0L
       conn.inputStream.use { input ->
         FileOutputStream(partFile).use { output ->
           val buf = ByteArray(64 * 1024)
-          var readSoFar = 0L
           while (true) {
             val n = input.read(buf)
-            if (n <= 0) break
+            if (n < 0) break
+            if (n == 0) continue
             output.write(buf, 0, n)
             md.update(buf, 0, n)
             readSoFar += n
@@ -227,8 +264,12 @@ object AppUpdater {
           output.fd.sync()
         }
       }
+      if (total > 0L && readSoFar != total) {
+        partFile.delete()
+        throw IOException("Truncated APK download ($readSoFar of $total bytes)")
+      }
       val gotSha = md.digest().joinToString("") { "%02x".format(it) }
-      if (gotSha != expectedSha) {
+      if (!MessageDigest.isEqual(gotSha.toByteArray(Charsets.US_ASCII), expectedSha.toByteArray(Charsets.US_ASCII))) {
         partFile.delete()
         throw IOException("Downloaded APK SHA-256 mismatch (expected ${expectedSha.take(12)}…, got ${gotSha.take(12)}…)")
       }
@@ -268,10 +309,14 @@ object AppUpdater {
   }
 
   private fun openConnection(url: String, timeoutMs: Int): HttpURLConnection {
-    var currentUrl = url
+    var currentUrl = requireHttpsUrl(url, "update")
     repeat(5) {
-      val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
-        instanceFollowRedirects = true
+      val parsed = URL(currentUrl)
+      if (!parsed.protocol.equals("https", ignoreCase = true)) {
+        throw IOException("Refusing non-HTTPS redirect target: $currentUrl")
+      }
+      val conn = (parsed.openConnection() as HttpURLConnection).apply {
+        instanceFollowRedirects = false
         connectTimeout = 20_000
         readTimeout = timeoutMs
         setRequestProperty("User-Agent", USER_AGENT)
@@ -282,7 +327,7 @@ object AppUpdater {
         val loc = conn.getHeaderField("Location")
         conn.disconnect()
         if (loc.isNullOrEmpty()) throw IOException("HTTP redirect ($code) without Location header")
-        currentUrl = URL(URL(currentUrl), loc).toString()
+        currentUrl = requireHttpsUrl(URL(parsed, loc).toString(), "redirect")
       } else if (code in 200..299) {
         return conn
       } else {

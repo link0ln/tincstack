@@ -42,17 +42,29 @@ uint32_t modulo(uint32_t hash, size_t n);
 	} \
 	static inline void hash_insert_ ## t (hash_ ##t *hash, const t *key, const void *value) { \
 		uint32_t i = hash_modulo_ ## t(hash_function_ ## t(key)); \
-		for(uint8_t f=0; f< (HASH_SEARCH_ITERATIONS - 1); f++){ \
-			if(hash->values[i] == NULL || !memcmp(key, &hash->keys[i], sizeof(t))) { \
-				memcpy(&hash->keys[i], key, sizeof(t)); \
-				hash->values[i] = value; \
-				return; \
+		uint32_t target = 0; \
+		bool have_target = false; \
+		for(uint8_t f = 0; f < HASH_SEARCH_ITERATIONS; f++) { \
+			if(hash->values[i] != NULL) { \
+				if(!memcmp(key, &hash->keys[i], sizeof(t))) { \
+					memcpy(&hash->keys[i], key, sizeof(t)); \
+					hash->values[i] = value; \
+					return; \
+				} \
+			} else if(!have_target) { \
+				target = i; \
+				have_target = true; \
 			} \
-			if(++i == n) i = 0; \
+			if(f < HASH_SEARCH_ITERATIONS - 1) { \
+				if(++i == n) i = 0; \
+			} \
 		} \
-		/* We always pick the last slot. */ \
-		memcpy(&hash->keys[i], key, sizeof(t)); \
-		hash->values[i] = value; \
+		/* If no empty slot was found, pick the last slot in the window. */ \
+		if(!have_target) { \
+			target = i; \
+		} \
+		memcpy(&hash->keys[target], key, sizeof(t)); \
+		hash->values[target] = value; \
 	} \
 	static inline void *hash_search_ ## t (const hash_ ##t *hash, const t *key) { \
 		uint32_t i = hash_modulo_ ## t(hash_function_ ## t(key)); \

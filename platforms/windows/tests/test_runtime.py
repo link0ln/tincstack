@@ -145,3 +145,91 @@ def test_paths_resolution(tmp_path, monkeypatch):
     monkeypatch.delenv(paths.BIN_DIR_ENV)
     assert os.path.basename(paths.resource_dir()) == "resources"
     assert os.path.dirname(paths.resource_dir()) == os.path.dirname(os.path.dirname(paths.__file__))
+
+
+def test_orphan_cleanup_skips_when_load_error_and_never_kills_by_image(tmp_path, monkeypatch):
+    """WL-10: _kill_orphan_daemons must do nothing when load_error is set, and
+    must only target stale PID-file processes whose control socket is dead."""
+    app = yc.AppConfig(path=str(tmp_path / "tinc.yaml"))
+    app.networks["demo"] = yc.NetworkCfg(name="demo", options={"Name": "demobook"})
+    rdir = tmp_path / "demo"
+    rdir.mkdir()
+    (rdir / "pid").write_text("99999\n")
+
+    terminated: list[int] = []
+    monkeypatch.setattr(rt_mod.Runtime, "_terminate_tincd_pid", classmethod(lambda cls, pid: terminated.append(pid) or True))
+
+    # 1. With load_error set: never touch any daemon
+    rt_err = rt_mod.Runtime(app, load_error="malformed YAML")
+    rt_err._kill_orphan_daemons()
+    assert terminated == []
+    assert (rdir / "pid").exists()
+
+    # 2. Without load_error, if control socket responds (is_running=True): keep daemon alive
+    rt_ok = rt_mod.Runtime(app)
+    monkeypatch.setattr(rt_ok, "is_running", lambda net: True)
+    rt_ok._kill_orphan_daemons("demo")
+    assert terminated == []
+    assert (rdir / "pid").exists()
+
+    # 3. Without load_error, if control socket is dead: terminate recorded PID only
+    monkeypatch.setattr(rt_ok, "is_running", lambda net: False)
+    rt_ok._kill_orphan_daemons("demo")
+    assert terminated == [99999]
+    assert not (rdir / "pid").exists()
+
+
+def test_sync_diag_port_prefers_live_diag_port_fn(tmp_path, monkeypatch):
+    """WL-12: Runtime._sync_diag_port uses the live diag_port_fn rather than a
+    stale diag_settings.json file."""
+    import threading
+    import diagnostics
+    diagnostics.save_diag_settings(str(tmp_path), enabled=True, port=9999)
+    app = yc.AppConfig(path=str(tmp_path / "tinc.yaml"))
+    app.networks["demo"] = yc.NetworkCfg(name="demo", options={"Name": "demobook"})
+    rt = rt_mod.Runtime(app, diag_port_fn=lambda: 8777)
+    seen: list[tuple[str, int]] = []
+    done = threading.Event()
+
+    def fake_diag_port(self, net, port=None, timeout=3.0):
+        seen.append((net, port))
+        done.set()
+        return True, port
+
+    monkeypatch.setattr(rt_mod.TincControl, "diag_port", fake_diag_port)
+    rt._sync_diag_port("demo")
+    assert done.wait(2.0)
+    assert seen == [("demo", 8777)]
+
+
+def test_generate_keys_uses_private_dir_under_config_base(tmp_path, monkeypatch):
+    """WL-18: generate_keys stages temporary key files inside self.base (with
+    paths.mkdir_private), never under world-shared %TEMP%."""
+    cfg = str(tmp_path / "tinc.yaml")
+    app = yc.AppConfig(path=cfg)
+    app.networks["demo"] = yc.NetworkCfg(
+        name="demo",
+        options={"Name": "demobook"},
+        hosts={"demobook": "Subnet = 10.99.0.1/32\n"},
+    )
+    rt = rt_mod.Runtime(app)
+    seen_dirs: list[str] = []
+
+    def fake_run(args, **kwargs):
+        cdir = args[args.index("-c") + 1]
+        seen_dirs.append(cdir)
+        assert os.path.dirname(os.path.abspath(cdir)) == os.path.abspath(str(tmp_path))
+        if sys.platform != "win32":
+            assert stat.S_IMODE(os.stat(cdir).st_mode) == 0o700
+        open(os.path.join(cdir, "ed25519_key.priv"), "w", encoding="utf-8").write("PRIVKEY\n")
+        open(os.path.join(cdir, "hosts", "demobook"), "w", encoding="utf-8").write("Ed25519PublicKey = PUBKEY\n")
+        return type("P", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr(rt_mod.subprocess, "run", fake_run)
+    ok, msg = rt.generate_keys("demo")
+    assert ok and msg == "keys generated"
+    assert len(seen_dirs) == 1 and not os.path.exists(seen_dirs[0])
+    assert app.net("demo").keys["ed25519_priv"] == "PRIVKEY"
+    assert "Ed25519PublicKey = PUBKEY" in app.net("demo").hosts["demobook"]
+    assert "Subnet = 10.99.0.1/32" in app.net("demo").hosts["demobook"]
+

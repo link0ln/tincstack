@@ -18,8 +18,13 @@
 
 package org.pacien.tincapp.data
 
+import org.yaml.snakeyaml.DumperOptions
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
+import org.yaml.snakeyaml.constructor.SafeConstructor
+import org.yaml.snakeyaml.nodes.Tag
+import org.yaml.snakeyaml.representer.Representer
+import org.yaml.snakeyaml.resolver.Resolver
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
@@ -51,16 +56,21 @@ class TincYaml(val file: File) {
   /** Parsed `networks:` map, or an empty map for an absent/empty file. */
   fun networks(): Map<String, Any?> = MEM_LOCK.withLock {
     if (!file.exists()) return@withLock emptyMap()
+    parseNetworksFromText(file.readText(), file.name)
+  }
+
+  private fun parseNetworksFromText(rawText: String, sourceName: String = file.name): Map<String, Any?> {
+    if (rawText.isBlank()) return emptyMap()
     val root = try {
-      newYaml().load<Any?>(file.readText())
+      newYaml().load<Any?>(rawText)
     } catch (e: Exception) {
-      throw InvalidConfigurationException("${file.name}: ${e.message}")
+      throw InvalidConfigurationException("$sourceName: ${e.message}")
     }
-    if (root == null) return@withLock emptyMap()
-    if (root !is Map<*, *>) throw InvalidConfigurationException("${file.name}: top level is not a mapping")
-    val networks = root["networks"] ?: return@withLock emptyMap()
-    if (networks !is Map<*, *>) throw InvalidConfigurationException("${file.name}: 'networks' is not a mapping")
-    networks.entries.associate { it.key.toString() to it.value }
+    if (root == null) return emptyMap()
+    if (root !is Map<*, *>) throw InvalidConfigurationException("$sourceName: top level is not a mapping")
+    val networks = root["networks"] ?: return emptyMap()
+    if (networks !is Map<*, *>) throw InvalidConfigurationException("$sourceName: 'networks' is not a mapping")
+    return networks.entries.associate { it.key.toString() to it.value }
   }
 
   fun networkNames(): List<String> = networks().keys.toList()
@@ -129,69 +139,164 @@ class TincYaml(val file: File) {
     return PeerConfig(peer, hText).noDirect
   }
 
-  /** Enable or disable relay-only mode (`NoDirectNodes` / `DirectConnect = no`) for [peerName].
-   *  Preserves `ConnectTo` and `IndirectData` as lower-level topology declarations. */
-  fun setPeerNoDirect(net: String, peerName: String, noDirect: Boolean) = withFileLock {
-    val peer = peerName.trim()
-    if (peer.isEmpty()) return@withFileLock
-    val ndList = optionValues(net, "NoDirectNodes")
-      .flatMap { it.split(Regex("[\\s,;]+")) }
-      .map { it.trim() }
-      .filter { it.isNotEmpty() }
-      .toMutableList()
-    val optChanges = LinkedHashMap<String, List<String>?>()
-    if (noDirect) {
-      if (ndList.none { it.equals(peer, ignoreCase = true) }) {
-        ndList.add(peer)
-      }
-    } else {
-      ndList.removeAll { it.equals(peer, ignoreCase = true) }
+  /**
+   * Transactional in-memory editor for `tinc.yaml` so multi-step updates
+   * (`options:` + `hosts:` changes, peer deletion + option cleanup, etc.)
+   * execute under one file lock and replace `tinc.yaml` in a single atomic rename.
+   */
+  inner class BatchEditor internal constructor(private var docText: String) {
+    internal fun resultText(): String = docText
+
+    private fun netMap(net: String): Map<String, Any?> {
+      val n = parseNetworksFromText(docText)[net] ?: return emptyMap()
+      if (n !is Map<*, *>) throw InvalidConfigurationException("${file.name}: network '$net' is not a mapping")
+      return n.entries.associate { it.key.toString() to it.value }
     }
-    optChanges["NoDirectNodes"] = ndList.ifEmpty { null }
-    setOptions(net, optChanges)
-    if (hostText(net, peer) != null) {
-      val hostChanges = if (noDirect) {
-        mapOf("DirectConnect" to "no")
-      } else {
-        mapOf("DirectConnect" to null)
+
+    private fun secMap(net: String, section: String): Map<String, Any?> {
+      val s = netMap(net)[section] ?: return emptyMap()
+      if (s !is Map<*, *>) throw InvalidConfigurationException("${file.name}: '$section' of network '$net' is not a mapping")
+      return s.entries.associate { it.key.toString() to it.value }
+    }
+
+    fun optionValues(net: String, key: String): List<String> =
+      valuesOf(secMap(net, "options")[key])
+
+    fun optionValue(net: String, key: String): String? =
+      optionValues(net, key).firstOrNull()
+
+    fun hostText(net: String, name: String): String? =
+      secMap(net, "hosts")[name]?.toString()
+
+    fun hostNames(net: String): List<String> {
+      val own = optionValue(net, "Name")
+      val names = secMap(net, "hosts").keys.toList()
+      return listOfNotNull(own?.takeIf { it in names }) + names.filter { it != own }
+    }
+
+    fun isPeerNoDirect(net: String, peerName: String): Boolean {
+      val peer = peerName.trim()
+      if (peer.isEmpty()) return false
+      val ndList = optionValues(net, "NoDirectNodes")
+        .flatMap { it.split(Regex("[\\s,;]+")) }
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+      if (ndList.any { it.equals(peer, ignoreCase = true) }) return true
+      val hText = hostText(net, peer) ?: return false
+      return PeerConfig(peer, hText).noDirect
+    }
+
+    fun setOptions(net: String, changes: Map<String, List<String>?>) {
+      if (changes.isEmpty()) return
+      docText = splice(docText, net, changes)
+    }
+
+    fun setHostVars(net: String, name: String, changes: Map<String, String?>) {
+      if (changes.isEmpty()) return
+      val original = hostText(net, name)
+        ?: throw InvalidConfigurationException("no host record for '$name' in ${file.name}")
+      val edited = spliceHostVars(original, changes)
+      if (edited != original) {
+        docText = replaceHostBlockInText(docText, net, name, edited, file.name)
       }
-      setHostVars(net, peer, hostChanges)
+    }
+
+    fun setHostMultiVars(net: String, name: String, changes: Map<String, List<String>?>, createIfMissing: Boolean = true) {
+      val current = hostText(net, name)
+      if (changes.isEmpty() && current != null) return
+      val original = current
+        ?: if (createIfMissing) "" else throw InvalidConfigurationException("no host record for '$name' in ${file.name}")
+      val edited = spliceHostMultiVars(original, changes)
+      if (edited != original || current == null) {
+        docText = replaceHostBlockInText(docText, net, name, edited, file.name)
+      }
+    }
+
+    fun setHostText(net: String, name: String, newText: String) {
+      val original = hostText(net, name)
+      val merged = mergeLearnedTofuKeys(newText, original).trimEnd()
+      val origTrimmed = original?.trimEnd()
+      if (merged != origTrimmed) {
+        docText = replaceHostBlockInText(docText, net, name, if (merged.isEmpty()) "" else "$merged\n", file.name)
+      }
+    }
+
+    fun removeHost(net: String, name: String) {
+      if (docText.isEmpty()) return
+      docText = removeHostBlockInText(docText, net, name)
+    }
+
+    fun setPeerNoDirect(net: String, peerName: String, noDirect: Boolean) {
+      val peer = peerName.trim()
+      if (peer.isEmpty()) return
+      val ndList = optionValues(net, "NoDirectNodes")
+        .flatMap { it.split(Regex("[\\s,;]+")) }
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .toMutableList()
+      if (noDirect) {
+        if (ndList.none { it.equals(peer, ignoreCase = true) }) ndList.add(peer)
+      } else {
+        ndList.removeAll { it.equals(peer, ignoreCase = true) }
+      }
+      setOptions(net, mapOf("NoDirectNodes" to ndList.ifEmpty { null }))
+      if (hostText(net, peer) != null) {
+        val hostChanges = if (noDirect) mapOf("DirectConnect" to "no") else mapOf("DirectConnect" to null)
+        setHostVars(net, peer, hostChanges)
+      }
+    }
+
+    fun ensureConnectToIfDialable(net: String, peerName: String) {
+      val peer = peerName.trim()
+      if (peer.isEmpty() || isPeerNoDirect(net, peer)) return
+      val hText = hostText(net, peer) ?: return
+      if (PeerConfig(peer, hText).address.isNullOrBlank()) return
+      val ct = optionValues(net, "ConnectTo")
+        .flatMap { it.split(Regex("[\\s,;]+")) }
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .toMutableList()
+      if (ct.none { it.equals(peer, ignoreCase = true) }) {
+        ct.add(peer)
+        setOptions(net, mapOf("ConnectTo" to ct))
+      }
     }
   }
 
-  /** Replace or create the full host record `networks.<net>.hosts.<name>` with [newText]. */
-  fun setHostText(net: String, name: String, newText: String) = withFileLock {
-    val normalized = newText.trimEnd()
-    val original = hostText(net, name)?.trimEnd()
-    if (normalized != original || original == null) {
-      replaceHostBlock(net, name, if (normalized.isEmpty()) "" else "$normalized\n")
+  /** Apply multiple mutations in memory under one lock and commit with a single atomic write. */
+  fun editBatch(block: BatchEditor.() -> Unit) = withFileLock {
+    val original = if (file.exists()) file.readText() else ""
+    val editor = BatchEditor(original)
+    editor.block()
+    val updated = editor.resultText()
+    if (updated != original) {
+      writeAtomically(updated)
     }
+  }
+
+  /** Enable or disable relay-only mode (`NoDirectNodes` / `DirectConnect = no`) for [peerName].
+   *  Preserves `ConnectTo` and `IndirectData` as lower-level topology declarations. */
+  fun setPeerNoDirect(net: String, peerName: String, noDirect: Boolean) = editBatch {
+    setPeerNoDirect(net, peerName, noDirect)
+  }
+
+  /** Replace or create the full host record `networks.<net>.hosts.<name>` with [newText]. */
+  fun setHostText(net: String, name: String, newText: String) = editBatch {
+    setHostText(net, name, newText)
   }
 
   /**
    * Ensure [peerName] is listed in `ConnectTo` when direct connections to it
    * are allowed (`!isPeerNoDirect`) and its host record declares an `Address`.
    */
-  fun ensureConnectToIfDialable(net: String, peerName: String) = withFileLock {
-    val peer = peerName.trim()
-    if (peer.isEmpty() || isPeerNoDirect(net, peer)) return@withFileLock
-    val hText = hostText(net, peer) ?: return@withFileLock
-    if (PeerConfig(peer, hText).address.isNullOrBlank()) return@withFileLock
-    val ct = optionValues(net, "ConnectTo")
-      .flatMap { it.split(Regex("[\\s,;]+")) }
-      .map { it.trim() }
-      .filter { it.isNotEmpty() }
-      .toMutableList()
-    if (ct.none { it.equals(peer, ignoreCase = true) }) {
-      ct.add(peer)
-      setOptions(net, mapOf("ConnectTo" to ct))
-    }
+  fun ensureConnectToIfDialable(net: String, peerName: String) = editBatch {
+    ensureConnectToIfDialable(net, peerName)
   }
 
   /** Raw text of `tinc.yaml`, or empty string if absent. */
   fun readRawText(): String = MEM_LOCK.withLock { if (file.exists()) file.readText() else "" }
 
-  /** Validate that [newText] is a valid `tinc.yaml` mapping and write it atomically. */
+  /** Validate that [newText] is a valid `tinc.yaml` mapping and write it atomically, preserving daemon-learned TOFU keys. */
   fun writeRawText(newText: String) = withFileLock {
     val root = try {
       newYaml().load<Any?>(newText)
@@ -203,8 +308,30 @@ class TincYaml(val file: File) {
     if (networks != null && networks !is Map<*, *>) {
       throw InvalidConfigurationException("${file.name}: 'networks' is not a mapping")
     }
-    val normalized = newText.trimEnd() + "\n"
     val original = if (file.exists()) file.readText() else ""
+    var normalized = newText.trimEnd() + "\n"
+    if (original.isNotBlank() && networks is Map<*, *>) {
+      val diskNets = try {
+        parseNetworksFromText(original)
+      } catch (_: Exception) {
+        emptyMap()
+      }
+      for ((rawNetKey, rawNetVal) in networks.entries) {
+        val netName = rawNetKey?.toString() ?: continue
+        val diskNet = diskNets[netName] as? Map<*, *> ?: continue
+        val diskHosts = diskNet["hosts"] as? Map<*, *> ?: continue
+        val newHosts = (rawNetVal as? Map<*, *>)?.get("hosts") as? Map<*, *> ?: continue
+        for ((rawHostKey, rawHostVal) in newHosts.entries) {
+          val hostName = rawHostKey?.toString() ?: continue
+          val diskHostBody = diskHosts[hostName]?.toString() ?: continue
+          val newHostBody = rawHostVal?.toString() ?: continue
+          val mergedBody = mergeLearnedTofuKeys(newHostBody, diskHostBody).trimEnd()
+          if (mergedBody != newHostBody.trimEnd()) {
+            normalized = replaceHostBlockInText(normalized, netName, hostName, "$mergedBody\n", file.name)
+          }
+        }
+      }
+    }
     if (normalized != original) writeAtomically(normalized)
   }
 
@@ -343,77 +470,16 @@ class TincYaml(val file: File) {
 
   /** Replace or create the body of `networks.<net>.hosts.<name>` with [newText], preserving indentation. */
   private fun replaceHostBlock(net: String, name: String, newText: String) {
-    val rawLines = file.readText().split('\n').let { if (it.last().isEmpty()) it.dropLast(1) else it }.toMutableList()
-    var parsed = rawLines.map(::Line)
-    val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
-    require(netsIdx >= 0) { "no networks: section in ${file.name}" }
-    if (stripEmptyFlowMap(rawLines, netsIdx)) parsed = rawLines.map(::Line)
-    val netsEnd = blockEnd(parsed, netsIdx)
-    val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
-    val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
-    require(netIdx >= 0) { "no network '$net' in ${file.name}" }
-    if (stripEmptyFlowMap(rawLines, netIdx)) parsed = rawLines.map(::Line)
-    var netEnd = blockEnd(parsed, netIdx)
-    val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
-    var hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
-    if (hostsIdx < 0) {
-      val keysIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "keys")
-      val insertHostsAt = if (keysIdx >= 0) keysIdx else netEnd
-      rawLines.add(insertHostsAt, "${" ".repeat(sectionIndent)}hosts:")
-      parsed = rawLines.map(::Line)
-      netEnd = blockEnd(parsed, netIdx)
-      hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
-    } else if (stripEmptyFlowMap(rawLines, hostsIdx)) {
-      parsed = rawLines.map(::Line)
-    }
-    val hostsEnd = blockEnd(parsed, hostsIdx)
-    val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
-    val hostIdx = findChild(parsed, hostsIdx + 1, hostsEnd, hostIndent, name)
-    val bodyLines = if (newText.trimEnd().isEmpty()) {
-      listOf("${" ".repeat(hostIndent + 2)}# $name")
-    } else {
-      newText.trimEnd().split('\n').map { if (it.isEmpty()) "" else " ".repeat(hostIndent + 2) + it }
-    }
-    if (hostIdx >= 0) {
-      val hostEnd = blockEnd(parsed, hostIdx)
-      val blockIndent = parsed[hostIdx].indent
-      val headerLine = "${" ".repeat(blockIndent)}$name: |"
-      val indentedBody = if (newText.trimEnd().isEmpty()) {
-        listOf("${" ".repeat(blockIndent + 2)}# $name")
-      } else {
-        newText.trimEnd().split('\n').map { if (it.isEmpty()) "" else " ".repeat(blockIndent + 2) + it }
-      }
-      val result = rawLines.subList(0, hostIdx) + listOf(headerLine) + indentedBody + rawLines.subList(hostEnd, rawLines.size)
-      writeAtomically(result.joinToString("\n") + "\n")
-    } else {
-      val headerLine = "${" ".repeat(hostIndent)}$name: |"
-      val result = rawLines.subList(0, hostsEnd) + listOf(headerLine) + bodyLines + rawLines.subList(hostsEnd, rawLines.size)
-      writeAtomically(result.joinToString("\n") + "\n")
-    }
+    val updated = replaceHostBlockInText(file.readText(), net, name, newText, file.name)
+    writeAtomically(updated)
   }
 
   /** Remove the host block `networks.<net>.hosts.<name>` if present. */
   fun removeHost(net: String, name: String) = withFileLock {
     if (!file.exists()) return@withFileLock
-    val rawLines = file.readText().split('\n').let { if (it.last().isEmpty()) it.dropLast(1) else it }
-    val parsed = rawLines.map(::Line)
-    val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
-    if (netsIdx < 0) return@withFileLock
-    val netsEnd = blockEnd(parsed, netsIdx)
-    val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
-    val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
-    if (netIdx < 0) return@withFileLock
-    val netEnd = blockEnd(parsed, netIdx)
-    val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
-    val hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
-    if (hostsIdx < 0) return@withFileLock
-    val hostsEnd = blockEnd(parsed, hostsIdx)
-    val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
-    val hostIdx = findChild(parsed, hostsIdx + 1, hostsEnd, hostIndent, name)
-    if (hostIdx < 0) return@withFileLock
-    val hostEnd = blockEnd(parsed, hostIdx)
-    val result = rawLines.subList(0, hostIdx) + rawLines.subList(hostEnd, rawLines.size)
-    writeAtomically(result.joinToString("\n") + "\n")
+    val original = file.readText()
+    val updated = removeHostBlockInText(original, net, name)
+    if (updated != original) writeAtomically(updated)
   }
 
   private fun <T> withFileLock(block: () -> T): T = MEM_LOCK.withLock {
@@ -453,7 +519,10 @@ class TincYaml(val file: File) {
     const val FILE_NAME = "tinc.yaml"
     private val HOST_KEY_RE = Regex("^[A-Za-z][A-Za-z0-9_]*$")
     private val MEM_LOCK = ReentrantLock()
-    private val EMPTY_FLOW_MAP_RE = Regex("^(\\s*[^:#]+:)\\s*\\{\\s*\\}(\\s*(?:#.*)?)$")
+    private val EMPTY_FLOW_MAP_RE = Regex("^(\\s*(?:\"[^\"]*\"|'[^']*'|[^:#]+):)\\s*\\{\\s*\\}(\\s*(?:#.*)?)$")
+    private val YAML_RESERVED_WORDS = setOf(
+      "y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"
+    )
 
     private fun stripEmptyFlowMap(rawLines: MutableList<String>, idx: Int): Boolean {
       val m = EMPTY_FLOW_MAP_RE.matchEntire(rawLines[idx]) ?: return false
@@ -466,7 +535,97 @@ class TincYaml(val file: File) {
       lines[idx] = Line("${m.groupValues[1]}${m.groupValues[2]}")
     }
 
-    private fun newYaml() = Yaml(LoaderOptions().apply { isAllowDuplicateKeys = true })
+    /**
+     * Custom SnakeYAML resolver that keeps all non-empty scalars as verbatim Strings
+     * (never mangling YAML 1.1 boolean node/network names like `no`, `yes`, `on`, `off`
+     * into `Boolean`, nor turning `01:02` sexagesimals into integers), while still
+     * resolving empty mapping bodies (`hosts:`) to `null`.
+     */
+    private class RawStringResolver : Resolver() {
+      override fun addImplicitResolvers() {
+        addImplicitResolver(Tag.NULL, EMPTY, null)
+      }
+    }
+
+    internal fun newYaml(): Yaml {
+      val loaderOpts = LoaderOptions().apply { isAllowDuplicateKeys = true }
+      val dumperOpts = DumperOptions()
+      return Yaml(
+        SafeConstructor(loaderOpts),
+        Representer(dumperOpts),
+        dumperOpts,
+        loaderOpts,
+        RawStringResolver(),
+      )
+    }
+
+    private fun isPlainScalarSafe(s: String): Boolean {
+      if (s.isEmpty()) return false
+      if (s.first().isWhitespace() || s.last().isWhitespace()) return false
+      if (s.first() in "[]{}\"'|>#&*!%@`,?:-") {
+        if (!(s.length >= 2 && s[0] == '-' && s[1].isDigit())) return false
+      }
+      for (c in s) {
+        if (c.code < 0x20 || c.code == 0x7f || c == '"' || c == '\\') return false
+      }
+      if (s.contains(": ") || s.endsWith(":") || s.contains('#')) return false
+      if (s.lowercase() in YAML_RESERVED_WORDS) return false
+      return true
+    }
+
+    private fun isPlainKeySafe(k: String): Boolean =
+      isPlainScalarSafe(k) && !k.contains(':')
+
+    internal fun quoteDqScalar(s: String): String = buildString(s.length + 4) {
+      append('"')
+      for (c in s) {
+        when (c) {
+          '"' -> append("\\\"")
+          '\\' -> append("\\\\")
+          '\n' -> append("\\n")
+          '\r' -> append("\\r")
+          '\t' -> append("\\t")
+          else -> if (c.code < 0x20 || c.code == 0x7f) {
+            append(String.format("\\x%02x", c.code))
+          } else {
+            append(c)
+          }
+        }
+      }
+      append('"')
+    }
+
+    internal fun formatYamlScalar(s: String): String =
+      if (isPlainScalarSafe(s)) s else quoteDqScalar(s)
+
+    internal fun formatYamlKey(k: String): String =
+      if (isPlainKeySafe(k)) k else quoteDqScalar(k)
+
+    /**
+     * Preserve daemon-learned TOFU keys (`Ed25519PublicKey`, `TlsFingerprint`) from
+     * [diskHostText] when [newHostText] omits them because the daemon persisted them
+     * concurrently while the user was editing.
+     */
+    internal fun mergeLearnedTofuKeys(newHostText: String, diskHostText: String?): String {
+      if (diskHostText.isNullOrBlank() || newHostText.isBlank()) return newHostText
+      val newKvs = parseHostKeyValues(newHostText)
+      val diskKvs = parseHostKeyValues(diskHostText)
+      val missing = LinkedHashMap<String, List<String>?>()
+      for (tofuKey in listOf("Ed25519PublicKey", "TlsFingerprint")) {
+        val hasInNew = newKvs.any { it.first.equals(tofuKey, ignoreCase = true) && it.second.isNotBlank() }
+        if (!hasInNew) {
+          val diskVals = diskKvs
+            .filter { it.first.equals(tofuKey, ignoreCase = true) && it.second.isNotBlank() }
+            .map { it.second }
+          if (diskVals.isNotEmpty()) {
+            missing[tofuKey] = diskVals
+          }
+        }
+      }
+      if (missing.isEmpty()) return newHostText
+      val dummy = TincYaml(File("tinc.yaml"))
+      return dummy.spliceHostMultiVars(newHostText, missing)
+    }
 
     /** True if [trimmed] is a `Key = value` line (and not a base64 line with `=` padding). */
     fun isHostKeyValueLine(trimmed: String): Boolean {
@@ -499,7 +658,7 @@ class TincYaml(val file: File) {
       val grouped = LinkedHashMap<String, MutableList<String>>()
       for ((k, v) in parseHostKeyValues(text)) {
         val lower = k.lowercase()
-        canonicalName.putIfAbsent(lower, k)
+        if (!canonicalName.containsKey(lower)) canonicalName[lower] = k
         grouped.getOrPut(lower) { mutableListOf() }.add(v)
       }
       return grouped.entries.map { (lower, vals) -> canonicalName[lower]!! to vals.toList() }
@@ -531,11 +690,68 @@ class TincYaml(val file: File) {
       val skip = content.isEmpty() || content.startsWith("#") || content.isBlank()
       fun keyOrNull(): String? {
         if (skip || content.startsWith("-")) return null
+        if (content.startsWith("\"")) {
+          var i = 1
+          val sb = StringBuilder()
+          while (i < content.length) {
+            val c = content[i]
+            if (c == '\\' && i + 1 < content.length) {
+              i++
+              when (val esc = content[i]) {
+                'n' -> sb.append('\n')
+                't' -> sb.append('\t')
+                'r' -> sb.append('\r')
+                '"' -> sb.append('"')
+                '\\' -> sb.append('\\')
+                'x' -> if (i + 2 < content.length) {
+                  val hex = content.substring(i + 1, i + 3).toIntOrNull(16)
+                  if (hex != null) {
+                    sb.append(hex.toChar())
+                    i += 2
+                  } else sb.append('x')
+                } else sb.append('x')
+                else -> sb.append(esc)
+              }
+              i++
+            } else if (c == '"') {
+              val rest = content.substring(i + 1).trimStart(' ', '\t')
+              if (!rest.startsWith(":")) return null
+              val after = rest.substring(1)
+              if (after.isNotEmpty() && !after[0].isWhitespace()) return null
+              return sb.toString()
+            } else {
+              sb.append(c)
+              i++
+            }
+          }
+          return null
+        }
+        if (content.startsWith("'")) {
+          var i = 1
+          val sb = StringBuilder()
+          while (i < content.length) {
+            val c = content[i]
+            if (c == '\'' && i + 1 < content.length && content[i + 1] == '\'') {
+              sb.append('\'')
+              i += 2
+            } else if (c == '\'') {
+              val rest = content.substring(i + 1).trimStart(' ', '\t')
+              if (!rest.startsWith(":")) return null
+              val after = rest.substring(1)
+              if (after.isNotEmpty() && !after[0].isWhitespace()) return null
+              return sb.toString()
+            } else {
+              sb.append(c)
+              i++
+            }
+          }
+          return null
+        }
         val colon = content.indexOf(':')
         if (colon <= 0) return null
         val after = content.substring(colon + 1)
         if (after.isNotEmpty() && !after[0].isWhitespace()) return null // e.g. "10.0.0.1:655" is not a key
-        return content.substring(0, colon).trim().removeSurrounding("\"").removeSurrounding("'")
+        return content.substring(0, colon).trim()
       }
     }
 
@@ -569,11 +785,91 @@ class TincYaml(val file: File) {
 
     private fun render(key: String, values: List<String>, indent: Int): List<String> {
       val pad = " ".repeat(indent)
-      values.forEach { v ->
-        require(v.isNotBlank() && v.none { it == '\n' || it == '\r' } && !v.trim().startsWith("#")) { "unrepresentable value for $key: '$v'" }
+      val formattedKey = formatYamlKey(key)
+      val formattedVals = values.map { v ->
+        val trimmed = v.trim()
+        require(trimmed.isNotEmpty() && v.none { it == '\n' || it == '\r' || it == '\u0000' }) {
+          "unrepresentable value for $key: '$v'"
+        }
+        formatYamlScalar(trimmed)
       }
-      return if (values.size == 1) listOf("$pad$key: ${values[0].trim()}")
-      else listOf("$pad$key:") + values.map { "$pad  - ${it.trim()}" }
+      return if (formattedVals.size == 1) listOf("$pad$formattedKey: ${formattedVals[0]}")
+      else listOf("$pad$formattedKey:") + formattedVals.map { "$pad  - $it" }
+    }
+
+    internal fun replaceHostBlockInText(docText: String, net: String, name: String, newText: String, sourceName: String = FILE_NAME): String {
+      val rawLines = docText.split('\n').let { if (it.last().isEmpty()) it.dropLast(1) else it }.toMutableList()
+      var parsed = rawLines.map(::Line)
+      val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
+      require(netsIdx >= 0) { "no networks: section in $sourceName" }
+      if (stripEmptyFlowMap(rawLines, netsIdx)) parsed = rawLines.map(::Line)
+      val netsEnd = blockEnd(parsed, netsIdx)
+      val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
+      val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
+      require(netIdx >= 0) { "no network '$net' in $sourceName" }
+      if (stripEmptyFlowMap(rawLines, netIdx)) parsed = rawLines.map(::Line)
+      var netEnd = blockEnd(parsed, netIdx)
+      val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
+      var hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
+      if (hostsIdx < 0) {
+        val keysIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "keys")
+        val insertHostsAt = if (keysIdx >= 0) keysIdx else netEnd
+        rawLines.add(insertHostsAt, "${" ".repeat(sectionIndent)}hosts:")
+        parsed = rawLines.map(::Line)
+        netEnd = blockEnd(parsed, netIdx)
+        hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
+      } else if (stripEmptyFlowMap(rawLines, hostsIdx)) {
+        parsed = rawLines.map(::Line)
+      }
+      val hostsEnd = blockEnd(parsed, hostsIdx)
+      val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
+      val hostIdx = findChild(parsed, hostsIdx + 1, hostsEnd, hostIndent, name)
+      val formattedName = formatYamlKey(name)
+      val safeCommentName = name.replace("\n", " ").replace("\r", " ")
+      if (hostIdx >= 0) {
+        val hostEnd = blockEnd(parsed, hostIdx)
+        val blockIndent = parsed[hostIdx].indent
+        val headerLine = "${" ".repeat(blockIndent)}$formattedName: |"
+        val indentedBody = if (newText.trimEnd().isEmpty()) {
+          listOf("${" ".repeat(blockIndent + 2)}# $safeCommentName")
+        } else {
+          newText.trimEnd().split('\n').map { if (it.isEmpty()) "" else " ".repeat(blockIndent + 2) + it }
+        }
+        val result = rawLines.subList(0, hostIdx) + listOf(headerLine) + indentedBody + rawLines.subList(hostEnd, rawLines.size)
+        return result.joinToString("\n") + "\n"
+      } else {
+        val headerLine = "${" ".repeat(hostIndent)}$formattedName: |"
+        val bodyLines = if (newText.trimEnd().isEmpty()) {
+          listOf("${" ".repeat(hostIndent + 2)}# $safeCommentName")
+        } else {
+          newText.trimEnd().split('\n').map { if (it.isEmpty()) "" else " ".repeat(hostIndent + 2) + it }
+        }
+        val result = rawLines.subList(0, hostsEnd) + listOf(headerLine) + bodyLines + rawLines.subList(hostsEnd, rawLines.size)
+        return result.joinToString("\n") + "\n"
+      }
+    }
+
+    internal fun removeHostBlockInText(docText: String, net: String, name: String): String {
+      if (docText.isEmpty()) return docText
+      val rawLines = docText.split('\n').let { if (it.last().isEmpty()) it.dropLast(1) else it }
+      val parsed = rawLines.map(::Line)
+      val netsIdx = findChild(parsed, 0, parsed.size, 0, "networks")
+      if (netsIdx < 0) return docText
+      val netsEnd = blockEnd(parsed, netsIdx)
+      val netIndent = firstChildIndent(parsed, netsIdx + 1, netsEnd, 2)
+      val netIdx = findChild(parsed, netsIdx + 1, netsEnd, netIndent, net)
+      if (netIdx < 0) return docText
+      val netEnd = blockEnd(parsed, netIdx)
+      val sectionIndent = firstChildIndent(parsed, netIdx + 1, netEnd, netIndent + 2)
+      val hostsIdx = findChild(parsed, netIdx + 1, netEnd, sectionIndent, "hosts")
+      if (hostsIdx < 0) return docText
+      val hostsEnd = blockEnd(parsed, hostsIdx)
+      val hostIndent = firstChildIndent(parsed, hostsIdx + 1, hostsEnd, sectionIndent + 2)
+      val hostIdx = findChild(parsed, hostsIdx + 1, hostsEnd, hostIndent, name)
+      if (hostIdx < 0) return docText
+      val hostEnd = blockEnd(parsed, hostIdx)
+      val result = rawLines.subList(0, hostIdx) + rawLines.subList(hostEnd, rawLines.size)
+      return result.joinToString("\n") + "\n"
     }
 
     /** Pure function: the document text with `networks.<net>.options.<key>` entries replaced/removed/added. */
@@ -598,7 +894,7 @@ class TincYaml(val file: File) {
       // <net>:
       var netIdx = findChild(lines, netsIdx + 1, netsEnd, netIndent, net)
       if (netIdx < 0) {
-        insert(netsEnd, listOf("${" ".repeat(netIndent)}$net:"))
+        insert(netsEnd, listOf("${" ".repeat(netIndent)}${formatYamlKey(net)}:"))
         netIdx = netsEnd
       } else {
         stripEmptyFlowMapLine(lines, netIdx)

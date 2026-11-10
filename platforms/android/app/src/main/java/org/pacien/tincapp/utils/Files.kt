@@ -24,13 +24,16 @@ import java.io.RandomAccessFile
 
 /** Owner-only permissions, recursively: the network directory holds private keys. */
 fun File.makePrivate() {
-  this.setExecutable(this.isDirectory, false)
+  this.setReadable(false, false)
+  this.setWritable(false, false)
+  this.setExecutable(false, false)
   this.setReadable(true, true)
   this.setWritable(true, true)
 
-  if (this.isDirectory)
-    for (file in this.listFiles()!!)
-      file.makePrivate()
+  if (this.isDirectory) {
+    this.setExecutable(true, true)
+    this.listFiles()?.forEach { it.makePrivate() }
+  }
 }
 
 /**

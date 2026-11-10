@@ -515,7 +515,7 @@ bool setup_myself_reloadable(void) {
 
 				if(low_power_mode && new_w < 1000) {
 					new_w += 1000;
-				} else if(!low_power_mode && new_w >= 1000) {
+				} else if(!low_power_mode && !myself->status.no_direct && new_w >= 1000) {
 					new_w = MAX(new_w - 1000, 1);
 				}
 

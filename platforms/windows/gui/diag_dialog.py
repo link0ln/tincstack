@@ -20,20 +20,20 @@ _MONO = QtGui.QFont("Consolas" if os.name == "nt" else "Monospace", 9)
 
 SECURITY_WARNING_TITLE = "Enable Remote Diagnostic Web Server?"
 SECURITY_WARNING_TEXT = (
-    "<b>Security Warning — Full Remote Client Control Over VPN</b><br><br>"
-    "Enabling the Diagnostic Web Server opens an HTTP interface (without password "
-    "authentication) accessible to <b>any peer inside your VPN network</b> via "
+    "<b>Security Warning — Remote Client Control Over VPN</b><br><br>"
+    "Enabling the Diagnostic Web Server opens a password-protected HTTP interface "
+    "accessible to peers inside your VPN network via "
     "<code>http://&lt;your-vpn-ip&gt;:&lt;port&gt;/</code> as well as locally on "
     "<code>127.0.0.1</code>.<br><br>"
-    "Anyone who can reach this port over the VPN will be able to:"
+    "Anyone with the access password shown in this dialog will be able to:"
     "<ul>"
     "<li>View live traffic graphs, RTT/PMTU metrics, and daemon logs</li>"
     "<li>Run in-tunnel &amp; outer network probes (ping, traceroute, PMTU, port checks)</li>"
     "<li>Switch transport protocols, modify routes, and edit network configuration</li>"
     "<li>Start, stop, or restart the VPN daemon</li>"
     "</ul>"
-    "<b>Only enable this feature if you trust all nodes in your VPN mesh, and disable "
-    "it when you finish troubleshooting.</b><br><br>"
+    "<b>Keep the access password confidential and disable the server when you finish "
+    "troubleshooting.</b><br><br>"
     "Do you understand the risks and want to enable the Diagnostic Web Server now?"
 )
 
@@ -112,6 +112,23 @@ class DiagnosticsDialog(QtWidgets.QDialog):
         self.open_btn = QtWidgets.QPushButton("🌐 Open WebUI")
         self.open_btn.clicked.connect(self.open_browser)
         sgrid.addWidget(self.open_btn, 1, 4)
+
+        sgrid.addWidget(QtWidgets.QLabel("Access Password:"), 2, 0)
+        self.pass_edit = QtWidgets.QLineEdit()
+        self.pass_edit.setReadOnly(True)
+        self.pass_edit.setFont(_MONO)
+        self.pass_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.pass_edit.setText(self.server.get_password())
+        sgrid.addWidget(self.pass_edit, 2, 1, 1, 2)
+
+        self.show_pass_btn = QtWidgets.QPushButton("👁 Show")
+        self.show_pass_btn.setCheckable(True)
+        self.show_pass_btn.toggled.connect(self.toggle_password_visibility)
+        sgrid.addWidget(self.show_pass_btn, 2, 3)
+
+        self.copy_pass_btn = QtWidgets.QPushButton("📋 Copy Password")
+        self.copy_pass_btn.clicked.connect(self.copy_password)
+        sgrid.addWidget(self.copy_pass_btn, 2, 4)
 
         lay.addWidget(srv_group)
 
@@ -211,7 +228,7 @@ class DiagnosticsDialog(QtWidgets.QDialog):
 
     def toggle_server(self) -> None:
         if self.server.enabled:
-            self.server.stop()
+            self.server.stop(wait=False)
         else:
             if not self.confirm_enable():
                 return
@@ -222,6 +239,7 @@ class DiagnosticsDialog(QtWidgets.QDialog):
         self.state_changed.emit()
 
     def refresh_ui(self) -> None:
+        self.pass_edit.setText(self.server.get_password())
         on = self.server.enabled
         self.port_spin.setEnabled(not on)
         if on:
@@ -237,6 +255,19 @@ class DiagnosticsDialog(QtWidgets.QDialog):
             self.url_edit.setText("(enable the server to access the WebUI over VPN or localhost)")
             self.copy_btn.setEnabled(False)
             self.open_btn.setEnabled(False)
+
+    def toggle_password_visibility(self, checked: bool) -> None:
+        if checked:
+            self.pass_edit.setEchoMode(QtWidgets.QLineEdit.Normal)
+            self.show_pass_btn.setText("🙈 Hide")
+        else:
+            self.pass_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+            self.show_pass_btn.setText("👁 Show")
+
+    def copy_password(self) -> None:
+        pwd = self.server.get_password()
+        if pwd:
+            QtWidgets.QApplication.clipboard().setText(pwd)
 
     def copy_url(self) -> None:
         urls = self.server.get_vpn_urls()

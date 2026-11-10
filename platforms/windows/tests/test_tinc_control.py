@@ -86,3 +86,21 @@ def test_runner_failure_is_reported_not_raised():
     snap = ctl.snapshot("demo")
     assert snap.error
 
+
+def test_snapshot_reports_error_when_edges_or_subnets_dump_fails():
+    """WL-15: a partial control-socket failure during `dump edges` or `dump subnets`
+    must set `snap.error` rather than returning a seemingly valid incomplete snapshot."""
+    for failing_sub in (["dump", "edges"], ["dump", "subnets"]):
+        def runner(cmd, timeout):
+            sub = cmd[cmd.index("-c") + 2:]
+            if sub == failing_sub:
+                return 1, "", "control socket closed mid-dump"
+            if sub == ["dump", "nodes"]:
+                return 0, NODES, ""
+            return 0, "", ""
+
+        ctl = tc.TincControl(tinc_exe="tinc", yaml_path="/x/tinc.yaml", runner=runner)
+        snap = ctl.snapshot("demo")
+        assert "control socket closed mid-dump" in snap.error
+
+

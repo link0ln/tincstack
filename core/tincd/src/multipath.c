@@ -165,18 +165,20 @@ static void handle_uplink_udp_v4(void *data, int flags) {
 	multipath_uplinks[idx].rx_packets++;
 	multipath_uplinks[idx].rx_bytes += (uint64_t)len;
 
-	listen_socket_t *ls = listen_sockets > 0 ? &listen_socket[0] : NULL;
+	listen_socket_t u_ls;
+	memset(&u_ls, 0, sizeof(u_ls));
+	u_ls.sa.sa.sa_family = AF_INET;
+	u_ls.tcp.fd = -1;
 
 	for(int i = 0; i < listen_sockets; i++) {
 		if(listen_socket[i].sa.sa.sa_family == AF_INET) {
-			ls = &listen_socket[i];
+			u_ls = listen_socket[i];
 			break;
 		}
 	}
 
-	if(ls) {
-		handle_incoming_vpn_packet_uplink(idx, ls, &pkt, &addr);
-	}
+	u_ls.udp.fd = multipath_uplinks[idx].udp_fd_v4;
+	handle_incoming_vpn_packet_uplink(idx, &u_ls, &pkt, &addr);
 }
 
 static void handle_uplink_udp_v6(void *data, int flags) {
@@ -202,18 +204,20 @@ static void handle_uplink_udp_v6(void *data, int flags) {
 	multipath_uplinks[idx].rx_packets++;
 	multipath_uplinks[idx].rx_bytes += (uint64_t)len;
 
-	listen_socket_t *ls = listen_sockets > 0 ? &listen_socket[0] : NULL;
+	listen_socket_t u_ls;
+	memset(&u_ls, 0, sizeof(u_ls));
+	u_ls.sa.sa.sa_family = AF_INET6;
+	u_ls.tcp.fd = -1;
 
 	for(int i = 0; i < listen_sockets; i++) {
 		if(listen_socket[i].sa.sa.sa_family == AF_INET6) {
-			ls = &listen_socket[i];
+			u_ls = listen_socket[i];
 			break;
 		}
 	}
 
-	if(ls) {
-		handle_incoming_vpn_packet_uplink(idx, ls, &pkt, &addr);
-	}
+	u_ls.udp.fd = multipath_uplinks[idx].udp_fd_v6;
+	handle_incoming_vpn_packet_uplink(idx, &u_ls, &pkt, &addr);
 }
 
 static void close_uplink_sockets(multipath_uplink_t *u) {
@@ -337,12 +341,18 @@ bool multipath_bind_socket(int fd, int af, int uplink_idx) {
 	if(u->net_handle != 0) {
 		android_setsocknetwork_fn fn = resolve_android_setsocknetwork();
 
-		if(fn) {
-			if(fn(u->net_handle, fd) != 0) {
-				logger(DEBUG_CONNECTIONS, LOG_WARNING,
-				       "multipath: android_setsocknetwork(%"PRIu64") on %s failed: %s",
-				       u->net_handle, u->name, strerror(errno));
-			}
+		if(!fn) {
+			logger(DEBUG_CONNECTIONS, LOG_WARNING,
+			       "multipath: android_setsocknetwork unavailable on %s (handle=%"PRIu64")",
+			       u->name, u->net_handle);
+			return false;
+		}
+
+		if(fn(u->net_handle, fd) != 0) {
+			logger(DEBUG_CONNECTIONS, LOG_WARNING,
+			       "multipath: android_setsocknetwork(%"PRIu64") on %s failed: %s",
+			       u->net_handle, u->name, strerror(errno));
+			return false;
 		}
 	}
 #endif
@@ -419,16 +429,53 @@ int multipath_get_udp_fd(int uplink_idx, int af, int fallback_sock_idx) {
 			return multipath_uplinks[uplink_idx].udp_fd_v4;
 		}
 
-		if(af == AF_INET6 && multipath_uplinks[uplink_idx].udp_fd_v6 >= 0) {
-			return multipath_uplinks[uplink_idx].udp_fd_v6;
+		if(af == AF_INET6) {
+			if(multipath_uplinks[uplink_idx].udp_fd_v6 < 0 && multipath_initialized &&
+			                (!multipath_uplinks[uplink_idx].have_v4 || multipath_uplinks[uplink_idx].have_v6)) {
+				multipath_uplinks[uplink_idx].udp_fd_v6 = open_uplink_udp_socket(uplink_idx, AF_INET6);
+
+				if(multipath_uplinks[uplink_idx].udp_fd_v6 >= 0) {
+					io_add(&multipath_uplinks[uplink_idx].io_v6, handle_uplink_udp_v6,
+					       (void *)(intptr_t)uplink_idx, multipath_uplinks[uplink_idx].udp_fd_v6, IO_READ);
+				}
+			}
+
+			if(multipath_uplinks[uplink_idx].udp_fd_v6 >= 0) {
+				return multipath_uplinks[uplink_idx].udp_fd_v6;
+			}
 		}
 	}
 
-	if(fallback_sock_idx >= 0 && fallback_sock_idx < listen_sockets) {
+	if(fallback_sock_idx < 0) {
+		return -1;
+	}
+
+	if(fallback_sock_idx < listen_sockets) {
 		return listen_socket[fallback_sock_idx].udp.fd;
 	}
 
+	for(int i = 0; i < listen_sockets; i++) {
+		if(listen_socket[i].sa.sa.sa_family == af) {
+			return listen_socket[i].udp.fd;
+		}
+	}
+
 	return listen_sockets > 0 ? listen_socket[0].udp.fd : -1;
+}
+
+bool multipath_owns_udp_fd(int fd) {
+	if(fd < 0) {
+		return false;
+	}
+
+	for(int i = 0; i < MAX_UPLINKS; i++) {
+		if(multipath_uplinks[i].in_use &&
+		                (multipath_uplinks[i].udp_fd_v4 == fd || multipath_uplinks[i].udp_fd_v6 == fd)) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 bool multipath_uplink_is_healthy(int uplink_idx) {
@@ -512,6 +559,12 @@ int multipath_upsert_uplink(const char *name, const char *local_ip, int weight,
 	u->ifindex = if_nametoindex(u->name);
 #endif
 
+	/* Reset cached local source IPs before re-parsing name / local_ip */
+	u->have_v4 = false;
+	u->have_v6 = false;
+	memset(&u->local_v4, 0, sizeof(u->local_v4));
+	memset(&u->local_v6, 0, sizeof(u->local_v6));
+
 	/* If name itself is an IP literal, parse it as local_ip as well */
 	parse_ip_into_uplink(u, name);
 
@@ -549,8 +602,13 @@ bool multipath_remove_uplink(const char *name) {
 				multipath_uplink_count--;
 			}
 
-			if(multipath_initialized) {
-				multipath_maintain();
+			for splay_each(node_t, n, &node_tree) {
+				for(int j = 0; j < MAX_NODE_PATHS; j++) {
+					if(n->paths[j].uplink_idx == i) {
+						n->paths[j].active = false;
+						n->paths[j].confirmed = false;
+					}
+				}
 			}
 
 			/* Close any connections still bound to this removed uplink */
@@ -568,11 +626,23 @@ bool multipath_remove_uplink(const char *name) {
 				}
 			} while(found_dead);
 
+			if(multipath_initialized) {
+				multipath_maintain();
+			}
+
 			return true;
 		}
 	}
 
 	return false;
+}
+
+static bool connection_is_dialling_node(const connection_t *c, const node_t *n) {
+	if(!c || !n || c->status.control || c->status.web_front || c->status.active) {
+		return false;
+	}
+
+	return (c->node == n) || (c->name && !strcmp(c->name, n->name));
 }
 
 /* Pick the best uplink for a new outgoing connection to node `n` so parallel
@@ -596,13 +666,13 @@ int multipath_pick_next_uplink(const node_t *n) {
 
 		if(n) {
 			for list_each(connection_t, c, &n->connections) {
-				if(c->uplink_idx == i) {
+				if(c->status.active && c->uplink_idx == i) {
 					used++;
 				}
 			}
 
 			for list_each(connection_t, c, &connection_list) {
-				if(c->status.connecting && c->name && !strcmp(c->name, n->name) && c->uplink_idx == i) {
+				if(connection_is_dialling_node(c, n) && c->uplink_idx == i) {
 					used++;
 				}
 			}
@@ -621,6 +691,19 @@ int multipath_pick_next_uplink(const node_t *n) {
 	}
 
 	return best_idx;
+}
+
+int multipath_get_tx_uplink(const node_t *n) {
+	if(multipath_mode == MULTIPATH_OFF || multipath_uplink_count <= 0) {
+		return -1;
+	}
+
+	if(n && n->connection && n->connection->uplink_idx >= 0 &&
+	                multipath_uplink_is_healthy(n->connection->uplink_idx)) {
+		return n->connection->uplink_idx;
+	}
+
+	return multipath_pick_next_uplink(n);
 }
 
 /* ---- Configuration Parsing ----------------------------------------------- */
@@ -752,7 +835,7 @@ static void handle_netlink_event(void *data, int flags) {
 			break;
 		}
 
-		for(struct nlmsghdr *nh = (struct nlmsghdr *)buf; NLMSG_OK(nh, (unsigned int)len); nh = NLMSG_NEXT(nh, len)) {
+		for(struct nlmsghdr *nh = (struct nlmsghdr *)buf; len >= (ssize_t)sizeof(*nh) && NLMSG_OK(nh, (size_t)len); nh = NLMSG_NEXT(nh, len)) {
 			if(nh->nlmsg_type == NLMSG_DONE || nh->nlmsg_type == NLMSG_ERROR) {
 				break;
 			}
@@ -865,32 +948,119 @@ void multipath_node_del_connection(node_t *n, connection_t *c) {
 	list_delete(&n->connections, c);
 }
 
+static uint16_t extract_sockaddr_port(const sockaddr_t *sa) {
+	if(sa->sa.sa_family == AF_INET) {
+		return sa->in.sin_port;
+	}
+
+	if(sa->sa.sa_family == AF_INET6) {
+		return sa->in6.sin6_port;
+	}
+
+	return 0;
+}
+
+static void set_sockaddr_port_net(sockaddr_t *sa, uint16_t net_port) {
+	if(sa->sa.sa_family == AF_INET) {
+		sa->in.sin_port = net_port;
+	} else if(sa->sa.sa_family == AF_INET6) {
+		sa->in6.sin6_port = net_port;
+	}
+}
+
 static void multipath_transfer_edge(connection_t *from, connection_t *to) {
 	if(!from || !to || !from->edge) {
 		return;
 	}
 
 	edge_t *e = from->edge;
-	uint16_t old_port = 0;
+	bool from_is_single_flow_udp = from->transport &&
+	                               (from->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP);
+	bool to_is_single_flow_udp = to->transport &&
+	                             (to->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP);
 
-	if(e->address.sa.sa_family == AF_INET) {
-		old_port = e->address.in.sin_port;
-	} else if(e->address.sa.sa_family == AF_INET6) {
-		old_port = e->address.in6.sin6_port;
+	uint16_t listen_port = !from_is_single_flow_udp ? extract_sockaddr_port(&e->address) : 0;
+
+	if(!listen_port) {
+		listen_port = extract_sockaddr_port(&to->base_address);
 	}
 
-	bool is_single_flow_udp = to->transport &&
-	                          (to->transport->caps & (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP)) == (TRANSPORT_CAP_SINGLE_FLOW | TRANSPORT_CAP_DATA_UDP);
+	if(!listen_port && e->to && e->to->address_cache && e->to->address_cache->data.used > 0) {
+		listen_port = extract_sockaddr_port(&e->to->address_cache->data.address[0]);
+	}
 
 	to->edge = e;
 	e->connection = to;
-	e->address = to->address;
+	e->options = to->options;
 
-	if(!is_single_flow_udp && old_port) {
-		if(e->address.sa.sa_family == AF_INET) {
-			e->address.in.sin_port = old_port;
-		} else if(e->address.sa.sa_family == AF_INET6) {
-			e->address.in6.sin6_port = old_port;
+	if(to_is_single_flow_udp) {
+		e->address = to->address;
+	} else {
+		e->address = to->address;
+
+		if(listen_port) {
+			set_sockaddr_port_net(&e->address, listen_port);
+		}
+	}
+
+	sockaddr_t local_sa;
+
+	if(transport_local_address(to, &local_sa)) {
+		if(!to_is_single_flow_udp) {
+			sockaddr_setport(&local_sa, myport.udp);
+		}
+
+		e->local_address = local_sa;
+	}
+
+	if(e->to && e->from) {
+		e->reverse = lookup_edge(e->to, e->from);
+
+		if(e->reverse) {
+			e->reverse->reverse = e;
+		}
+	}
+
+	if(e->to) {
+		node_t *n = e->to;
+
+		if(n->prevedge == e) {
+			n->options = e->options;
+
+			if(to->options & OPTION_TCPONLY) {
+				n->options |= OPTION_TCPONLY;
+			}
+
+			bool indirect = myself->status.indirect || (e->options & OPTION_INDIRECT) ||
+			                n->status.no_direct || n->remote_no_direct;
+			n->status.indirect = indirect;
+			n->via = indirect ? myself->via : n;
+		}
+
+		bool from_dgram = from->transport && from->transport->send_datagram != NULL;
+		bool to_dgram = to->transport && to->transport->send_datagram != NULL;
+
+		if(from_dgram != to_dgram) {
+			timeout_del(&n->udp_ping_timeout);
+			n->status.udp_confirmed = false;
+
+			if(from_dgram) {
+				n->status.udp_addr_confirmed = false;
+			}
+
+			n->status.ping_sent = false;
+			n->udp_ping_sent = (struct timeval) {0, 0};
+			n->mtuprobes = 0;
+			n->minmtu = 0;
+			n->maxmtu = MTU;
+			n->mtu = MTU;
+		} else if((to->options & OPTION_TCPONLY) && n->status.udp_confirmed) {
+			timeout_del(&n->udp_ping_timeout);
+			n->status.udp_confirmed = false;
+			n->status.udp_addr_confirmed = false;
+			n->minmtu = 0;
+			n->maxmtu = MTU;
+			n->mtu = MTU;
 		}
 	}
 
@@ -1210,20 +1380,17 @@ uint32_t multipath_flow_hash(const vpn_packet_t *pkt) {
 	const uint8_t *p = DATA(pkt);
 	size_t len = pkt->len;
 
-	/* Skip Ethernet header if present (Switch/Hub mode or TAP) */
-	uint16_t ether_type = 0;
+	/* vpn_packet_t always begins with a 14-byte Ethernet / pseudo-Ethernet
+	   header in both RMODE_ROUTER and RMODE_SWITCH / RMODE_HUB. */
+	const size_t l2_off = 14;
+	uint16_t ether_type = ((uint16_t)p[12] << 8) | p[13];
+	p += l2_off;
+	len -= l2_off;
 
-	if(routing_mode != RMODE_ROUTER && len >= sizeof(struct ether_header)) {
-		ether_type = ((uint16_t)p[12] << 8) | p[13];
-		p += sizeof(struct ether_header);
-		len -= sizeof(struct ether_header);
-
-		/* 802.1Q VLAN tag */
-		if(ether_type == 0x8100 && len >= 4) {
-			ether_type = ((uint16_t)p[2] << 8) | p[3];
-			p += 4;
-			len -= 4;
-		}
+	/* 802.1Q VLAN tag */
+	if(ether_type == 0x8100 && len >= 4) {
+		p += 4;
+		len -= 4;
 	}
 
 	/* FNV-1a 32-bit basis */
@@ -1495,12 +1662,16 @@ static int count_node_live_or_dialling(const node_t *n) {
 	}
 
 	for list_each(connection_t, c, &connection_list) {
-		if(c->status.connecting && c->name && !strcmp(c->name, n->name)) {
+		if(connection_is_dialling_node(c, n) && multipath_uplink_is_healthy(c->uplink_idx)) {
 			count++;
 		}
 	}
 
 	return count;
+}
+
+static bool sockaddr_has_valid_family(const sockaddr_t *sa) {
+	return sa && sa->sa.sa_family != AF_UNSPEC && sa->sa.sa_family != AF_UNKNOWN && sa->sa.sa_family != 0;
 }
 
 /* Open a secondary parallel carrier connection to `outgoing->node` without
@@ -1526,47 +1697,86 @@ static void dial_secondary_connection(outgoing_t *outgoing) {
 		return;
 	}
 
-	const sockaddr_t *sa = NULL;
+	sockaddr_t target_sa = {0};
+	bool have_target = false;
+	sockaddr_t first_valid_sa = {0};
+	bool have_first_valid = false;
 
-	for(uint32_t i = 0; i < n->address_cache->data.used; i++) {
-		const sockaddr_t *cand = &n->address_cache->data.address[i];
+	reset_address_cache(n->address_cache);
 
-		if(!cand->sa.sa_family || address_routes_via_vpn(cand)) {
+	const sockaddr_t *cand;
+
+	while((cand = get_recent_address(n->address_cache)) != NULL) {
+		if(!sockaddr_has_valid_family(cand) || address_routes_via_vpn(cand)) {
 			continue;
+		}
+
+		if(!have_first_valid) {
+			memcpy(&first_valid_sa, cand, SALEN(cand->sa));
+			have_first_valid = true;
 		}
 
 		bool already_used = false;
 
 		for list_each(connection_t, existing, &n->connections) {
-			if(!sockaddrcmp_noport(cand, &existing->base_address) ||
-			                !sockaddrcmp_noport(cand, &existing->address)) {
+			if((sockaddr_has_valid_family(&existing->base_address) && !sockaddrcmp_noport(cand, &existing->base_address)) ||
+			                (sockaddr_has_valid_family(&existing->address) && !sockaddrcmp_noport(cand, &existing->address))) {
 				already_used = true;
 				break;
 			}
 		}
 
 		if(!already_used) {
-			sa = cand;
+			memcpy(&target_sa, cand, SALEN(cand->sa));
+			have_target = true;
 			break;
 		}
 	}
 
-	if(!sa) {
-		sa = &n->connection->base_address;
+	reset_address_cache(n->address_cache);
+
+	if(!have_target && have_first_valid) {
+		target_sa = first_valid_sa;
+		have_target = true;
 	}
 
-	if(!sa->sa.sa_family) {
-		sa = &n->connection->address;
+	if(!have_target) {
+		for list_each(connection_t, existing, &n->connections) {
+			if(sockaddr_has_valid_family(&existing->base_address) && !address_routes_via_vpn(&existing->base_address)) {
+				memcpy(&target_sa, &existing->base_address, SALEN(existing->base_address.sa));
+				have_target = true;
+				break;
+			}
+		}
 	}
 
-	if(!sa->sa.sa_family) {
+	if(!have_target && sockaddr_has_valid_family(&n->connection->base_address) &&
+	                !address_routes_via_vpn(&n->connection->base_address)) {
+		memcpy(&target_sa, &n->connection->base_address, SALEN(n->connection->base_address.sa));
+		have_target = true;
+	}
+
+	if(!have_target && n->connection->edge &&
+	                sockaddr_has_valid_family(&n->connection->edge->address) &&
+	                !address_routes_via_vpn(&n->connection->edge->address)) {
+		memcpy(&target_sa, &n->connection->edge->address, SALEN(n->connection->edge->address.sa));
+		have_target = true;
+	}
+
+	if(!have_target && sockaddr_has_valid_family(&n->connection->address) &&
+	                !address_routes_via_vpn(&n->connection->address)) {
+		memcpy(&target_sa, &n->connection->address, SALEN(n->connection->address.sa));
+		have_target = true;
+	}
+
+	if(!have_target) {
 		return;
 	}
 
 	connection_t *c = new_connection();
 	c->outgoing = NULL; /* Primary connection owns `outgoing`; secondary is self-contained */
-	memcpy(&c->address, sa, SALEN(sa->sa));
-	memcpy(&c->base_address, sa, SALEN(sa->sa));
+	memcpy(&c->address, &target_sa, SALEN(target_sa.sa));
+	memcpy(&c->base_address, &target_sa, SALEN(target_sa.sa));
 	c->hostname = sockaddr2hostname(&c->address);
 	c->name = xstrdup(n->name);
 	c->outmaclength = myself->connection->outmaclength;

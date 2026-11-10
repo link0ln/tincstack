@@ -43,12 +43,14 @@ import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import org.pacien.tincapp.R
 import org.pacien.tincapp.activities.BaseActivity
+import org.pacien.tincapp.commands.Executor
 import org.pacien.tincapp.context.AppPaths
 import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.databinding.ActivityConfigEditorBinding
 import org.pacien.tincapp.databinding.ConfigKeyItemBinding
 import org.pacien.tincapp.databinding.DialogAddKeyBinding
 import org.pacien.tincapp.extensions.Java.defaultMessage
+import org.pacien.tincapp.extensions.Java.exceptionallyAccept
 import org.pacien.tincapp.service.TincVpnService
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -75,6 +77,7 @@ class ConfigEditorActivity : BaseActivity() {
   private val yaml by lazy { TincYaml(AppPaths.tincYamlFile(netName)) }
   private lateinit var stanza: String
   private var ownNode: String? = null
+  private val saving = AtomicBoolean(false)
 
   private val adapter = Adapter()
   private val allRows = mutableListOf<Row>()
@@ -162,21 +165,8 @@ class ConfigEditorActivity : BaseActivity() {
       }
     })
 
-    stanza = yaml.resolveNetwork(netName)
-    loadFromDisk()
-
-    val targetFocus = focusNode?.takeIf { it.isNotBlank() }
-    currentScope = if (targetFocus != null) {
-      if (targetFocus !in knownNodes) {
-        knownNodes.add(targetFocus)
-      }
-      Scope.Node(targetFocus)
-    } else {
-      Scope.Options
-    }
-
-    renderScopeChips()
-    applyScope()
+    stanza = netName
+    loadFromDiskAsync()
   }
 
   override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -215,53 +205,96 @@ class ConfigEditorActivity : BaseActivity() {
       .show()
   }
 
-  private fun loadFromDisk() {
-    allRows.clear()
-    visibleRows.clear()
-    removedRows.clear()
-    knownNodes.clear()
-    initialNodes.clear()
-    deletedNodes.clear()
+  private data class LoadedSnapshot(
+    val resolvedStanza: String,
+    val rawText: String,
+    val own: String?,
+    val nodes: List<String>,
+    val rows: List<Row>,
+  )
 
-    rawOriginalText = yaml.readRawText()
-    rawPendingText = null
-    suppressRawWatcher = true
-    binding.configRawEdit.setText(rawOriginalText)
-    suppressRawWatcher = false
-
-    ownNode = yaml.optionValue(stanza, "Name")
-    for ((k, v) in yaml.options(stanza)) {
-      allRows.add(
-        Row(
-          kind = Row.Kind.OPTION,
-          sectionTitle = R.string.config_section_options,
-          sectionSort = 0,
-          net = stanza,
-          node = null,
-          k = k,
-          original = TincYaml.valuesOf(v).joinToString(", "),
-        )
-      )
-    }
-
-    val nodes = yaml.hostNames(stanza)
-    knownNodes.addAll(nodes)
-    initialNodes.addAll(nodes)
-
-    for (node in nodes) {
-      val text = yaml.hostText(stanza, node) ?: continue
-      for ((k, vals) in TincYaml.parseHostMultiKeyValues(text)) {
-        allRows.add(
+  private fun loadFromDiskAsync() {
+    Executor.supplyAsyncTask {
+      val resolvedStanza = yaml.resolveNetwork(netName)
+      val rawText = yaml.readRawText()
+      val own = yaml.optionValue(resolvedStanza, "Name")
+      val rows = mutableListOf<Row>()
+      for ((k, v) in yaml.options(resolvedStanza)) {
+        rows.add(
           Row(
-            kind = Row.Kind.HOST,
-            sectionTitle = R.string.config_section_hosts,
-            sectionSort = 1,
-            net = stanza,
-            node = node,
+            kind = Row.Kind.OPTION,
+            sectionTitle = R.string.config_section_options,
+            sectionSort = 0,
+            net = resolvedStanza,
+            node = null,
             k = k,
-            original = vals.joinToString(", "),
+            original = TincYaml.valuesOf(v).joinToString(", "),
           )
         )
+      }
+      val nodes = yaml.hostNames(resolvedStanza)
+      for (node in nodes) {
+        val text = yaml.hostText(resolvedStanza, node) ?: continue
+        for ((k, vals) in TincYaml.parseHostMultiKeyValues(text)) {
+          rows.add(
+            Row(
+              kind = Row.Kind.HOST,
+              sectionTitle = R.string.config_section_hosts,
+              sectionSort = 1,
+              net = resolvedStanza,
+              node = node,
+              k = k,
+              original = vals.joinToString(", "),
+            )
+          )
+        }
+      }
+      LoadedSnapshot(resolvedStanza, rawText, own, nodes, rows)
+    }.thenAccept { snap ->
+      runOnUiThread {
+        if (isFinishing) return@runOnUiThread
+        stanza = snap.resolvedStanza
+        allRows.clear()
+        visibleRows.clear()
+        removedRows.clear()
+        knownNodes.clear()
+        initialNodes.clear()
+        deletedNodes.clear()
+
+        rawOriginalText = snap.rawText
+        rawPendingText = null
+        suppressRawWatcher = true
+        binding.configRawEdit.setText(rawOriginalText)
+        suppressRawWatcher = false
+
+        ownNode = snap.own
+        allRows.addAll(snap.rows)
+        knownNodes.addAll(snap.nodes)
+        initialNodes.addAll(snap.nodes)
+
+        val targetFocus = focusNode?.takeIf { it.isNotBlank() }
+        currentScope = if (targetFocus != null) {
+          if (targetFocus !in knownNodes) {
+            knownNodes.add(targetFocus)
+          }
+          Scope.Node(targetFocus)
+        } else {
+          Scope.Options
+        }
+
+        invalidateOptionsMenu()
+        renderScopeChips()
+        applyScope()
+      }
+    }.exceptionallyAccept { e ->
+      runOnUiThread {
+        if (isFinishing) return@runOnUiThread
+        val msg = e.cause?.defaultMessage() ?: e.defaultMessage()
+        MaterialAlertDialogBuilder(this)
+          .setTitle(R.string.config_save_failed)
+          .setMessage(msg)
+          .setPositiveButton(R.string.action_close) { _, _ -> finish() }
+          .show()
       }
     }
   }
@@ -800,80 +833,106 @@ class ConfigEditorActivity : BaseActivity() {
   }
 
   private fun save() {
-    try {
-      // Raw edits apply no matter which scope is on screen now: switching
-      // tabs after typing YAML used to silently drop every raw change.
-      val rawChanged = rawPendingText != null && rawPendingText != rawOriginalText
-      if (rawChanged) {
-        yaml.writeRawText(rawPendingText!!)
+    if (!saving.compareAndSet(false, true)) return
+    binding.configSave.isEnabled = false
+
+    // Raw edits apply no matter which scope is on screen now: switching
+    // tabs after typing YAML used to silently drop every raw change.
+    val rawTextToWrite = rawPendingText
+    val rawChanged = rawTextToWrite != null && rawTextToWrite != rawOriginalText
+    val stanzaSnap = stanza
+    val deletedNodesSnap = deletedNodes.toList()
+    val structuredChange = deletedNodesSnap.isNotEmpty() ||
+      removedRows.isNotEmpty() ||
+      allRows.any { it.changed() }
+
+    val removedOptionKeys = removedRows.filter { it.kind == Row.Kind.OPTION }.map { it.key() }
+    val changedOptions = allRows.filter { it.kind == Row.Kind.OPTION && it.changed() }.map { r ->
+      val sep = if (isTokenListKey(r.key())) Regex("[\\s,;]+") else Regex(",")
+      val vals = r.value().split(sep).map { it.trim() }.filter { it.isNotEmpty() }
+      r.key() to vals.ifEmpty { null }
+    }
+    val hostMutations = knownNodes.mapNotNull { node ->
+      val hostChanges = LinkedHashMap<String, List<String>?>()
+      for (r in removedRows.filter { it.kind == Row.Kind.HOST && it.node == node }) {
+        hostChanges[r.key()] = null
       }
-
-      val structuredChange = deletedNodes.isNotEmpty() ||
-        removedRows.isNotEmpty() ||
-        allRows.any { it.changed() }
-
-      if (!rawChanged || structuredChange) {
-        for (delNode in deletedNodes) {
-          yaml.removeHost(stanza, delNode)
-        }
-
-        val optChanges = LinkedHashMap<String, List<String>?>()
-        if (deletedNodes.isNotEmpty()) {
-          val blocked = yaml.optionValues(stanza, "BlockedNodes").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
-          for (delNode in deletedNodes) {
-            if (delNode !in blocked) blocked.add(delNode)
-          }
-          optChanges["BlockedNodes"] = blocked
-          val ct = yaml.optionValues(stanza, "ConnectTo").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() && it !in deletedNodes }
-          optChanges["ConnectTo"] = ct.ifEmpty { null }
-        }
-        for (r in removedRows.filter { it.kind == Row.Kind.OPTION }) {
-          optChanges[r.key()] = null
-        }
-        for (r in allRows.filter { it.kind == Row.Kind.OPTION }) {
-          if (!r.changed()) continue
-          val sep = if (isTokenListKey(r.key())) Regex("[\\s,;]+") else Regex(",")
-          val vals = r.value().split(sep).map { it.trim() }.filter { it.isNotEmpty() }
-          optChanges[r.key()] = vals.ifEmpty { null }
-        }
-        if (optChanges.isNotEmpty()) {
-          yaml.setOptions(stanza, optChanges)
-        }
-
-        for (node in knownNodes) {
-          val hostChanges = LinkedHashMap<String, List<String>?>()
-          for (r in removedRows.filter { it.kind == Row.Kind.HOST && it.node == node }) {
-            hostChanges[r.key()] = null
-          }
-          for (r in allRows.filter { it.kind == Row.Kind.HOST && it.node == node }) {
-            if (!r.changed()) continue
-            val vals = r.value().split(',').map { it.trim() }.filter { it.isNotEmpty() }
-            hostChanges[r.key()] = vals.ifEmpty { null }
-          }
-          val isNewNode = node !in initialNodes
-          if (hostChanges.isNotEmpty() || isNewNode) {
-            yaml.setHostMultiVars(stanza, node, hostChanges, createIfMissing = true)
-          }
-        }
+      for (r in allRows.filter { it.kind == Row.Kind.HOST && it.node == node }) {
+        if (!r.changed()) continue
+        val vals = r.value().split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        hostChanges[r.key()] = vals.ifEmpty { null }
       }
-    } catch (e: Exception) {
-      val msg = e.cause?.defaultMessage() ?: e.defaultMessage()
-      if (rawPendingText != null && rawPendingText != rawOriginalText) {
-        binding.configRawLayout.error = msg
-      }
-      MaterialAlertDialogBuilder(this)
-        .setTitle(R.string.config_save_failed)
-        .setMessage(msg)
-        .setPositiveButton(R.string.action_close, null)
-        .show()
-      return
+      val isNewNode = node !in initialNodes
+      if (hostChanges.isNotEmpty() || isNewNode) node to hostChanges else null
     }
 
-    dirty.set(false)
-    reconnectIfActive()
-    notifyDone()
-    setResult(RESULT_OK)
-    finish()
+    Executor.supplyAsyncTask {
+      if (rawChanged && rawTextToWrite != null) {
+        yaml.writeRawText(rawTextToWrite)
+      }
+      if (!rawChanged || structuredChange) {
+        yaml.editBatch {
+          for (delNode in deletedNodesSnap) {
+            removeHost(stanzaSnap, delNode)
+          }
+
+          val optChanges = LinkedHashMap<String, List<String>?>()
+          if (deletedNodesSnap.isNotEmpty()) {
+            val blocked = optionValues(stanzaSnap, "BlockedNodes")
+              .flatMap { it.split(Regex("[\\s,;]+")) }
+              .map { it.trim() }
+              .filter { it.isNotEmpty() }
+              .toMutableList()
+            for (delNode in deletedNodesSnap) {
+              if (delNode !in blocked) blocked.add(delNode)
+            }
+            optChanges["BlockedNodes"] = blocked
+            val ct = optionValues(stanzaSnap, "ConnectTo")
+              .flatMap { it.split(Regex("[\\s,;]+")) }
+              .map { it.trim() }
+              .filter { it.isNotEmpty() && it !in deletedNodesSnap }
+            optChanges["ConnectTo"] = ct.ifEmpty { null }
+          }
+          for (k in removedOptionKeys) {
+            optChanges[k] = null
+          }
+          for ((k, vals) in changedOptions) {
+            optChanges[k] = vals
+          }
+          if (optChanges.isNotEmpty()) {
+            setOptions(stanzaSnap, optChanges)
+          }
+
+          for ((node, hostChanges) in hostMutations) {
+            setHostMultiVars(stanzaSnap, node, hostChanges, createIfMissing = true)
+          }
+        }
+      }
+    }.thenAccept {
+      runOnUiThread {
+        saving.set(false)
+        dirty.set(false)
+        reconnectIfActive()
+        notifyDone()
+        setResult(RESULT_OK)
+        finish()
+      }
+    }.exceptionallyAccept { e ->
+      runOnUiThread {
+        saving.set(false)
+        binding.configSave.isEnabled = dirty.get()
+        if (isFinishing) return@runOnUiThread
+        val msg = e.cause?.defaultMessage() ?: e.defaultMessage()
+        if (rawChanged) {
+          binding.configRawLayout.error = msg
+        }
+        MaterialAlertDialogBuilder(this)
+          .setTitle(R.string.config_save_failed)
+          .setMessage(msg)
+          .setPositiveButton(R.string.action_close, null)
+          .show()
+      }
+    }
   }
 
   private fun notifyDone() {
@@ -881,7 +940,7 @@ class ConfigEditorActivity : BaseActivity() {
   }
 
   private fun reconnectIfActive() {
-    if (TincVpnService.isDaemonRunning()) {
+    if (TincVpnService.isConnected() && TincVpnService.getCurrentNetName() == netName) {
       TincVpnService.connect(netName)
     }
   }

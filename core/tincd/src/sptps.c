@@ -110,6 +110,10 @@ static void free_sptps_key(sptps_key_t *key) {
 
 // Send a record (datagram version, accepts all record types, handles encryption and authentication).
 static bool send_record_priv_datagram(sptps_t *s, uint8_t type, const void *data, uint16_t len) {
+	if(s->outstate && s->out_key_packets >= UINT32_MAX) {
+		return error(s, EIO, "Refusing to wrap seqno without key rotation");
+	}
+
 	uint8_t *buffer = alloca(len + 21UL);
 
 	// Create header with sequence number, length and record type
@@ -122,8 +126,15 @@ static bool send_record_priv_datagram(sptps_t *s, uint8_t type, const void *data
 
 	if(s->outstate) {
 		// If first handshake has finished, encrypt and HMAC
+		s->out_key_packets++;
 		chacha_poly1305_encrypt(s->outcipher, seqno, buffer + 4, len + 1, buffer + 4, NULL);
-		return s->send_data(s->handle, type, buffer, len + 21UL);
+		bool sent = s->send_data(s->handle, type, buffer, len + 21UL);
+
+		if(sent && s->out_key_packets >= 0x80000000ULL && s->state == SPTPS_SECONDARY_KEX && !s->mykex) {
+			sptps_force_kex(s);
+		}
+
+		return sent;
 	} else {
 		// Otherwise send as plaintext
 		return s->send_data(s->handle, type, buffer, len + 5UL);
@@ -133,6 +144,10 @@ static bool send_record_priv_datagram(sptps_t *s, uint8_t type, const void *data
 static bool send_record_priv(sptps_t *s, uint8_t type, const void *data, uint16_t len) {
 	if(s->datagram) {
 		return send_record_priv_datagram(s, type, data, len);
+	}
+
+	if(s->outstate && s->out_key_packets >= UINT32_MAX) {
+		return error(s, EIO, "Refusing to wrap seqno without key rotation");
 	}
 
 	uint8_t *buffer = alloca(len + 19UL);
@@ -147,8 +162,15 @@ static bool send_record_priv(sptps_t *s, uint8_t type, const void *data, uint16_
 
 	if(s->outstate) {
 		// If first handshake has finished, encrypt and HMAC
+		s->out_key_packets++;
 		chacha_poly1305_encrypt(s->outcipher, seqno, buffer + 2, len + 1, buffer + 2, NULL);
-		return s->send_data(s->handle, type, buffer, len + 19UL);
+		bool sent = s->send_data(s->handle, type, buffer, len + 19UL);
+
+		if(sent && s->out_key_packets >= 0x80000000ULL && s->state == SPTPS_SECONDARY_KEX && !s->mykex) {
+			sptps_force_kex(s);
+		}
+
+		return sent;
 	} else {
 		// Otherwise send as plaintext
 		return s->send_data(s->handle, type, buffer, len + 3UL);
@@ -188,7 +210,9 @@ static bool send_kex(sptps_t *s) {
 	// Create a new ECDH public key.
 	s->ecdh = ecdh_generate_public(s->mykex->pubkey);
 
-	if(!s) {
+	if(!s->ecdh) {
+		free_sptps_kex(s->mykex);
+		s->mykex = NULL;
 		return error(s, EINVAL, "Failed to generate ECDH public key");
 	}
 
@@ -304,6 +328,7 @@ static bool receive_ack(sptps_t *s, const uint8_t *data, uint16_t len) {
 	free_sptps_key(s->key);
 	s->key = NULL;
 	s->instate = true;
+	s->in_key_packets = 0;
 
 	return true;
 }
@@ -391,6 +416,8 @@ static bool receive_sig(sptps_t *s, const uint8_t *data, uint16_t len) {
 		return error(s, EINVAL, "Failed to set key");
 	}
 
+	s->out_key_packets = 0;
+
 	return true;
 }
 
@@ -470,14 +497,30 @@ static bool receive_handshake(sptps_t *s, const uint8_t *data, uint16_t len) {
 }
 
 static bool sptps_check_seqno(sptps_t *s, uint32_t seqno, bool update_state) {
-	// Replay protection using a sliding window of configurable size.
-	// s->inseqno is expected sequence number
-	// seqno is received sequence number
-	// s->late[] is a circular buffer, a 1 bit means a packet has not been received yet
-	// The circular buffer contains bits for sequence numbers from s->inseqno - s->replaywin * 8 to (but excluding) s->inseqno.
+	// Replay protection using a sliding window of configurable size
+	// with RFC 1982 modular serial number arithmetic across 32-bit wraparound
+	// and a 64-bit unwrapped sequence index (inseq_abs) so any replaywin size
+	// (power-of-two or arbitrary) indexes s->late[] without wraparound aliasing.
+	int32_t diff = (int32_t)(seqno - s->inseqno);
+	uint32_t win_u = (s->replaywin > 0x08000000U) ? (0x08000000U * 8U) : ((uint32_t)s->replaywin * 8U);
+	int32_t win = (int32_t)win_u;
+	uint64_t pkt_abs;
+
+	if(diff >= 0) {
+		pkt_abs = s->inseq_abs + (uint64_t)(uint32_t)diff;
+	} else {
+		uint64_t behind = (uint64_t)(-(int64_t)diff);
+
+		if(behind > s->inseq_abs) {
+			return update_state ? error(s, EIO, "Received late or replayed packet, seqno %u, last received %u\n", seqno, s->inseqno) : false;
+		}
+
+		pkt_abs = s->inseq_abs - behind;
+	}
+
 	if(s->replaywin) {
-		if(seqno != s->inseqno) {
-			if(seqno >= s->inseqno + s->replaywin * 8) {
+		if(diff > 0) {
+			if(diff >= win) {
 				/* In SPTPS, ChaCha20-Poly1305 AEAD authenticates seqno as the
 				   nonce before sptps_check_seqno(..., true) is called, so a
 				   jump ahead of the replay window is genuine packet loss on
@@ -485,33 +528,36 @@ static bool sptps_check_seqno(sptps_t *s, uint32_t seqno, bool update_state) {
 				   immediately instead of dropping the first replaywin/4 valid
 				   post-loss packets. */
 				if(update_state) {
-					warning(s, "Lost %d packets\n", seqno - s->inseqno);
+					warning(s, "Lost %d packets\n", diff);
 					// Mark all packets in the replay window as being late.
 					memset(s->late, 255, s->replaywin);
 				}
-			} else if(seqno < s->inseqno) {
-				// If the sequence number is farther in the past than the bitmap goes, or if the packet was already received, drop it.
-				if((s->inseqno >= s->replaywin * 8 && seqno < s->inseqno - s->replaywin * 8) || !(s->late[(seqno / 8) % s->replaywin] & (1 << seqno % 8))) {
-					return update_state ? error(s, EIO, "Received late or replayed packet, seqno %d, last received %d\n", seqno, s->inseqno) : false;
-				}
 			} else if(update_state) {
 				// We missed some packets. Mark them in the bitmap as being late.
-				for(uint32_t i = s->inseqno; i < seqno; i++) {
-					s->late[(i / 8) % s->replaywin] |= 1 << i % 8;
+				for(int32_t k = 0; k < diff; k++) {
+					uint64_t skipped = s->inseq_abs + (uint64_t)(uint32_t)k;
+					s->late[(skipped / 8ULL) % s->replaywin] |= (uint8_t)(1U << (skipped % 8ULL));
 				}
+			}
+		} else if(diff < 0) {
+			// If the sequence number is farther in the past than the bitmap goes,
+			// or packet was already received, drop it.
+			if(diff < -win || !(s->late[(pkt_abs / 8ULL) % s->replaywin] & (1U << (pkt_abs % 8ULL)))) {
+				return update_state ? error(s, EIO, "Received late or replayed packet, seqno %u, last received %u\n", seqno, s->inseqno) : false;
 			}
 		}
 
 		if(update_state) {
 			// Mark the current packet as not being late.
-			s->late[(seqno / 8) % s->replaywin] &= ~(1 << seqno % 8);
+			s->late[(pkt_abs / 8ULL) % s->replaywin] &= (uint8_t)~(1U << (pkt_abs % 8ULL));
 			s->farfuture = 0;
 		}
 	}
 
 	if(update_state) {
-		if(seqno >= s->inseqno) {
-			s->inseqno = seqno + 1;
+		if(diff >= 0) {
+			s->inseqno = seqno + 1U;
+			s->inseq_abs = pkt_abs + 1ULL;
 		}
 
 		if(!s->inseqno) {
@@ -579,6 +625,7 @@ static bool sptps_receive_data_datagram(sptps_t *s, const uint8_t *data, size_t 
 		}
 
 		s->inseqno = seqno + 1;
+		s->inseq_abs = (uint64_t)seqno + 1ULL;
 
 		uint8_t type = *(data++);
 		len--;
@@ -595,7 +642,15 @@ static bool sptps_receive_data_datagram(sptps_t *s, const uint8_t *data, size_t 
 	uint8_t *buffer = alloca(len);
 	size_t outlen;
 
-	if(!chacha_poly1305_decrypt(s->incipher, seqno, data, len, buffer, &outlen)) {
+	bool used_prev = false;
+
+	if(s->in_key_packets > (uint64_t)UINT32_MAX && !(s->state == SPTPS_ACK && s->key)) {
+		return error(s, EIO, "Peer wrapped seqno without key rotation");
+	}
+
+	if(s->in_key_packets <= (uint64_t)UINT32_MAX && chacha_poly1305_decrypt(s->incipher, seqno, data, len, buffer, &outlen)) {
+		/* Decrypted with current session key. */
+	} else {
 		if(s->state == SPTPS_ACK && s->key) {
 			chacha_poly1305_ctx_t *tmp = chacha_poly1305_init();
 			uint8_t *newkey = s->initiator ? s->key->key0 : s->key->key1;
@@ -615,6 +670,7 @@ static bool sptps_receive_data_datagram(sptps_t *s, const uint8_t *data, size_t 
 		} else if(s->prev_incipher && chacha_poly1305_decrypt(s->prev_incipher, seqno, data, len, buffer, &outlen)) {
 			/* Late meta ANS_KEY (ACK) or in-flight UDP packet encrypted with the
 			   previous session key right after an implicit UDP key transition. */
+			used_prev = true;
 		} else {
 			return error(s, EIO, "Failed to decrypt and verify packet");
 		}
@@ -628,6 +684,10 @@ static bool sptps_receive_data_datagram(sptps_t *s, const uint8_t *data, size_t 
 		   reordered packet for a broken key and call send_req_key(), tearing
 		   down the active tunnel mid-stream. */
 		return true;
+	}
+
+	if(!used_prev) {
+		s->in_key_packets++;
 	}
 
 	// Append a NULL byte for safety.
@@ -733,9 +793,15 @@ size_t sptps_receive_data(sptps_t *s, const void *vdata, size_t len) {
 
 	// Check HMAC and decrypt.
 	if(s->instate) {
+		if(s->in_key_packets > (uint64_t)UINT32_MAX) {
+			return error(s, EIO, "Peer wrapped seqno without key rotation");
+		}
+
 		if(!chacha_poly1305_decrypt(s->incipher, seqno, s->inbuf + 2UL, s->reclen + 17UL, s->inbuf + 2UL, NULL)) {
 			return error(s, EINVAL, "Failed to decrypt and verify record");
 		}
+
+		s->in_key_packets++;
 	}
 
 	// Append a NULL byte for safety.

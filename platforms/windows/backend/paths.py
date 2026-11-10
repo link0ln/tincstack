@@ -32,8 +32,8 @@ every logon. What the task runs is a PyInstaller onedir tree installed under
 %ProgramFiles%\\tincmgr\\app (bundle(), management.install_self()), which loads
 everything from where it lies and unpacks nothing.
 
-Apart from stage_file(), stage_verified(), write_private() and adopt_config(),
-nothing here writes anything; callers create the runtime dirs (runtime.py).
+Apart from stage_file(), stage_verified(), write_private(), mkdir_private() and
+adopt_config(), nothing here writes anything; callers create the runtime dirs (runtime.py).
 """
 
 from __future__ import annotations
@@ -393,8 +393,92 @@ def open_private_new(path: str) -> int:
         raise
 
 
+def mkdir_private(path: str) -> str:
+    """Create directory `path` restricted to the current security context
+    (Windows: private_sddl() protected DACL, refusing reparse points; POSIX:
+    mode 0700, refusing symlinks). Returns `path`."""
+    path = os.path.abspath(path)
+    if sys.platform != "win32":
+        if os.path.islink(path):
+            raise OSError(f"refusing symlink directory: {path}")
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        if os.path.islink(path):
+            raise OSError(f"refusing symlink directory: {path}")
+        os.chmod(path, 0o700)
+        return path
+
+    import ctypes
+    from ctypes import wintypes
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent, exist_ok=True)
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL)]
+    advapi32.GetSecurityDescriptorOwner.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    kernel32.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p]
+    kernel32.CreateDirectoryW.restype = wintypes.BOOL
+    kernel32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetFileAttributesW.restype = wintypes.DWORD
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+    elevated, sid = _token_identity()
+    sd = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            private_sddl(elevated, sid), 1, ctypes.byref(sd), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        sa = SecurityAttributes(ctypes.sizeof(SecurityAttributes), sd, False)
+        if not kernel32.CreateDirectoryW(path, ctypes.byref(sa)):
+            err = ctypes.get_last_error()
+            error_already_exists = 183
+            if err != error_already_exists:
+                raise ctypes.WinError(err)
+            attrs = kernel32.GetFileAttributesW(path)
+            invalid_attrs, attr_dir, attr_reparse = 0xFFFFFFFF, 0x10, 0x400
+            if attrs == invalid_attrs or not (attrs & attr_dir) or (attrs & attr_reparse):
+                raise OSError(f"refusing unsafe existing directory: {path}")
+            present, defaulted = wintypes.BOOL(False), wintypes.BOOL(False)
+            dacl = ctypes.c_void_p()
+            owner = ctypes.c_void_p()
+            owner_defaulted = wintypes.BOOL(False)
+            advapi32.GetSecurityDescriptorDacl(sd, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted))
+            advapi32.GetSecurityDescriptorOwner(sd, ctypes.byref(owner), ctypes.byref(owner_defaulted))
+            se_file_object = 1
+            sec_info = 0x00000004 | 0x80000000  # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+            if elevated and owner.value:
+                sec_info |= 0x00000001  # OWNER_SECURITY_INFORMATION
+            rc = advapi32.SetNamedSecurityInfoW(
+                path, se_file_object, sec_info,
+                owner if (elevated and owner.value) else None, None, dacl, None,
+            )
+            if rc != 0:
+                raise ctypes.WinError(rc)
+    finally:
+        kernel32.LocalFree(sd)
+    return path
+
+
 def write_private(path: str, data: bytes) -> None:
     """Replace `path` atomically with `data`, created by open_private_new()."""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
     tmp = path + ".new"
     try:
         os.remove(tmp)            # a leftover would keep its own ACL

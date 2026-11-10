@@ -82,6 +82,7 @@ typedef struct diag_tcp_conn_t {
 	uint32_t peer_wnd;
 	bool syn_acked;
 	bool fin_sent;
+	bool fin_ever_sent;
 	bool fin_acked;
 	bool peer_fin;
 
@@ -94,6 +95,7 @@ typedef struct diag_tcp_conn_t {
 	uint8_t rx_buf[DIAG_TCP_RX_CAP];
 
 	size_t tx_sent_offset;
+	size_t tx_max_sent_offset;
 	size_t tx_len;
 	uint8_t tx_buf[DIAG_TCP_TX_CAP];
 } diag_tcp_conn_t;
@@ -428,11 +430,6 @@ static void diag_tcp_pump_tx(diag_tcp_conn_t *c, size_t max_segments) {
 
 	size_t sent_segs = 0;
 	size_t max_inflight = MIN((size_t)c->peer_wnd, (size_t)DIAG_TCP_INFLIGHT);
-
-	if(max_inflight < DIAG_TCP_MSS) {
-		max_inflight = DIAG_TCP_MSS;
-	}
-
 	uint16_t rx_wnd = diag_tcp_rx_wnd(c);
 
 	while(c->tx_sent_offset < c->tx_len && c->tx_sent_offset < max_inflight) {
@@ -441,7 +438,13 @@ static void diag_tcp_pump_tx(diag_tcp_conn_t *c, size_t max_segments) {
 		}
 
 		size_t rem = c->tx_len - c->tx_sent_offset;
+		size_t wnd_rem = max_inflight - c->tx_sent_offset;
 		size_t chunk = rem > DIAG_TCP_MSS ? DIAG_TCP_MSS : rem;
+
+		if(chunk > wnd_rem) {
+			chunk = wnd_rem;
+		}
+
 		uint32_t seq = c->tx_una_seq + (uint32_t)c->tx_sent_offset;
 
 		diag_tcp_send_segment(c->my_ip, c->peer_ip, c->my_port, c->peer_port,
@@ -449,6 +452,11 @@ static void diag_tcp_pump_tx(diag_tcp_conn_t *c, size_t max_segments) {
 		                      c->tx_buf + c->tx_sent_offset, chunk, false);
 
 		c->tx_sent_offset += chunk;
+
+		if(c->tx_sent_offset > c->tx_max_sent_offset) {
+			c->tx_max_sent_offset = c->tx_sent_offset;
+		}
+
 		c->last_tx_tv = now;
 		sent_segs++;
 	}
@@ -459,6 +467,7 @@ static void diag_tcp_pump_tx(diag_tcp_conn_t *c, size_t max_segments) {
 		                      seq, c->rcv_nxt, DIAG_TH_FIN | DIAG_TH_ACK, rx_wnd,
 		                      NULL, 0, false);
 		c->fin_sent = true;
+		c->fin_ever_sent = true;
 		c->last_tx_tv = now;
 	}
 }
@@ -534,9 +543,28 @@ static void diag_tcp_timer_cb(void *data) {
 			}
 		} else if((c->tx_len > 0 || (c->fin_sent && !c->fin_acked)) && elapsed_us >= DIAG_TCP_RTO_US) {
 			c->rto_count++;
-			c->tx_sent_offset = 0;
-			c->fin_sent = false;
-			diag_tcp_pump_tx(c, 4);
+
+			if(c->peer_wnd == 0 && c->tx_len > 0) {
+				/* TCP Zero-Window probe: send at most 1 byte at snd.una. */
+				uint16_t rx_wnd = diag_tcp_rx_wnd(c);
+				diag_tcp_send_segment(c->my_ip, c->peer_ip, c->my_port, c->peer_port,
+				                      c->tx_una_seq, c->rcv_nxt, DIAG_TH_ACK, rx_wnd,
+				                      c->tx_buf, 1, false);
+
+				if(c->tx_sent_offset < 1) {
+					c->tx_sent_offset = 1;
+				}
+
+				if(c->tx_max_sent_offset < 1) {
+					c->tx_max_sent_offset = 1;
+				}
+
+				c->last_tx_tv = now;
+			} else {
+				c->tx_sent_offset = 0;
+				c->fin_sent = false;
+				diag_tcp_pump_tx(c, 4);
+			}
 		}
 	}
 
@@ -692,7 +720,7 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 		c->rcv_nxt = seq + 1;
 		c->iss = ((uint32_t)now.tv_sec << 16) ^ (uint32_t)now.tv_usec ^ ((uint32_t)sport << 8) ^ 0x5a3c96e1U;
 		c->tx_una_seq = c->iss + 1;
-		c->peer_wnd = win > 1460 ? win : 16384;
+		c->peer_wnd = win;
 		c->last_activity = now.tv_sec;
 		c->last_tx_tv = now;
 
@@ -725,7 +753,6 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 	}
 
 	c->last_activity = now.tv_sec;
-	c->peer_wnd = win >= 1460 ? win : 4096;
 
 	if(flags & DIAG_TH_ACK) {
 		if(!c->syn_acked) {
@@ -736,28 +763,41 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 		}
 
 		if(c->syn_acked) {
+			c->peer_wnd = win;
 			int32_t acked = (int32_t)(ack - c->tx_una_seq);
-			int32_t max_ackable = (int32_t)c->tx_sent_offset + (c->fin_sent ? 1 : 0);
+			int32_t max_ackable = (int32_t)c->tx_max_sent_offset + ((c->fin_sent || c->fin_ever_sent) ? 1 : 0);
 
-			if(acked > 0 && acked <= max_ackable) {
+			if(acked == 0 && c->peer_wnd == 0) {
 				c->rto_count = 0;
-				size_t drop = (size_t)acked <= c->tx_sent_offset ? (size_t)acked : c->tx_sent_offset;
+			} else if(acked > 0 && acked <= max_ackable) {
+				c->rto_count = 0;
+				size_t drop = (size_t)acked <= c->tx_max_sent_offset ? (size_t)acked : c->tx_max_sent_offset;
+
+				if(drop > c->tx_len) {
+					drop = c->tx_len;
+				}
 
 				if(drop > 0) {
 					memmove(c->tx_buf, c->tx_buf + drop, c->tx_len - drop);
 					c->tx_len -= drop;
 					c->tx_una_seq += (uint32_t)drop;
-					c->tx_sent_offset -= drop;
+					c->tx_max_sent_offset -= drop;
+					c->tx_sent_offset = (c->tx_sent_offset >= drop) ? (c->tx_sent_offset - drop) : 0;
 					c->last_tx_tv = now;
 				}
 
-				if(c->fin_sent && ack == c->tx_una_seq + 1) {
+				if((c->fin_sent || c->fin_ever_sent) && c->tx_len == 0 && ack == c->tx_una_seq + 1) {
 					c->fin_acked = true;
 					c->fin_sent = false;
+					c->fin_ever_sent = false;
 					c->tx_una_seq++;
 				}
 			}
 		}
+	}
+
+	if(!c->syn_acked) {
+		return;
 	}
 
 	bool send_ack = false;

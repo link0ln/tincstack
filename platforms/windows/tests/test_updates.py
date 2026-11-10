@@ -218,3 +218,29 @@ def test_clean_pyinstaller_env_resets_meipass2(monkeypatch):
     assert env.get("PYINSTALLER_RESET_ENVIRONMENT") == "1"
 
 
+def test_create_staging_dir_and_verify_staged_exe_rejects_tampering(tmp_path):
+    """WL-02: update staging uses a private staging directory outside %TEMP%,
+    and verify_staged_exe detects any post-extraction modification or symlink."""
+    import hashlib
+    import stat
+
+    staging = updates.create_staging_dir(str(tmp_path), elevated=False)
+    assert os.path.isdir(staging)
+    assert os.path.abspath(staging).startswith(os.path.abspath(str(tmp_path)))
+    if sys.platform != "win32":
+        assert stat.S_IMODE(os.stat(staging).st_mode) == 0o700
+
+    exe = os.path.join(staging, "tincmgr.exe")
+    payload = b"MZ-authentic-binary"
+    digest = hashlib.sha256(payload).hexdigest()
+    with open(exe, "wb") as f:
+        f.write(payload)
+
+    assert updates.verify_staged_exe(exe, digest) is True
+    # Tamper with staged binary -> verification must fail
+    with open(exe, "wb") as f:
+        f.write(b"MZ-tampered-binary")
+    assert updates.verify_staged_exe(exe, digest) is False
+
+
+

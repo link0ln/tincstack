@@ -470,7 +470,78 @@ def is_frozen() -> bool:
     return paths.is_frozen()
 
 
-def install_remote(exe_path: str, version: str) -> str:
+from contextlib import contextmanager
+
+
+@contextmanager
+def _lock_and_verify_exe(exe_path: str, expected_sha256: str | None = None):
+    """Hold a read-only handle WITHOUT write/delete sharing on `exe_path` while
+    re-verifying its SHA-256 digest (and Authenticode signature when present)
+    right through the launch of `--self-install`, preventing TOCTOU swaps."""
+    exp = (expected_sha256 or "").strip().lower()
+    if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", exp):
+        raise paths.IntegrityError("missing or malformed expected SHA-256 for installer")
+    if not exe_path or os.path.islink(exe_path) or not os.path.isfile(exe_path):
+        raise OSError(f"installer executable not found: {exe_path}")
+    if sys.platform != "win32":
+        if exp and paths.sha256_file(exe_path).lower() != exp:
+            raise paths.IntegrityError(f"{exe_path} failed SHA-256 verification before launch")
+        yield
+        return
+
+    import ctypes
+    import hashlib
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.ReadFile.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+    ]
+    k32.ReadFile.restype = wintypes.BOOL
+    k32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+    k32.GetFileAttributesW.restype = wintypes.DWORD
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    attrs = k32.GetFileAttributesW(exe_path)
+    if attrs == 0xFFFFFFFF or (attrs & 0x400):  # FILE_ATTRIBUTE_REPARSE_POINT
+        raise paths.IntegrityError(f"refusing reparse point installer: {exe_path}")
+
+    generic_read, file_share_read, open_existing, attr_normal = 0x80000000, 0x00000001, 3, 0x80
+    h = k32.CreateFileW(exe_path, generic_read, file_share_read, None, open_existing, attr_normal, None)
+    if h is None or h == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if exp:
+            hasher = hashlib.sha256()
+            buf = ctypes.create_string_buffer(1 << 20)
+            read_n = wintypes.DWORD(0)
+            while True:
+                if not k32.ReadFile(h, buf, len(buf), ctypes.byref(read_n), None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if read_n.value == 0:
+                    break
+                hasher.update(buf.raw[: read_n.value])
+            if hasher.hexdigest().lower() != exp:
+                raise paths.IntegrityError(f"{exe_path} failed SHA-256 verification before launch")
+        try:
+            import updates
+            ok_sig, sig_err = updates.verify_authenticode(exe_path)
+            if not ok_sig:
+                raise paths.IntegrityError(f"Authenticode verification failed: {sig_err}")
+        except ImportError:
+            pass
+        yield
+    finally:
+        k32.CloseHandle(h)
+
+
+def install_remote(exe_path: str, version: str, expected_sha256: str | None = None) -> str:
     """Install a downloaded single-file tincmgr.exe (verified against the
     release's SHA256SUMS by the caller) over the current install. The
     downloaded exe does not carry this running build's manifest, so the
@@ -480,7 +551,8 @@ def install_remote(exe_path: str, version: str) -> str:
     at run-at-startup. Returns the installed exe path."""
     if paths.version_key(version) is None:
         raise ValueError(f"not a release version: {version!r}")
-    ok = run_elevated(exe_path, "--self-install")
+    with _lock_and_verify_exe(exe_path, expected_sha256):
+        ok = run_elevated(exe_path, "--self-install")
     if not ok:
         raise OSError("the elevated installer did not start (declined?)")
     d = install_dir()
@@ -490,7 +562,8 @@ def install_remote(exe_path: str, version: str) -> str:
 
 
 def start_self_update(exe_path: str, version: str, caller_pid: int | None = None,
-                      caller_exe: str | None = None) -> str:
+                      caller_exe: str | None = None,
+                      expected_sha256: str | None = None) -> str:
     """Launch the downloaded `exe_path` asynchronously with `--self-install`
     so the calling GUI can stop its tunnels and exit first, releasing locks on
     Program Files\\tincmgr\\app (and caller_exe) before the installer swaps the
@@ -507,19 +580,20 @@ def start_self_update(exe_path: str, version: str, caller_pid: int | None = None
         raw_args += ["--replace-exe", caller_exe]
     raw_args.append("--relaunch")
     params = subprocess.list2cmdline(raw_args)
-    if sys.platform == "win32" and is_admin():
-        try:
-            subprocess.Popen(
-                [exe_path, *raw_args],
-                shell=False,
-                env=_clean_pyinstaller_env(),
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | _NO_WINDOW,
-                close_fds=True,
-            )
-            return os.path.join(d, "tincmgr.exe")
-        except OSError:
-            pass
-    ok = run_elevated(exe_path, params, wait=False)
+    with _lock_and_verify_exe(exe_path, expected_sha256):
+        if sys.platform == "win32" and is_admin():
+            try:
+                subprocess.Popen(
+                    [exe_path, *raw_args],
+                    shell=False,
+                    env=_clean_pyinstaller_env(),
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | _NO_WINDOW,
+                    close_fds=True,
+                )
+                return os.path.join(d, "tincmgr.exe")
+            except OSError:
+                pass
+        ok = run_elevated(exe_path, params, wait=False)
     if not ok:
         raise OSError("the elevated installer did not start (declined?)")
     return os.path.join(d, "tincmgr.exe")

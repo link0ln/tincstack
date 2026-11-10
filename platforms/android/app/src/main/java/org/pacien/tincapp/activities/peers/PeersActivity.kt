@@ -36,6 +36,7 @@ import org.pacien.tincapp.R
 import org.pacien.tincapp.activities.BaseActivity
 import org.pacien.tincapp.activities.common.Labels
 import org.pacien.tincapp.activities.common.PeersLiveData
+import org.pacien.tincapp.commands.Executor
 import org.pacien.tincapp.commands.Tinc
 import org.pacien.tincapp.activities.config.ConfigEditorActivity
 import org.pacien.tincapp.context.AppPaths
@@ -46,6 +47,7 @@ import org.pacien.tincapp.databinding.ActivityPeersBinding
 import org.pacien.tincapp.databinding.PeerItemBinding
 import org.pacien.tincapp.extensions.Java.defaultMessage
 import org.pacien.tincapp.extensions.Java.exceptionallyAccept
+import org.pacien.tincapp.service.TincVpnService
 import java.util.Locale
 
 /** The nodes of the running network: who is reachable, how, and how fast. */
@@ -82,31 +84,39 @@ class PeersActivity : BaseActivity() {
       Rendered whenever the live list is empty (offline, or the daemon has
       not answered yet) and after a return from the editor. */
   private fun renderStatic() {
-    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-    val stanza = yaml.resolveNetwork(netName)
-    val own = yaml.optionValue(stanza, "Name")
-    val names = hostNames(yaml, stanza)
     val live = adapter.current.associateBy { it.name }
-    val rows = names.map { n ->
-      val livePeer = live[n]
-      PeerStatus(
-        name = n,
-        self = n == own,
-        address = livePeer?.address ?: run {
-          val cfg = yaml.hostText(stanza, n)?.let { PeerConfig(n, it) }
-          cfg?.address
-        },
-        port = staticPort(yaml, stanza, n, livePeer),
-        reachable = livePeer?.reachable == true,
-        directUdp = livePeer?.directUdp == true,
-        via = livePeer?.via,
-        rttMs = livePeer?.rttMs,
-        transport = livePeer?.transport,
-        noDirect = n != own && (livePeer?.noDirect == true || yaml.isPeerNoDirect(stanza, n)),
-      )
+    Executor.supplyAsyncTask {
+      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+      val stanza = yaml.resolveNetwork(netName)
+      val own = yaml.optionValue(stanza, "Name")
+      val names = hostNames(yaml, stanza)
+      val rows = names.map { n ->
+        val livePeer = live[n]
+        PeerStatus(
+          name = n,
+          self = n == own,
+          address = livePeer?.address ?: run {
+            val cfg = yaml.hostText(stanza, n)?.let { PeerConfig(n, it) }
+            cfg?.address
+          },
+          port = staticPort(yaml, stanza, n, livePeer),
+          reachable = livePeer?.reachable == true,
+          directUdp = livePeer?.directUdp == true,
+          via = livePeer?.via,
+          rttMs = livePeer?.rttMs,
+          transport = livePeer?.transport,
+          noDirect = n != own && (livePeer?.noDirect == true || yaml.isPeerNoDirect(stanza, n)),
+        )
+      }
+      val summaries = rows.associate { p -> p.name to staticAddressSummary(yaml, stanza, p.name, p) }
+      rows to summaries
+    }.thenAccept { (rows, summaries) ->
+      runOnUiThread {
+        if (!isFinishing) {
+          adapter.submit(rows, summaries)
+        }
+      }
     }
-    val summaries = rows.associate { p -> p.name to staticAddressSummary(yaml, stanza, p.name, p) }
-    adapter.submit(rows, summaries)
   }
 
   private fun staticPort(yaml: TincYaml, stanza: String, node: String, live: PeerStatus?): String? {
@@ -155,17 +165,26 @@ class PeersActivity : BaseActivity() {
   private fun render(peers: List<PeerStatus>?) {
     if (peers.isNullOrEmpty()) {
       renderStatic()
+      binding.peersPlaceholder.isVisible = peers == null && adapter.itemCount == 0
+      if (peers == null && adapter.itemCount == 0) binding.peersPlaceholder.setText(R.string.peers_not_connected)
     } else {
-      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-      val stanza = yaml.resolveNetwork(netName)
-      val merged = peers.map { p ->
-        if (p.self || p.noDirect) p else p.copy(noDirect = yaml.isPeerNoDirect(stanza, p.name))
+      Executor.supplyAsyncTask {
+        val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+        val stanza = yaml.resolveNetwork(netName)
+        val merged = peers.map { p ->
+          if (p.self || p.noDirect) p else p.copy(noDirect = yaml.isPeerNoDirect(stanza, p.name))
+        }
+        val summaries = merged.associate { p -> p.name to staticAddressSummary(yaml, stanza, p.name, p) }
+        merged to summaries
+      }.thenAccept { (merged, summaries) ->
+        runOnUiThread {
+          if (!isFinishing) {
+            adapter.submit(merged, summaries)
+            binding.peersPlaceholder.isVisible = false
+          }
+        }
       }
-      val summaries = merged.associate { p -> p.name to staticAddressSummary(yaml, stanza, p.name, p) }
-      adapter.submit(merged, summaries)
     }
-    binding.peersPlaceholder.isVisible = peers == null && adapter.itemCount == 0
-    if (peers == null && adapter.itemCount == 0) binding.peersPlaceholder.setText(R.string.peers_not_connected)
   }
 
   /** The anchored dropdown on a peer's ⋮ button; the own node has no per-peer
@@ -175,52 +194,70 @@ class PeersActivity : BaseActivity() {
       openConfigEditor(peer.name)
       return
     }
-    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-    val stanza = yaml.resolveNetwork(netName)
-    val isNoDirect = peer.noDirect || yaml.isPeerNoDirect(stanza, peer.name)
-    PopupMenu(this, anchor).apply {
-      menu.add(0, MENU_EDIT, 0, R.string.peer_edit_action)
-      menu.add(0, MENU_TRANSPORT, 1, R.string.peer_transport_action)
-      menu.add(
-        0,
-        MENU_TOGGLE_DIRECT,
-        2,
-        if (isNoDirect) R.string.peer_allow_direct_action else R.string.peer_forbid_direct_action,
-      )
-      menu.add(0, MENU_INFO, 3, R.string.peer_info_action)
-      setOnMenuItemClickListener { item ->
-        when (item.itemId) {
-          MENU_EDIT -> openConfigEditor(peer.name)
-          MENU_TRANSPORT -> showPeerTransportDialog(peer.name)
-          MENU_TOGGLE_DIRECT -> togglePeerNoDirect(peer)
-          else -> fetchLivePeerInfo(peer.name)
-        }
-        true
+    Executor.supplyAsyncTask {
+      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+      val stanza = yaml.resolveNetwork(netName)
+      peer.noDirect || yaml.isPeerNoDirect(stanza, peer.name)
+    }.thenAccept { isNoDirect ->
+      runOnUiThread {
+        if (isFinishing) return@runOnUiThread
+        PopupMenu(this, anchor).apply {
+          menu.add(0, MENU_EDIT, 0, R.string.peer_edit_action)
+          menu.add(0, MENU_TRANSPORT, 1, R.string.peer_transport_action)
+          menu.add(
+            0,
+            MENU_TOGGLE_DIRECT,
+            2,
+            if (isNoDirect) R.string.peer_allow_direct_action else R.string.peer_forbid_direct_action,
+          )
+          menu.add(0, MENU_INFO, 3, R.string.peer_info_action)
+          setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+              MENU_EDIT -> openConfigEditor(peer.name)
+              MENU_TRANSPORT -> showPeerTransportDialog(peer.name)
+              MENU_TOGGLE_DIRECT -> togglePeerNoDirect(peer)
+              else -> fetchLivePeerInfo(peer.name)
+            }
+            true
+          }
+        }.show()
       }
-    }.show()
+    }
   }
 
   private fun togglePeerNoDirect(peer: PeerStatus) {
     if (peer.self) return
-    try {
+    Executor.supplyAsyncTask {
       val yaml = TincYaml(AppPaths.tincYamlFile(netName))
       val stanza = yaml.resolveNetwork(netName)
-      val currentlyNoDirect = peer.noDirect || yaml.isPeerNoDirect(stanza, peer.name)
-      val nextNoDirect = !currentlyNoDirect
-      yaml.setPeerNoDirect(stanza, peer.name, nextNoDirect)
-      val updated = adapter.current.map {
-        if (it.name == peer.name) it.copy(noDirect = nextNoDirect) else it
+      var nextNoDirect = !peer.noDirect
+      yaml.editBatch {
+        val currentlyNoDirect = peer.noDirect || isPeerNoDirect(stanza, peer.name)
+        nextNoDirect = !currentlyNoDirect
+        setPeerNoDirect(stanza, peer.name, nextNoDirect)
       }
-      adapter.submit(updated)
-      if (org.pacien.tincapp.service.TincVpnService.isDaemonRunning()) {
-        Tinc.reload(netName).exceptionallyAccept {
-          org.pacien.tincapp.service.TincVpnService.connect(netName)
+      nextNoDirect
+    }.thenAccept { nextNoDirect ->
+      runOnUiThread {
+        if (isFinishing) return@runOnUiThread
+        val updated = adapter.current.map {
+          if (it.name == peer.name) it.copy(noDirect = nextNoDirect) else it
         }
+        adapter.submit(updated)
+        if (TincVpnService.isDaemonRunning() && TincVpnService.getCurrentNetName() == netName) {
+          Tinc.reload(netName).exceptionallyAccept {
+            if (TincVpnService.isConnected() && TincVpnService.getCurrentNetName() == netName) {
+              TincVpnService.connect(netName)
+            }
+          }
+        }
+        val msgRes = if (nextNoDirect) R.string.peer_no_direct_enabled_format else R.string.peer_no_direct_disabled_format
+        notify(getString(msgRes, peer.name))
       }
-      val msgRes = if (nextNoDirect) R.string.peer_no_direct_enabled_format else R.string.peer_no_direct_disabled_format
-      notify(getString(msgRes, peer.name))
-    } catch (e: Exception) {
-      notify(e.cause?.defaultMessage() ?: e.defaultMessage())
+    }.exceptionallyAccept { e ->
+      runOnUiThread {
+        if (!isFinishing) notify(e.cause?.defaultMessage() ?: e.defaultMessage())
+      }
     }
   }
 
@@ -231,55 +268,79 @@ class PeersActivity : BaseActivity() {
   }
 
   private fun showPeerTransportDialog(peerName: String) {
-    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-    val stanza = yaml.resolveNetwork(netName)
-    val currentPref = yaml.hostText(stanza, peerName)
-      ?.let { PeerConfig(peerName, it).preferredTransport?.lowercase(Locale.ROOT) }
-      ?.takeIf { it.isNotBlank() }
-      ?: "auto"
+    Executor.supplyAsyncTask {
+      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+      val stanza = yaml.resolveNetwork(netName)
+      val currentPref = yaml.hostText(stanza, peerName)
+        ?.let { PeerConfig(peerName, it).preferredTransport?.lowercase(Locale.ROOT) }
+        ?.takeIf { it.isNotBlank() }
+        ?: "auto"
+      stanza to currentPref
+    }.thenAccept { (stanza, currentPref) ->
+      runOnUiThread {
+        if (isFinishing) return@runOnUiThread
+        val codes = arrayOf("auto", "quic", "https", "obfs", "sf", "sftcp", "plain")
+        val labels = arrayOf(
+          getString(R.string.peer_transport_auto),
+          getString(R.string.transport_quic),
+          getString(R.string.transport_https),
+          getString(R.string.transport_obfs),
+          getString(R.string.transport_sf),
+          getString(R.string.transport_sftcp),
+          getString(R.string.transport_plain),
+        )
+        val checked = codes.indexOf(currentPref).coerceAtLeast(0)
 
-    val codes = arrayOf("auto", "quic", "https", "obfs", "sf", "sftcp", "plain")
-    val labels = arrayOf(
-      getString(R.string.peer_transport_auto),
-      getString(R.string.transport_quic),
-      getString(R.string.transport_https),
-      getString(R.string.transport_obfs),
-      getString(R.string.transport_sf),
-      getString(R.string.transport_sftcp),
-      getString(R.string.transport_plain),
-    )
-    val checked = codes.indexOf(currentPref).coerceAtLeast(0)
-
-    MaterialAlertDialogBuilder(this)
-      .setTitle("$peerName — ${getString(R.string.setting_transport_title)}")
-      .setSingleChoiceItems(labels, checked) { dialog, which ->
-        val chosen = codes[which]
-        try {
-          val valToSet = if (chosen == "auto") null else listOf(chosen)
-          yaml.setHostMultiVars(
-            stanza,
-            peerName,
-            mapOf("PreferredTransports" to valToSet, "PreferredTransport" to null),
-            createIfMissing = true,
-          )
-          if (chosen != "auto") {
-            yaml.ensureConnectToIfDialable(stanza, peerName)
+        MaterialAlertDialogBuilder(this)
+          .setTitle("$peerName — ${getString(R.string.setting_transport_title)}")
+          .setSingleChoiceItems(labels, checked) { dialog, which ->
+            val chosen = codes[which]
+            dialog.dismiss()
+            Executor.supplyAsyncTask {
+              val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+              val valToSet = if (chosen == "auto") null else listOf(chosen)
+              yaml.editBatch {
+                setHostMultiVars(
+                  stanza,
+                  peerName,
+                  mapOf("PreferredTransports" to valToSet, "PreferredTransport" to null),
+                  createIfMissing = true,
+                )
+                if (chosen != "auto") {
+                  ensureConnectToIfDialable(stanza, peerName)
+                }
+              }
+            }.thenAccept {
+              runOnUiThread {
+                if (TincVpnService.isDaemonRunning() && TincVpnService.getCurrentNetName() == netName) {
+                  Tinc.reload(netName)
+                    .thenCompose { Tinc.disconnectPeer(netName, peerName).exceptionally { } }
+                    .thenCompose { Tinc.retry(netName) }
+                    .exceptionallyAccept {
+                      if (TincVpnService.isConnected() && TincVpnService.getCurrentNetName() == netName) {
+                        TincVpnService.connect(netName)
+                      }
+                    }
+                }
+                if (!isFinishing) {
+                  renderStatic()
+                  notify(getString(R.string.config_saved))
+                }
+              }
+            }.exceptionallyAccept { e ->
+              runOnUiThread {
+                if (!isFinishing) notify(e.cause?.defaultMessage() ?: e.defaultMessage())
+              }
+            }
           }
-          if (org.pacien.tincapp.service.TincVpnService.isDaemonRunning()) {
-            Tinc.reload(netName)
-              .thenCompose { Tinc.disconnectPeer(netName, peerName).exceptionally { } }
-              .thenCompose { Tinc.retry(netName) }
-              .exceptionallyAccept { org.pacien.tincapp.service.TincVpnService.connect(netName) }
-          }
-          renderStatic()
-          notify(getString(R.string.config_saved))
-        } catch (e: Exception) {
-          notify(e.cause?.defaultMessage() ?: e.defaultMessage())
-        }
-        dialog.dismiss()
+          .setNegativeButton(R.string.action_cancel, null)
+          .show()
       }
-      .setNegativeButton(R.string.action_cancel, null)
-      .show()
+    }.exceptionallyAccept { e ->
+      runOnUiThread {
+        if (!isFinishing) notify(e.cause?.defaultMessage() ?: e.defaultMessage())
+      }
+    }
   }
 
   private fun openConfigEditor(nodeName: String?) {

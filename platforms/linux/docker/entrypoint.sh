@@ -27,8 +27,7 @@
 #                   forwards another external port to FRONT_PORT. Stored as
 #                   options.HttpsPortPublic and options.QuicPortPublic; the
 #                   node then advertises this one and still listens on
-#                   FRONT_PORT. Like FRONT_PORT, unsetting it later does not
-#                   remove the option (`tincstack-cli del HttpsPortPublic`).
+#                   FRONT_PORT. Unsetting it clears the stored public port.
 #   OBFS_PORT       UDP port for the obfuscated carrier (default: tinc UDP port);
 #                   stored as options.ObfsPort and advertised in the host record.
 #   OBFS_PORT_PUBLIC  public port peers reach OBFS_PORT on through a port forward;
@@ -54,6 +53,8 @@ PUBLIC_ADDRESS=${PUBLIC_ADDRESS:-}
 PORT=${PORT:-}
 FRONT_PORT=${FRONT_PORT:-}
 FRONT_PORT_PUBLIC=${FRONT_PORT_PUBLIC:-}
+OBFS_PORT=${OBFS_PORT:-}
+OBFS_PORT_PUBLIC=${OBFS_PORT_PUBLIC:-}
 INVITE=${INVITE:-${CONNECT_TO:-}}
 LOG_LEVEL=${LOG_LEVEL:-1}
 CERT_RENEW=${CERT_RENEW:-1}
@@ -119,52 +120,126 @@ if [[ -n $NODE_NAME ]]; then
     fi
 fi
 
+valid_port() {
+    local p=$1
+    [[ $p =~ ^[0-9]+$ ]] && (( 10#$p >= 1 && 10#$p <= 65535 ))
+}
+
 if [[ -n $PORT ]]; then
     cli set Port "$PORT"
     log "options.Port = $PORT"
+elif (( ! fresh )); then
+    cur_port=$(cli get Port 2>/dev/null || true)
+    cur_ct=$(cli get ConnectTo 2>/dev/null || true)
+    default_port=655
+    [[ -z $cur_ct ]] || default_port=0
+    if [[ -n $cur_port && $cur_port != "$default_port" ]]; then
+        cli set Port "$default_port"
+        log "PORT unset: reset options.Port from $cur_port to $default_port"
+    fi
 fi
 
 if [[ -n $FRONT_PORT ]]; then
     cli set HttpsPort "$FRONT_PORT"
     cli set QuicPort "$FRONT_PORT"
     log "options.HttpsPort = options.QuicPort = $FRONT_PORT"
+elif (( ! fresh )); then
+    if [[ -n $(cli get HttpsPort 2>/dev/null || true) || -n $(cli get QuicPort 2>/dev/null || true) ]]; then
+        cli del HttpsPort >/dev/null 2>&1 || true
+        cli del QuicPort >/dev/null 2>&1 || true
+        log "FRONT_PORT unset: cleared stale options.HttpsPort / options.QuicPort"
+    fi
 fi
 
 if [[ -n $FRONT_PORT_PUBLIC ]]; then
     cli set HttpsPortPublic "$FRONT_PORT_PUBLIC"
     cli set QuicPortPublic "$FRONT_PORT_PUBLIC"
     log "options.HttpsPortPublic = options.QuicPortPublic = $FRONT_PORT_PUBLIC"
+elif (( ! fresh )); then
+    if [[ -n $(cli get HttpsPortPublic 2>/dev/null || true) || -n $(cli get QuicPortPublic 2>/dev/null || true) ]]; then
+        cli del HttpsPortPublic >/dev/null 2>&1 || true
+        cli del QuicPortPublic >/dev/null 2>&1 || true
+        log "FRONT_PORT_PUBLIC unset: cleared stale options.HttpsPortPublic / options.QuicPortPublic"
+    fi
 fi
 
-if [[ -n ${OBFS_PORT:-} ]]; then
+if [[ -n $OBFS_PORT ]]; then
     cli set ObfsPort "$OBFS_PORT"
-    log "options.ObfsPort = $OBFS_PORT"
+    log "options.ObfsPort = $OBFS_PORT (ensure UDP port $OBFS_PORT is published on the host, e.g. via compose.obfs.yml)"
+elif (( ! fresh )); then
+    if [[ -n $(cli get ObfsPort 2>/dev/null || true) ]]; then
+        cli del ObfsPort >/dev/null 2>&1 || true
+        log "OBFS_PORT unset: cleared stale options.ObfsPort"
+    fi
 fi
 
-if [[ -n ${OBFS_PORT_PUBLIC:-} ]]; then
+if [[ -n $OBFS_PORT_PUBLIC ]]; then
     cli set ObfsPortPublic "$OBFS_PORT_PUBLIC"
     log "options.ObfsPortPublic = $OBFS_PORT_PUBLIC"
+elif (( ! fresh )); then
+    if [[ -n $(cli get ObfsPortPublic 2>/dev/null || true) ]]; then
+        cli del ObfsPortPublic >/dev/null 2>&1 || true
+        log "OBFS_PORT_PUBLIC unset: cleared stale options.ObfsPortPublic"
+    fi
 fi
 
-address=
+address_args=()
 if [[ -n $PUBLIC_ADDRESS ]]; then
+    addr_host=
+    addr_port=
     case $PUBLIC_ADDRESS in
-        \[*\]:*) address="${PUBLIC_ADDRESS%%\]:*}"; address="${address#\[} ${PUBLIC_ADDRESS##*\]:}" ;;   # [v6]:port
-        \[*\])   address="${PUBLIC_ADDRESS#\[}"; address="${address%\]}" ;;                                # [v6]
-        *:*:*)   address=$PUBLIC_ADDRESS ;;                                                                # bare v6
-        *:*)     address="${PUBLIC_ADDRESS%%:*} ${PUBLIC_ADDRESS##*:}" ;;                                  # host:port
-        *)       address=$PUBLIC_ADDRESS ;;
+        \[*\]:*)
+            addr_host=${PUBLIC_ADDRESS%%\]:*}
+            addr_host=${addr_host#\[}
+            addr_port=${PUBLIC_ADDRESS##*\]:}
+            if [[ -z $addr_host || -z $addr_port ]] || ! valid_port "$addr_port"; then
+                log "invalid PUBLIC_ADDRESS '$PUBLIC_ADDRESS': expected [ipv6]:port with port 1..65535"
+                exit 1
+            fi
+            address_args=("$addr_host" "$addr_port")
+            ;;
+        \[*\])
+            addr_host=${PUBLIC_ADDRESS#\[}
+            addr_host=${addr_host%\]}
+            if [[ -z $addr_host ]]; then
+                log "invalid PUBLIC_ADDRESS '$PUBLIC_ADDRESS': empty bracketed address"
+                exit 1
+            fi
+            address_args=("$addr_host")
+            ;;
+        *\[* | *\]*)
+            log "invalid PUBLIC_ADDRESS '$PUBLIC_ADDRESS': unmatched brackets"
+            exit 1
+            ;;
+        *:*:*)
+            address_args=("$PUBLIC_ADDRESS")
+            ;;
+        *:*)
+            addr_host=${PUBLIC_ADDRESS%%:*}
+            addr_port=${PUBLIC_ADDRESS##*:}
+            if [[ -z $addr_host || -z $addr_port ]] || ! valid_port "$addr_port"; then
+                log "invalid PUBLIC_ADDRESS '$PUBLIC_ADDRESS': expected host:port with non-empty host and port 1..65535"
+                exit 1
+            fi
+            address_args=("$addr_host" "$addr_port")
+            ;;
+        *)
+            address_args=("$PUBLIC_ADDRESS")
+            ;;
     esac
+    if [[ ${address_args[0]} == -* || ${address_args[0]} == *[[:space:]]* ]]; then
+        log "invalid PUBLIC_ADDRESS '$PUBLIC_ADDRESS': malformed host '${address_args[0]}'"
+        exit 1
+    fi
 fi
 
 # Own host record: `Address` is what `tinc invite` reads. Set before the
 # start when the name is known, right after `Ready` otherwise (the running
 # daemon is asked to reload by the CLI; nothing here needs that).
 set_host_vars() {
-    if [[ -n $address ]]; then
-        # shellcheck disable=SC2086  # "host port" are two CLI arguments
-        cli set "$name.Address" $address
-        log "hosts.$name Address = $address"
+    if (( ${#address_args[@]} > 0 )); then
+        cli set "$name.Address" "${address_args[@]}"
+        log "hosts.$name Address = ${address_args[*]}"
     fi
 }
 
@@ -175,6 +250,7 @@ sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608 >/dev/null 2>&1 ||
 tincd -n "$NETNAME" -c "$YAML" -D -d"$LOG_LEVEL" &
 daemon=$!
 trap 'kill -TERM "$daemon" 2>/dev/null || true' TERM INT
+trap 'kill -HUP "$daemon" 2>/dev/null || true' HUP
 
 deadline=$(( SECONDS + READY_TIMEOUT ))
 until cli pid >/dev/null 2>&1; do
@@ -187,6 +263,14 @@ until cli pid >/dev/null 2>&1; do
     if (( SECONDS >= deadline )); then
         log "tincd did not open its control socket within ${READY_TIMEOUT}s"
         kill -TERM "$daemon" 2>/dev/null || true
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$daemon" 2>/dev/null || break
+            sleep 0.5
+        done
+        if kill -0 "$daemon" 2>/dev/null; then
+            kill -KILL "$daemon" 2>/dev/null || true
+        fi
+        wait "$daemon" 2>/dev/null || true
         exit 1
     fi
     sleep 0.5
@@ -222,18 +306,36 @@ fi
 # The first check runs a minute after start, not one interval after it: a node
 # restarted more often than CERT_RENEW_INTERVAL would otherwise never check.
 renew_loop() {
-    local domain token out sleep_pid delay=$(( CERT_RENEW_INTERVAL < 60 ? CERT_RENEW_INTERVAL : 60 ))
-    trap '[[ -z ${sleep_pid:-} ]] || kill -TERM "$sleep_pid" 2>/dev/null || true; exit 0' TERM INT
+    local domain token out rc_renew sleep_pid="" renew_pid="" out_file=""
+    local delay=$(( CERT_RENEW_INTERVAL < 60 ? CERT_RENEW_INTERVAL : 60 ))
+    trap '
+        [[ -z $sleep_pid ]] || kill -TERM "$sleep_pid" 2>/dev/null || true
+        [[ -z $renew_pid ]] || kill -TERM "$renew_pid" 2>/dev/null || true
+        [[ -z $sleep_pid ]] || wait "$sleep_pid" 2>/dev/null || true
+        [[ -z $renew_pid ]] || wait "$renew_pid" 2>/dev/null || true
+        [[ -z $out_file ]] || rm -f "$out_file"
+        exit 0
+    ' TERM INT
     while true; do
         sleep "$delay" &
         sleep_pid=$!
         wait "$sleep_pid" || break
+        sleep_pid=""
         kill -0 "$daemon" 2>/dev/null || break
         delay=$CERT_RENEW_INTERVAL
         domain=$(cli get CertDomain 2>/dev/null || true)
         token=$(cli get CloudflareToken 2>/dev/null || true)   # never logged
         [[ -n $domain && -n $token ]] || continue
-        if out=$(cli cert renew 2>&1); then
+        out_file=$(mktemp "${TMPDIR:-/tmp}/tincstack-renew.XXXXXX")
+        cli cert renew >"$out_file" 2>&1 &
+        renew_pid=$!
+        rc_renew=0
+        wait "$renew_pid" || rc_renew=$?
+        renew_pid=""
+        out=$(cat "$out_file" 2>/dev/null || true)
+        rm -f "$out_file"
+        out_file=""
+        if (( rc_renew == 0 )); then
             # The no-op case is the common one; only say something when the
             # certificate actually changed.
             [[ $out == *"nothing to do"* ]] || log "cert renew: ${out//$'\n'/ }"
@@ -253,5 +355,8 @@ rc=0
 while kill -0 "$daemon" 2>/dev/null; do
     wait "$daemon" && rc=0 || rc=$?
 done
-[[ -z ${renewer:-} ]] || kill -TERM "$renewer" 2>/dev/null || true
+if [[ -n ${renewer:-} ]]; then
+    kill -TERM "$renewer" 2>/dev/null || true
+    wait "$renewer" 2>/dev/null || true
+fi
 exit "$rc"

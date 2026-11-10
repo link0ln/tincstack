@@ -13,11 +13,17 @@ UID routing.
 
 from __future__ import annotations
 
+import base64
+import copy
 import faulthandler
+import hmac
+import http.cookies
+import ipaddress
 import json
 import os
 import platform
 import re
+import secrets
 import socket
 import ssl
 import subprocess
@@ -32,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 import management
+import paths
 import routes
 import transports
 import yaml_config
@@ -41,6 +48,133 @@ from tinc_control import NetworkSnapshot, Node, TincControl, decode_status
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 DEFAULT_DIAG_PORT = 8655
+DIAG_SESSION_COOKIE = "tinc_diag_sid"
+DIAG_SESSION_TTL = 86400.0
+DIAG_SESSION_MAX = 64
+_DIAG_PASS_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+REDACTED_PLACEHOLDER = "***REDACTED***"
+_PUBLIC_KEY_ENTRIES = frozenset({"tls_cert"})
+_SECRET_OPTION_NAMES_LOWER = frozenset({"cloudflaretoken", "ed25519privatekey", "privatekey"})
+_NET_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+_settings_lock = threading.Lock()
+_active_servers_lock = threading.Lock()
+_active_servers: dict[str, "DiagWebServer"] = {}
+
+
+def is_valid_net_name(net: str, app: yaml_config.AppConfig | None = None) -> bool:
+    """Validate `net` against path traversal and (when `app` has networks) membership."""
+    if not net or ".." in net or not _NET_NAME_RE.fullmatch(net):
+        return False
+    if app is not None and app.networks and net not in app.networks:
+        return False
+    return True
+
+
+def is_valid_probe_host(host: str) -> bool:
+    """Accept only a valid IPv4/IPv6 literal or DNS hostname; reject option flags."""
+    if not host or len(host) > 253:
+        return False
+    if host[0] in ("-", "/") or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in host):
+        return False
+    unbracketed = host[1:-1] if (host.startswith("[") and host.endswith("]")) else host
+    try:
+        ipaddress.ip_address(unbracketed)
+        return True
+    except ValueError:
+        pass
+    if ":" in host or "[" in host or "]" in host:
+        return False
+    trimmed = host[:-1] if host.endswith(".") else host
+    if not trimmed or ".." in trimmed:
+        return False
+    labels = trimmed.split(".")
+    if all(lbl.isdigit() for lbl in labels):
+        return False
+    return all(bool(_DNS_LABEL_RE.fullmatch(lbl)) for lbl in labels)
+
+
+def _is_secret_key_entry(key_name: str) -> bool:
+    return key_name.strip().lower() not in _PUBLIC_KEY_ENTRIES
+
+
+def _is_secret_option_name(opt_name: str) -> bool:
+    return opt_name.strip().lower() in _SECRET_OPTION_NAMES_LOWER
+
+
+def redact_options_dict(opts: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in (opts or {}).items():
+        if _is_secret_option_name(str(k)) and v not in (None, ""):
+            out[k] = REDACTED_PLACEHOLDER
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def redact_yaml_document(doc: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of `doc` with all secret keys/options replaced by REDACTED_PLACEHOLDER."""
+    redacted = copy.deepcopy(doc or {})
+    nets = redacted.get("networks")
+    if isinstance(nets, dict):
+        for _net_name, nd in nets.items():
+            if not isinstance(nd, dict):
+                continue
+            keys = nd.get("keys")
+            if isinstance(keys, dict):
+                for kk, kv in list(keys.items()):
+                    if _is_secret_key_entry(str(kk)) and kv not in (None, ""):
+                        keys[kk] = REDACTED_PLACEHOLDER
+            opts = nd.get("options")
+            if isinstance(opts, dict):
+                for ok, ov in list(opts.items()):
+                    if _is_secret_option_name(str(ok)) and ov not in (None, ""):
+                        opts[ok] = REDACTED_PLACEHOLDER
+    return redacted
+
+
+def restore_redacted_yaml_document(new_doc: dict[str, Any], orig_doc: dict[str, Any]) -> dict[str, Any]:
+    """Restore REDACTED_PLACEHOLDER entries per-network from `orig_doc` so network A's
+    secrets never overwrite network B's."""
+    merged = copy.deepcopy(new_doc or {})
+    new_nets = merged.get("networks")
+    orig_nets = (orig_doc or {}).get("networks") if isinstance(orig_doc, dict) else {}
+    if not isinstance(new_nets, dict):
+        return merged
+    if not isinstance(orig_nets, dict):
+        orig_nets = {}
+    for net_name, nd in new_nets.items():
+        if not isinstance(nd, dict):
+            continue
+        orig_nd = orig_nets.get(net_name)
+        orig_keys = orig_nd.get("keys") if isinstance(orig_nd, dict) else None
+        orig_opts = orig_nd.get("options") if isinstance(orig_nd, dict) else None
+
+        new_keys = nd.get("keys")
+        if isinstance(new_keys, dict):
+            orig_keys_ci = {str(k).lower(): v for k, v in (orig_keys or {}).items()} if isinstance(orig_keys, dict) else {}
+            for kk, kv in list(new_keys.items()):
+                if isinstance(kv, str) and kv.strip() == REDACTED_PLACEHOLDER:
+                    if isinstance(orig_keys, dict) and kk in orig_keys:
+                        new_keys[kk] = copy.deepcopy(orig_keys[kk])
+                    elif str(kk).lower() in orig_keys_ci:
+                        new_keys[kk] = copy.deepcopy(orig_keys_ci[str(kk).lower()])
+                    else:
+                        new_keys.pop(kk, None)
+
+        new_opts = nd.get("options")
+        if isinstance(new_opts, dict):
+            orig_opts_ci = {str(k).lower(): v for k, v in (orig_opts or {}).items()} if isinstance(orig_opts, dict) else {}
+            for ok, ov in list(new_opts.items()):
+                if isinstance(ov, str) and ov.strip() == REDACTED_PLACEHOLDER:
+                    if isinstance(orig_opts, dict) and ok in orig_opts:
+                        new_opts[ok] = copy.deepcopy(orig_opts[ok])
+                    elif str(ok).lower() in orig_opts_ci:
+                        new_opts[ok] = copy.deepcopy(orig_opts_ci[str(ok).lower()])
+                    else:
+                        new_opts.pop(ok, None)
+    return merged
 SERIES_MAX_POINTS = 3600       # ~2.5 hours at 2.5s interval
 INCIDENTS_MAX = 500
 EVENTS_FILE_MAX_BYTES = 2 * 1024 * 1024
@@ -276,6 +410,8 @@ class TelemetryCollector:
         self._load_persisted_events()
 
     def _events_path(self, net: str) -> str:
+        if not is_valid_net_name(net):
+            raise ValueError(f"Invalid network name: {net!r}")
         return os.path.join(self.base_dir, f"{net}-diag-events.jsonl")
 
     def _load_persisted_events(self) -> None:
@@ -286,6 +422,8 @@ class TelemetryCollector:
                 if not fname.endswith("-diag-events.jsonl"):
                     continue
                 net = fname[:-len("-diag-events.jsonl")]
+                if not is_valid_net_name(net):
+                    continue
                 fpath = os.path.join(self.base_dir, fname)
                 dq = self._incidents.setdefault(net, deque(maxlen=INCIDENTS_MAX))
                 with open(fpath, "r", encoding="utf-8", errors="replace") as f:
@@ -311,6 +449,8 @@ class TelemetryCollector:
             pass
 
     def _persist_event(self, ev: IncidentEvent) -> None:
+        if not is_valid_net_name(ev.net):
+            return
         path = self._events_path(ev.net)
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -326,6 +466,8 @@ class TelemetryCollector:
             pass
 
     def clear_incidents(self, net: str) -> None:
+        if not is_valid_net_name(net):
+            raise ValueError(f"Invalid network name: {net!r}")
         with self._lock:
             self._incidents.pop(net, None)
         path = self._events_path(net)
@@ -353,6 +495,8 @@ class TelemetryCollector:
         return ev
 
     def record_user_mark(self, net: str, note: str = "") -> IncidentEvent:
+        if not is_valid_net_name(net):
+            raise ValueError(f"Invalid network name: {net!r}")
         with self._lock:
             snap = self._latest_snap.get(net)
         peer_summary = {}
@@ -739,7 +883,15 @@ class ActiveProber:
                     "subnets": n.subnets,
                     "preferred_transport": "auto",
                 }
-        if ":" in target and not target.startswith("["):
+        if target.startswith("["):
+            if "]:" in target:
+                hpart, pstr = target[1:].rsplit("]:", 1)
+                p = int(pstr) if pstr.isdigit() else 655
+                return hpart, {"addresses": [(hpart, str(p))], "port": p, "https_port": p, "quic_port": p, "obfs_port": p, "subnets": [], "preferred_transport": "auto"}
+            if target.endswith("]"):
+                hpart = target[1:-1]
+                return hpart, {"addresses": [(hpart, "")], "port": 655, "https_port": 443, "quic_port": 443, "obfs_port": 0, "subnets": [], "preferred_transport": "auto"}
+        if target.count(":") == 1 and not target.startswith("["):
             host, pstr = target.rsplit(":", 1)
             p = int(pstr) if pstr.isdigit() else 655
             return host, {"addresses": [(host, str(p))], "port": p, "https_port": p, "quic_port": p, "obfs_port": p, "subnets": [], "preferred_transport": "auto"}
@@ -846,6 +998,9 @@ class ActiveProber:
             if not host:
                 msg = "Specify a peer name, hostname, or outer IP address."
                 return {"ok": False, "output": msg, "formatted": msg}
+            if not is_valid_probe_host(host):
+                msg = f"Invalid target host: {host!r}"
+                return {"ok": False, "output": msg, "formatted": msg}
             count = max(1, min(int(params.get("count") or 4), 15))
             if sys.platform == "win32":
                 cmd = ["ping", "-n", str(count), "-w", "2000", host]
@@ -865,6 +1020,9 @@ class ActiveProber:
             host, _ = self._resolve_peer_outer_host(net, peer_or_host)
             if not host:
                 msg = "Specify a peer name, hostname, or outer IP address."
+                return {"ok": False, "output": msg, "formatted": msg}
+            if not is_valid_probe_host(host):
+                msg = f"Invalid target host: {host!r}"
                 return {"ok": False, "output": msg, "formatted": msg}
             if sys.platform == "win32":
                 cmd = ["tracert", "-d", "-h", "18", "-w", "1000", host]
@@ -923,6 +1081,9 @@ class ActiveProber:
         host, ep = self._resolve_peer_outer_host(net, target)
         if not host:
             msg = "Specify a peer name or host[:port]."
+            return {"ok": False, "output": msg, "formatted": msg}
+        if not is_valid_probe_host(host):
+            msg = f"Invalid target host: {host!r}"
             return {"ok": False, "output": msg, "formatted": msg}
         lines = [f"=== Carrier & Transport Handshake Prober for '{target}' (host={host}) ==="]
 
@@ -1023,6 +1184,9 @@ class ActiveProber:
 
     def _probe_dns_and_cache(self, net: str) -> dict[str, Any]:
         app = self.app_fn()
+        if net and not is_valid_net_name(net, app):
+            msg = f"Invalid network name: {net!r}"
+            return {"ok": False, "output": msg, "formatted": msg}
         nc = app.net(net) if app else None
         lines = [f"=== DNS Resolution & Address Cache Inspector for '{net}' ==="]
         if nc:
@@ -1031,9 +1195,13 @@ class ActiveProber:
                 if not ep["addresses"]:
                     continue
                 for addr, port in ep["addresses"]:
+                    clean_addr = addr[1:-1] if (addr.startswith("[") and addr.endswith("]")) else addr
+                    if not is_valid_probe_host(clean_addr):
+                        lines.append(f"  Host {hname:15s} : {addr}:{port or ep['port']} -> SKIPPED (invalid address)")
+                        continue
                     t0 = time.perf_counter()
                     try:
-                        infos = socket.getaddrinfo(addr, None, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+                        infos = socket.getaddrinfo(clean_addr, None, socket.AF_UNSPEC, socket.SOCK_DGRAM)
                         ips = sorted({i[4][0] for i in infos})
                         ms = (time.perf_counter() - t0) * 1000.0
                         lines.append(f"  Host {hname:15s} : {addr}:{port or ep['port']} -> {', '.join(ips)} ({ms:.1f} ms)")
@@ -1106,29 +1274,264 @@ def _settings_path(base_dir: str) -> str:
     return os.path.join(base_dir, "diag_settings.json")
 
 
-def load_diag_settings(base_dir: str) -> dict[str, Any]:
-    path = _settings_path(base_dir)
+def _generate_diag_password(length: int = 16) -> str:
+    return "".join(secrets.choice(_DIAG_PASS_ALPHABET) for _ in range(length))
+
+
+def _read_raw_diag_settings(path: str) -> dict[str, Any]:
     if os.path.isfile(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return {
-                "enabled": bool(data.get("enabled", False)),
-                "port": int(data.get("port", DEFAULT_DIAG_PORT)),
-            }
+            if isinstance(data, dict):
+                return data
         except Exception:
             pass
-    return {"enabled": False, "port": DEFAULT_DIAG_PORT}
+    return {}
 
 
-def save_diag_settings(base_dir: str, enabled: bool, port: int) -> None:
+def _write_raw_diag_settings(path: str, payload: dict[str, Any]) -> None:
+    raw = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    paths.write_private(path, raw)
+
+
+def ensure_diag_password(base_dir: str) -> str:
+    """Ensure a persistent random password exists in `diag_settings.json` (protected
+    with `paths.private_sddl` on Windows / 0600 on POSIX) and return it."""
+    if not base_dir:
+        return ""
     path = _settings_path(base_dir)
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"enabled": bool(enabled), "port": int(port)}, f, indent=2)
-    except OSError:
-        pass
+    with _settings_lock:
+        data = _read_raw_diag_settings(path)
+        pwd = str(data.get("password") or "").strip()
+        if pwd:
+            return pwd
+        pwd = _generate_diag_password(16)
+        payload = {
+            "enabled": bool(data.get("enabled", False)),
+            "port": int(data.get("port", DEFAULT_DIAG_PORT)),
+            "password": pwd,
+        }
+        try:
+            _write_raw_diag_settings(path, payload)
+        except OSError:
+            pass
+        return pwd
+
+
+def load_diag_settings(base_dir: str, ensure_password: bool = True) -> dict[str, Any]:
+    if not base_dir:
+        return {"enabled": False, "port": DEFAULT_DIAG_PORT, "password": ""}
+    path = _settings_path(base_dir)
+    with _settings_lock:
+        data = _read_raw_diag_settings(path)
+        enabled = bool(data.get("enabled", False))
+        try:
+            port = int(data.get("port", DEFAULT_DIAG_PORT))
+        except (TypeError, ValueError):
+            port = DEFAULT_DIAG_PORT
+        pwd = str(data.get("password") or "").strip()
+    if ensure_password and not pwd:
+        pwd = ensure_diag_password(base_dir)
+    return {"enabled": enabled, "port": port, "password": pwd}
+
+
+def save_diag_settings(base_dir: str, enabled: bool, port: int, password: str | None = None) -> None:
+    if not base_dir:
+        return
+    path = _settings_path(base_dir)
+    with _settings_lock:
+        data = _read_raw_diag_settings(path)
+        pwd = (password or "").strip() or str(data.get("password") or "").strip()
+        if not pwd:
+            pwd = _generate_diag_password(16)
+        payload = {
+            "enabled": bool(enabled),
+            "port": int(port),
+            "password": pwd,
+        }
+        try:
+            _write_raw_diag_settings(path, payload)
+        except OSError:
+            pass
+
+
+def live_diag_port(base_dir: str) -> int:
+    """Return the live listening port of the active `DiagWebServer` for `base_dir`,
+    or 0 when disabled / not running."""
+    if not base_dir:
+        return 0
+    key = os.path.normcase(os.path.abspath(base_dir))
+    with _active_servers_lock:
+        srv = _active_servers.get(key)
+    if srv is not None and srv.enabled:
+        return srv.port
+    return 0
+
+
+DIAG_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tincstack — Вход в панель диагностики</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #238636;
+    --red: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  }
+  .login-card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 26px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .brand .bolt { color: var(--accent); font-size: 21px; }
+  .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 20px;
+  }
+  .field-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  input[type="password"], input[type="text"] {
+    flex: 1;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 12px;
+    font-size: 14px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  button {
+    background: #21262d;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { background: #30363d; }
+  .btn-submit {
+    width: 100%;
+    background: var(--green);
+    border-color: rgba(240, 246, 252, 0.15);
+    color: #fff;
+    padding: 10px 16px;
+    font-size: 14px;
+  }
+  .btn-submit:hover { background: #2ea043; }
+  .err {
+    display: none;
+    margin-top: 12px;
+    padding: 9px 11px;
+    border-radius: 6px;
+    border: 1px solid rgba(248, 81, 73, 0.45);
+    background: rgba(248, 81, 73, 0.12);
+    color: var(--red);
+    font-size: 12.5px;
+  }
+</style>
+</head>
+<body>
+  <form class="login-card" id="login-form">
+    <div class="brand"><span class="bolt">⚡</span> <span>tincstack · Веб-панель диагностики</span></div>
+    <div class="subtitle">
+      Доступ защищён паролем. Скопируйте пароль из окна
+      <b>Diagnostics &amp; Remote WebUI</b> в приложении <code>tincmgr</code>.
+    </div>
+    <div class="field-row">
+      <input type="password" id="diag-pwd" placeholder="Пароль доступа / Password" autocomplete="current-password" autofocus required>
+      <button type="button" id="toggle-vis" title="Показать или скрыть пароль">Показать</button>
+    </div>
+    <button type="submit" class="btn-submit" id="submit-btn">Войти в веб-панель</button>
+    <div class="err" id="login-err"></div>
+  </form>
+<script>
+(function() {
+  const pwdInput = document.getElementById('diag-pwd');
+  const toggleBtn = document.getElementById('toggle-vis');
+  const form = document.getElementById('login-form');
+  const errBox = document.getElementById('login-err');
+  const submitBtn = document.getElementById('submit-btn');
+
+  toggleBtn.addEventListener('click', function() {
+    const show = pwdInput.type === 'password';
+    pwdInput.type = show ? 'text' : 'password';
+    toggleBtn.textContent = show ? 'Скрыть' : 'Показать';
+  });
+
+  form.addEventListener('submit', async function(ev) {
+    ev.preventDefault();
+    errBox.style.display = 'none';
+    submitBtn.disabled = true;
+    try {
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        credentials: 'same-origin',
+        body: JSON.stringify({password: pwdInput.value || ''})
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok && data.ok) {
+        window.location.replace('/');
+        return;
+      }
+      errBox.textContent = data.error || 'Неверный пароль доступа (Invalid password)';
+      errBox.style.display = 'block';
+      pwdInput.select();
+    } catch (e) {
+      errBox.textContent = 'Ошибка соединения: ' + e.message;
+      errBox.style.display = 'block';
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
+"""
 
 
 def tail_file(path: str, max_lines: int = 250) -> str:
@@ -1160,6 +1563,8 @@ class DiagWebServer:
         app_fn: Callable[[], yaml_config.AppConfig],
         runtime: Any,
         action_handler: Callable[[str, str, dict[str, Any]], tuple[bool, str, dict[str, Any]]] | None = None,
+        on_config_changed: Callable[[str, str], None] | None = None,
+        on_lifecycle: Callable[[str, str, bool], None] | None = None,
     ) -> None:
         self.base_dir = base_dir
         self.tc = tc
@@ -1170,12 +1575,101 @@ class DiagWebServer:
         self.app_fn = app_fn
         self.runtime = runtime
         self.action_handler = action_handler
+        self.on_config_changed = on_config_changed
+        self.on_lifecycle = on_lifecycle
         self._lock = threading.Lock()
         self._refresh_locks: dict[str, threading.Lock] = {}
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._closing_thread: threading.Thread | None = None
         self._port: int = DEFAULT_DIAG_PORT
         self._enabled: bool = False
+        self._sessions: dict[str, float] = {}
+        self._fallback_password: str = _generate_diag_password(16)
+        if self.base_dir:
+            ensure_diag_password(self.base_dir)
+
+    def get_password(self) -> str:
+        if self.base_dir:
+            return ensure_diag_password(self.base_dir)
+        return self._fallback_password
+
+    def _create_session(self) -> str:
+        now = time.time()
+        sid = secrets.token_hex(32)
+        with self._lock:
+            expired = [k for k, exp in self._sessions.items() if exp <= now]
+            for k in expired:
+                self._sessions.pop(k, None)
+            while len(self._sessions) >= DIAG_SESSION_MAX:
+                oldest = min(self._sessions, key=self._sessions.get)  # type: ignore[arg-type]
+                self._sessions.pop(oldest, None)
+            self._sessions[sid] = now + DIAG_SESSION_TTL
+        return sid
+
+    def _validate_session(self, sid: str) -> bool:
+        if not sid or len(sid) != 64:
+            return False
+        now = time.time()
+        with self._lock:
+            for k, exp in list(self._sessions.items()):
+                if exp <= now:
+                    self._sessions.pop(k, None)
+            for k in self._sessions:
+                if hmac.compare_digest(k, sid):
+                    return True
+        return False
+
+    def _revoke_session(self, sid: str) -> None:
+        if not sid:
+            return
+        with self._lock:
+            for k in list(self._sessions.keys()):
+                if hmac.compare_digest(k, sid):
+                    self._sessions.pop(k, None)
+
+    def _allowed_hosts(self) -> set[str]:
+        allowed: set[str] = {"127.0.0.1", "localhost", "::1"}
+        app = self.app_fn()
+        if app:
+            for net_name, nc in app.networks.items():
+                snap = self.collector.get_latest_snapshot(net_name)
+                if snap and not snap.error:
+                    for n in snap.nodes.values():
+                        if n.is_self and n.vpn_address:
+                            ip = n.vpn_address.split("/")[0].strip().lower()
+                            if ip:
+                                allowed.add(ip)
+                if nc.node_name and nc.node_name in nc.hosts:
+                    ep = parse_host_endpoints(nc.hosts[nc.node_name])
+                    for sub in ep["subnets"]:
+                        ip = sub.split("/")[0].strip().lower()
+                        if ip and ip not in ("0.0.0.0", "::"):
+                            allowed.add(ip)
+                for key in ("InterfaceAddress", "WintunAddress"):
+                    raw_val = nc.options.get(key)
+                    vals = raw_val if isinstance(raw_val, (list, tuple)) else ([raw_val] if raw_val else [])
+                    for item in vals:
+                        ip = str(item).strip().split()[0].split("/")[0].strip().lower()
+                        if ip and ip not in ("0.0.0.0", "::"):
+                            allowed.add(ip)
+        return allowed
+
+    def _notify_config_changed(self, net: str, action: str) -> None:
+        cb = self.on_config_changed
+        if cb is not None:
+            try:
+                cb(net, action)
+            except Exception:
+                pass
+
+    def _notify_lifecycle(self, net: str, action: str, ok: bool) -> None:
+        cb = self.on_lifecycle
+        if cb is not None:
+            try:
+                cb(net, action, ok)
+            except Exception:
+                pass
 
     @property
     def enabled(self) -> bool:
@@ -1189,11 +1683,16 @@ class DiagWebServer:
 
     def start(self, port: int = DEFAULT_DIAG_PORT) -> tuple[bool, str]:
         port = max(1024, min(int(port), 65535))
+        if self.base_dir:
+            ensure_diag_password(self.base_dir)
         with self._lock:
             if self._httpd is not None and self._port == port and self._enabled:
                 self.sync_tincd_bridge()
                 return True, f"Diagnostic server already running on port {port}"
-        self.stop()
+            closing = self._closing_thread
+        if closing is not None and closing.is_alive():
+            closing.join(timeout=2.0)
+        self.stop(wait=True)
 
         server_ref = self
 
@@ -1213,45 +1712,149 @@ class DiagWebServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _send_html(self, html: str, status: int = 200) -> None:
+            def _send_html(self, html: str, status: int = 200, headers: dict[str, str] | None = None) -> None:
                 body = html.encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))
+                if headers:
+                    for k, v in headers.items():
+                        self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(body)
 
-            def do_GET(self) -> None:
-                parsed = urllib.parse.urlparse(self.path)
-                qs = urllib.parse.parse_qs(parsed.query)
-                net = (qs.get("net", [""])[0] or "").strip()
+            def _validate_host(self) -> tuple[bool, set[str]]:
+                host_hdr = (self.headers.get("Host") or "").strip()
+                allowed = server_ref._allowed_hosts()
+                if not host_hdr or "@" in host_hdr or "/" in host_hdr or "\\" in host_hdr:
+                    self._send_json({"ok": False, "error": "Invalid Host header"}, status=403)
+                    return False, allowed
+                try:
+                    split_h = urllib.parse.urlsplit(f"//{host_hdr}")
+                    req_host = (split_h.hostname or "").lower()
+                    _ = split_h.port
+                except ValueError:
+                    req_host = ""
+                if not req_host or req_host not in allowed:
+                    self._send_json({"ok": False, "error": "Invalid Host header"}, status=403)
+                    return False, allowed
+                return True, allowed
 
-                if parsed.path in ("/", "/index.html"):
+            def _extract_session_cookie(self) -> str:
+                raw_cookie = self.headers.get("Cookie") or ""
+                if not raw_cookie:
+                    return ""
+                try:
+                    jar = http.cookies.SimpleCookie()
+                    jar.load(raw_cookie)
+                    if DIAG_SESSION_COOKIE in jar:
+                        return jar[DIAG_SESSION_COOKIE].value.strip()
+                except Exception:
+                    pass
+                for part in raw_cookie.split(";"):
+                    k, sep, v = part.strip().partition("=")
+                    if sep and k.strip() == DIAG_SESSION_COOKIE:
+                        return v.strip()
+                return ""
+
+            def _check_auth(self) -> tuple[bool, str]:
+                expected = server_ref.get_password()
+                if not expected:
+                    return False, ""
+                expected_b = expected.encode("utf-8")
+
+                x_pwd = self.headers.get("X-Diag-Password")
+                if x_pwd is not None:
+                    if hmac.compare_digest(x_pwd.encode("utf-8"), expected_b):
+                        return True, "header"
+                    return False, ""
+
+                auth_hdr = (self.headers.get("Authorization") or "").strip()
+                if auth_hdr:
+                    scheme, _, rest = auth_hdr.partition(" ")
+                    scheme_low = scheme.lower()
+                    rest = rest.strip()
+                    if scheme_low == "bearer" and rest:
+                        if hmac.compare_digest(rest.encode("utf-8"), expected_b):
+                            return True, "header"
+                        return False, ""
+                    if scheme_low == "basic" and rest:
+                        try:
+                            decoded = base64.b64decode(rest, validate=False).decode("utf-8", errors="replace")
+                            _user, sep, pw = decoded.partition(":")
+                            cand = pw if sep else decoded
+                            if hmac.compare_digest(cand.encode("utf-8"), expected_b):
+                                return True, "header"
+                        except Exception:
+                            pass
+                        return False, ""
+                    return False, ""
+
+                sid = self._extract_session_cookie()
+                if sid and server_ref._validate_session(sid):
+                    return True, "cookie"
+                return False, ""
+
+            def do_GET(self) -> None:
+                ok_host, _ = self._validate_host()
+                if not ok_host:
+                    return
+                parsed = urllib.parse.urlparse(self.path)
+                authed, _ = self._check_auth()
+
+                if parsed.path in ("/", "/index.html", "/login"):
+                    if not authed:
+                        self._send_html(DIAG_LOGIN_HTML)
+                        return
                     self._send_html(DIAG_WEBUI_HTML)
                     return
-                if parsed.path == "/api/overview":
-                    self._send_json(server_ref.build_overview(net))
-                    return
-                if parsed.path == "/api/logs":
-                    lines = int(qs.get("lines", ["250"])[0] or 250)
-                    source = (qs.get("source", ["tincd"])[0] or "tincd").strip()
-                    self._send_json(server_ref.build_logs(net, source=source, lines=lines))
-                    return
-                if parsed.path == "/api/config":
-                    self._send_json(server_ref.build_config(net))
-                    return
-                if parsed.path == "/api/export":
-                    bundle = server_ref.build_export_bundle(net)
-                    fname = f"tincstack-diag-{net or 'all'}-{int(time.time())}.json"
+
+                if not authed:
                     self._send_json(
-                        bundle,
-                        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+                        {"ok": False, "auth_required": True, "error": "Authentication required"},
+                        status=401,
                     )
+                    return
+
+                qs = urllib.parse.parse_qs(parsed.query)
+                net = (qs.get("net", [""])[0] or "").strip()
+                if net and not is_valid_net_name(net, server_ref.app_fn()):
+                    self._send_json({"ok": False, "error": "Invalid network name"}, status=400)
+                    return
+
+                try:
+                    if parsed.path == "/api/overview":
+                        self._send_json(server_ref.build_overview(net))
+                        return
+                    if parsed.path == "/api/logs":
+                        lines = max(1, min(int(qs.get("lines", ["250"])[0] or 250), 5000))
+                        source = (qs.get("source", ["tincd"])[0] or "tincd").strip()
+                        self._send_json(server_ref.build_logs(net, source=source, lines=lines))
+                        return
+                    if parsed.path == "/api/config":
+                        self._send_json(server_ref.build_config(net))
+                        return
+                    if parsed.path == "/api/export":
+                        bundle = server_ref.build_export_bundle(net)
+                        safe_net = net if (net and is_valid_net_name(net)) else "all"
+                        fname = f"tincstack-diag-{safe_net}-{int(time.time())}.json"
+                        self._send_json(
+                            bundle,
+                            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+                        )
+                        return
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, status=400)
                     return
                 self._send_json({"ok": False, "error": "Not found"}, status=404)
 
             def do_POST(self) -> None:
+                ok_host, allowed_hosts = self._validate_host()
+                if not ok_host:
+                    return
+                parsed = urllib.parse.urlparse(self.path)
+
                 origin = (self.headers.get("Origin") or "").strip()
                 if origin:
                     if origin.lower() == "null":
@@ -1259,27 +1862,74 @@ class DiagWebServer:
                         return
                     try:
                         o_host = (urllib.parse.urlparse(origin).hostname or "").lower()
-                        req_host = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
-                        if not o_host or o_host not in ("127.0.0.1", "localhost", "::1", req_host):
+                        if not o_host or o_host not in allowed_hosts:
                             self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
                             return
                     except Exception:
                         self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
                         return
-                parsed = urllib.parse.urlparse(self.path)
-                length = int(self.headers.get("Content-Length", "0") or 0)
+
+                authed, auth_mode = self._check_auth()
+                try:
+                    length = int(self.headers.get("Content-Length", "0") or 0)
+                except ValueError:
+                    length = 0
+                if length > 4 * 1024 * 1024:
+                    self._send_json({"ok": False, "error": "Payload too large"}, status=413)
+                    return
                 raw = self.rfile.read(length) if length > 0 else b"{}"
                 try:
                     payload = json.loads(raw.decode("utf-8", errors="replace"))
+                    if not isinstance(payload, dict):
+                        payload = {}
                 except Exception:
                     payload = {}
 
+                if parsed.path == "/api/login":
+                    provided = str(payload.get("password") or "")
+                    expected = server_ref.get_password()
+                    if expected and hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+                        sid = server_ref._create_session()
+                        cookie = f"{DIAG_SESSION_COOKIE}={sid}; HttpOnly; SameSite=Strict; Path=/"
+                        self._send_json({"ok": True, "message": "Authenticated"}, headers={"Set-Cookie": cookie})
+                    else:
+                        self._send_json(
+                            {"ok": False, "auth_required": True, "error": "Invalid password"},
+                            status=401,
+                        )
+                    return
+
+                if not authed:
+                    self._send_json(
+                        {"ok": False, "auth_required": True, "error": "Authentication required"},
+                        status=401,
+                    )
+                    return
+
+                if not origin and auth_mode != "header":
+                    self._send_json(
+                        {"ok": False, "error": "Missing Origin header on cookie-authenticated POST"},
+                        status=403,
+                    )
+                    return
+
+                if parsed.path == "/api/logout":
+                    sid = self._extract_session_cookie()
+                    server_ref._revoke_session(sid)
+                    cookie = f"{DIAG_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+                    self._send_json({"ok": True}, headers={"Set-Cookie": cookie})
+                    return
+
                 net = str(payload.get("net") or "").strip()
+                if net and not is_valid_net_name(net, server_ref.app_fn()):
+                    self._send_json({"ok": False, "error": "Invalid network name"}, status=400)
+                    return
+
                 if parsed.path == "/api/mark":
                     note = str(payload.get("note") or "")
                     target_net = net or server_ref._default_net()
-                    if not target_net:
-                        self._send_json({"ok": False, "error": "No network configured"}, status=400)
+                    if not target_net or not is_valid_net_name(target_net, server_ref.app_fn()):
+                        self._send_json({"ok": False, "error": "No valid network configured"}, status=400)
                         return
                     ev = server_ref.collector.record_user_mark(target_net, note)
                     self._send_json({"ok": True, "message": "Метка затупа сохранена", "event": ev.to_dict()})
@@ -1287,6 +1937,9 @@ class DiagWebServer:
 
                 if parsed.path == "/api/probe":
                     target_net = net or server_ref._default_net()
+                    if target_net and not is_valid_net_name(target_net, server_ref.app_fn()):
+                        self._send_json({"ok": False, "error": "Invalid network name"}, status=400)
+                        return
                     tool = str(payload.get("tool") or payload.get("kind") or "").strip()
                     res = server_ref.prober.run_probe(target_net, tool, payload)
                     self._send_json(res)
@@ -1294,8 +1947,15 @@ class DiagWebServer:
 
                 if parsed.path == "/api/action":
                     target_net = net or server_ref._default_net()
+                    if target_net and not is_valid_net_name(target_net, server_ref.app_fn()):
+                        self._send_json({"ok": False, "error": "Invalid network name"}, status=400)
+                        return
                     action = str(payload.get("action") or "").strip()
-                    ok, msg, extra = server_ref.handle_action(target_net, action, payload)
+                    try:
+                        ok, msg, extra = server_ref.handle_action(target_net, action, payload)
+                    except ValueError as e:
+                        self._send_json({"ok": False, "error": str(e)}, status=400)
+                        return
                     resp = {"ok": ok, "message": msg}
                     resp.update(extra)
                     self._send_json(resp, status=200 if ok else 400)
@@ -1309,32 +1969,59 @@ class DiagWebServer:
         except OSError as e:
             return False, f"Could not bind port {port}: {e}"
 
-        t = threading.Thread(target=httpd.serve_forever, name=f"diag-http-{port}", daemon=True)
+        t = threading.Thread(
+            target=httpd.serve_forever,
+            kwargs={"poll_interval": 0.1},
+            name=f"diag-http-{port}",
+            daemon=True,
+        )
         t.start()
         with self._lock:
             self._httpd = httpd
             self._thread = t
             self._port = port
             self._enabled = True
+        if self.base_dir:
+            with _active_servers_lock:
+                _active_servers[os.path.normcase(os.path.abspath(self.base_dir))] = self
         save_diag_settings(self.base_dir, True, port)
         self.sync_tincd_bridge()
         return True, f"Diagnostic Web Server listening on port {port}"
 
-    def stop(self) -> tuple[bool, str]:
+    def stop(self, wait: bool = True) -> tuple[bool, str]:
         with self._lock:
             httpd = self._httpd
             self._httpd = None
             self._thread = None
             self._enabled = False
             port = self._port
+            prev_closing = self._closing_thread
+        if self.base_dir:
+            key = os.path.normcase(os.path.abspath(self.base_dir))
+            with _active_servers_lock:
+                if _active_servers.get(key) is self:
+                    _active_servers.pop(key, None)
         save_diag_settings(self.base_dir, False, port)
         self.sync_tincd_bridge()
         if httpd is not None:
-            try:
-                httpd.shutdown()
-                httpd.server_close()
-            except Exception:
-                pass
+            def _shutdown_server() -> None:
+                try:
+                    httpd.shutdown()
+                    httpd.server_close()
+                except Exception:
+                    pass
+
+            if wait:
+                if prev_closing is not None and prev_closing.is_alive():
+                    prev_closing.join(timeout=2.0)
+                _shutdown_server()
+            else:
+                ct = threading.Thread(target=_shutdown_server, name="diag-http-stop", daemon=True)
+                with self._lock:
+                    self._closing_thread = ct
+                ct.start()
+        elif wait and prev_closing is not None and prev_closing.is_alive():
+            prev_closing.join(timeout=2.0)
         return True, "Diagnostic Web Server stopped"
 
     def sync_tincd_bridge(self, specific_net: str | None = None, async_mode: bool = True) -> None:
@@ -1439,8 +2126,12 @@ class DiagWebServer:
 
     def build_overview(self, net: str = "") -> dict[str, Any]:
         app = self.app_fn()
+        if net and not is_valid_net_name(net, app):
+            raise ValueError(f"Invalid network name: {net!r}")
         nets = list(app.networks) if app else []
         target_net = net if (net and net in nets) else (nets[0] if nets else "")
+        if target_net and not is_valid_net_name(target_net):
+            target_net = ""
         snap: NetworkSnapshot | None = None
         if target_net:
             snap = self._get_or_refresh_snapshot(target_net, max_age=2.0)
@@ -1569,7 +2260,12 @@ class DiagWebServer:
         }
 
     def build_logs(self, net: str = "", source: str = "tincd", lines: int = 250) -> dict[str, Any]:
+        app = self.app_fn()
+        if net and not is_valid_net_name(net, app):
+            raise ValueError(f"Invalid network name: {net!r}")
         target_net = net or self._default_net()
+        if target_net and not is_valid_net_name(target_net, app):
+            target_net = ""
         tincd_log = os.path.join(self.base_dir, f"{target_net}-tincd.log") if target_net else ""
         global_mgr_log = app_log_path(self.base_dir)
         net_mgr_log = os.path.join(self.base_dir, f"{target_net}-tincmgr.log") if target_net else ""
@@ -1605,53 +2301,58 @@ class DiagWebServer:
 
     def build_config(self, net: str = "") -> dict[str, Any]:
         app = self.app_fn()
+        if net and not is_valid_net_name(net, app):
+            raise ValueError(f"Invalid network name: {net!r}")
         target_net = net or self._default_net()
-        nc = app.net(target_net) if (app and target_net) else None
+        if target_net and not is_valid_net_name(target_net, app):
+            target_net = ""
         raw_yaml = ""
-        if app and os.path.isfile(app.path):
-            try:
-                with open(app.path, "r", encoding="utf-8", errors="replace") as f:
-                    raw_yaml = f.read()
-                raw_yaml = re.sub(
-                    r"(?im)^(\s*(?:Ed25519PrivateKey|PrivateKey|CloudflareToken)\s*[:=]\s*).*$",
-                    r"\1***REDACTED***",
-                    raw_yaml,
-                )
-            except OSError:
-                pass
-        tr_val = nc.options.get("Transports", "") if nc else ""
-        pref_val = nc.options.get("PreferredTransports", "") if nc else ""
-        if isinstance(tr_val, list):
-            tr_val = ", ".join(str(x) for x in tr_val)
-        if isinstance(pref_val, list):
-            pref_val = ", ".join(str(x) for x in pref_val)
-        safe_opts = dict(nc.options) if nc else {}
-        for secret_key in ("Ed25519PrivateKey", "PrivateKey", "CloudflareToken"):
-            if secret_key in safe_opts:
-                safe_opts[secret_key] = "***REDACTED***"
+        with yaml_config._MEM_LOCK:
+            nc = app.net(target_net) if (app and target_net) else None
+            if app and app.path and os.path.isfile(app.path):
+                try:
+                    doc = yaml_config.read_document(app.path)
+                    raw_yaml = yaml_config.dump_text(redact_yaml_document(doc))
+                except (yaml_config.ConfigError, OSError):
+                    raw_yaml = ""
+            elif app:
+                raw_yaml = yaml_config.dump_text(redact_yaml_document(yaml_config.to_dict(app)))
+            tr_val = nc.options.get("Transports", "") if nc else ""
+            pref_val = nc.options.get("PreferredTransports", "") if nc else ""
+            if isinstance(tr_val, list):
+                tr_val = ", ".join(str(x) for x in tr_val)
+            if isinstance(pref_val, list):
+                pref_val = ", ".join(str(x) for x in pref_val)
+            safe_opts = redact_options_dict(nc.options) if nc else {}
+            hosts_copy = dict(nc.hosts) if nc else {}
+            autostart = nc.autostart if nc else False
+            wintun_mtu = (nc.wintun_mtu or 1400) if nc else 1400
+            full_tunnel = nc.full_tunnel if nc else ""
         return {
             "ok": True,
             "net": target_net,
-            "autostart": nc.autostart if nc else False,
-            "wintun_mtu": (nc.wintun_mtu or 1400) if nc else 1400,
-            "full_tunnel": nc.full_tunnel if nc else "",
+            "autostart": autostart,
+            "wintun_mtu": wintun_mtu,
+            "full_tunnel": full_tunnel,
             "transports": str(tr_val),
             "preferred_transports": str(pref_val),
             "options": safe_opts,
             "options_conf": yaml_config.options_to_conf(safe_opts) if nc else "",
-            "hosts": dict(nc.hosts) if nc else {},
+            "hosts": hosts_copy,
             "raw_yaml": raw_yaml,
         }
 
     def build_export_bundle(self, net: str = "") -> dict[str, Any]:
+        app = self.app_fn()
+        if net and not is_valid_net_name(net, app):
+            raise ValueError(f"Invalid network name: {net!r}")
         target_net = net or self._default_net()
+        if target_net and not is_valid_net_name(target_net, app):
+            target_net = ""
         cfg = self.build_config(target_net)
         # Scrub private keys and tokens from export bundle for safety
         cfg.pop("raw_yaml", None)
-        opts = dict(cfg.get("options") or {})
-        if "CloudflareToken" in opts:
-            opts["CloudflareToken"] = "***REDACTED***"
-        cfg["options"] = opts
+        cfg["options"] = redact_options_dict(dict(cfg.get("options") or {}))
         return {
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "overview": self.build_overview(target_net),
@@ -1668,6 +2369,8 @@ class DiagWebServer:
 
     def default_action_handler(self, net: str, action: str, payload: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
         app = self.app_fn()
+        if net and not is_valid_net_name(net, app):
+            return False, f"Invalid network: {net}", {}
         nc = app.net(net) if (app and net) else None
 
         if action == "daemon":
@@ -1678,13 +2381,20 @@ class DiagWebServer:
         if action == "start" and self.runtime:
             ok, msg = self.runtime.start(net)
             self.sync_tincd_bridge(net)
+            self._notify_lifecycle(net, "start", ok)
+            if ok:
+                self._notify_config_changed(net, "start")
             return ok, msg, {}
         if action == "stop" and self.runtime:
             ok, msg = self.runtime.stop(net)
+            self._notify_lifecycle(net, "stop", ok)
             return ok, msg, {}
         if action == "restart" and self.runtime:
             ok, msg = self.runtime.restart(net)
             self.sync_tincd_bridge(net)
+            self._notify_lifecycle(net, "restart", ok)
+            if ok:
+                self._notify_config_changed(net, "restart")
             return ok, msg, {}
         if action == "reload":
             res = self.tc.reload(net)
@@ -1700,6 +2410,8 @@ class DiagWebServer:
             res = self.tc.set_debug(net, level)
             return res.ok, (res.stdout + res.stderr).strip() or f"debug level set to {level}", {}
         if action == "clear_incidents":
+            if not is_valid_net_name(net, app):
+                return False, "Invalid network name", {}
             self.collector.clear_incidents(net)
             return True, "Журнал инцидентов очищен", {}
         if action == "clear_crash_log":
@@ -1737,6 +2449,7 @@ class DiagWebServer:
                         ct_list.append(peer)
                     nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
                 yaml_config.save(app)
+            self._notify_config_changed(net, action)
             res = self.tc.switch_peer_transport(net, peer)
             self.collector.add_incident(
                 net=net, kind="USER_ACTION", severity="info", peer=peer,
@@ -1764,6 +2477,7 @@ class DiagWebServer:
                 if peer in nc.hosts or new_host:
                     nc.hosts[peer] = new_host
                 yaml_config.save(app)
+            self._notify_config_changed(net, action)
             res = self.tc.reload(net)
             mode_str = "Relay only (no direct connect)" if no_direct else "Direct connect allowed"
             self.collector.add_incident(
@@ -1777,12 +2491,19 @@ class DiagWebServer:
             subnet = str(payload.get("subnet") or "").strip()
             vpn_ip = str(payload.get("vpn_ip") or "").strip()
             enable = bool(payload.get("enable", True))
-            if enable:
-                routes.add(nc.options, subnet, vpn_ip)
-            else:
-                routes.remove(nc.options, subnet)
-            yaml_config.save(app)
-            alias = routes.adapter_aliases(nc.options, net)
+            with yaml_config._MEM_LOCK:
+                if os.path.exists(app.path):
+                    try:
+                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                    except Exception:
+                        pass
+                if enable:
+                    routes.add(nc.options, subnet, vpn_ip)
+                else:
+                    routes.remove(nc.options, subnet)
+                yaml_config.save(app)
+                alias = routes.adapter_aliases(nc.options, net)
+            self._notify_config_changed(net, action)
             if alias:
                 if enable:
                     routes.apply_now(alias[0], subnet, vpn_ip)
@@ -1794,8 +2515,15 @@ class DiagWebServer:
                 return False, "Network not found", {}
             peer = str(payload.get("peer") or "").strip()
             enable = bool(payload.get("enable", False))
-            nc.full_tunnel = peer if enable else ""
-            yaml_config.save(app)
+            with yaml_config._MEM_LOCK:
+                if os.path.exists(app.path):
+                    try:
+                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                    except Exception:
+                        pass
+                nc.full_tunnel = peer if enable else ""
+                yaml_config.save(app)
+            self._notify_config_changed(net, action)
             msg = self.runtime.full_tunnel_sync(net) if self.runtime else "saved"
             return True, msg, {}
         if action in ("save_host", "peer_save_host"):
@@ -1818,6 +2546,7 @@ class DiagWebServer:
                 else:
                     nc.options.pop("BlockedNodes", None)
                 yaml_config.save(app)
+            self._notify_config_changed(net, action)
             self.tc.reload(net)
             return True, f"Saved host '{host}'", {}
         if action == "delete_host":
@@ -1843,6 +2572,7 @@ class DiagWebServer:
                     blocked_list.append(host)
                 nc.options["BlockedNodes"] = blocked_list
                 yaml_config.save(app)
+            self._notify_config_changed(net, action)
             self.tc.reload(net)
             return True, f"Deleted and blocked host '{host}'", {}
         if action == "save_settings":
@@ -1850,20 +2580,29 @@ class DiagWebServer:
                 return False, "Network not found", {}
             tr_str = str(payload.get("transports") or "").strip()
             pref_str = str(payload.get("preferred_transports") or "").strip()
-            if tr_str:
-                nc.options["Transports"] = transports.parse_carrier_list(tr_str)
-            else:
-                nc.options.pop("Transports", None)
-            if pref_str:
-                nc.options["PreferredTransports"] = transports.parse_carrier_list(pref_str)
-            else:
-                nc.options.pop("PreferredTransports", None)
-            if "full_tunnel" in payload:
-                nc.full_tunnel = str(payload.get("full_tunnel") or "").strip()
-            errs = transports.validate(nc.options)
-            if errs:
-                return False, "; ".join(errs), {}
-            yaml_config.save(app)
+            with yaml_config._MEM_LOCK:
+                if os.path.exists(app.path):
+                    try:
+                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                    except Exception:
+                        pass
+                cand_opts = copy.deepcopy(nc.options)
+                if tr_str:
+                    cand_opts["Transports"] = transports.parse_carrier_list(tr_str)
+                else:
+                    cand_opts.pop("Transports", None)
+                if pref_str:
+                    cand_opts["PreferredTransports"] = transports.parse_carrier_list(pref_str)
+                else:
+                    cand_opts.pop("PreferredTransports", None)
+                errs = transports.validate(cand_opts)
+                if errs:
+                    return False, "; ".join(errs), {}
+                nc.options = cand_opts
+                if "full_tunnel" in payload:
+                    nc.full_tunnel = str(payload.get("full_tunnel") or "").strip()
+                yaml_config.save(app)
+            self._notify_config_changed(net, action)
             self.tc.reload(net)
             if self.runtime:
                 self.runtime.full_tunnel_sync(net)
@@ -1872,49 +2611,68 @@ class DiagWebServer:
             if not nc:
                 return False, "Network not found", {}
             conf_text = str(payload.get("options_conf") or "")
-            new_opts = yaml_config.conf_to_options(conf_text)
-            for secret_key in ("Ed25519PrivateKey", "PrivateKey", "CloudflareToken"):
-                if new_opts.get(secret_key) == "***REDACTED***" and secret_key in nc.options:
-                    new_opts[secret_key] = nc.options[secret_key]
-            for k in ("Transports", "PreferredTransports"):
-                if k in new_opts:
-                    new_opts[k] = transports.parse_carrier_list(new_opts[k])
-            errs = transports.validate(new_opts)
-            if errs:
-                return False, "; ".join(errs), {}
-            nc.options = new_opts
-            if "autostart" in payload:
-                nc.autostart = bool(payload["autostart"])
-            if "wintun_mtu" in payload:
-                try:
-                    nc.wintun_mtu = int(payload["wintun_mtu"])
-                except ValueError:
-                    pass
-            yaml_config.save(app)
+            with yaml_config._MEM_LOCK:
+                if os.path.exists(app.path):
+                    try:
+                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                    except Exception:
+                        pass
+                new_opts = yaml_config.conf_to_options(conf_text)
+                orig_ci = {str(k).lower(): v for k, v in nc.options.items()}
+                for ok, ov in list(new_opts.items()):
+                    if _is_secret_option_name(str(ok)) and isinstance(ov, str) and ov.strip() == REDACTED_PLACEHOLDER:
+                        if ok in nc.options:
+                            new_opts[ok] = copy.deepcopy(nc.options[ok])
+                        elif str(ok).lower() in orig_ci:
+                            new_opts[ok] = copy.deepcopy(orig_ci[str(ok).lower()])
+                        else:
+                            new_opts.pop(ok, None)
+                for k in ("Transports", "PreferredTransports"):
+                    if k in new_opts:
+                        new_opts[k] = transports.parse_carrier_list(new_opts[k])
+                errs = transports.validate(new_opts)
+                if errs:
+                    return False, "; ".join(errs), {}
+                nc.options = new_opts
+                if "autostart" in payload:
+                    nc.autostart = bool(payload["autostart"])
+                if "wintun_mtu" in payload:
+                    try:
+                        nc.wintun_mtu = int(payload["wintun_mtu"])
+                    except ValueError:
+                        pass
+                yaml_config.save(app)
+            self._notify_config_changed(net, action)
             self.tc.reload(net)
             return True, "Saved network options", {}
         if action == "save_raw_yaml":
             if not app:
                 return False, "App config not loaded", {}
             raw_text = str(payload.get("raw_yaml") or "")
-            if "***REDACTED***" in raw_text and os.path.isfile(app.path):
+            try:
+                incoming_doc = yaml_config.parse_text(raw_text, app.path)
+            except yaml_config.ConfigError as e:
+                return False, str(e), {}
+            with yaml_config._MEM_LOCK:
                 try:
-                    with open(app.path, "r", encoding="utf-8", errors="replace") as f:
-                        orig_yaml = f.read()
-                    for secret_key in ("Ed25519PrivateKey", "PrivateKey", "CloudflareToken"):
-                        m = re.search(rf"(?im)^(\s*{secret_key}\s*[:=]\s*)(.+)$", orig_yaml)
-                        if m:
-                            real_val = m.group(2)
-                            raw_text = re.sub(
-                                rf"(?im)^(\s*{secret_key}\s*[:=]\s*)\*\*\*REDACTED\*\*\*\s*$",
-                                lambda g, rv=real_val: g.group(1) + rv,
-                                raw_text,
-                            )
-                except OSError:
-                    pass
-            yaml_config.save_text(app.path, raw_text)
-            yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-            self.tc.reload(net)
+                    orig_doc = yaml_config.read_document(app.path) if os.path.isfile(app.path) else yaml_config.to_dict(app)
+                except yaml_config.ConfigError:
+                    orig_doc = yaml_config.to_dict(app)
+                restored_doc = restore_redacted_yaml_document(incoming_doc, orig_doc)
+                for nname, nd in (restored_doc.get("networks") or {}).items():
+                    if isinstance(nd, dict):
+                        errs = transports.validate(dict(nd.get("options") or {}))
+                        if errs:
+                            return False, f"{nname}: {'; '.join(errs)}", {}
+                final_text = yaml_config.dump_text(restored_doc)
+                try:
+                    yaml_config.save_text(app.path, final_text)
+                    yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
+                except yaml_config.ConfigError as e:
+                    return False, str(e), {}
+            self._notify_config_changed(net, action)
+            if net:
+                self.tc.reload(net)
             return True, "Saved tinc.yaml", {}
         if action == "invite":
             peer = str(payload.get("peer") or "").strip()

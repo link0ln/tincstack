@@ -95,8 +95,10 @@ int multipath_upsert_uplink(const char *name, const char *local_ip, int weight,
                             bool is_backup, int mark, uint64_t net_handle, bool is_up);
 bool multipath_remove_uplink(const char *name);
 int multipath_pick_next_uplink(const struct node_t *n);
+int multipath_get_tx_uplink(const struct node_t *n);
 bool multipath_bind_socket(int fd, int af, int uplink_idx);
 int multipath_get_udp_fd(int uplink_idx, int af, int fallback_sock_idx);
+bool multipath_owns_udp_fd(int fd);
 bool multipath_uplink_is_healthy(int uplink_idx);
 
 /* Multi-connection pool & make-before-break failover */

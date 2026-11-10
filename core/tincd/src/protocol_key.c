@@ -153,6 +153,87 @@ static bool send_initial_sptps_data(void *handle, uint8_t type, const void *data
 #define KEY_QUORUM_FLAG_DIRECT_EDGE 0x02
 #define KEY_QUORUM_FLAG_VALID_SPTPS 0x04
 
+static bool is_valid_quorum_nonce(const char *nonce) {
+	if(!nonce) {
+		return false;
+	}
+
+	size_t len = strlen(nonce);
+
+	if(len < 16 || len > 64) {
+		return false;
+	}
+
+	for(size_t i = 0; i < len; i++) {
+		if(!isxdigit((unsigned char)nonce[i])) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static ecdsa_t *get_my_quorum_ecdsa(void) {
+	if(myself && myself->connection && ecdsa_active(myself->connection->ecdsa)) {
+		return myself->connection->ecdsa;
+	}
+
+	if(myself && ecdsa_active(myself->ecdsa)) {
+		return myself->ecdsa;
+	}
+
+	return NULL;
+}
+
+static bool ecdsa_sign_base64(ecdsa_t *ecdsa, const void *msg, size_t len, char **sig_b64_out) {
+	if(!ecdsa_active(ecdsa) || !sig_b64_out) {
+		return false;
+	}
+
+	size_t siglen = ecdsa_size(ecdsa);
+
+	if(siglen == 0 || siglen > 128) {
+		return false;
+	}
+
+	uint8_t raw_sig[128];
+
+	if(!ecdsa_sign(ecdsa, msg, len, raw_sig)) {
+		return false;
+	}
+
+	char *b64 = xmalloc(B64_SIZE(siglen));
+	b64encode_tinc(raw_sig, b64, siglen);
+	*sig_b64_out = b64;
+	return true;
+}
+
+static bool ecdsa_verify_base64(ecdsa_t *ecdsa, const void *msg, size_t len, const char *sig_b64) {
+	if(!ecdsa_active(ecdsa) || !sig_b64) {
+		return false;
+	}
+
+	size_t siglen = ecdsa_size(ecdsa);
+
+	if(siglen == 0 || siglen > 128) {
+		return false;
+	}
+
+	size_t b64len = strlen(sig_b64);
+
+	if(b64len != (siglen * 4 + 2) / 3) {
+		return false;
+	}
+
+	uint8_t raw_sig[128];
+
+	if(b64decode_tinc(sig_b64, raw_sig, b64len) != siglen) {
+		return false;
+	}
+
+	return ecdsa_verify(ecdsa, msg, len, raw_sig);
+}
+
 bool send_req_pubkey_refresh(node_t *to) {
 	if(!to || !to->status.reachable || !to->nexthop || !to->nexthop->connection || to == myself) {
 		return false;
@@ -167,8 +248,46 @@ bool send_req_pubkey_refresh(node_t *to) {
 	return send_request(to->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, to->name, REQ_PUBKEY);
 }
 
+static void free_quorum_voter(const void *p) {
+	free((void *)p);
+}
+
+static void clear_key_quorum(node_t *target) {
+	if(!target) {
+		return;
+	}
+
+	free(target->pending_pubkey);
+	target->pending_pubkey = NULL;
+	target->quorum_nonce[0] = '\0';
+	target->quorum_voters.delete = free_quorum_voter;
+	list_empty_list(&target->quorum_voters);
+}
+
+static bool quorum_has_voted(const node_t *target, const char *voter_name) {
+	if(!target || !voter_name) {
+		return false;
+	}
+
+	for list_each(const char, v, &target->quorum_voters) {
+		if(!strcmp(v, voter_name)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static void start_key_quorum(node_t *target, const char *candidate_pubkey) {
 	if(!target || target == myself || !candidate_pubkey || !*candidate_pubkey) {
+		return;
+	}
+
+	if((target->connection && target->connection->status.active) || target->status.validkey) {
+		logger(DEBUG_ALWAYS, LOG_WARNING,
+		       "Refusing Ed25519 key replacement for %s: local node holds an active authenticated session under the existing key",
+		       target->name);
+		clear_key_quorum(target);
 		return;
 	}
 
@@ -176,6 +295,11 @@ static void start_key_quorum(node_t *target, const char *candidate_pubkey) {
 	                now.tv_sec - target->pending_pubkey_time < KEY_QUORUM_INTERVAL) {
 		return;
 	}
+
+	uint8_t nonce_raw[16];
+	randomize(nonce_raw, sizeof(nonce_raw));
+	bin2hex(nonce_raw, target->quorum_nonce, sizeof(nonce_raw));
+	target->quorum_nonce[32] = '\0';
 
 	free(target->pending_pubkey);
 	target->pending_pubkey = xstrdup(candidate_pubkey);
@@ -185,6 +309,8 @@ static void start_key_quorum(node_t *target, const char *candidate_pubkey) {
 	target->quorum_votes_old = 0;
 	target->quorum_direct_new = 0;
 	target->quorum_verified_old = 0;
+	target->quorum_voters.delete = free_quorum_voter;
+	list_empty_list(&target->quorum_voters);
 
 	for splay_each(node_t, v, &node_tree) {
 		if(v == myself || v == target || !v->status.reachable || !v->nexthop || !v->nexthop->connection) {
@@ -196,8 +322,8 @@ static void start_key_quorum(node_t *target, const char *candidate_pubkey) {
 			v->quorum_voted_at = 0;
 		}
 
-		send_request(v->nexthop->connection, "%d %s %s %d %s",
-		             REQ_KEY, myself->name, v->name, KEY_QUORUM_REQ, target->name);
+		send_request(v->nexthop->connection, "%d %s %s %d %s %s",
+		             REQ_KEY, myself->name, v->name, KEY_QUORUM_REQ, target->name, target->quorum_nonce);
 		target->quorum_asked_peers++;
 	}
 
@@ -211,6 +337,17 @@ static void evaluate_key_quorum(node_t *target) {
 		return;
 	}
 
+	/* Local veto: if we ourselves hold an active authenticated meta connection
+	   or verified SPTPS session with `target' under the existing key, never
+	   replace our cached key. */
+	if((target->connection && target->connection->status.active) || target->status.validkey) {
+		logger(DEBUG_ALWAYS, LOG_WARNING,
+		       "Quorum rejected Ed25519 key update for %s: local node holds an active authenticated session under the existing key",
+		       target->name);
+		clear_key_quorum(target);
+		return;
+	}
+
 	/* Safety veto: if any peer in the mesh holds an active, cryptographically
 	   verified session (direct meta edge or verified SPTPS session) with
 	   `target' under a DIFFERENT key, do not replace our cached key. */
@@ -218,29 +355,29 @@ static void evaluate_key_quorum(node_t *target) {
 		logger(DEBUG_ALWAYS, LOG_WARNING,
 		       "Quorum rejected Ed25519 key update for %s: %u peer(s) still hold an active verified session under the existing key",
 		       target->name, target->quorum_verified_old);
-		free(target->pending_pubkey);
-		target->pending_pubkey = NULL;
+		clear_key_quorum(target);
 		return;
 	}
 
 	uint32_t total_votes = target->quorum_votes_new + target->quorum_votes_old;
 	bool approved = false;
 
-	if(target->quorum_direct_new >= 1 &&
+	if(target->quorum_votes_new >= 1 && target->quorum_direct_new >= 1 &&
 	                (total_votes >= target->quorum_asked_peers || target->quorum_votes_new >= 2 || target->quorum_asked_peers <= 1)) {
 		/* At least one direct graph neighbor of `target' (which authenticated
 		   `target' on its meta edge) confirmed the new key, and no peer in the
 		   mesh holds a verified session under the old key. */
 		approved = true;
 	} else if(target->quorum_asked_peers > 0 &&
+	                (target->quorum_votes_new >= 2 || target->quorum_direct_new >= 1) &&
 	                target->quorum_votes_new * 2 > target->quorum_asked_peers &&
 	                target->quorum_votes_new > target->quorum_votes_old) {
 		/* Strict majority of all queried reachable peers confirmed the new key. */
 		approved = true;
 	} else if(target->quorum_asked_peers > 0 &&
+	                (target->quorum_votes_new >= 2 || target->quorum_direct_new >= 1) &&
 	                total_votes >= target->quorum_asked_peers &&
-	                target->quorum_votes_new > target->quorum_votes_old &&
-	                (target->quorum_votes_new >= 2 || target->quorum_direct_new >= 1 || target->quorum_asked_peers == 1)) {
+	                target->quorum_votes_new > target->quorum_votes_old) {
 		/* All queried peers with a key responded and the majority confirmed it. */
 		approved = true;
 	} else if(target->quorum_votes_new >= 2 && target->quorum_votes_old == 0 &&
@@ -249,15 +386,14 @@ static void evaluate_key_quorum(node_t *target) {
 		approved = true;
 	}
 
-	if(!approved) {
+	if(!approved || target->quorum_votes_new < 1) {
 		return;
 	}
 
 	ecdsa_t *new_key = ecdsa_set_base64_public_key(target->pending_pubkey);
 
 	if(!new_key) {
-		free(target->pending_pubkey);
-		target->pending_pubkey = NULL;
+		clear_key_quorum(target);
 		return;
 	}
 
@@ -270,8 +406,7 @@ static void evaluate_key_quorum(node_t *target) {
 	replace_config_file(target->name, "Ed25519PublicKey", target->pending_pubkey);
 	target->in_config = true;
 
-	free(target->pending_pubkey);
-	target->pending_pubkey = NULL;
+	clear_key_quorum(target);
 
 	obfs_link_rekey_node(target);
 	sptps_stop(&target->sptps);
@@ -383,8 +518,6 @@ bool send_req_key(node_t *to) {
 /* REQ_KEY is overloaded to allow arbitrary requests to be routed between two nodes. */
 
 static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, node_t *to, int reqno) {
-	(void)c;
-
 	/* If this is a SPTPS packet, see if sending UDP info helps.
 	   Note that we only do this if we're the destination or the static relay;
 	   otherwise every hop would initiate its own UDP info message, resulting in elevated chatter. */
@@ -492,14 +625,73 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 	}
 
 	case ANS_PUBKEY: {
+		if(!from->nexthop || from->nexthop->connection != c) {
+			logger(DEBUG_PROTOCOL, LOG_WARNING, "Ignoring ANS_PUBKEY from %s (%s) via unexpected connection %s", from->name, from->hostname, c->name);
+			return true;
+		}
+
 		char pubkey[MAX_STRING_SIZE];
 		char histransports[MAX_STRING_SIZE] = "";
 		char hisdseal[MAX_STRING_SIZE] = "";
 		int fields = sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING " " MAX_STRING, pubkey, histransports, hisdseal);
 
-		/* Learn the peer's accept mask even when we already had its key: the
-		   key is cached forever, the mask is what goes stale. */
-		uint32_t prev_transports = from->transports;
+		if(fields < 1) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ANS_PUBKEY", from->name, from->hostname, "missing pubkey");
+			return true;
+		}
+
+		if(node_read_ecdsa_public_key(from)) {
+			char *knownkey = ecdsa_get_base64_public_key(from->ecdsa);
+			bool same = knownkey && fields >= 1 && !strcmp(knownkey, pubkey);
+			free(knownkey);
+
+			if(!same) {
+				ecdsa_t *cand = ecdsa_set_base64_public_key(pubkey);
+
+				if(!cand) {
+					logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ANS_PUBKEY", from->name, from->hostname, "invalid candidate pubkey");
+					return true;
+				}
+
+				ecdsa_free(cand);
+				start_key_quorum(from, pubkey);
+				return true;
+			}
+
+			/* Learn the peer's accept mask only after verifying the key matches
+			   our cached key, so an unverified key claim cannot mutate transports
+			   or dseal or rewrite disk config. */
+			uint32_t prev_transports = from->transports;
+
+			if(fields >= 2 && *histransports) {
+				uint32_t mask;
+				char bad[TRANSPORT_LIST_MAX];
+
+				if(transport_parse_list(histransports, &mask, NULL, NULL, bad) && mask) {
+					from->transports = mask;
+				} else {
+					logger(DEBUG_PROTOCOL, LOG_WARNING, "Ignoring Transports of %s in ANS_PUBKEY: unknown carrier `%s'", from->name, bad);
+				}
+			} else if(!from->transports) {
+				from->transports = TRANSPORT_MASK_PLAIN;
+			}
+
+			dseal_learn(from, fields >= 3 ? hisdseal : NULL);
+
+			if(from->transports != prev_transports && from->transports != TRANSPORT_MASK_PLAIN && *histransports) {
+				replace_config_file(from->name, "Transports", histransports);
+			}
+
+			logger(DEBUG_PROTOCOL, LOG_DEBUG, "Got ANS_PUBKEY from %s (%s) matching our cached Ed25519 key", from->name, from->hostname);
+			return true;
+		}
+
+		from->ecdsa = ecdsa_set_base64_public_key(pubkey);
+
+		if(!from->ecdsa) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ANS_PUBKEY", from->name, from->hostname, "invalid pubkey");
+			return true;
+		}
 
 		if(fields >= 2 && *histransports) {
 			uint32_t mask;
@@ -510,7 +702,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			} else {
 				logger(DEBUG_PROTOCOL, LOG_WARNING, "Ignoring Transports of %s in ANS_PUBKEY: unknown carrier `%s'", from->name, bad);
 			}
-		} else if(fields >= 1 && !from->transports) {
+		} else if(!from->transports) {
 			/* An answer with no carrier token is an upstream tinc, or a
 			   tincstack older than stream AC: it is plain-only and saying so
 			   is what stops send_req_transports() asking again for ever. */
@@ -519,44 +711,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 
 		/* An answer is definitive: with the token, or without it (an older
 		   build, which answers the same question every time). */
-		if(fields >= 1) {
-			dseal_learn(from, fields >= 3 ? hisdseal : NULL);
-		}
-
-		if(node_read_ecdsa_public_key(from)) {
-			if(from->transports != prev_transports && from->transports != TRANSPORT_MASK_PLAIN && *histransports) {
-				replace_config_file(from->name, "Transports", histransports);
-			}
-
-			char *knownkey = ecdsa_get_base64_public_key(from->ecdsa);
-			bool same = knownkey && fields >= 1 && !strcmp(knownkey, pubkey);
-			free(knownkey);
-
-			if(same) {
-				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Got ANS_PUBKEY from %s (%s) matching our cached Ed25519 key", from->name, from->hostname);
-				return true;
-			}
-
-			ecdsa_t *cand = (fields >= 1) ? ecdsa_set_base64_public_key(pubkey) : NULL;
-
-			if(!cand) {
-				logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ANS_PUBKEY", from->name, from->hostname, "invalid candidate pubkey");
-				return true;
-			}
-
-			ecdsa_free(cand);
-			start_key_quorum(from, pubkey);
-			return true;
-		}
-
-		if(fields >= 1) {
-			from->ecdsa = ecdsa_set_base64_public_key(pubkey);
-		}
-
-		if(!from->ecdsa) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ANS_PUBKEY", from->name, from->hostname, "invalid pubkey");
-			return true;
-		}
+		dseal_learn(from, fields >= 3 ? hisdseal : NULL);
 
 		logger(DEBUG_PROTOCOL, LOG_INFO, "Learned Ed25519 public key from %s (%s)", from->name, from->hostname);
 		append_config_file(from->name, "Ed25519PublicKey", pubkey);
@@ -687,14 +842,27 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		return dseal_kex_h(from, request);
 
 	case KEY_QUORUM_REQ: {
-		char target_name[MAX_STRING_SIZE];
+		if(!from->nexthop || from->nexthop->connection != c) {
+			logger(DEBUG_PROTOCOL, LOG_WARNING, "Ignoring KEY_QUORUM_REQ from %s (%s) via unexpected connection %s", from->name, from->hostname, c->name);
+			return true;
+		}
 
-		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING, target_name) != 1 || !check_id(target_name)) {
+		char target_name[MAX_STRING_SIZE];
+		char nonce[MAX_STRING_SIZE];
+
+		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING, target_name, nonce) != 2 ||
+		                !check_id(target_name) || !is_valid_quorum_nonce(nonce)) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "KEY_QUORUM_REQ", from->name, from->hostname);
 			return true;
 		}
 
 		if(node_is_blocked(target_name)) {
+			return true;
+		}
+
+		ecdsa_t *my_ecdsa = get_my_quorum_ecdsa();
+
+		if(!ecdsa_active(my_ecdsa)) {
 			return true;
 		}
 
@@ -727,20 +895,46 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			send_req_pubkey_refresh(target);
 		}
 
-		send_request(from->nexthop->connection, "%d %s %s %d %s %s %d",
+		const char *pk_str = (pk && *pk) ? pk : "-";
+		char msg[2048];
+		int mlen = snprintf(msg, sizeof(msg), "tinc-key-quorum-v1 %s %s %s %s %s %d",
+		                    myself->name, from->name, target->name, nonce, pk_str, flags);
+
+		if(mlen <= 0 || (size_t)mlen >= sizeof(msg)) {
+			free(pk);
+			return true;
+		}
+
+		char *sig_b64 = NULL;
+
+		if(!ecdsa_sign_base64(my_ecdsa, msg, (size_t)mlen, &sig_b64)) {
+			free(pk);
+			return true;
+		}
+
+		send_request(from->nexthop->connection, "%d %s %s %d %s %s %d %s %s",
 		             REQ_KEY, myself->name, from->name, KEY_QUORUM_ANS,
-		             target->name, (pk && *pk) ? pk : "-", flags);
+		             target->name, pk_str, flags, nonce, sig_b64);
+		free(sig_b64);
 		free(pk);
 		return true;
 	}
 
 	case KEY_QUORUM_ANS: {
+		if(!from->nexthop || from->nexthop->connection != c) {
+			logger(DEBUG_PROTOCOL, LOG_WARNING, "Ignoring KEY_QUORUM_ANS from %s (%s) via unexpected connection %s", from->name, from->hostname, c->name);
+			return true;
+		}
+
 		char target_name[MAX_STRING_SIZE];
 		char voted_pubkey[MAX_STRING_SIZE];
+		char nonce[MAX_STRING_SIZE];
+		char sig_b64[MAX_STRING_SIZE];
 		int flags = 0;
 
-		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING " %d", target_name, voted_pubkey, &flags) != 3 || !check_id(target_name)) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "KEY_QUORUM_ANS", from->name, from->hostname);
+		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING " %d " MAX_STRING " " MAX_STRING,
+		                target_name, voted_pubkey, &flags, nonce, sig_b64) != 5 || !check_id(target_name)) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Rejecting unsigned or malformed %s from %s (%s)", "KEY_QUORUM_ANS", from->name, from->hostname);
 			return true;
 		}
 
@@ -754,15 +948,37 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			return true;
 		}
 
-		if(from->quorum_voted_for == target && from->quorum_voted_at == target->pending_pubkey_time) {
+		if(!target->quorum_nonce[0] || strcmp(nonce, target->quorum_nonce) != 0) {
+			logger(DEBUG_PROTOCOL, LOG_WARNING, "Rejecting KEY_QUORUM_ANS from %s for %s: nonce mismatch", from->name, target->name);
 			return true;
 		}
 
+		if(quorum_has_voted(target, from->name)) {
+			return true;
+		}
+
+		if(!node_read_ecdsa_public_key(from) || !ecdsa_active(from->ecdsa)) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Rejecting KEY_QUORUM_ANS from %s for %s: voter Ed25519 public key unknown", from->name, target->name);
+			return true;
+		}
+
+		char msg[2048];
+		int mlen = snprintf(msg, sizeof(msg), "tinc-key-quorum-v1 %s %s %s %s %s %d",
+		                    from->name, myself->name, target->name, target->quorum_nonce, voted_pubkey, flags);
+
+		if(mlen <= 0 || (size_t)mlen >= sizeof(msg) ||
+		                !ecdsa_verify_base64(from->ecdsa, msg, (size_t)mlen, sig_b64)) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Rejecting KEY_QUORUM_ANS from %s for %s: invalid Ed25519 signature", from->name, target->name);
+			return true;
+		}
+
+		target->quorum_voters.delete = free_quorum_voter;
+		list_insert_tail(&target->quorum_voters, xstrdup(from->name));
 		from->quorum_voted_for = target;
 		from->quorum_voted_at = target->pending_pubkey_time;
 
 		if(!(flags & KEY_QUORUM_FLAG_HAS_KEY) || !strcmp(voted_pubkey, "-")) {
-			if(target->quorum_asked_peers > target->quorum_votes_new + target->quorum_votes_old + 1) {
+			if(target->quorum_asked_peers > 0) {
 				target->quorum_asked_peers--;
 			}
 		} else {

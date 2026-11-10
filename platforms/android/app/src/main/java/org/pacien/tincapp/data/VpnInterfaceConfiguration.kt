@@ -94,18 +94,27 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
         throw TincYaml.InvalidConfigurationException(
           "$KEY_ALLOWED_APPLICATIONS cannot contain only ${BuildConfig.APPLICATION_ID}")
 
-      val pool = yaml.optionValue(net, KEY_ADDRESS_POOL)?.let { applyIgnoringException(CidrAddress.Companion::fromSlashSeparated, it) }
+      val pool = yaml.optionValue(net, KEY_ADDRESS_POOL)
+        ?.trim()
+        ?.let { applyIgnoringException(CidrAddress.Companion::fromSlashSeparated, it) }
+        ?.let { AnnouncedRoutes.normalise(it) }
+      val ipv4Pool = pool?.takeIf { !it.address.contains(':') }
+      val defaultBareV4Prefix = ipv4Pool?.prefix ?: 24
 
       val addresses = yaml.optionValues(net, KEY_ADDRESSES)
         .map(String::trim)
         .filter { it.isNotEmpty() && it.lowercase() !in listOf("dhcp", "dhcp6", "slaac") }
-        .map { CidrAddress.fromSlashSeparated(it) }
-        .ifEmpty { ownAddressesFromSubnet(yaml, net, pool) }
+        .map { CidrAddress.fromSlashSeparatedOrHost(it, defaultIpv4Prefix = defaultBareV4Prefix, defaultIpv6Prefix = 128) }
+        .ifEmpty { ownAddressesFromSubnet(yaml, net, ipv4Pool) }
 
       val routes = yaml.optionValues(net, KEY_ROUTES)
         .map { it.trim().substringBefore(' ') } // "prefix [gateway]": the gateway is meaningless on a tun fd
         .filter(String::isNotEmpty)
-        .map { CidrAddress.fromSlashSeparated(it) }
+        .map { raw ->
+          val parsed = CidrAddress.fromSlashSeparatedOrHost(raw, defaultIpv4Prefix = 32, defaultIpv6Prefix = 128)
+          AnnouncedRoutes.normalise(parsed)
+            ?: throw TincYaml.InvalidConfigurationException("not a valid route prefix: '$raw'")
+        }
         .ifEmpty { listOfNotNull(pool) }
 
       return VpnInterfaceConfiguration(
@@ -124,12 +133,24 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
         TincYaml.asTincBoolean(yaml.optionValue(net, KEY_LOW_POWER_MODE), false))
     }
 
-    /** Own `Subnet` host lines (`10.1.0.2/32`) become interface addresses with the pool's prefix length. */
-    private fun ownAddressesFromSubnet(yaml: TincYaml, net: String, pool: CidrAddress?): List<CidrAddress> =
-      yaml.ownHostValues(net, HOST_KEY_SUBNET)
+    /** Own `/32` IPv4 `Subnet` host lines (`10.1.0.2/32` or bare `10.1.0.2`) become interface addresses with the IPv4 pool's prefix length. */
+    private fun ownAddressesFromSubnet(yaml: TincYaml, net: String, ipv4Pool: CidrAddress?): List<CidrAddress> {
+      val hostSubnets = yaml.ownHostValues(net, HOST_KEY_SUBNET)
         .map { it.substringBefore('#').trim() }
         .filter { it.isNotEmpty() && !it.contains(':') } // IPv4 only; IPv6 subnets need an explicit InterfaceAddress
-        .mapNotNull { applyIgnoringException(CidrAddress.Companion::fromSlashSeparated, it) }
-        .map { if (pool != null && it.prefix == 32) CidrAddress(it.address, pool.prefix) else it }
+        .mapNotNull { raw ->
+          applyIgnoringException({ s: String -> CidrAddress.fromSlashSeparatedOrHost(s, defaultIpv4Prefix = 32) }, raw)
+        }
+        .filter { it.prefix == 32 && AnnouncedRoutes.normalise(it) != null }
+      if (ipv4Pool == null) return hostSubnets
+      val anyInPool = hostSubnets.any { AnnouncedRoutes.covers(ipv4Pool, it) }
+      return hostSubnets.mapIndexed { idx, cidr ->
+        if (AnnouncedRoutes.covers(ipv4Pool, cidr) || (!anyInPool && idx == 0)) {
+          CidrAddress(cidr.address, ipv4Pool.prefix)
+        } else {
+          cidr
+        }
+      }
+    }
   }
 }

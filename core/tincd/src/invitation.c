@@ -617,7 +617,42 @@ int cmd_invite(int argc, char *argv[]) {
 	}
 
 	if(!makedirs(DIR_INVITATIONS)) {
-		return false;
+		return 1;
+	}
+
+	// Get the local address before locking, scanning invitations, or allocating
+	// from the pool, since get_my_hostname() may block on stdin or network
+	// discovery and may update our own host config.
+	char *address = NULL;
+	char *port = NULL;
+
+	if(!get_my_hostname(&address, &port)) {
+		return 1;
+	}
+
+	char lockbase[PATH_MAX];
+	const char *lock_target = yamlconf_path;
+
+	if(!lock_target) {
+		if((size_t)snprintf(lockbase, sizeof(lockbase), "%s" SLASH "invitations" SLASH ".invite", confbase) >= sizeof(lockbase)) {
+			fprintf(stderr, "Filename too long: %s" SLASH "invitations" SLASH ".invite\n", confbase);
+			free(address);
+			free(port);
+			return 1;
+		}
+
+		lock_target = lockbase;
+	}
+
+	if(!yamlconf_lock(lock_target)) {
+		fprintf(stderr, "Could not lock %s: %s\n", lock_target, strerror(errno));
+		free(address);
+		free(port);
+		return 1;
+	}
+
+	if(yamlconf_path) {
+		yamlconf_reload_global();
 	}
 
 	snprintf(filename, sizeof(filename), "%s" SLASH "invitations", confbase);
@@ -627,6 +662,9 @@ int cmd_invite(int argc, char *argv[]) {
 
 	if(!dir) {
 		fprintf(stderr, "Could not read directory %s: %s\n", filename, strerror(errno));
+		yamlconf_unlock();
+		free(address);
+		free(port);
 		return 1;
 	}
 
@@ -662,69 +700,113 @@ int cmd_invite(int argc, char *argv[]) {
 
 	if(errno) {
 		fprintf(stderr, "Error while reading directory %s: %s\n", filename, strerror(errno));
+		closedir(dir);
+		yamlconf_unlock();
+		free(address);
+		free(port);
 		return 1;
 	}
 
 	closedir(dir);
 
-	ecdsa_t *key;
+	ecdsa_t *key = NULL;
+	FILE *f = NULL;
 	snprintf(filename, sizeof(filename), "%s" SLASH "invitations" SLASH "ed25519_key.priv", confbase);
 
-	// Remove the key if there are no outstanding invitations.
-	if(!count) {
-		unlink(filename);
-	}
+	// Reuse the existing invitation key only while outstanding invitations exist;
+	// otherwise generate a fresh key and atomically replace without unlinking first.
+	if(count > 0) {
+		f = fopen(filename, "r");
 
-	// Create a new key if necessary.
-	FILE *f = fopen(filename, "r");
-
-	if(!f) {
-		if(errno != ENOENT) {
-			fprintf(stderr, "Could not read %s: %s\n", filename, strerror(errno));
-			return 1;
-		}
-
-		key = ecdsa_generate();
-
-		if(!key) {
-			return 1;
-		}
-
-		f = fopen(filename, "w");
-
-		if(!f) {
-			fprintf(stderr, "Could not write %s: %s\n", filename, strerror(errno));
-			ecdsa_free(key);
-			return 1;
-		}
-
-		chmod(filename, 0600);
-
-		if(!ecdsa_write_pem_private_key(key, f)) {
-			fprintf(stderr, "Could not write ECDSA private key\n");
+		if(f) {
+			key = ecdsa_read_pem_private_key(f);
 			fclose(f);
-			ecdsa_free(key);
+
+			if(!key) {
+				fprintf(stderr, "Could not read private key from %s\n", filename);
+				yamlconf_unlock();
+				free(address);
+				free(port);
+				return 1;
+			}
+		} else if(errno != ENOENT) {
+			fprintf(stderr, "Could not read %s: %s\n", filename, strerror(errno));
+			yamlconf_unlock();
+			free(address);
+			free(port);
 			return 1;
-		}
-
-		fclose(f);
-
-		if(connect_tincd(true)) {
-			sendline(fd, "%d %d", CONTROL, REQ_RELOAD);
-		} else {
-			fprintf(stderr, "Could not signal the tinc daemon. Please restart or reload it manually.\n");
-		}
-	} else {
-		key = ecdsa_read_pem_private_key(f);
-		fclose(f);
-
-		if(!key) {
-			fprintf(stderr, "Could not read private key from %s\n", filename);
 		}
 	}
 
 	if(!key) {
-		return 1;
+		key = ecdsa_generate();
+
+		if(!key) {
+			yamlconf_unlock();
+			free(address);
+			free(port);
+			return 1;
+		}
+
+		char tmpkey[PATH_MAX];
+
+		if((size_t)snprintf(tmpkey, sizeof(tmpkey), "%s.tmp.%ld", filename, (long)getpid()) >= sizeof(tmpkey)) {
+			fprintf(stderr, "Filename too long: %s.tmp\n", filename);
+			ecdsa_free(key);
+			yamlconf_unlock();
+			free(address);
+			free(port);
+			return 1;
+		}
+
+		unlink(tmpkey);
+		f = fopenmask(tmpkey, "w", 0600);
+
+		if(!f) {
+			fprintf(stderr, "Could not write %s: %s\n", tmpkey, strerror(errno));
+			ecdsa_free(key);
+			yamlconf_unlock();
+			free(address);
+			free(port);
+			return 1;
+		}
+
+		bool key_ok = ecdsa_write_pem_private_key(key, f) && !fflush(f);
+
+		if(fclose(f) || !key_ok) {
+			fprintf(stderr, "Could not write ECDSA private key\n");
+			unlink(tmpkey);
+			ecdsa_free(key);
+			yamlconf_unlock();
+			free(address);
+			free(port);
+			return 1;
+		}
+
+#ifdef HAVE_WINDOWS
+		bool replaced = MoveFileExA(tmpkey, filename, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+		bool replaced = rename(tmpkey, filename) == 0;
+#endif
+
+		if(!replaced) {
+			fprintf(stderr, "Could not replace %s: %s\n", filename, strerror(errno));
+			unlink(tmpkey);
+			ecdsa_free(key);
+			yamlconf_unlock();
+			free(address);
+			free(port);
+			return 1;
+		}
+
+		if(connect_tincd(true)) {
+			if(sendline(fd, "%d %d", CONTROL, REQ_RELOAD)) {
+				char reply[256];
+				recvline(fd, reply, sizeof(reply));
+			}
+		} else {
+			fprintf(stderr, "Could not signal the tinc daemon. Please restart or reload it manually.\n");
+		}
 	}
 
 	// Create a hash of the key.
@@ -753,27 +835,10 @@ int cmd_invite(int argc, char *argv[]) {
 
 	b64encode_tinc_urlsafe(cookie, cookie, 18);
 
-	// Get the local address before allocating from the pool or creating the
-	// invitation file on disk, since get_my_hostname() may block on stdin or
-	// network discovery and may update our own host config.
-	char *address = NULL;
-	char *port = NULL;
-
-	if(!get_my_hostname(&address, &port)) {
-		memzero(cookie, sizeof(cookie));
-		return 1;
-	}
-
-	bool ylocked = yamlconf_path && yamlconf_lock(yamlconf_path);
-
-	if(ylocked) {
-		yamlconf_reload_global();
-	}
-
 	// Assign the invitee an address from our AddressPool (M3). Done before the
 	// invitation file exists so the pending-invitation scan does not see it,
-	// and serialized under yamlconf_lock so concurrent invitations cannot
-	// hand out the same IP.
+	// and serialized under the invitation/YAML lock so concurrent invitations
+	// cannot hand out the same IP.
 	char *pool = conf_get(tinc_conf, "AddressPool");
 	char *assigned = NULL;
 	int pool_prefix = 0;
@@ -787,9 +852,7 @@ int cmd_invite(int argc, char *argv[]) {
 			free(address);
 			free(port);
 			memzero(cookie, sizeof(cookie));
-			if(ylocked) {
-				yamlconf_unlock();
-			}
+			yamlconf_unlock();
 			return 1;
 		}
 
@@ -800,9 +863,7 @@ int cmd_invite(int argc, char *argv[]) {
 			free(address);
 			free(port);
 			memzero(cookie, sizeof(cookie));
-			if(ylocked) {
-				yamlconf_unlock();
-			}
+			yamlconf_unlock();
 			return 1;
 		}
 
@@ -820,9 +881,7 @@ int cmd_invite(int argc, char *argv[]) {
 		free(assigned);
 		free(address);
 		free(port);
-		if(ylocked) {
-			yamlconf_unlock();
-		}
+		yamlconf_unlock();
 		fprintf(stderr, "Could not create invitation file %s: %s\n", filename, strerror(errno));
 		return 1;
 	}
@@ -895,9 +954,7 @@ int cmd_invite(int argc, char *argv[]) {
 	bool appended = append_host_config(f, myname, port);
 	free(port);
 
-	if(ylocked) {
-		yamlconf_unlock();
-	}
+	yamlconf_unlock();
 
 	if(!appended) {
 		fprintf(stderr, "Could not append my config to invitation file: %s.\n", strerror(errno));
@@ -1269,6 +1326,8 @@ static bool finalize_join_yaml(const char *name) {
 
 			free(confbase);
 			confbase = xstrdup(yamlconf_path);
+			free(yamlconf_path);
+			yamlconf_path = NULL;
 			yamlconf_free(yamlconf_global);
 			yamlconf_global = NULL;
 			make_names(false);
