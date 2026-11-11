@@ -120,6 +120,25 @@ if [[ -n $NODE_NAME ]]; then
     fi
 fi
 
+ENV_STATE=$RUNDIR/.entrypoint-env
+
+env_state_has() {
+    [[ -f $ENV_STATE ]] && grep -qxF "$1" "$ENV_STATE"
+}
+
+env_state_add() {
+    if ! env_state_has "$1"; then
+        printf '%s\n' "$1" >>"$ENV_STATE"
+    fi
+}
+
+env_state_del() {
+    [[ -f $ENV_STATE ]] || return 0
+    local tmp=$ENV_STATE.tmp
+    grep -vxF "$1" "$ENV_STATE" >"$tmp" || true
+    mv -f "$tmp" "$ENV_STATE"
+}
+
 valid_port() {
     local p=$1
     [[ $p =~ ^[0-9]+$ ]] && (( 10#$p >= 1 && 10#$p <= 65535 ))
@@ -127,8 +146,9 @@ valid_port() {
 
 if [[ -n $PORT ]]; then
     cli set Port "$PORT"
+    env_state_add PORT
     log "options.Port = $PORT"
-elif (( ! fresh )); then
+elif (( ! fresh )) && env_state_has PORT; then
     cur_port=$(cli get Port 2>/dev/null || true)
     cur_ct=$(cli get ConnectTo 2>/dev/null || true)
     default_port=655
@@ -137,50 +157,59 @@ elif (( ! fresh )); then
         cli set Port "$default_port"
         log "PORT unset: reset options.Port from $cur_port to $default_port"
     fi
+    env_state_del PORT
 fi
 
 if [[ -n $FRONT_PORT ]]; then
     cli set HttpsPort "$FRONT_PORT"
     cli set QuicPort "$FRONT_PORT"
+    env_state_add FRONT_PORT
     log "options.HttpsPort = options.QuicPort = $FRONT_PORT"
-elif (( ! fresh )); then
+elif (( ! fresh )) && env_state_has FRONT_PORT; then
     if [[ -n $(cli get HttpsPort 2>/dev/null || true) || -n $(cli get QuicPort 2>/dev/null || true) ]]; then
         cli del HttpsPort >/dev/null 2>&1 || true
         cli del QuicPort >/dev/null 2>&1 || true
-        log "FRONT_PORT unset: cleared stale options.HttpsPort / options.QuicPort"
+        log "FRONT_PORT unset: cleared env-managed options.HttpsPort / options.QuicPort"
     fi
+    env_state_del FRONT_PORT
 fi
 
 if [[ -n $FRONT_PORT_PUBLIC ]]; then
     cli set HttpsPortPublic "$FRONT_PORT_PUBLIC"
     cli set QuicPortPublic "$FRONT_PORT_PUBLIC"
+    env_state_add FRONT_PORT_PUBLIC
     log "options.HttpsPortPublic = options.QuicPortPublic = $FRONT_PORT_PUBLIC"
-elif (( ! fresh )); then
+elif (( ! fresh )) && env_state_has FRONT_PORT_PUBLIC; then
     if [[ -n $(cli get HttpsPortPublic 2>/dev/null || true) || -n $(cli get QuicPortPublic 2>/dev/null || true) ]]; then
         cli del HttpsPortPublic >/dev/null 2>&1 || true
         cli del QuicPortPublic >/dev/null 2>&1 || true
-        log "FRONT_PORT_PUBLIC unset: cleared stale options.HttpsPortPublic / options.QuicPortPublic"
+        log "FRONT_PORT_PUBLIC unset: cleared env-managed options.HttpsPortPublic / options.QuicPortPublic"
     fi
+    env_state_del FRONT_PORT_PUBLIC
 fi
 
 if [[ -n $OBFS_PORT ]]; then
     cli set ObfsPort "$OBFS_PORT"
+    env_state_add OBFS_PORT
     log "options.ObfsPort = $OBFS_PORT (ensure UDP port $OBFS_PORT is published on the host, e.g. via compose.obfs.yml)"
-elif (( ! fresh )); then
+elif (( ! fresh )) && env_state_has OBFS_PORT; then
     if [[ -n $(cli get ObfsPort 2>/dev/null || true) ]]; then
         cli del ObfsPort >/dev/null 2>&1 || true
-        log "OBFS_PORT unset: cleared stale options.ObfsPort"
+        log "OBFS_PORT unset: cleared env-managed options.ObfsPort"
     fi
+    env_state_del OBFS_PORT
 fi
 
 if [[ -n $OBFS_PORT_PUBLIC ]]; then
     cli set ObfsPortPublic "$OBFS_PORT_PUBLIC"
+    env_state_add OBFS_PORT_PUBLIC
     log "options.ObfsPortPublic = $OBFS_PORT_PUBLIC"
-elif (( ! fresh )); then
+elif (( ! fresh )) && env_state_has OBFS_PORT_PUBLIC; then
     if [[ -n $(cli get ObfsPortPublic 2>/dev/null || true) ]]; then
         cli del ObfsPortPublic >/dev/null 2>&1 || true
-        log "OBFS_PORT_PUBLIC unset: cleared stale options.ObfsPortPublic"
+        log "OBFS_PORT_PUBLIC unset: cleared env-managed options.ObfsPortPublic"
     fi
+    env_state_del OBFS_PORT_PUBLIC
 fi
 
 address_args=()
