@@ -84,6 +84,12 @@ bool add_edge_h(connection_t *c, const char *request) {
 		return false;
 	}
 
+	if(weight < -100000000) {
+		weight = -100000000;
+	} else if(weight > 100000000) {
+		weight = 100000000;
+	}
+
 	/* Check if names are valid */
 
 	if(!check_id(from_name) || !check_id(to_name) || !strcmp(from_name, to_name)) {

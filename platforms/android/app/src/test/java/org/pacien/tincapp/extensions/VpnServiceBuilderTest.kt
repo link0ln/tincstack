@@ -18,12 +18,14 @@
 
 package org.pacien.tincapp.extensions
 
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.IInterface
 import org.junit.Assert.assertEquals
-import org.junit.Before
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -222,5 +224,48 @@ class VpnServiceBuilderTest {
       listOf("192.168.1.0/24", "fd00:1:0:0:0:0:0:0/64"),
       strings(cfg, "routes").map { it.substringBefore(" ") },
     )
+  }
+
+  @Test
+  fun allowApplicationFailsClosedWhenZeroListedPackagesAreInstalled() {
+    val dir = tmp.newFolder("missing_whitelist")
+    val file = File(dir, TincYaml.FILE_NAME).apply {
+      writeText("""
+        |networks:
+        |  mynet:
+        |    options:
+        |      Name: phone
+        |      InterfaceAddress: 10.210.0.3/24
+        |      InterfaceRoute: 10.210.0.0/24
+        |      AllowApplication:
+        |        - org.missing.app1
+        |        - org.missing.app2
+        |""".trimMargin())
+    }
+    val vpnCfg = VpnInterfaceConfiguration.fromTincYaml(file, "mynet")
+
+    class FilteringVpnService(private val installed: Set<String>) : VpnService() {
+      inner class FilteringBuilder : Builder() {
+        override fun addAllowedApplication(packageName: String): Builder {
+          if (packageName !in installed) {
+            throw PackageManager.NameNotFoundException(packageName)
+          }
+          return super.addAllowedApplication(packageName)
+        }
+      }
+    }
+
+    val noneInstalledBuilder = FilteringVpnService(emptySet()).FilteringBuilder()
+    try {
+      noneInstalledBuilder.applyCfg(vpnCfg)
+      fail("Expected InvalidConfigurationException when 0 AllowApplication packages are installed")
+    } catch (e: TincYaml.InvalidConfigurationException) {
+      assertTrue(e.message!!.contains("org.missing.app1"))
+    }
+
+    // When at least one whitelisted package IS installed, startup succeeds with that package only.
+    val partialInstalledBuilder = FilteringVpnService(setOf("org.missing.app2")).FilteringBuilder()
+    val built = config(partialInstalledBuilder.applyCfg(vpnCfg))
+    assertEquals(listOf("org.missing.app2"), strings(built, "allowedApplications"))
   }
 }

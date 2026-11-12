@@ -57,6 +57,7 @@ void io_add(io_t *io, io_cb_t cb, void *data, int fd, int flags) {
 	}
 
 	io->fd = fd;
+	io->flags = 0;
 	io->cb = cb;
 	io->data = data;
 	io->node.data = io;
@@ -90,7 +91,9 @@ void io_set(io_t *io, int flags) {
 
 	if(flags & IO_WRITE) {
 		ev.events |= EPOLLOUT;
-	} else if(ev.events == 0) {
+	}
+
+	if(ev.events == 0) {
 		io_tree.generation++;
 		return;
 	}
@@ -115,6 +118,10 @@ bool event_loop(void) {
 	while(running) {
 		struct timeval diff;
 		struct timeval *tv = timeout_execute(&diff);
+
+		if(!running) {
+			break;
+		}
 
 		struct epoll_event events[MAX_EVENTS_PER_LOOP];
 		int n = -1;
@@ -144,13 +151,19 @@ bool event_loop(void) {
 			   arms ngtcp2's microsecond timers on every packet, so at 1 Mbit/s
 			   that spin was 15 % of a core (windows/event.c adds 1 for the same
 			   reason). */
-			long timeout = -1;
+			int64_t timeout = -1;
 
 			if(tv) {
-				timeout = (tv->tv_sec * 1000) + ((tv->tv_usec + 999) / 1000);
-
-				if(timeout > INT_MAX) {
+				if(tv->tv_sec < 0 || (tv->tv_sec == 0 && tv->tv_usec <= 0)) {
+					timeout = 0;
+				} else if((int64_t)tv->tv_sec > INT_MAX / 1000 - 2) {
 					timeout = INT_MAX;
+				} else {
+					timeout = ((int64_t)tv->tv_sec * 1000) + ((tv->tv_usec + 999) / 1000);
+
+					if(timeout > INT_MAX) {
+						timeout = INT_MAX;
+					}
 				}
 			}
 
@@ -175,20 +188,35 @@ bool event_loop(void) {
 
 		for(int i = 0; i < n; i++) {
 			io_t *io = events[i].data.ptr;
+			uint32_t revents = events[i].events;
 
-			if(events[i].events & EPOLLOUT && io->flags & IO_WRITE) {
+			if(!io || !io->cb || io->flags == 0) {
+				if(io && io->fd != -1) {
+					epoll_ctl(epollset, EPOLL_CTL_DEL, io->fd, NULL);
+				}
+
+				continue;
+			}
+
+			if((revents & EPOLLOUT) && (io->flags & IO_WRITE)) {
 				io->cb(io->data, IO_WRITE);
 			}
 
-			if(curgen != io_tree.generation) {
+			if(!running || curgen != io_tree.generation) {
 				break;
 			}
 
-			if(events[i].events & EPOLLIN && io->flags & IO_READ) {
+			if((revents & (EPOLLIN | EPOLLERR | EPOLLHUP)) && (io->flags & IO_READ)) {
 				io->cb(io->data, IO_READ);
+			} else if((revents & (EPOLLERR | EPOLLHUP)) && !(revents & EPOLLOUT)) {
+				if(io->flags & IO_WRITE) {
+					io->cb(io->data, IO_WRITE);
+				} else if(io->fd != -1) {
+					epoll_ctl(epollset, EPOLL_CTL_DEL, io->fd, NULL);
+				}
 			}
 
-			if(curgen != io_tree.generation) {
+			if(!running || curgen != io_tree.generation) {
 				break;
 			}
 		}

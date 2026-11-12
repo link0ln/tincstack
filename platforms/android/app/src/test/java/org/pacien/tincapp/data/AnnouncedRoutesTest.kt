@@ -135,4 +135,14 @@ class AnnouncedRoutesTest {
     assertEquals(listOf(cidr("10.1.0.0/16")), AnnouncedRoutes.deserialise(" nonsense, 10.1.2.3/16 ,,x/y"))
     assertTrue(AnnouncedRoutes.deserialise(null).isEmpty())
   }
+
+  @Test
+  fun ipv4MappedIpv6RoutesAreNormalizedOrRejectedSafely() {
+    assertEquals(cidr("192.0.2.0/24"), AnnouncedRoutes.normalise(CidrAddress("::ffff:192.0.2.5", 120)))
+    assertEquals(cidr("198.51.100.7/32"), AnnouncedRoutes.normalise(CidrAddress("::ffff:198.51.100.7", 128)))
+    assertEquals(cidr("0.0.0.0/0"), AnnouncedRoutes.normalise(CidrAddress("::ffff:10.0.0.1", 96)))
+    // Prefix < 96 or > 128 on an IPv4-mapped IPv6 address is invalid and must be rejected
+    assertEquals(null, AnnouncedRoutes.normalise(CidrAddress("::ffff:192.0.2.5", 64)))
+    assertEquals(null, AnnouncedRoutes.normalise(CidrAddress("::ffff:192.0.2.5", 129)))
+  }
 }

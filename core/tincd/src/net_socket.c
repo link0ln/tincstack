@@ -113,7 +113,7 @@ static void configure_tcp(connection_t *c) {
 }
 
 static bool bind_to_interface(int sd) {
-	char *iface;
+	char *iface = NULL;
 
 #if defined(SOL_SOCKET) && defined(SO_BINDTODEVICE)
 	struct ifreq ifr;
@@ -134,6 +134,7 @@ static bool bind_to_interface(int sd) {
 	if(status) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Can't bind to interface %s: %s", iface,
 		       sockstrerror(sockerrno));
+		free(iface);
 		return false;
 	}
 
@@ -142,6 +143,7 @@ static bool bind_to_interface(int sd) {
 	logger(DEBUG_ALWAYS, LOG_WARNING, "%s not supported on this platform", "BindToInterface");
 #endif
 
+	free(iface);
 	return true;
 }
 
@@ -222,7 +224,6 @@ static void set_bind_policy(int nfd, bool reuse) {
 int setup_listen_socket(const sockaddr_t *sa) {
 	int nfd;
 	int option;
-	char *iface;
 
 	nfd = socket(sa->sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
 
@@ -258,25 +259,9 @@ int setup_listen_socket(const sockaddr_t *sa) {
 
 #endif
 
-	if(get_config_string
-	                (lookup_config(&config_tree, "BindToInterface"), &iface)) {
-#if defined(SOL_SOCKET) && defined(SO_BINDTODEVICE)
-		struct ifreq ifr;
-
-		memset(&ifr, 0, sizeof(ifr));
-		strncpy(ifr.ifr_name, iface, IFNAMSIZ);
-		ifr.ifr_name[IFNAMSIZ - 1] = 0;
-
-		if(setsockopt(nfd, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr))) {
-			closesocket(nfd);
-			logger(DEBUG_ALWAYS, LOG_ERR, "Can't bind to interface %s: %s", iface,
-			       sockstrerror(sockerrno));
-			return -1;
-		}
-
-#else
-		logger(DEBUG_ALWAYS, LOG_WARNING, "%s not supported on this platform", "BindToInterface");
-#endif
+	if(!bind_to_interface(nfd)) {
+		closesocket(nfd);
+		return -1;
 	}
 
 	if(!try_bind(nfd, sa, "tcp")) {
@@ -1302,9 +1287,38 @@ void try_outgoing_connections(void) {
 		}
 
 		if(c->outgoing && c->outgoing->timeout == -1) {
-			c->outgoing = NULL;
-			logger(DEBUG_CONNECTIONS, LOG_INFO, "No more outgoing connection to %s", c->name);
-			terminate_connection(c, c->edge);
+			/* Terminate secondary multipath sibling connections for this node
+			   FIRST so multipath_promote_survivor() cannot keep a removed
+			   ConnectTo alive on an extra uplink socket. */
+			list_t siblings = {
+				.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+			};
+
+			for list_each(connection_t, sib, &connection_list) {
+				if(sib == c || !sib->status.multipath_sub) {
+					continue;
+				}
+
+				if((c->node && sib->node == c->node) ||
+				                (!sib->node && sib->name && c->name && !strcmp(sib->name, c->name))) {
+					list_insert_tail(&siblings, sib);
+				}
+			}
+
+			for list_each(connection_t, sib, &siblings) {
+				if(connection_is_live(sib)) {
+					sib->outgoing = NULL;
+					terminate_connection(sib, sib->edge);
+				}
+			}
+
+			list_empty_list(&siblings);
+
+			if(connection_is_live(c)) {
+				c->outgoing = NULL;
+				logger(DEBUG_CONNECTIONS, LOG_INFO, "No more outgoing connection to %s", c->name);
+				terminate_connection(c, c->edge);
+			}
 		}
 	}
 

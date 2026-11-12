@@ -411,6 +411,20 @@ static bool drop_privs(void) {
 			return false;
 		}
 
+		if(yamlconf_path) {
+			size_t cblen = strlen(confbase);
+
+			while(cblen > 1 && confbase[cblen - 1] == '/') {
+				cblen--;
+			}
+
+			if(cblen > 1 && !strncmp(yamlconf_path, confbase, cblen) && yamlconf_path[cblen] == '/') {
+				char *rel = xstrdup(yamlconf_path + cblen);
+				free(yamlconf_path);
+				yamlconf_path = rel;
+			}
+		}
+
 		free(confbase);
 		confbase = xstrdup("");
 	}

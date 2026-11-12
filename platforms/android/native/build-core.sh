@@ -172,7 +172,7 @@ build_deps() {
   cc="$BIN/${triple}${API}-clang"
   if [ -f "$prefix/lib/libngtcp2_crypto_ossl.a" ] && [ -f "$prefix/lib/pkgconfig/openssl.pc" ] \
      && grep -q "^Version: ${OPENSSL_VERSION}$" "$prefix/lib/pkgconfig/openssl.pc" \
-     && [ "$(cat "$prefix/ngtcp2-patch.sha256" 2>/dev/null)" = "$NGTCP2_PATCH_SHA" ]; then
+     && [ "$(cat "$prefix/ngtcp2-patch.sha256" 2>/dev/null)" = "${NGTCP2_PATCH_SHA}:ndebug" ]; then
     echo ">>> [$abi] OpenSSL ${OPENSSL_VERSION} + ngtcp2 already built in $prefix"
     return
   fi
@@ -222,14 +222,15 @@ build_deps() {
     ./configure --host="$triple" --prefix="$prefix" --libdir="$prefix/lib" \
         --enable-lib-only --disable-shared --enable-static --with-openssl --without-gnutls \
         CC="$cc" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" STRIP="$BIN/llvm-strip" \
-        CFLAGS="-O2 -fPIC -ffunction-sections -fdata-sections" \
+        CPPFLAGS="-DNDEBUG" \
+        CFLAGS="-O2 -DNDEBUG -fPIC -ffunction-sections -fdata-sections" \
         OPENSSL_LIBS="$(pkg-config --libs openssl)" > configure.log 2>&1 \
       || { tail -30 configure.log; exit 1; }
     make -j"$JOBS" > build.log 2>&1 || { tail -40 build.log; exit 1; }
     make install > install.log 2>&1 || { tail -20 install.log; exit 1; }
   )
   flatten_pc "$prefix"
-  echo "$NGTCP2_PATCH_SHA" > "$prefix/ngtcp2-patch.sha256"
+  echo "${NGTCP2_PATCH_SHA}:ndebug" > "$prefix/ngtcp2-patch.sha256"
   rm -rf "$src"
   PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --modversion openssl libngtcp2 libngtcp2_crypto_ossl
 }
@@ -253,7 +254,7 @@ needs_exe_wrapper = true
 
 [built-in options]
 c_args = ['-ffunction-sections', '-fdata-sections']
-c_link_args = ['-Wl,--gc-sections']
+c_link_args = ['-Wl,--gc-sections', '-Wl,-z,max-page-size=16384']
 
 [host_machine]
 system = 'android'

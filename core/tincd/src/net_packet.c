@@ -99,6 +99,15 @@ static int current_probe_reply_sock = -1;
 static const node_t *current_probe_reply_node = NULL;
 static const node_t *current_relay_rx_peer = NULL;
 static bool force_node_address = false;
+
+typedef struct probe_path_override_t {
+	bool active;
+	int fd;
+	size_t sock;
+	const sockaddr_t *dst;
+} probe_path_override_t;
+
+static probe_path_override_t current_probe_path_override = {0};
 bool localdiscovery = true;
 bool low_power_mode = false;
 bool udp_discovery = true;
@@ -327,9 +336,17 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 		gettimeofday(&now, NULL);
 		struct timeval rtt;
 		timersub(&now, &n->udp_ping_sent, &rtt);
-		n->udp_ping_rtt = (int)(rtt.tv_sec * 1000000 + rtt.tv_usec);
+		int64_t rtt_us = (int64_t)rtt.tv_sec * 1000000 + rtt.tv_usec;
+
+		if(rtt_us < 1) {
+			rtt_us = 1;
+		} else if(rtt_us > 300000000) {
+			rtt_us = 300000000;
+		}
+
+		n->udp_ping_rtt = (int)rtt_us;
 		n->status.ping_sent = false;
-		multipath_update_udp_rtt(n, &n->address, (uint32_t)MAX(n->udp_ping_rtt, 1));
+		multipath_update_udp_rtt(n, &n->address, (uint32_t)n->udp_ping_rtt);
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Got type %d UDP probe reply %d from %s (%s) rtt=%d.%03d", DATA(packet)[0], len, n->name, n->hostname, n->udp_ping_rtt / 1000, n->udp_ping_rtt % 1000);
 
 		int rtt_ms = n->udp_ping_rtt / 1000;
@@ -341,28 +358,38 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 		if(n->smoothed_rtt_ms <= 0 || rtt_ms < n->smoothed_rtt_ms) {
 			n->smoothed_rtt_ms = rtt_ms;
 		} else {
-			n->smoothed_rtt_ms = (n->smoothed_rtt_ms * 3 + rtt_ms) / 4;
+			n->smoothed_rtt_ms = (int)(((int64_t)n->smoothed_rtt_ms * 3 + (int64_t)rtt_ms) / 4);
 		}
 
 		if(n->connection && n->connection->edge && !n->connection->status.custom_weight) {
 			edge_t *e = n->connection->edge;
-			int new_weight = n->smoothed_rtt_ms;
+			int64_t r = n->smoothed_rtt_ms;
 
 			if(low_power_mode || myself->status.no_direct) {
-				new_weight += 1000;
+				r += 1000;
 			}
 
 			if(n->connection->options & OPTION_TCPONLY) {
-				new_weight += 500;
+				r += 500;
 			} else if(n->connection->transport && n->connection->transport->send_datagram) {
-				new_weight += 250;
+				r += 250;
 			}
 
-			int diff = new_weight > e->weight ? new_weight - e->weight : e->weight - new_weight;
-			time_t cooldown = (new_weight < e->weight) ? 5 : 60;
+			if(r < -100000000) {
+				r = -100000000;
+			} else if(r > 100000000) {
+				r = 100000000;
+			}
 
-			if(diff >= 20 && diff * 2 >= e->weight &&
+			int64_t cur_w = e->weight;
+			int64_t diff = r > cur_w ? r - cur_w : cur_w - r;
+			time_t cooldown = (r < cur_w) ? 5 : 60;
+
+			if(diff >= 20 && diff * 2 >= (cur_w > 0 ? cur_w : 0) &&
 			                (!e->weight_rtt_calibrated || now.tv_sec - e->last_weight_update >= cooldown)) {
+				int new_weight = (e->weight_rtt_calibrated && cur_w >= -100000000 && cur_w <= 100000000)
+				                 ? (int)(((int64_t)r + (int64_t)e->weight) / 2)
+				                 : (int)r;
 				logger(DEBUG_PROTOCOL, LOG_INFO, "Calibrating edge weight to %s from %d to %d (UDP RTT %d.%03d ms)",
 				       n->name, e->weight, new_weight, n->udp_ping_rtt / 1000, n->udp_ping_rtt % 1000);
 				splay_node_t *snode = splay_unlink(&edge_weight_tree, e);
@@ -387,6 +414,13 @@ static void udp_probe_h(node_t *n, vpn_packet_t *packet, length_t len) {
 
 	if(len >= MINMTU) {
 		n->last_large_udp_rx = now.tv_sec;
+	}
+
+	/* Never confirm UDP or start PMTU probing if the node has no valid
+	   resolved UDP address and is not on a carrier datagram path. */
+	if((n->address.sa.sa_family == AF_UNSPEC || n->address.sa.sa_family == AF_UNKNOWN) &&
+	                !carrier_datagram_path(n)) {
+		return;
 	}
 
 	/* It's a valid reply: now we know bidirectional communication
@@ -677,7 +711,8 @@ static void apply_incoming_udp_endpoint(node_t *n, bool is_probe_req) {
 	   on the new address is proven by a probe reply or data packet. Record the
 	   source endpoint so `send_udp_probe_reply()` answers back to `addr`. */
 	if(is_probe_req && n->status.udp_confirmed && sockaddrcmp(addr, &n->address)) {
-		current_probe_reply_addr = *addr;
+		sockaddrfree(&current_probe_reply_addr);
+		sockaddrcpy(&current_probe_reply_addr, addr);
 		current_probe_reply_sock = sock_idx;
 		current_probe_reply_node = n;
 		multipath_record_udp_rx(n, multipath_current_rx_uplink, sock_idx, addr, pkt_len);
@@ -1049,7 +1084,18 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 
 	if(!(DATA(origpkt)[12] | DATA(origpkt)[13])) {
 		if(n->sptps.outstate) {
+			bool is_probe_req = origpkt->len >= 1 && DATA(origpkt)[0] == 0 &&
+			                    !n->status.send_locally && !force_node_address &&
+			                    !carrier_beacon_raw && current_probe_reply_node == NULL;
 			sptps_send_record(&n->sptps, PKT_PROBE, DATA(origpkt), origpkt->len);
+
+			if(is_probe_req) {
+				node_t *probe_target = (n->via && n->via != myself) ? n->via : n->nexthop;
+
+				if(probe_target == n && !node_tcponly(n) && !carrier_datagram_path(n)) {
+					multipath_probe_node_paths(n, DATA(origpkt), origpkt->len);
+				}
+			}
 		}
 
 		return;
@@ -1346,13 +1392,21 @@ bool node_best_lan_address(const node_t *n, sockaddr_t *out) {
 		const sockaddr_t *cand = edge_usable_local_addr(e);
 
 		if(cand && sockaddr_same_lan_as_myself(cand)) {
-			*out = *cand;
+			if(out != cand) {
+				sockaddrfree(out);
+				sockaddrcpy(out, cand);
+			}
+
 			return true;
 		}
 	}
 
 	if(sockaddr_is_private_lan(&n->address) && !address_routes_via_vpn(&n->address)) {
-		*out = n->address;
+		if(out != &n->address) {
+			sockaddrfree(out);
+			sockaddrcpy(out, &n->address);
+		}
+
 		return true;
 	}
 
@@ -1360,7 +1414,11 @@ bool node_best_lan_address(const node_t *n, sockaddr_t *out) {
 		const sockaddr_t *cand = edge_usable_local_addr(e);
 
 		if(cand && sockaddr_is_private_lan(cand)) {
-			*out = *cand;
+			if(out != cand) {
+				sockaddrfree(out);
+				sockaddrcpy(out, cand);
+			}
+
 			return true;
 		}
 	}
@@ -1978,6 +2036,45 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	memcpy(buf_ptr, data, len);
 	buf_ptr += len;
 
+	if(type == PKT_PROBE && current_probe_path_override.active) {
+		size_t pkt_bytes = (size_t)(buf_ptr - buf);
+		int pfd = current_probe_path_override.fd;
+		size_t psock = current_probe_path_override.sock;
+		const sockaddr_t *psa = current_probe_path_override.dst;
+
+		if(pfd < 0 || !psa || (psa->sa.sa_family != AF_INET && psa->sa.sa_family != AF_INET6)) {
+			return false;
+		}
+
+		bool obfs_carrier = relay->connection && relay->connection->transport && relay->connection->transport->id == TRANSPORT_OBFS;
+		dseal_verdict_t dv = dseal_verdict(relay);
+
+		if(!obfs_carrier && (dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK)) {
+			return send_sptps_data_held(relay, dv, to, from, type, data, len);
+		}
+
+		size_t probe_excess = 0;
+		obfs_send_t probe_wrapped = obfs_carrier ? obfs_wrap_send_fd(pfd, psock, psa, buf, pkt_bytes, relay, &probe_excess) : OBFS_SEND_PLAIN;
+
+		if(probe_wrapped == OBFS_SEND_OK || probe_wrapped == OBFS_SEND_TOOBIG) {
+			return true;
+		} else if(probe_wrapped == OBFS_SEND_ERR) {
+			return false;
+		}
+
+		if(dv == DSEAL_SEND_SEAL) {
+			obfs_send_t probe_sealed = obfs_seal_send_fd(pfd, psock, psa, buf, pkt_bytes, relay, &probe_excess);
+			return probe_sealed != OBFS_SEND_ERR;
+		}
+
+		if(dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK) {
+			return send_sptps_data_held(relay, dv, to, from, type, data, len);
+		}
+
+		sendto(pfd, buf, pkt_bytes, 0, &psa->sa, SALEN(psa->sa));
+		return true;
+	}
+
 	const sockaddr_t *sa = NULL;
 	size_t sock = 0;
 
@@ -2039,10 +2136,6 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 		}
 
 		return true;
-	}
-
-	if(type == PKT_PROBE) {
-		multipath_probe_node_paths(relay, buf, (size_t)(buf_ptr - buf));
 	}
 
 	/* DirectSeal (obfs.h) decides for every obfs link but the obfs carrier's
@@ -2214,6 +2307,40 @@ bool send_sptps_data(node_t *to, node_t *from, int type, const void *data, size_
 	}
 
 	return true;
+}
+
+bool send_sptps_probe_on_path(node_t *n, int uplink_idx, size_t sock_idx,
+                              const sockaddr_t *dst, const void *probe_payload, size_t payload_len) {
+	if(!n || !dst || !probe_payload || !payload_len || payload_len > UINT16_MAX ||
+	                !n->status.sptps || !n->sptps.outstate) {
+		return false;
+	}
+
+	if(dst->sa.sa_family != AF_INET && dst->sa.sa_family != AF_INET6) {
+		return false;
+	}
+
+	if(address_routes_via_vpn(dst) || sockaddr_is_my_nat_wan_ip(dst)) {
+		return false;
+	}
+
+	adapt_socket(dst, &sock_idx);
+	int fd = multipath_get_udp_fd(uplink_idx, dst->sa.sa_family, (int)sock_idx);
+
+	if(fd < 0) {
+		return false;
+	}
+
+	probe_path_override_t prev = current_probe_path_override;
+	current_probe_path_override = (probe_path_override_t) {
+		.active = true,
+		.fd = fd,
+		.sock = sock_idx,
+		.dst = dst,
+	};
+	bool ok = sptps_send_record(&n->sptps, PKT_PROBE, probe_payload, (uint16_t)payload_len);
+	current_probe_path_override = prev;
+	return ok;
 }
 
 bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t len) {
@@ -2667,12 +2794,37 @@ static bool punch_send_go(node_t *a, node_t *b) {
 }
 
 void send_no_direct_signal(node_t *to, bool no_direct) {
-	if(!to || to == myself || !myself || !to->status.reachable || !to->nexthop || !to->nexthop->connection) {
+	if(!to || to == myself || !myself || !to->status.reachable) {
+		return;
+	}
+
+	connection_t *c = NULL;
+
+	if(to->nexthop && to->nexthop->connection &&
+	                connection_is_live(to->nexthop->connection) &&
+	                to->nexthop->connection->status.active &&
+	                !to->nexthop->connection->status.remove_unused) {
+		c = to->nexthop->connection;
+	}
+
+	if(!c) {
+		for splay_each(edge_t, e, &myself->edge_tree) {
+			if(e->to && e->to != to && e->connection &&
+			                connection_is_live(e->connection) &&
+			                e->connection->status.active &&
+			                !e->connection->status.remove_unused) {
+				c = e->connection;
+				break;
+			}
+		}
+	}
+
+	if(!c) {
 		return;
 	}
 
 	int flag = no_direct ? PUNCH_NO_DIRECT : PUNCH_ALLOW_DIRECT;
-	send_request(to->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, to->name, PUNCH_REQ, flag);
+	send_request(c, "%d %s %s %d %d - -", REQ_KEY, myself->name, to->name, PUNCH_REQ, flag);
 
 	if(!no_direct && !to->connection && to->status.validkey) {
 		try_udp(to, false);
@@ -2766,6 +2918,11 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 		timeout_del(&from->punch_timer);
 		from->punch_go = (struct timeval) {0, 0};
 		from->last_lan_udp_rx = 0;
+
+		for(int i = 0; i < MAX_NODE_PATHS; i++) {
+			sockaddrfree(&from->paths[i].addr);
+		}
+
 		memset(from->paths, 0, sizeof(from->paths));
 
 		if(changed) {
@@ -2825,9 +2982,11 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 		if(sa.sa.sa_family == AF_UNSPEC || sa.sa.sa_family == AF_UNKNOWN ||
 		                !sockaddr_is_unicast_ip(&sa) || address_routes_via_vpn(&sa) ||
 		                from->nexthop == from) {
+			sockaddrfree(&sa);
 			have = false;
 		} else if(sockaddr_is_my_nat_wan_ip(&sa)) {
 			if(!node_best_lan_address(from, &sa)) {
+				sockaddrfree(&sa);
 				have = false;
 			}
 		}
@@ -2840,6 +2999,7 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 			send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
 		}
 
+		sockaddrfree(&sa);
 		return true;
 	}
 
@@ -2850,10 +3010,12 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 		   distance. */
 		send_request(from->nexthop->connection, "%d %s %s %d %d - -", REQ_KEY, myself->name, from->name, PUNCH_REQ, 1);
 		punch_start(from, from->weighted_distance / 2, have ? &sa : NULL, "the peer asked through a relay");
+		sockaddrfree(&sa);
 		return true;
 	}
 
 	punch_start(from, 0, have ? &sa : NULL, flag == 2 ? "the relay says go" : "the peer says go");
+	sockaddrfree(&sa);
 	return true;
 }
 
@@ -2988,11 +3150,13 @@ static void try_udp(node_t *n, bool has_data) {
 			if(pred_port >= 1024 && pred_port <= 65535) {
 				char port_str[16];
 				snprintf(port_str, sizeof(port_str), "%d", pred_port);
-				sockaddr_t saved_addr = n->address;
+				sockaddr_t saved_addr = {0};
+				sockaddrcpy(&saved_addr, &n->address);
 				sockaddr_setport(&n->address, port_str);
 				force_node_address = true;
 				send_udp_probe_packet(n, MIN_PROBE_SIZE);
 				force_node_address = false;
+				sockaddrfree(&n->address);
 				n->address = saved_addr;
 			}
 		}
@@ -3008,7 +3172,7 @@ static length_t choose_initial_maxmtu(node_t *n) {
 	size_t sockindex;
 	choose_udp_address(n, &sa, &sockindex);
 
-	if(!sa) {
+	if(!sa || (sa->sa.sa_family != AF_INET && sa->sa.sa_family != AF_INET6)) {
 		return MTU;
 	}
 
@@ -3125,15 +3289,21 @@ static void try_mtu(node_t *n) {
 		return; /* fixed; a smaller carrier ceiling comes back as reduce_mtu() */
 	}
 
-	struct timeval elapsed;
-	timersub(&now, &n->mtu_ping_sent, &elapsed);
+	/* Enforce minimum spacing whenever mtu_ping_sent is set, REGARDLESS of
+	   whether n->mtuprobes == 0 (e.g. after update_node_udp(n, NULL) resets
+	   mtuprobes to 0), preventing high-rate 1472B UDP probe storms. */
+	if(n->mtu_ping_sent.tv_sec != 0 || n->mtu_ping_sent.tv_usec != 0) {
+		struct timeval elapsed;
+		timersub(&now, &n->mtu_ping_sent, &elapsed);
 
-	if(n->mtuprobes >= 0) {
-		if(n->mtuprobes != 0 && elapsed.tv_sec == 0 && elapsed.tv_usec < 333333) {
-			return;
-		}
-	} else {
-		if(n->mtuprobes < -1) {
+		if(elapsed.tv_sec < 0) {
+			/* Guard against wall-clock step backwards or clock switch */
+			n->mtu_ping_sent = (struct timeval) {0, 0};
+		} else if(n->mtuprobes >= 0) {
+			if(elapsed.tv_sec == 0 && elapsed.tv_usec < 333333) {
+				return;
+			}
+		} else if(n->mtuprobes < -1) {
 			if(elapsed.tv_sec < 1) {
 				return;
 			}

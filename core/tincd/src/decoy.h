@@ -79,6 +79,8 @@ typedef struct decoy_request_t {
 	char host[256];         /* Host (or the absolute URI's), without its port */
 	bool has_via;
 	bool has_content_length;
+	bool has_transfer_encoding;
+	long long content_length;
 	char accept_encoding[DECOY_FIELD_MAX];
 	char if_modified_since[128];
 	char if_unmodified_since[128];
@@ -130,6 +132,7 @@ void decoy_answer_free(decoy_answer_t *a);
    bytes). `at' may be NULL (TLS on 443). Never touches the network. */
 char *decoy_respond(const char *request, size_t reqlen, const decoy_origin_t *at, size_t *resplen);
 char *decoy_respond_static(const char *request, size_t reqlen, size_t *resplen);
+char *decoy_respond_503(const decoy_origin_t *at, size_t *resplen);
 
 /* Upstream proxy (HttpsDecoyUpstream), event-driven (review M5-1): the fetch
    runs on the daemon's event loop with a non-blocking connect, a total
@@ -179,6 +182,27 @@ bool decoy_keeps_alive(const char *resp, size_t len);
    in a blank line) already: an unparsable request line, a bad header line,
    HTTP/0.9. The caller then stops reading and answers. */
 bool decoy_request_refused(const char *head, size_t len);
+
+/* Whether `buf[0..len)' holds a complete request ready to answer (including
+   any Content-Length body that can fit within `maxbuf'). */
+bool decoy_request_ready(const char *buf, size_t len, size_t maxbuf);
+
+/* Parse HttpsDecoyUpstream ("host", "host:port", "[ipv6]", "[ipv6]:port")
+   into unbracketed `host' + `port' for getaddrinfo() and `hosthdr' for the
+   forwarded HTTP Host header. */
+bool decoy_parse_upstream_hostport(const char *spec, char *host, size_t hostlen,
+                                   char *port, size_t portlen,
+                                   char *hosthdr, size_t hosthdrlen);
+
+/* Largest static file served from HttpsDecoyRoot (4 MiB) and global cap on
+   in-flight decoy response buffers (32 MiB; excess gets 503). */
+#define DECOY_MAX_FILE_SIZE (4 * 1024 * 1024)
+#define DECOY_MAX_RESP_BUDGET (32 * 1024 * 1024)
+#define DECOY_MAX_FETCHES 64
+
+bool decoy_budget_acquire(size_t bytes);
+void decoy_budget_release(size_t bytes);
+size_t decoy_budget_used(void);
 
 /* The longest request head read (nginx: large_client_header_buffers 4 8k).
    A head that does not end within it is answered as nginx answers it

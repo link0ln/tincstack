@@ -90,6 +90,7 @@ typedef struct https_session_t {
 
 	char *wbuf;            /* pending outbound handshake/decoy bytes */
 	size_t wlen, woff;
+	size_t wbuf_budget;
 
 	char *rbuf;            /* accumulated HTTP head */
 	size_t rlen, rcap;
@@ -253,6 +254,17 @@ static https_session_t *new_session(connection_t *c, bool is_server) {
 	return s;
 }
 
+static void release_wbuf(https_session_t *s) {
+	if(s->wbuf_budget) {
+		decoy_budget_release(s->wbuf_budget);
+		s->wbuf_budget = 0;
+	}
+
+	free(s->wbuf);
+	s->wbuf = NULL;
+	s->wlen = s->woff = 0;
+}
+
 void https_close(connection_t *c) {
 	https_session_t *s = c->transport_data;
 
@@ -278,7 +290,7 @@ void https_close(connection_t *c) {
 	decoy_fetch_cancel(s->fetch);
 	free(s->sni);
 	free(s->host);
-	free(s->wbuf);
+	release_wbuf(s);
 	free(s->rbuf);
 	free(s);
 	c->transport_data = NULL;
@@ -300,9 +312,32 @@ static void fail(https_session_t *s) {
 }
 
 static void set_wbuf(https_session_t *s, const void *buf, size_t len) {
-	free(s->wbuf);
+	release_wbuf(s);
 	s->wbuf = xmalloc(len);
 	memcpy(s->wbuf, buf, len);
+	s->wlen = len;
+	s->woff = 0;
+}
+
+static void set_wbuf_owned(https_session_t *s, char *buf, size_t len, bool budgeted) {
+	release_wbuf(s);
+
+	if(budgeted) {
+		if(decoy_budget_acquire(len)) {
+			s->wbuf_budget = len;
+		} else {
+			free(buf);
+			decoy_origin_t at;
+			decoy_origin_of(s->c->socket, true, &at);
+			buf = decoy_respond_503(&at, &len);
+
+			if(decoy_budget_acquire(len)) {
+				s->wbuf_budget = len;
+			}
+		}
+	}
+
+	s->wbuf = buf;
 	s->wlen = len;
 	s->woff = 0;
 }
@@ -351,7 +386,8 @@ static int flush_wbuf(https_session_t *s) {
    head too long for nginx's buffers). */
 static int read_head(https_session_t *s) {
 	/* A pipelined request may already be here (decoy keep-alive). */
-	if(s->rlen >= 4 && memmem(s->rbuf, s->rlen, "\r\n\r\n", 4)) {
+	if(s->is_server ? (s->rlen > 0 && decoy_request_ready(s->rbuf, s->rlen, DECOY_HEAD_MAX - 1))
+	                : (s->rlen >= 4 && memmem(s->rbuf, s->rlen, "\r\n\r\n", 4) != NULL)) {
 		return 1;
 	}
 
@@ -373,13 +409,11 @@ static int read_head(https_session_t *s) {
 			s->rlen += (size_t) n;
 			s->rbuf[s->rlen] = 0;
 
-			if(s->rlen >= 4 && memmem(s->rbuf, s->rlen, "\r\n\r\n", 4)) {
-				return 1;
-			}
-
-			/* nginx answers a request line it cannot parse at once, without
-			   waiting for the rest of a head that will never come. */
-			if(s->is_server && decoy_request_refused(s->rbuf, s->rlen)) {
+			if(s->is_server) {
+				if(decoy_request_ready(s->rbuf, s->rlen, DECOY_HEAD_MAX - 1)) {
+					return 1;
+				}
+			} else if(s->rlen >= 4 && memmem(s->rbuf, s->rlen, "\r\n\r\n", 4)) {
 				return 1;
 			}
 
@@ -609,9 +643,17 @@ static bool verify_client_auth(https_session_t *s, char **out_name) {
 		return false;
 	}
 
-	/* Shared verification (authn.c): name known, signature over our own cert
-	   fingerprint + this session's exporter, freshness, replay cache. */
-	return authn_verify(payload, plen, tls_own_fp, exporter, "https", s->c->hostname, out_name);
+	/* Shared verification (authn.c): name known, signature over this SSL's
+	   certificate fingerprint + this session's exporter, freshness, replay cache. */
+	uint8_t own_fp[TLS_FP_LEN];
+	tls_ssl_own_fp(s->ssl, own_fp);
+
+	if(!authn_verify(payload, plen, own_fp, exporter, "https", s->c->hostname, out_name)) {
+		return false;
+	}
+
+	s->c->status.web_front = false;
+	return true;
 }
 
 static void build_ws_accept(const char *head, char *out, size_t outlen) {
@@ -678,9 +720,7 @@ static void become_established(https_session_t *s) {
 	free(s->rbuf);
 	s->rbuf = NULL;
 	s->rlen = s->rcap = 0;
-	free(s->wbuf);
-	s->wbuf = NULL;
-	s->wlen = s->woff = 0;
+	release_wbuf(s);
 
 	set_io(s, IO_READ);
 
@@ -975,9 +1015,8 @@ static void drive_tls_handshake(https_session_t *s) {
 static void server_pump(https_session_t *s);
 
 static void prepare_decoy_write(https_session_t *s, char *resp, size_t resplen) {
-	set_wbuf(s, resp, resplen);
-	s->decoy_keep_alive = decoy_keeps_alive(resp, resplen);
-	free(resp);
+	set_wbuf_owned(s, resp, resplen, true);
+	s->decoy_keep_alive = decoy_keeps_alive(s->wbuf, s->wlen);
 	s->state = HS_SERVER_WRITE_DECOY;
 	logger(DEBUG_CONNECTIONS, LOG_INFO, "https: serving the decoy to a TLS probe from %s", s->c->hostname);
 }
@@ -1085,6 +1124,8 @@ static void server_pump(https_session_t *s) {
 			   when the response said keep-alive, else send close_notify and close
 			   (measured: nginx sends the alert before its FIN; a bare FIN is not what
 			   a web server does). */
+			release_wbuf(s);
+
 			if(!s->decoy_keep_alive) {
 				if(!SSL_in_init(s->ssl)) {
 					SSL_shutdown(s->ssl);
@@ -1207,9 +1248,7 @@ static void https_io(void *data, int flags) {
 		int f = flush_wbuf(s);
 
 		if(f == 1) {
-			free(s->wbuf);
-			s->wbuf = NULL;
-			s->wlen = s->woff = 0;
+			release_wbuf(s);
 			s->state = HS_CLIENT_READ_RESP;
 			set_io(s, IO_READ);
 		} else if(f < 0) {
@@ -1289,10 +1328,18 @@ static void https_io(void *data, int flags) {
    which no browser or curl dialling an IP does (found comparing the
    Windows dialler's ClientHello with curl's). */
 static char *choose_sni(connection_t *c) {
+	char hostbuf[256];
 	char *sni = NULL;
 
 	if(get_config_string(lookup_config(&config_tree, "HttpsSni"), &sni) && sni && *sni) {
-		return sni;
+		bool ok = tls_extract_sni_hostname(sni, hostbuf, sizeof(hostbuf));
+		free(sni);
+
+		if(ok) {
+			return xstrdup(hostbuf);
+		}
+
+		return NULL;
 	}
 
 	free(sni);
@@ -1302,33 +1349,19 @@ static char *choose_sni(connection_t *c) {
 	char *addr = NULL;
 
 	if(read_host_config(tree, c->name, false)) {
-		char *a = NULL;
+		for(config_t *cfg = lookup_config(tree, "Address"); cfg; cfg = lookup_config_next(tree, cfg)) {
+			char *a = NULL;
 
-		if(get_config_string(lookup_config(tree, "Address"), &a) && a && *a) {
-			/* A name has a letter that is not a hex/':'/'.' IP char. */
-			bool looks_like_name = false;
-
-			for(char *p = a; *p; p++) {
-				if(isalpha((uint8_t) *p) && *p != ':') {
-					/* still could be hex in IPv6; require a non-hex letter */
-					if(!strchr("abcdefABCDEF", *p)) {
-						looks_like_name = true;
-						break;
-					}
+			if(get_config_string(cfg, &a) && a && *a) {
+				if(tls_extract_sni_hostname(a, hostbuf, sizeof(hostbuf))) {
+					addr = xstrdup(hostbuf);
+					free(a);
+					break;
 				}
 			}
 
-			/* An IPv6 literal contains ':'; a dotted IPv4 is all digits/dots. */
-			if(strchr(a, ':')) {
-				looks_like_name = false;
-			}
-
-			if(looks_like_name) {
-				addr = xstrdup(a);
-			}
+			free(a);
 		}
-
-		free(a);
 	}
 
 	exit_configuration(tree);

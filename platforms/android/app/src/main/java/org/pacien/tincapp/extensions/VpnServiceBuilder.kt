@@ -22,6 +22,7 @@ package org.pacien.tincapp.extensions
 import android.net.VpnService
 import org.pacien.tincapp.data.AnnouncedRoutes
 import org.pacien.tincapp.data.CidrAddress
+import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.data.VpnInterfaceConfiguration
 import org.pacien.tincapp.extensions.Java.applyIgnoringException
 import java.net.InetAddress
@@ -93,8 +94,21 @@ object VpnServiceBuilder {
   private fun VpnService.Builder.allowFamilies(familyList: List<Int>): VpnService.Builder =
     familyList.fold(this) { net, family -> net.allowFamily(family) }
 
-  private fun VpnService.Builder.addAllowedApplications(apps: List<String>): VpnService.Builder =
-    apps.fold(this) { net, app -> applyIgnoringException(net::addAllowedApplication, app, net)!! }
+  private fun VpnService.Builder.addAllowedApplications(apps: List<String>): VpnService.Builder {
+    if (apps.isEmpty()) return this
+    var addedCount = 0
+    for (app in apps) {
+      if (applyIgnoringException(this::addAllowedApplication, app, null) != null) {
+        addedCount++
+      }
+    }
+    if (addedCount == 0) {
+      throw TincYaml.InvalidConfigurationException(
+        "None of the allowed applications (${apps.joinToString(", ")}) are installed on this device"
+      )
+    }
+    return this
+  }
 
   private fun VpnService.Builder.addDisallowedApplications(apps: List<String>): VpnService.Builder =
     apps.fold(this) { net, app -> applyIgnoringException(net::addDisallowedApplication, app, net)!! }

@@ -200,7 +200,7 @@ void sssp_bfs(void) {
 				continue;
 			}
 
-			int step_weight = (e->reverse && e->reverse->weight > e->weight) ? e->reverse->weight : e->weight;
+			int64_t step_weight = (e->reverse && e->reverse->weight > e->weight) ? e->reverse->weight : e->weight;
 
 			if(n != myself) {
 				if(n->status.no_direct || n->remote_no_direct) {
@@ -220,8 +220,16 @@ void sssp_bfs(void) {
 				}
 			}
 
-			int cand_dist = n->distance + 1;
-			int cand_weight = n->weighted_distance + step_weight;
+			int cand_dist = n->distance < INT_MAX ? n->distance + 1 : INT_MAX;
+			int64_t cand_weight64 = (int64_t)n->weighted_distance + step_weight;
+
+			if(cand_weight64 > (int64_t)(INT_MAX / 2)) {
+				cand_weight64 = INT_MAX / 2;
+			} else if(cand_weight64 < (int64_t)(INT_MIN / 2)) {
+				cand_weight64 = INT_MIN / 2;
+			}
+
+			int cand_weight = (int)cand_weight64;
 
 			if(e->to->status.visited) {
 				if(!e->to->status.indirect && indirect) {
@@ -248,7 +256,8 @@ void sssp_bfs(void) {
 				e->to->options |= OPTION_TCPONLY;
 			}
 
-			if((!e->to->status.reachable || (e->to->address.sa.sa_family == AF_UNSPEC && e->address.sa.sa_family != AF_UNKNOWN)) &&
+			if((!e->to->status.reachable || e->to->address.sa.sa_family == AF_UNSPEC) &&
+			                e->address.sa.sa_family != AF_UNKNOWN && e->address.sa.sa_family != AF_UNSPEC &&
 			                !e->to->status.no_direct && !e->to->remote_no_direct) {
 				update_node_udp(e->to, &e->address);
 			}
@@ -314,14 +323,21 @@ void sssp_bfs(void) {
 	   both clear it. One mark per reroute, so a flapping edge produces one
 	   restart per flap rather than a storm. */
 	for splay_each(node_t, n, &node_tree) {
-		if(n != myself && n->status.visited && n->status.waitingforkey && !n->status.validkey
-		                && n->prev_nexthop && n->nexthop != n->prev_nexthop) {
-			/* prev_nexthop is compared, never followed (see the snapshot
-			   above); the name in the message is the route we have NOW, which
-			   this BFS just computed and is therefore live. */
-			logger(DEBUG_PROTOCOL, LOG_DEBUG, "The route to %s changed while we were waiting for its key (now via %s); the pending key exchange went out over the old one",
-			       n->name, n->nexthop ? n->nexthop->name : "(nothing)");
-			n->status.sptps_route_stale = true;
+		if(n != myself && n->status.visited && n->prev_nexthop && n->nexthop != n->prev_nexthop) {
+			if(n->status.waitingforkey && !n->status.validkey) {
+				/* prev_nexthop is compared, never followed (see the snapshot
+				   above); the name in the message is the route we have NOW, which
+				   this BFS just computed and is therefore live. */
+				logger(DEBUG_PROTOCOL, LOG_DEBUG, "The route to %s changed while we were waiting for its key (now via %s); the pending key exchange went out over the old one",
+				       n->name, n->nexthop ? n->nexthop->name : "(nothing)");
+				n->status.sptps_route_stale = true;
+			} else if(n->status.validkey && n->status.sptps &&
+			                n->sptps.instate && n->sptps.outstate &&
+			                n->sptps.state != SPTPS_SECONDARY_KEX) {
+				logger(DEBUG_PROTOCOL, LOG_DEBUG, "The route to %s changed during secondary SPTPS rekey (now via %s); resetting pending secondary KEX",
+				       n->name, n->nexthop ? n->nexthop->name : "(nothing)");
+				sptps_abort_secondary_kex(&n->sptps);
+			}
 		}
 
 		n->prev_nexthop = NULL;

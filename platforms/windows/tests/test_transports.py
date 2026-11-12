@@ -4,45 +4,54 @@ import transports as tr
 
 def test_defaults_match_schema():
     eff = tr.effective({})
-    assert eff["Transports"] == ["plain", "obfs", "https", "quic"]
+    assert eff["Transports"] == ["plain", "sf", "sftcp", "obfs", "https", "quic"]
     assert eff["PreferredTransports"] == ["plain"]
-    assert eff["HttpsPort"] == 443 and "HttpsFront" not in eff
-    assert eff["QuicPort"] == 443 and eff["ObfsJunkPacketCount"] == 0
+    assert eff["HttpsPort"] == "" and "HttpsFront" not in eff
+    assert eff["QuicPort"] == "" and eff["ObfsJunkPacketCount"] == 0
     assert eff["ObfsPort"] == 0
 
 
 def test_validate_ok_for_absent_and_sane():
     assert tr.validate({}) == []
-    assert tr.validate({"Transports": ["quic", "plain"], "PreferredTransports": "quic, plain",
-                        "ObfsJunkPacketCount": 3, "ObfsInitMagicHeader": "1000-2000",
+    assert tr.validate({"Transports": ["quic", "sftcp", "sf", "plain"],
+                        "PreferredTransports": "ws, h3, quic, plain",
+                        "ObfsJunkPacketCount": 3, "ObfsInitMagicHeader": 1000,
+                        "ObfsTransportMagicHeader": 0x7FFFFFFF,
                         "HttpsPort": 8443,
                         "TlsCert": "/c.pem", "TlsKey": "/k.pem",
                         "HttpsDecoyUpstream": "example.org:443", "QuicPort": 443}) == []
+    assert tr.validate({"HttpsDecoyUpstream": "[2001:db8::1]:8443",
+                        "HttpsPort": "", "QuicPort": ""}) == []
 
 
 def test_validate_errors():
     errs = tr.validate({"Transports": [], "PreferredTransports": ["tcp", "plain", "plain"],
                         "ObfsJunkPacketCount": "x", "ObfsJunkPacketMinSize": 500,
-                        "ObfsJunkPacketMaxSize": 100, "ObfsInitMagicHeader": "9-5",
+                        "ObfsJunkPacketMaxSize": 100, "ObfsInitMagicHeader": "1000-2000",
+                        "ObfsTransportMagicHeader": 0x80000000,
                         "HttpsPort": 70000,
                         "TlsCert": "/c.pem", "HttpsDecoyUpstream": "not a host", "QuicPort": -1})
     joined = "\n".join(errs)
     for needle in ("Transports: must list at least one", "unknown carrier(s) tcp", "duplicate carrier",
                    "ObfsJunkPacketCount: must be an integer", "MinSize must be <=",
-                   "ObfsInitMagicHeader: range",
+                   "ObfsInitMagicHeader: must be a single integer between 0 and 2147483647",
+                   "ObfsTransportMagicHeader: must be a single integer between 0 and 2147483647",
                    "HttpsPort: must be between 0 and 65535", "TlsCert and TlsKey",
                    "HttpsDecoyUpstream: expected", "QuicPort: must be between"):
         assert needle in joined, needle
+    for bad_decoy in ("http://example.org:443", "https://127.0.0.1:8443/path", "[2001:db8::1]", "example.org:0"):
+        d_errs = tr.validate({"HttpsDecoyUpstream": bad_decoy})
+        assert any("HttpsDecoyUpstream" in e for e in d_errs), bad_decoy
 
 
 def test_changes_writes_only_user_edits():
-    loaded = {"Name": "a", "Transports": ["plain", "quic"]}
-    edited = {"Transports": ["plain", "quic"],          # unchanged -> nothing
-              "PreferredTransports": ["quic", "plain"],  # absent, non-default -> write
-              "HttpsPort": 443,                          # absent, default -> stay absent
-              "QuicPort": 443,                           # absent, default -> stay absent
-              "TlsCert": "",                             # absent, empty -> stay absent
-              "ObfsJunkPacketCount": 4}                  # absent, non-default -> write
+    loaded = {"Name": "a", "Transports": ["plain", "sf", "sftcp", "quic"]}
+    edited = {"Transports": ["plain", "sf", "sftcp", "quic"],  # unchanged -> nothing
+              "PreferredTransports": ["quic", "plain"],        # absent, non-default -> write
+              "HttpsPort": "",                                 # absent, default ("") -> stay absent
+              "QuicPort": "",                                  # absent, default ("") -> stay absent
+              "TlsCert": "",                                   # absent, empty -> stay absent
+              "ObfsJunkPacketCount": 4}                        # absent, non-default -> write
     assert tr.changes(loaded, edited) == {"PreferredTransports": ["quic", "plain"],
                                           "ObfsJunkPacketCount": 4}
 

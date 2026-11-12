@@ -72,7 +72,7 @@ enum class Transport(val id: String) {
           .mapNotNull(::byId)
           .toList()
       }.toSet()
-      return accepted + PLAIN + SFTCP
+      return if (accepted.isEmpty()) setOf(PLAIN, SFTCP) else accepted
     }
   }
 }

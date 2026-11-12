@@ -49,7 +49,7 @@ class SessionStateMachineTest {
   fun lockStopsTheDaemonAndUnlockRelaunchesItOnTheSameSession() {
     val (state, actions) = play(State.Idle, started(), Event.ScreenOff, Event.UserPresent)
     assertEquals(State.Connected("net", DaemonRun(7, 1), true), state)
-    assertEquals(listOf(Action.StopDaemon("net"), Action.StartDaemon("net", DaemonRun(7, 1))), actions)
+    assertEquals(listOf(Action.StopDaemon("net", 7), Action.StartDaemon("net", DaemonRun(7, 1))), actions)
   }
 
   @Test
@@ -74,7 +74,7 @@ class SessionStateMachineTest {
   fun screenOnWithALockedKeyguardWaitsForUserPresent() {
     val (state, actions) = play(State.Idle, started(), Event.ScreenOff, Event.ScreenOn(keyguardLocked = true))
     assertEquals(State.Suspended("net", run0), state)
-    assertEquals(listOf(Action.StopDaemon("net")), actions)
+    assertEquals(listOf(Action.StopDaemon("net", 7)), actions)
   }
 
   @Test
@@ -109,7 +109,7 @@ class SessionStateMachineTest {
   fun userDisconnectWhileLockedIsFinal() {
     val (state, actions) = play(State.Idle, started(), Event.ScreenOff, Event.UserDisconnect, Event.UserPresent, Event.ScreenOn(false))
     assertEquals(State.Idle, state)
-    assertEquals(listOf(Action.StopDaemon("net"), Action.TearDown(7, TearDownReason.USER)), actions)
+    assertEquals(listOf(Action.StopDaemon("net", 7), Action.TearDown(7, TearDownReason.USER)), actions)
   }
 
   @Test
@@ -132,7 +132,7 @@ class SessionStateMachineTest {
   fun theDaemonASuspendStoppedIsNotACrash() {
     val (state, actions) = play(State.Idle, started(), Event.ScreenOff, Event.DaemonExited(run0))
     assertEquals(State.Suspended("net", run0), state)
-    assertEquals(listOf(Action.StopDaemon("net")), actions)
+    assertEquals(listOf(Action.StopDaemon("net", 7)), actions)
   }
 
   @Test
@@ -208,7 +208,7 @@ class SessionStateMachineTest {
   fun routesThatChangeWhileSuspendedOrIdleDoNothing() {
     val (suspended, a1) = play(State.Idle, started(), Event.ScreenOff, Event.RoutesChanged(exit))
     assertEquals(State.Suspended("net", run0), suspended)
-    assertEquals(listOf(Action.StopDaemon("net")), a1)
+    assertEquals(listOf(Action.StopDaemon("net", 7)), a1)
     val (idle, a2) = play(State.Idle, Event.RoutesChanged(exit))
     assertEquals(State.Idle, idle)
     assertTrue(a2.isEmpty())
@@ -222,7 +222,7 @@ class SessionStateMachineTest {
 
     val (afterMediaStop, a2) = play(lockedPlaying, Event.MediaStopped)
     assertEquals(State.Suspended("net", run0), afterMediaStop)
-    assertEquals(listOf(Action.StopDaemon("net")), a2)
+    assertEquals(listOf(Action.StopDaemon("net", 7)), a2)
   }
 
   @Test
@@ -237,12 +237,26 @@ class SessionStateMachineTest {
     assertEquals(State.Suspended("net", DaemonRun(7, 1)), state)
     assertEquals(
       listOf(
-        Action.StopDaemon("net"),
+        Action.StopDaemon("net", 7),
         Action.StartDaemon("net", DaemonRun(7, 1)),
-        Action.StopDaemon("net"),
+        Action.StopDaemon("net", 7),
       ),
       actions,
     )
+  }
+
+  @Test
+  fun stopDaemonCarriesMonotonicSessionTokenAcrossReconnections() {
+    val (_, actions) = play(
+      State.Idle,
+      Event.SessionStarted("net1", DaemonRun(11, 0), true),
+      Event.ScreenOff,
+      Event.UserDisconnect,
+      Event.SessionStarted("net2", DaemonRun(12, 0), true),
+      Event.ScreenOff,
+    )
+    val stops = actions.filterIsInstance<Action.StopDaemon>()
+    assertEquals(listOf(Action.StopDaemon("net1", 11), Action.StopDaemon("net2", 12)), stops)
   }
 
   @Test

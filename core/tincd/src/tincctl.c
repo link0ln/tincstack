@@ -19,6 +19,10 @@
 
 #include "system.h"
 
+#ifndef HAVE_WINDOWS
+#include <poll.h>
+#endif
+
 #ifdef HAVE_READLINE
 #include "readline/readline.h"
 #include "readline/history.h"
@@ -40,7 +44,10 @@
 #include "certcmd.h"
 #include "tincctl.h"
 #include "yamlconf.h"
+#include "zeroconf.h"
 #include "top.h"
+
+extern const char **yamlconf_network_names(yamlconf_t *yc);
 #include "version.h"
 #include "subnet.h"
 #include "keys.h"
@@ -309,7 +316,7 @@ ask_filename:
 
 		size_t len = strlen(buf);
 
-		if(len) {
+		while(len && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
 			buf[--len] = 0;
 		}
 
@@ -377,6 +384,79 @@ static bool ed25519_keygen(bool ask) {
 		return false;
 	} else {
 		fprintf(stderr, "Done.\n");
+	}
+
+	if(yamlconf_path && (!ask || !tty)) {
+		FILE *mem = yamlconf_content_fp("");
+
+		if(!mem) {
+			ecdsa_free(key);
+			return false;
+		}
+
+		if(!ecdsa_write_pem_private_key(key, mem)) {
+			fclose(mem);
+			ecdsa_free(key);
+			fprintf(stderr, "Error writing private key!\n");
+			return false;
+		}
+
+		fflush(mem);
+		long sz = ftell(mem);
+
+		if(sz <= 0 || fseek(mem, 0, SEEK_SET) != 0) {
+			fclose(mem);
+			ecdsa_free(key);
+			return false;
+		}
+
+		char *pem = xmalloc((size_t)sz + 1);
+		size_t rd = fread(pem, 1, (size_t)sz, mem);
+		pem[rd] = 0;
+		fclose(mem);
+
+		char *pubkey = ecdsa_get_base64_public_key(key);
+		ecdsa_free(key);
+
+		if(!pubkey) {
+			memzero(pem, strlen(pem));
+			free(pem);
+			return false;
+		}
+
+		if(!yamlconf_lock(yamlconf_path)) {
+			fprintf(stderr, "Could not lock %s: %s\n", yamlconf_path, strerror(errno));
+			memzero(pem, strlen(pem));
+			free(pem);
+			free(pubkey);
+			return false;
+		}
+
+		if(!access(yamlconf_path, F_OK)) {
+			yamlconf_reload_global();
+		}
+
+		if(!yamlconf_global) {
+			yamlconf_global = yamlconf_new();
+		}
+
+		yamlconf_set_key_pem(yamlconf_global, netname, "ed25519_priv", pem);
+		memzero(pem, strlen(pem));
+		free(pem);
+
+		if(name) {
+			yamlconf_host_add_line(yamlconf_global, netname, name, "Ed25519PublicKey", pubkey);
+		}
+
+		free(pubkey);
+		bool saved = yamlconf_save(yamlconf_global, yamlconf_path);
+		yamlconf_unlock();
+
+		if(!saved) {
+			fprintf(stderr, "Error writing %s: %s\n", yamlconf_path, strerror(errno));
+		}
+
+		return saved;
 	}
 
 	snprintf(fname, sizeof(fname), "%s" SLASH "ed25519_key.priv", confbase);
@@ -454,6 +534,88 @@ static bool rsa_keygen(int bits, bool ask) {
 		return false;
 	} else {
 		fprintf(stderr, "Done.\n");
+	}
+
+	if(yamlconf_path && (!ask || !tty)) {
+		FILE *priv_mem = yamlconf_content_fp("");
+		FILE *pub_mem = yamlconf_content_fp("");
+
+		if(!priv_mem || !pub_mem) {
+			if(priv_mem) {
+				fclose(priv_mem);
+			}
+
+			if(pub_mem) {
+				fclose(pub_mem);
+			}
+
+			rsa_free(key);
+			return false;
+		}
+
+		if(!rsa_write_pem_private_key(key, priv_mem) || !rsa_write_pem_public_key(key, pub_mem)) {
+			fclose(priv_mem);
+			fclose(pub_mem);
+			rsa_free(key);
+			fprintf(stderr, "Error writing RSA key!\n");
+			return false;
+		}
+
+		rsa_free(key);
+		fflush(priv_mem);
+		fflush(pub_mem);
+		long priv_sz = ftell(priv_mem);
+		long pub_sz = ftell(pub_mem);
+
+		if(priv_sz <= 0 || pub_sz <= 0 || fseek(priv_mem, 0, SEEK_SET) != 0 || fseek(pub_mem, 0, SEEK_SET) != 0) {
+			fclose(priv_mem);
+			fclose(pub_mem);
+			return false;
+		}
+
+		char *priv_pem = xmalloc((size_t)priv_sz + 1);
+		size_t priv_rd = fread(priv_pem, 1, (size_t)priv_sz, priv_mem);
+		priv_pem[priv_rd] = 0;
+		fclose(priv_mem);
+
+		char *pub_pem = xmalloc((size_t)pub_sz + 1);
+		size_t pub_rd = fread(pub_pem, 1, (size_t)pub_sz, pub_mem);
+		pub_pem[pub_rd] = 0;
+		fclose(pub_mem);
+
+		if(!yamlconf_lock(yamlconf_path)) {
+			fprintf(stderr, "Could not lock %s: %s\n", yamlconf_path, strerror(errno));
+			memzero(priv_pem, strlen(priv_pem));
+			free(priv_pem);
+			free(pub_pem);
+			return false;
+		}
+
+		if(!access(yamlconf_path, F_OK)) {
+			yamlconf_reload_global();
+		}
+
+		if(!yamlconf_global) {
+			yamlconf_global = yamlconf_new();
+		}
+
+		yamlconf_set_key_pem(yamlconf_global, netname, "rsa_priv", priv_pem);
+		memzero(priv_pem, strlen(priv_pem));
+		free(priv_pem);
+
+		if(name) {
+			yamlconf_host_add_line(yamlconf_global, netname, name, pub_pem, NULL);
+		}
+
+		free(pub_pem);
+		bool saved = yamlconf_save(yamlconf_global, yamlconf_path);
+		yamlconf_unlock();
+
+		if(!saved) {
+			fprintf(stderr, "Error writing %s: %s\n", yamlconf_path, strerror(errno));
+		}
+
+		return saved;
 	}
 
 	snprintf(fname, sizeof(fname), "%s" SLASH "rsa_key.priv", confbase);
@@ -801,18 +963,27 @@ static void reload_configuration_control(void) {
 
 bool connect_tincd(bool verbose) {
 	if(fd >= 0) {
-		fd_set r;
-		FD_ZERO(&r);
-		FD_SET(fd, &r);
-		struct timeval tv = {0, 0};
+#ifdef HAVE_WINDOWS
+		WSAPOLLFD pfd = {.fd = (SOCKET)fd, .events = POLLRDNORM};
+		int pr = WSAPoll(&pfd, 1, 0);
+		bool disconnected = (pr > 0 && (pfd.revents & (POLLRDNORM | POLLERR | POLLHUP)));
+#else
+		struct pollfd pfd = {.fd = fd, .events = POLLIN};
+		int pr = poll(&pfd, 1, 0);
+		bool disconnected = (pr > 0 && (pfd.revents & (POLLIN | POLLERR | POLLHUP)));
+#endif
 
-		if(select(fd + 1, &r, NULL, NULL, &tv)) {
+		if(disconnected) {
 			fprintf(stderr, "Previous connection to tincd lost, reconnecting.\n");
 			closesocket(fd);
 			reset_rx_buffer();
 			fd = -1;
-		} else {
+		} else if(pr >= 0) {
 			return true;
+		} else {
+			closesocket(fd);
+			reset_rx_buffer();
+			fd = -1;
 		}
 	}
 
@@ -2866,7 +3037,7 @@ static const char *obfs_resolve_key(const char *k) {
    argv[-1], so we pass a base array and hand it base+1. */
 static int obfs_config_call(const char *action, const char *key, const char *value) {
 	char *base[4];
-	base[0] = "obfs";
+	base[0] = (char *)"obfs";
 	base[1] = (char *)action;
 	base[2] = (char *)key;
 	int argc = 2;
@@ -3010,7 +3181,12 @@ static int cmd_obfs(int argc, char *argv[]) {
 }
 
 static int cmd_init(int argc, char *argv[]) {
-	if(!access(tinc_conf, F_OK)) {
+	if(yamlconf_path) {
+		if(yamlconf_global && yamlconf_has_network(yamlconf_global, netname)) {
+			fprintf(stderr, "Configuration for `%s' in %s already exists!\n", netname, yamlconf_path);
+			return 1;
+		}
+	} else if(!access(tinc_conf, F_OK)) {
 		fprintf(stderr, "Configuration file %s already exists!\n", tinc_conf);
 		return 1;
 	}
@@ -3036,6 +3212,8 @@ static int cmd_init(int argc, char *argv[]) {
 			}
 
 			name = strdup(buf);
+		} else if(yamlconf_path) {
+			name = zeroconf_default_name();
 		} else {
 			fprintf(stderr, "No Name given!\n");
 			return 1;
@@ -3054,8 +3232,30 @@ static int cmd_init(int argc, char *argv[]) {
 		return 1;
 	}
 
+	if(yamlconf_path) {
+		if(!yamlconf_lock(yamlconf_path)) {
+			fprintf(stderr, "Could not lock %s: %s\n", yamlconf_path, strerror(errno));
+			return 1;
+		}
+
+		if(!access(yamlconf_path, F_OK) && !yamlconf_reload_global()) {
+			fprintf(stderr, "Could not read YAML config %s\n", yamlconf_path);
+			yamlconf_unlock();
+			return 1;
+		}
+
+		if(!yamlconf_global) {
+			yamlconf_global = yamlconf_new();
+		}
+
+		yamlconf_set_option(yamlconf_global, netname, "Name", name);
+		bool ok = zeroconf_materialise(false);
+		yamlconf_unlock();
+		return ok ? 0 : 1;
+	}
+
 	if(!makedirs(DIR_HOSTS | DIR_CONFBASE | DIR_CONFDIR | DIR_CACHE)) {
-		return false;
+		return 1;
 	}
 
 	FILE *f = fopen(tinc_conf, "w");
@@ -3272,13 +3472,29 @@ static int cmd_edit(int argc, char *argv[]) {
 	return 0;
 }
 
+static void maybe_materialise_yaml(void) {
+	if(!yamlconf_path || !yamlconf_global) {
+		return;
+	}
+
+	if(!yamlconf_has_network(yamlconf_global, netname)) {
+		return;
+	}
+
+	if(!yamlconf_key_pem(yamlconf_global, netname, "ed25519_priv") ||
+	                !yamlconf_has_option(yamlconf_global, netname, "Name")) {
+		zeroconf_materialise(true);
+	}
+}
+
 static int export(const char *name, FILE *out) {
 	char filename[PATH_MAX];
 	snprintf(filename, sizeof(filename), "%s" SLASH "%s", hosts_dir, name);
-	FILE *in = fopen(filename, "r");
+	FILE *in = config_fopen(filename, "r");
 
 	if(!in) {
-		fprintf(stderr, "Could not open configuration file %s: %s\n", filename, strerror(errno));
+		fprintf(stderr, "Could not open configuration file %s: %s\n",
+		        yamlconf_path ? yamlconf_path : filename, strerror(errno));
 		return 1;
 	}
 
@@ -3292,7 +3508,8 @@ static int export(const char *name, FILE *out) {
 	}
 
 	if(ferror(in)) {
-		fprintf(stderr, "Error while reading configuration file %s: %s\n", filename, strerror(errno));
+		fprintf(stderr, "Error while reading configuration file %s: %s\n",
+		        yamlconf_path ? yamlconf_path : filename, strerror(errno));
 		fclose(in);
 		return 1;
 	}
@@ -3308,6 +3525,8 @@ static int cmd_export(int argc, char *argv[]) {
 		fprintf(stderr, "Too many arguments!\n");
 		return 1;
 	}
+
+	maybe_materialise_yaml();
 
 	char *name = get_my_name(true);
 
@@ -3331,6 +3550,46 @@ static int cmd_export_all(int argc, char *argv[]) {
 	if(argc > 1) {
 		fprintf(stderr, "Too many arguments!\n");
 		return 1;
+	}
+
+	if(yamlconf_path) {
+		maybe_materialise_yaml();
+
+		if(!yamlconf_global) {
+			fprintf(stderr, "Could not open YAML configuration %s\n", yamlconf_path);
+			return 1;
+		}
+
+		const char **hosts = yamlconf_host_names(yamlconf_global, netname);
+
+		if(!hosts) {
+			return 1;
+		}
+
+		bool first = true;
+		int result = 0;
+
+		for(size_t i = 0; hosts[i]; i++) {
+			if(!check_id(hosts[i])) {
+				continue;
+			}
+
+			if(first) {
+				first = false;
+			} else {
+				printf("\n#---------------------------------------------------------------#\n");
+			}
+
+			result |= export(hosts[i], stdout);
+		}
+
+		free(hosts);
+
+		if(!tty) {
+			fclose(stdout);
+		}
+
+		return result;
 	}
 
 	DIR *dir = opendir(hosts_dir);
@@ -3367,12 +3626,122 @@ static int cmd_export_all(int argc, char *argv[]) {
 	return result;
 }
 
+static int cmd_import_yaml(FILE *in) {
+	if(!yamlconf_lock(yamlconf_path)) {
+		fprintf(stderr, "Could not lock %s: %s\n", yamlconf_path, strerror(errno));
+		return 1;
+	}
+
+	if(!access(yamlconf_path, F_OK) && !yamlconf_reload_global()) {
+		fprintf(stderr, "Could not read YAML config %s\n", yamlconf_path);
+		yamlconf_unlock();
+		return 1;
+	}
+
+	if(!yamlconf_global) {
+		yamlconf_global = yamlconf_new();
+	}
+
+	char buf[4096];
+	char hname[4096];
+	char cur_host[4096] = "";
+	bool have_host = false;
+	size_t hcap = 0, hlen = 0;
+	char *htext = NULL;
+	int count = 0;
+	bool firstline = true;
+
+	while(fgets(buf, sizeof(buf), in)) {
+		if(sscanf(buf, "Name = %4095s", hname) == 1) {
+			firstline = false;
+
+			if(!check_id(hname)) {
+				fprintf(stderr, "Invalid Name in input!\n");
+				free(htext);
+				yamlconf_unlock();
+				return 1;
+			}
+
+			if(have_host) {
+				yamlconf_host_set_text(yamlconf_global, netname, cur_host, htext ? htext : "");
+				count++;
+				free(htext);
+				htext = NULL;
+				hcap = hlen = 0;
+				have_host = false;
+			}
+
+			if(!force && yamlconf_has_host(yamlconf_global, netname, hname)) {
+				fprintf(stderr, "Host configuration %s already exists in %s [%s], skipping.\n",
+				        hname, yamlconf_path, netname ? netname : "");
+				continue;
+			}
+
+			snprintf(cur_host, sizeof(cur_host), "%s", hname);
+			hcap = 512;
+			hlen = 0;
+			htext = xmalloc(hcap);
+			htext[0] = 0;
+			have_host = true;
+			continue;
+		} else if(firstline) {
+			fprintf(stderr, "Junk at the beginning of the input, ignoring.\n");
+			firstline = false;
+		}
+
+		if(!strcmp(buf, "#---------------------------------------------------------------#\n")) {
+			continue;
+		}
+
+		if(have_host) {
+			size_t bl = strlen(buf);
+
+			if(hlen + bl + 1 > hcap) {
+				hcap = (hlen + bl + 1) * 2;
+				htext = xrealloc(htext, hcap);
+			}
+
+			memcpy(htext + hlen, buf, bl + 1);
+			hlen += bl;
+		}
+	}
+
+	if(have_host) {
+		yamlconf_host_set_text(yamlconf_global, netname, cur_host, htext ? htext : "");
+		count++;
+		free(htext);
+		htext = NULL;
+	}
+
+	if(!count) {
+		yamlconf_unlock();
+		fprintf(stderr, "No host configuration files imported.\n");
+		return 1;
+	}
+
+	bool saved = yamlconf_save(yamlconf_global, yamlconf_path);
+	yamlconf_unlock();
+
+	if(!saved) {
+		fprintf(stderr, "Error writing %s: %s\n", yamlconf_path, strerror(errno));
+		return 1;
+	}
+
+	reload_configuration_control();
+	fprintf(stderr, "Imported %d host configuration files.\n", count);
+	return 0;
+}
+
 static int cmd_import(int argc, char *argv[]) {
 	(void)argv;
 
 	if(argc > 1) {
 		fprintf(stderr, "Too many arguments!\n");
 		return 1;
+	}
+
+	if(yamlconf_path) {
+		return cmd_import_yaml(stdin);
 	}
 
 	FILE *in = stdin;
@@ -3474,7 +3843,21 @@ static int switch_network(char *name) {
 		fd = -1;
 	}
 
+	char *saved_yaml = yamlconf_path ? xstrdup(yamlconf_path) : NULL;
+
+	if(saved_yaml) {
+		yamlconf_free(yamlconf_global);
+		yamlconf_global = NULL;
+		free(yamlconf_path);
+		yamlconf_path = NULL;
+	}
+
 	free_names();
+
+	if(saved_yaml) {
+		confbase = saved_yaml;
+	}
+
 	netname = strcmp(name, ".") ? xstrdup(name) : NULL;
 	make_names(false);
 
@@ -3497,6 +3880,26 @@ static int cmd_network(int argc, char *argv[]) {
 
 	if(argc == 2) {
 		return switch_network(argv[1]);
+	}
+
+	if(yamlconf_path) {
+		if(!yamlconf_global && !yamlconf_reload_global()) {
+			fprintf(stderr, "Could not read YAML config %s\n", yamlconf_path);
+			return 1;
+		}
+
+		const char **nets = yamlconf_network_names(yamlconf_global);
+
+		if(!nets) {
+			return 1;
+		}
+
+		for(size_t i = 0; nets[i]; i++) {
+			printf("%s\n", nets[i]);
+		}
+
+		free(nets);
+		return 0;
 	}
 
 	DIR *dir = opendir(confdir);
@@ -3575,6 +3978,8 @@ static int cmd_sign(int argc, char *argv[]) {
 		return 1;
 	}
 
+	maybe_materialise_yaml();
+
 	if(!name) {
 		name = get_my_name(true);
 
@@ -3585,10 +3990,11 @@ static int cmd_sign(int argc, char *argv[]) {
 
 	char fname[PATH_MAX];
 	snprintf(fname, sizeof(fname), "%s" SLASH "ed25519_key.priv", confbase);
-	FILE *fp = fopen(fname, "r");
+	FILE *fp = config_fopen(fname, "r");
 
 	if(!fp) {
-		fprintf(stderr, "Could not open %s: %s\n", fname, strerror(errno));
+		fprintf(stderr, "Could not open %s: %s\n",
+		        yamlconf_path ? yamlconf_path : fname, strerror(errno));
 		return 1;
 	}
 
@@ -3759,10 +4165,11 @@ static int cmd_verify(int argc, char *argv[]) {
 
 	char fname[PATH_MAX];
 	snprintf(fname, sizeof(fname), "%s" SLASH "hosts" SLASH "%s", confbase, node);
-	FILE *fp = fopen(fname, "r");
+	FILE *fp = config_fopen(fname, "r");
 
 	if(!fp) {
-		fprintf(stderr, "Could not open %s: %s\n", fname, strerror(errno));
+		fprintf(stderr, "Could not open %s: %s\n",
+		        yamlconf_path ? yamlconf_path : fname, strerror(errno));
 		free(data);
 		return 1;
 	}
@@ -4166,7 +4573,7 @@ int main(int argc, char *argv[]) {
 
 	if(WSAStartup(MAKEWORD(2, 2), &wsa_state)) {
 		fprintf(stderr, "System call `%s' failed: %s\n", "WSAStartup", winerror(GetLastError()));
-		return false;
+		return 1;
 	}
 
 #endif

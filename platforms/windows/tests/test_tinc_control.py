@@ -104,3 +104,37 @@ def test_snapshot_reports_error_when_edges_or_subnets_dump_fails():
         assert "control socket closed mid-dump" in snap.error
 
 
+def test_relay_link_classification_and_diag_ping_payload_cap():
+    """M-WIN-06: a node whose nexthop != name and has no direct connection must be
+    classified as 'relay' even if udp_confirmed (0x80) is set in status; and
+    diag_ping / in_tunnel_ping cap payload size to 1472 bytes matching diag.c."""
+    nodes_out = (
+        "demobook id 1a2b at MYSELF port 655 options c status 0 nexthop demobook via demobook distance 0 pmtu 1518 (min 0 max 1518) rx 0 0 tx 0 0\n"
+        "hub id 3c4d at 203.0.113.9 port 443 options c status 0x90 nexthop hub via hub distance 1 pmtu 1400 (min 1400 max 1400) rx 0 0 tx 0 0\n"
+        "leaf_relayed id 5e6f at 198.51.100.2 port 655 options c status 0x90 nexthop hub via hub distance 2 pmtu 1400 (min 1400 max 1400) rx 0 0 tx 0 0\n"
+    )
+    conns_out = "hub at 203.0.113.9 port 443 options c socket 5 status 002a outbuf 0/0/0 transport quic\n"
+    seen_cmds = []
+
+    def runner(cmd, timeout):
+        seen_cmds.append(cmd)
+        sub = cmd[cmd.index("-c") + 2:]
+        if sub == ["dump", "nodes"]:
+            return 0, nodes_out, ""
+        if sub == ["dump", "connections"]:
+            return 0, conns_out, ""
+        if sub in (["dump", "edges"], ["dump", "subnets"]):
+            return 0, "", ""
+        if sub[0] == "diag-ping":
+            return 0, "OK from=10.0.0.2 node=hub type=0 code=0 rtt_ms=5.0 ttl=64 mtu=0\n", ""
+        return 0, "", ""
+
+    ctl = tc.TincControl(tinc_exe="tinc", yaml_path="/x/tinc.yaml", runner=runner)
+    snap = ctl.snapshot("demo")
+    assert snap.nodes["hub"].link == "direct-udp"
+    assert snap.nodes["leaf_relayed"].link == "relay"
+
+    ctl.diag_ping("demo", "10.0.0.2", size=9000)
+    assert seen_cmds[-1][-6:] == ["diag-ping", "10.0.0.2", "1472", "64", "0", "2000"]
+
+

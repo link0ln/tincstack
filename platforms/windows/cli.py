@@ -47,6 +47,33 @@ def human(n: int) -> str:
     return f"{f:.0f}T"
 
 
+def resolve_config_path(explicit_config: str | None, cmd: str = "") -> tuple[str | None, str]:
+    """Resolve `tinc.yaml` path for CLI commands. When elevated without `-c`,
+    strictly use `paths.elevated_config_path()` (`%ProgramFiles%\\tincmgr\\tinc.yaml`)
+    and never fall back to an untrusted CWD or `%LOCALAPPDATA%`."""
+    if paths.is_elevated() and not explicit_config:
+        prot_cfg = paths.elevated_config_path()
+        if not prot_cfg:
+            return None, "error: could not resolve protected config directory (pass -c PATH)"
+        if os.path.isfile(prot_cfg):
+            return prot_cfg, ""
+        if cmd in ("join", "up"):
+            cfg, _ = paths.adopt_config(prot_cfg, None)
+            return cfg, ""
+        return None, f"error: no tinc.yaml found at {prot_cfg} (pass -c PATH)"
+    cfg = paths.find_config(explicit_config)
+    if not cfg:
+        if explicit_config and cmd in ("join", "up"):
+            return explicit_config, ""  # a fresh file is fine: the core materialises it
+        return None, "error: no tinc.yaml found (pass -c PATH)"
+    return cfg, ""
+
+
+def _resolve_config_path(explicit_config: str | None, cmd: str = "") -> str | None:
+    cfg, _ = resolve_config_path(explicit_config, cmd=cmd)
+    return cfg
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="tincmgr", description="single-YAML tinc manager (CLI)")
     ap.add_argument("-c", "--config", help="path to tinc.yaml (default: auto-detect)")
@@ -87,23 +114,21 @@ def main() -> int:
         ap.print_help()
         return 2
 
-    cfg = paths.find_config(args.config)
+    cfg, cfg_err = resolve_config_path(args.config, cmd=args.cmd)
     if not cfg:
-        if args.config and args.cmd in ("join", "up"):
-            cfg = args.config          # a fresh file is fine: the core materialises it
-        else:
-            print("error: no tinc.yaml found (pass -c PATH)", file=sys.stderr)
-            return 2
+        print(cfg_err, file=sys.stderr)
+        return 2
     try:
         app = yaml_config.load(cfg)
     except yaml_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    ok, msg = paths.binaries_present()
-    if not ok:
-        print(f"error: {msg}", file=sys.stderr)
-        return 2
     rt = Runtime(app)
+    missing_bins = [p for p in (rt.tincd, rt.tinc) if not os.path.isfile(p)]
+    if missing_bins:
+        ok, msg = paths.binaries_present()
+        print(f"error: {msg if not ok else 'missing staged binaries: ' + ', '.join(missing_bins)}", file=sys.stderr)
+        return 2
     tc = TincControl(tinc_exe=rt.tinc, yaml_path=app.path)
 
     def listing() -> None:
@@ -128,7 +153,7 @@ def main() -> int:
             nets = [n for n, nc in app.networks.items() if nc.autostart]
         rc = 0
         for n in nets:
-            ok, msg = rt.start(n)
+            ok, msg = rt.start(n, detached=True)
             rc |= 0 if ok else 1
             print(f"up {n}: {'ok' if ok else 'FAILED'} — {msg}")
         return rc
@@ -143,7 +168,7 @@ def main() -> int:
             print(f"down {n}: {msg}")
 
     elif args.cmd == "restart":
-        ok, msg = rt.restart(args.net)
+        ok, msg = rt.restart(args.net, detached=True)
         print(f"restart {args.net}: {'ok' if ok else 'FAILED'} — {msg}")
         return 0 if ok else 1
 

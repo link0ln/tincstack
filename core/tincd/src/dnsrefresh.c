@@ -58,6 +58,7 @@ typedef struct dnsrefresh_job_t {
 	char *node_name;                         /* tinc node the Address belongs to */
 	char *hostname;                          /* the DNS name in the Address statement */
 	char *port;                              /* port from the Address statement / Port option */
+	int ai_family;                           /* snapshot of addressfamily from event-loop thread */
 	sockaddr_t last_good;                    /* last live answer, persisted (sa_family 0 = none) */
 	bool has_last_good;
 	sockaddr_t *addrs;                       /* all addresses from latest resolution */
@@ -69,6 +70,7 @@ typedef struct dnsrefresh_job_t {
 typedef struct dnsrefresh_result_t {
 	char *node_name;
 	char *hostname;
+	char *port;
 	sockaddr_t addr;                         /* first address of the answer (priority order) */
 	sockaddr_t *addrs;                       /* all addresses returned by getaddrinfo */
 	size_t naddrs;
@@ -94,6 +96,7 @@ static void dnsrefresh_free_result_list(dnsrefresh_result_t *list) {
 		dnsrefresh_result_t *next = list->next;
 		free(list->node_name);
 		free(list->hostname);
+		free(list->port);
 		free(list->addrs);
 		free(list);
 		list = next;
@@ -376,6 +379,7 @@ static void *dnsrefresh_thread(void *arg) {
 			dnsrefresh_result_t *r = xzalloc(sizeof(*r));
 			r->node_name = xstrdup(j->node_name);
 			r->hostname = xstrdup(j->hostname);
+			r->port = xstrdup(j->port ? j->port : "655");
 
 			if(!dnsrefresh_is_name(j->hostname)) {
 				/* A literal IP is its own answer; report ok so the loop
@@ -395,7 +399,7 @@ static void *dnsrefresh_thread(void *arg) {
 			} else {
 				struct addrinfo hint = {0};
 				struct addrinfo *ai = NULL;
-				hint.ai_family = addressfamily;
+				hint.ai_family = j->ai_family;
 				hint.ai_socktype = SOCK_STREAM;
 				/* Resolve WITH the port: a port-0 sockaddr cannot be
 				   dialled, and the last-good endpoint must carry the
@@ -485,8 +489,10 @@ static void dnsrefresh_free_jobs(void) {
 	dnsrefresh_jobs = NULL;
 }
 
-static bool dnsrefresh_job_match(const dnsrefresh_job_t *j, const char *node_name, const char *hostname) {
-	return !strcmp(j->node_name, node_name) && !strcmp(j->hostname, hostname);
+static bool dnsrefresh_job_match(const dnsrefresh_job_t *j, const char *node_name, const char *hostname, const char *port) {
+	const char *jp = (j->port && *j->port) ? j->port : "655";
+	const char *qp = (port && *port) ? port : "655";
+	return !strcmp(j->node_name, node_name) && !strcmp(j->hostname, hostname) && !strcmp(jp, qp);
 }
 
 /* Collect every Address statement of every node's host record that is a
@@ -538,11 +544,12 @@ static void dnsrefresh_rebuild(void) {
 				}
 
 				if(dnsrefresh_is_name(address)) {
-					/* Skip duplicates (same node+name). */
+					const char *use_port = (port && *port) ? port : "655";
+					/* Skip duplicates (same node+name+port). */
 					bool dup = false;
 
 					for(dnsrefresh_job_t *j = dnsrefresh_jobs; j; j = j->next) {
-						if(dnsrefresh_job_match(j, n->name, address)) {
+						if(dnsrefresh_job_match(j, n->name, address, use_port)) {
 							dup = true;
 							break;
 						}
@@ -552,10 +559,11 @@ static void dnsrefresh_rebuild(void) {
 						dnsrefresh_job_t *job = xzalloc(sizeof(*job));
 						job->node_name = xstrdup(n->name);
 						job->hostname = xstrdup(address);
-						job->port = xstrdup(port ? port : "655");
+						job->port = xstrdup(use_port);
+						job->ai_family = addressfamily;
 
 						for(dnsrefresh_job_t *oj = old_jobs; oj; oj = oj->next) {
-							if(dnsrefresh_job_match(oj, n->name, address)) {
+							if(dnsrefresh_job_match(oj, n->name, address, use_port)) {
 								job->last_good = oj->last_good;
 								job->has_last_good = oj->has_last_good;
 								if(oj->addrs && oj->naddrs > 0) {
@@ -569,7 +577,7 @@ static void dnsrefresh_rebuild(void) {
 
 						if(!job->has_last_good) {
 							for(dnsrefresh_job_t *sj = saved_disk; sj; sj = sj->next) {
-								if(dnsrefresh_job_match(sj, n->name, address) && sj->has_last_good) {
+								if(dnsrefresh_job_match(sj, n->name, address, use_port) && sj->has_last_good) {
 									job->last_good = sj->last_good;
 									job->has_last_good = true;
 									break;
@@ -610,20 +618,18 @@ static void dnsrefresh_queue_batch(void) {
 		/* Defensive: a job with no port (should not exist after the
 		   load_state fix) still must not crash the strdup. */
 		c->port = xstrdup(j->port ? j->port : "655");
+		c->ai_family = addressfamily;
 		c->next = copy;
 		copy = c;
 	}
 
 	pthread_mutex_lock(&dnsrefresh.mutex);
-	dnsrefresh_result_t *stale = dnsrefresh.pending_done;
 	dnsrefresh_job_t *old_pending = dnsrefresh.pending;
-	dnsrefresh.pending_done = NULL;
 	dnsrefresh.pending = copy;
 	pthread_cond_signal(&dnsrefresh.work);
 	pthread_mutex_unlock(&dnsrefresh.mutex);
 
 	dnsrefresh_free_job_list(old_pending);
-	dnsrefresh_free_result_list(stale);
 }
 
 static bool dnsrefresh_ip_equal(const sockaddr_t *a, const sockaddr_t *b) {
@@ -687,7 +693,7 @@ static void dnsrefresh_apply(dnsrefresh_result_t *r) {
 	dnsrefresh_job_t *job = NULL;
 
 	for(dnsrefresh_job_t *j = dnsrefresh_jobs; j; j = j->next) {
-		if(dnsrefresh_job_match(j, r->node_name, r->hostname)) {
+		if(dnsrefresh_job_match(j, r->node_name, r->hostname, r->port)) {
 			job = j;
 			break;
 		}
@@ -740,6 +746,10 @@ static void dnsrefresh_apply(dnsrefresh_result_t *r) {
 	} else {
 		logger(DEBUG_CONNECTIONS, LOG_INFO, "dnsrefresh: %s (%s) did not resolve (%s); keeping the last-known address",
 		       r->node_name, r->hostname, r->gai_err ? gai_strerror(r->gai_err) : "empty answer");
+	}
+
+	if(dnsrefresh_interval <= 0) {
+		return;
 	}
 
 	/* The owner's rule: when DNS no longer lists the address a live meta
@@ -809,16 +819,57 @@ static void dnsrefresh_apply(dnsrefresh_result_t *r) {
 			return;
 		}
 
+		sockaddr_t old_live = *live;
+		connection_t *primary = n->connection;
+
+		/* First terminate all secondary multipath_sub sibling connections
+		   for this node so multipath_promote_survivor() cannot promote a
+		   stale-IP sibling or steal `primary->outgoing` instead of re-dialling
+		   the fresh DNS address. */
+		size_t sub_count = 0;
+
+		for list_each(connection_t, sib, &connection_list) {
+			if(sib != primary && sib->status.multipath_sub &&
+			                (sib->node == n || (!sib->node && sib->name && !strcmp(sib->name, n->name)))) {
+				sub_count++;
+			}
+		}
+
+		if(sub_count > 0) {
+			connection_t **subs = xmalloc(sub_count * sizeof(*subs));
+			size_t idx = 0;
+
+			for list_each(connection_t, sib, &connection_list) {
+				if(sib != primary && sib->status.multipath_sub &&
+				                (sib->node == n || (!sib->node && sib->name && !strcmp(sib->name, n->name)))) {
+					subs[idx++] = sib;
+				}
+			}
+
+			for(size_t i = 0; i < idx; i++) {
+				if(n->address_cache) {
+					drop_address_ip(n->address_cache, &subs[i]->address);
+				}
+
+				subs[i]->outgoing = NULL;
+				terminate_connection(subs[i], subs[i]->status.active);
+			}
+
+			free(subs);
+		}
+
 		if(n->address_cache) {
 			/* The old address must leave the candidate list entirely -- by
 			   IP, the cached spellings carry ephemeral ports -- or the
 			   re-dial walks straight back to it while the peer still
 			   answers there. */
-			drop_address_ip(n->address_cache, live);
+			drop_address_ip(n->address_cache, &old_live);
 			reset_address_cache(n->address_cache);
 		}
 
-		terminate_connection(n->connection, true);
+		if(n->connection) {
+			terminate_connection(n->connection, n->connection->status.active);
+		}
 	}
 }
 
@@ -828,6 +879,11 @@ static void dnsrefresh_handle_results(void) {
 	dnsrefresh.pending_done = NULL;
 	pthread_mutex_unlock(&dnsrefresh.mutex);
 
+	if(dnsrefresh_interval <= 0) {
+		dnsrefresh_free_result_list(results);
+		return;
+	}
+
 	/* First pass: update job->addrs for all results in the batch so
 	   multi-Address nodes have complete state before checking connections. */
 	for(dnsrefresh_result_t *r = results; r; r = r->next) {
@@ -835,7 +891,7 @@ static void dnsrefresh_handle_results(void) {
 			continue;
 		}
 		for(dnsrefresh_job_t *j = dnsrefresh_jobs; j; j = j->next) {
-			if(dnsrefresh_job_match(j, r->node_name, r->hostname)) {
+			if(dnsrefresh_job_match(j, r->node_name, r->hostname, r->port)) {
 				free(j->addrs);
 				j->addrs = NULL;
 				j->naddrs = 0;
@@ -854,6 +910,7 @@ static void dnsrefresh_handle_results(void) {
 		dnsrefresh_apply(results);
 		free(results->node_name);
 		free(results->hostname);
+		free(results->port);
 		free(results->addrs);
 		free(results);
 		results = next;
@@ -972,8 +1029,13 @@ void dnsrefresh_reload(void) {
 	}
 
 	if(dnsrefresh_interval <= 0) {
-		/* Disabled by reload: keep the thread but stop the timer. */
+		/* Disabled by reload: keep the thread but stop the timer and drop queued work. */
 		timeout_del(&dnsrefresh_timer);
+		pthread_mutex_lock(&dnsrefresh.mutex);
+		dnsrefresh_job_t *old_pending = dnsrefresh.pending;
+		dnsrefresh.pending = NULL;
+		pthread_mutex_unlock(&dnsrefresh.mutex);
+		dnsrefresh_free_job_list(old_pending);
 		logger(DEBUG_CONNECTIONS, LOG_NOTICE, "dnsrefresh: disabled (DnsRefreshInterval = 0)");
 		return;
 	}
@@ -991,8 +1053,12 @@ void dnsrefresh_reload(void) {
    name (D2): below the live cache, above re-reading Address. */
 
 const sockaddr_t *dnsrefresh_last_good(const char *node_name, const char *hostname) {
+	if(!node_name || !hostname) {
+		return NULL;
+	}
+
 	for(dnsrefresh_job_t *j = dnsrefresh_jobs; j; j = j->next) {
-		if(dnsrefresh_job_match(j, node_name, hostname) && j->has_last_good) {
+		if(!strcmp(j->node_name, node_name) && !strcmp(j->hostname, hostname) && j->has_last_good) {
 			return &j->last_good;
 		}
 	}
@@ -1001,11 +1067,11 @@ const sockaddr_t *dnsrefresh_last_good(const char *node_name, const char *hostna
 }
 
 bool dnsrefresh_active(void) {
-	return dnsrefresh.started;
+	return dnsrefresh.started && dnsrefresh_interval > 0;
 }
 
 size_t dnsrefresh_lookup_async(node_t *n, const char *host, const char *port, sockaddr_t *out, size_t max_out) {
-	if(!dnsrefresh.started || !n || !host || !*host || !dnsrefresh_is_name(host)) {
+	if(!dnsrefresh.started || dnsrefresh_interval <= 0 || !n || !host || !*host || !dnsrefresh_is_name(host)) {
 		return 0;
 	}
 
@@ -1013,7 +1079,7 @@ size_t dnsrefresh_lookup_async(node_t *n, const char *host, const char *port, so
 	dnsrefresh_job_t *job = NULL;
 
 	for(dnsrefresh_job_t *j = dnsrefresh_jobs; j; j = j->next) {
-		if(dnsrefresh_job_match(j, n->name, host)) {
+		if(dnsrefresh_job_match(j, n->name, host, use_port)) {
 			job = j;
 			break;
 		}
@@ -1024,6 +1090,7 @@ size_t dnsrefresh_lookup_async(node_t *n, const char *host, const char *port, so
 		job->node_name = xstrdup(n->name);
 		job->hostname = xstrdup(host);
 		job->port = xstrdup(use_port);
+		job->ai_family = addressfamily;
 		job->next = dnsrefresh_jobs;
 		dnsrefresh_jobs = job;
 	}
@@ -1051,7 +1118,7 @@ size_t dnsrefresh_lookup_async(node_t *n, const char *host, const char *port, so
 		bool already_queued = false;
 
 		for(dnsrefresh_job_t *p = dnsrefresh.pending; p; p = p->next) {
-			if(dnsrefresh_job_match(p, n->name, host)) {
+			if(dnsrefresh_job_match(p, n->name, host, use_port)) {
 				already_queued = true;
 				break;
 			}
@@ -1062,6 +1129,7 @@ size_t dnsrefresh_lookup_async(node_t *n, const char *host, const char *port, so
 			req->node_name = xstrdup(n->name);
 			req->hostname = xstrdup(host);
 			req->port = xstrdup(use_port);
+			req->ai_family = addressfamily;
 			req->next = dnsrefresh.pending;
 			dnsrefresh.pending = req;
 			pthread_cond_signal(&dnsrefresh.work);

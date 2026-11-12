@@ -61,14 +61,25 @@ char *tls_read_file(const char *path);
    normalises it to lower case in place. */
 bool tls_fingerprint_valid(char *s);
 
+/* Extract a valid DNS hostname suitable for TLS SNI / HTTP Host from a tinc
+   Address or SNI value (`host`, `host:port`, `host port`, `[ipv6]:port`,
+   `[ipv6] port`), stripping port and trailing dots and rejecting IPv4/IPv6
+   literals. */
+bool tls_extract_sni_hostname(const char *raw, char *out, size_t outlen);
+
 /* ---- daemon state (tls_init/tls_exit; tls_ready gates everything) -------- */
 
 extern bool tls_ready;
 extern SSL_CTX *tls_server_ctx;             /* our certificate, TLS 1.2+, ALPN http/1.1 */
 extern SSL_CTX *tls_client_ctx;             /* no verification: peers are pinned by fingerprint */
 extern uint8_t tls_own_fp[TLS_FP_LEN];
+extern uint8_t tls_own_chain_fp[TLS_FP_LEN];
 extern char tls_own_fp_hex[TLS_FP_HEX_LEN];
 extern char *tls_cert_source;               /* human-readable origin, for the log */
+
+/* SHA-256 fingerprint of the local server certificate bound to `ssl` (falling
+   back to `tls_own_fp` if unavailable), avoiding races across SIGHUP reloads. */
+void tls_ssl_own_fp(SSL *ssl, uint8_t out[TLS_FP_LEN]);
 
 /* Load the node certificate (TlsCert/TlsKey files, else the YAML keys, else
    classic-mode files generated on demand) and build the contexts. Safe to

@@ -146,6 +146,85 @@ static void test_malformed(void **state) {
 	assert_false(PARSE("HTTP/1.1 200 OK\r\n\r", false, &res, err));
 }
 
+static void test_split_url_and_ipv6(void **state) {
+	(void)state;
+	char host[256], port[8], path[256];
+
+	assert_true(httpc_split_url("https://acme-v02.api.letsencrypt.org/directory",
+	                            host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_string_equal(host, "acme-v02.api.letsencrypt.org");
+	assert_string_equal(port, "443");
+	assert_string_equal(path, "/directory");
+
+	assert_true(httpc_split_url("https://[2001:db8::1]:14000/dir",
+	                            host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_string_equal(host, "2001:db8::1");
+	assert_string_equal(port, "14000");
+	assert_string_equal(path, "/dir");
+
+	assert_true(httpc_split_url("https://[::1]",
+	                            host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_string_equal(host, "::1");
+	assert_string_equal(port, "443");
+	assert_string_equal(path, "/");
+
+	/* M-TR-06: control chars, CRLF, spaces, non-https, malformed IPv6/port rejected. */
+	assert_false(httpc_split_url("https://ca.test/dir\r\nX-Injected: 1",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_false(httpc_split_url("https://ca.test/dir with space",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_false(httpc_split_url("https://ca.test/\x7f",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_false(httpc_split_url("http://ca.test/dir",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_false(httpc_split_url("https://2001:db8::1/dir",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_false(httpc_split_url("https://[2001:db8::1/dir",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_false(httpc_split_url("https://[not-ipv6]:443/dir",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_false(httpc_split_url("https://ca.test:0/dir",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+	assert_false(httpc_split_url("https://ca.test:70000/dir",
+	                             host, sizeof(host), port, sizeof(port), path, sizeof(path)));
+}
+
+static void test_interim_1xx_and_clean_eof(void **state) {
+	(void)state;
+	http_response_t res;
+	char err[256] = "";
+
+	/* M-TR-06: 100 Continue interim block skipped before final 200 OK. */
+	assert_true(PARSE("HTTP/1.1 100 Continue\r\n\r\n"
+	                  "HTTP/1.1 200 OK\r\nReplay-Nonce: n2\r\nContent-Length: 5\r\n\r\nhello",
+	                  false, &res, err));
+	assert_int_equal(res.status, 200);
+	assert_int_equal(res.body_len, 5);
+	assert_string_equal(res.body, "hello");
+	httpc_free(&res);
+
+	/* Truncated right after 100 Continue must fail instead of returning status 100. */
+	assert_false(PARSE("HTTP/1.1 100 Continue\r\n\r\n", false, &res, err));
+
+	/* Unframed response without clean TLS close_notify (clean_eof = false) must fail. */
+	const char *unframed = "HTTP/1.1 200 OK\r\nContent-Type: application/pem-certificate-chain\r\n\r\n"
+	                       "-----BEGIN CERTIFICATE-----\nMIIB";
+	assert_false(httpc_parse_response_ex(unframed, strlen(unframed), false, false, "ca.test", &res, err, sizeof(err)));
+	assert_non_null(strstr(err, "close_notify"));
+	assert_true(httpc_parse_response_ex(unframed, strlen(unframed), false, true, "ca.test", &res, err, sizeof(err)));
+	httpc_free(&res);
+
+	/* Chunked missing final CRLF after 0\r\n must fail. */
+	assert_false(PARSE("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n",
+	                   false, &res, err));
+
+	/* Conflicting Transfer-Encoding + Content-Length or duplicate Content-Length must fail. */
+	assert_false(PARSE("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n"
+	                   "5\r\nhello\r\n0\r\n\r\n", false, &res, err));
+	assert_false(PARSE("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello",
+	                   false, &res, err));
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_content_length_exact),
@@ -158,6 +237,8 @@ int main(void) {
 		cmocka_unit_test(test_chunked_truncated),
 		cmocka_unit_test(test_chunk_size_cannot_wrap),
 		cmocka_unit_test(test_malformed),
+		cmocka_unit_test(test_split_url_and_ipv6),
+		cmocka_unit_test(test_interim_1xx_and_clean_eof),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

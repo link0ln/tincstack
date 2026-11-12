@@ -24,9 +24,12 @@
 #include "subnet.h"
 
 static long start;
+static subnet_t ipv4, ipv6;
 
 #ifndef HAVE_WINDOWS
 void ifconfig_header(FILE *out) {
+	memset(&ipv4, 0, sizeof(ipv4));
+	memset(&ipv6, 0, sizeof(ipv6));
 	fprintf(out, "#!/bin/sh\n");
 #ifdef HAVE_LINUX
 	fprintf(out, "ip link set \"$INTERFACE\" up\n");
@@ -71,6 +74,8 @@ bool ifconfig_footer(FILE *out) {
 }
 #else
 void ifconfig_header(FILE *out) {
+	memset(&ipv4, 0, sizeof(ipv4));
+	memset(&ipv6, 0, sizeof(ipv6));
 	start = ftell(out);
 }
 
@@ -92,8 +97,6 @@ bool ifconfig_footer(FILE *out) {
 	return ftell(out) != start;
 }
 #endif
-
-static subnet_t ipv4, ipv6;
 
 void ifconfig_address(FILE *out, const char *value) {
 	subnet_t address = {0};

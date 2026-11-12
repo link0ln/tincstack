@@ -65,11 +65,13 @@ int obfs_transport_header_junk = 0;
 uint32_t obfs_init_magic = 0;
 uint32_t obfs_transport_magic = 0;
 
-/* Cold-start key scans: floor per second (mirrors try_harder()'s bound); the
-   real budget scales with the number of peers (see obfs_udp_try) so a large
-   mesh's last node is still classified and junk floods cannot starve it. */
-#define OBFS_SCAN_PER_SEC 25
-#define OBFS_SCAN_MAX     512
+/* Cold-start key scans, counted in incoming UDP datagrams/sec (NOT per-link
+   key trials, which previously caused 2 packets on a 26-node mesh or
+   ObfsJunkPacketCount >= 3 to self-DoS cold starts). */
+#define OBFS_SCAN_PER_SEC   64
+#define OBFS_SCAN_MAX       512
+#define OBFS_SCAN_PER_SRC   16
+#define OBFS_SCAN_SRC_SLOTS 64
 
 /* Replay window width (bits) over the per-direction counter.
    512 bits (8 x 64-bit words) tolerates large inter-path RTT variance when
@@ -127,9 +129,11 @@ struct obfs_link_t {
 	/* Direct seal (DSEAL_KEX, obfs.h): the session key of a pair that has no
 	   obfs meta connection, negotiated end to end over the meta graph. */
 	ecdh_t *dk_ecdh;            /* our pending ephemeral as initiator */
-	uint8_t dk_pub[ECDH_SIZE];  /* its public half */
+	uint8_t dk_pub[ECDH_SIZE];  /* its public half (initiator's kex_ipub) */
 	uint8_t dk_rpub[ECDH_SIZE]; /* our public half as responder (bound into the confirm) */
+	uint8_t dk_ipub[ECDH_SIZE]; /* initiator's public half remembered by responder */
 	time_t dk_sent;             /* when our pending offer went out */
+	time_t kex_done_at;         /* when DSEAL_KEX last installed a session key */
 	bool dseal_used;            /* the direct path to this node is sealed with this link */
 	bool dseal_noted_old;       /* "bootstrap key only" was logged */
 	time_t dseal_old_since;     /* first unanswered sealed datagram to an older peer */
@@ -218,22 +222,34 @@ static bool obfs_fd_is_obfs_listen(int fd) {
 	return false;
 }
 
-static bool obfs_fd_is_valid(int fd) {
+static bool obfs_fd_matches_family(int fd, int af) {
 	if(fd < 0) {
 		return false;
 	}
 
-	if(obfs_fd_is_obfs_listen(fd)) {
-		return true;
+	for(int i = 0; i < obfs_listens; i++) {
+		if(obfs_listen[i].udp.fd == fd) {
+			return (int)obfs_listen[i].sa.sa.sa_family == af;
+		}
 	}
 
 	for(int i = 0; i < listen_sockets; i++) {
 		if(listen_socket[i].udp.fd == fd) {
-			return true;
+			return (int)listen_socket[i].sa.sa.sa_family == af;
 		}
 	}
 
-	return multipath_owns_udp_fd(fd);
+	if(multipath_owns_udp_fd(fd)) {
+		sockaddr_t local = {0};
+		socklen_t salen = sizeof(local);
+
+		if(getsockname(fd, &local.sa, &salen) == 0) {
+			sockaddrunmap(&local);
+			return (int)local.sa.sa_family == af;
+		}
+	}
+
+	return false;
 }
 
 int obfs_pick_socket(const sockaddr_t *sa) {
@@ -258,7 +274,7 @@ int obfs_pick_socket(const sockaddr_t *sa) {
 			}
 		}
 
-		if(obfs_fd_is_valid(fd)) {
+		if(obfs_fd_matches_family(fd, a.sa.sa_family)) {
 			return fd;
 		}
 	}
@@ -409,6 +425,8 @@ static bool obfs_derive_base(node_t *n, uint8_t base[64], bool *i_am_lo) {
 }
 
 static void obfs_link_free(obfs_link_t *l) {
+	sf_detach_obfs_link(l);
+
 	keyset_free(&l->boot);
 	keyset_free(&l->sess);
 	keyset_free(&l->next);
@@ -416,11 +434,15 @@ static void obfs_link_free(obfs_link_t *l) {
 
 	if(l->dk_ecdh) {
 		ecdh_free(l->dk_ecdh);
+		l->dk_ecdh = NULL;
 	}
 
-	memset(l->base, 0, sizeof(l->base));
-	memset(l->local_seed, 0, sizeof(l->local_seed));
-	memset(l->peer_seed, 0, sizeof(l->peer_seed));
+	memzero(l->base, sizeof(l->base));
+	memzero(l->local_seed, sizeof(l->local_seed));
+	memzero(l->peer_seed, sizeof(l->peer_seed));
+	memzero(l->dk_pub, sizeof(l->dk_pub));
+	memzero(l->dk_rpub, sizeof(l->dk_rpub));
+	memzero(l->dk_ipub, sizeof(l->dk_ipub));
 	free(l);
 }
 
@@ -509,6 +531,11 @@ void obfs_link_reset_for_test(node_t *n) {
 				l->dk_ecdh = NULL;
 			}
 
+			memset(l->dk_pub, 0, sizeof(l->dk_pub));
+			memset(l->dk_rpub, 0, sizeof(l->dk_rpub));
+			memset(l->dk_ipub, 0, sizeof(l->dk_ipub));
+			l->dk_sent = 0;
+			l->kex_done_at = 0;
 			l->dseal_used = false;
 			l->sess_tx_ready = false;
 			l->ack_sent = false;
@@ -554,6 +581,11 @@ void obfs_link_rekey_node(node_t *n) {
 			l->boot.ctr_tx = ((uint64_t)time(NULL) << 20) | (low & 0xfffff);
 
 			l->dseal_used = false;
+			l->dk_sent = 0;
+			l->kex_done_at = 0;
+			memset(l->dk_pub, 0, sizeof(l->dk_pub));
+			memset(l->dk_rpub, 0, sizeof(l->dk_rpub));
+			memset(l->dk_ipub, 0, sizeof(l->dk_ipub));
 			l->sess_tx_ready = false;
 			l->ack_sent = false;
 			l->have_peer_seed = false;
@@ -883,7 +915,9 @@ static void obfs_link_demote_sess(obfs_link_t *l) {
 
 	keyset_free(&l->next);
 	l->sess_tx_ready = false;
+	l->ack_sent = false;
 	l->dk_sent = 0;
+	l->kex_done_at = 0;
 }
 
 void obfs_session_start(connection_t *c) {
@@ -909,6 +943,16 @@ void obfs_session_start(connection_t *c) {
 
 	if(!l) {
 		return;
+	}
+
+	int boot_rx_fd = -1;
+
+	if(sf_promote_boot_obfs(c, &boot_rx_fd)) {
+		if(!c->status.multipath_sub) {
+			obfs_link_demote_sess(l);
+		}
+
+		obfs_link_activate_fd(l, &c->address, boot_rx_fd, true);
 	}
 
 	/* Fresh negotiation for this connection. */
@@ -1051,14 +1095,8 @@ static void obfs_hp_block(struct chacha_ctx *hp, const uint8_t *sample, uint8_t 
 	chacha_encrypt_bytes(hp, mask, mask, (uint32_t)masklen);
 }
 
-size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init) {
-	if(!l) {
-		return 0;
-	}
-
-	obfs_keyset_t *ks = (l->sess_tx_ready && l->sess.valid) ? &l->sess : &l->boot;
-
-	if(!ks->tx) {
+static size_t obfs_encode_ks(obfs_link_t *l, obfs_keyset_t *ks, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init, bool allow_selfheal) {
+	if(!l || !ks || !ks->tx) {
 		return 0;
 	}
 
@@ -1067,7 +1105,7 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 	   exchange re-negotiates within OBFS_SELFHEAL_DELAY, not one 30 s rekey
 	   tick (review R M5-2, residual). Only a flag + timer here; see the note on
 	   re-entrancy above. */
-	if(ks == &l->boot && l->active && !l->need_selfheal) {
+	if(allow_selfheal && ks == &l->boot && l->active && !l->need_selfheal) {
 		l->need_selfheal = true;
 		obfs_arm_selfheal();
 	}
@@ -1182,6 +1220,23 @@ size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, s
 	}
 
 	return base + tail;
+}
+
+size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init) {
+	if(!l) {
+		return 0;
+	}
+
+	obfs_keyset_t *ks = (l->sess_tx_ready && l->sess.valid) ? &l->sess : &l->boot;
+	return obfs_encode_ks(l, ks, in, inlen, out, outcap, init, true);
+}
+
+size_t obfs_encode_boot(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init) {
+	if(!l) {
+		return 0;
+	}
+
+	return obfs_encode_ks(l, &l->boot, in, inlen, out, outcap, init, false);
 }
 
 /* Try to unseal one datagram with keyset `ks' assuming a `mlen'-byte magic
@@ -1572,7 +1627,7 @@ void obfs_send_junk(size_t sock, const sockaddr_t *addr) {
 
 /* ---- inbound: keyed classification + replay check + re-injection --------- */
 
-static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerlen, const sockaddr_t *addr, obfs_link_t *l) {
+static listen_socket_t *obfs_resolve_main_ls(listen_socket_t *ls, const sockaddr_t *addr) {
 	listen_socket_t *main_ls = ls;
 
 	if(!ls || ((ls < listen_socket || ls >= listen_socket + listen_sockets) && !multipath_owns_udp_fd(ls->udp.fd))) {
@@ -1584,6 +1639,12 @@ static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerl
 			}
 		}
 	}
+
+	return main_ls;
+}
+
+static bool obfs_inject(listen_socket_t *ls, const uint8_t *inner, size_t innerlen, const sockaddr_t *addr, obfs_link_t *l) {
+	listen_socket_t *main_ls = obfs_resolve_main_ls(ls, addr);
 
 	if(!main_ls) {
 		return true;
@@ -1659,18 +1720,32 @@ static bool obfs_opens_session(const uint8_t *inner, size_t innerlen) {
 #define OBFS_EPOCH_SILENCE 5
 
 static bool obfs_sess_protected(const obfs_link_t *l) {
-	return l && l->sess_tx_ready && l->node && l->node->connection && l->node->connection->status.active;
-}
-
-static bool obfs_epoch_restart(obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, const uint8_t *inner, size_t innerlen) {
-	if(ks != &l->boot || obfs_sess_protected(l)) {
+	if(!l || !l->sess_tx_ready || !l->sess.valid) {
 		return false;
 	}
 
-	bool silent_data = !(innerlen >= SF_MAGIC_LEN && !memcmp(inner, sf_magic, SF_MAGIC_LEN))
+	if(l->node && l->node->connection && l->node->connection->status.active) {
+		return true;
+	}
+
+	if(l->dseal_used || l->kex_done_at != 0) {
+		return true;
+	}
+
+	return false;
+}
+
+static bool obfs_epoch_restart(obfs_link_t *l, obfs_keyset_t *ks, uint64_t seq, const uint8_t *inner, size_t innerlen) {
+	if(ks != &l->boot) {
+		return false;
+	}
+
+	bool opens_sess = (transport_accept_mask & TRANSPORT_BIT(TRANSPORT_OBFS)) && obfs_opens_session(inner, innerlen);
+	bool silent_data = !obfs_sess_protected(l)
+	                   && !(innerlen >= SF_MAGIC_LEN && !memcmp(inner, sf_magic, SF_MAGIC_LEN))
 	                   && now.tv_sec - ks->last_ok >= OBFS_EPOCH_SILENCE;
 
-	if(!silent_data && !obfs_opens_session(inner, innerlen)) {
+	if(!silent_data && !opens_sess) {
 		return false;
 	}
 
@@ -1733,12 +1808,26 @@ static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, 
 	bool is_sf = innerlen >= SF_MAGIC_LEN && !memcmp(inner, sf_magic, SF_MAGIC_LEN);
 
 	if(used_boot && obfs_sess_protected(l)) {
-		/* While the peer's authenticated meta connection is alive and sess_tx_ready
-		   holds, never allow static boot-key packets to downgrade sess/version or
-		   overwrite the peer's endpoint or rx_fd. */
+		/* While the peer's session key is active, never allow static boot-key
+		   packets to downgrade sess/version or overwrite l->addr / l->rx_fd.
+		   However, if the peer rebooted before PingTimeout expired, allow a
+		   fresh replay-verified SF_FLAG_SYN (and its isolated pre-auth handshake
+		   frames) to open a parallel single-flow session without disturbing the
+		   protected session until crypto authentication completes. */
 		if(is_sf) {
+			if((transport_accept_mask & TRANSPORT_BIT(TRANSPORT_OBFS)) &&
+			                (obfs_opens_session(inner, innerlen) ||
+			                 (innerlen >= SF_HDR_LEN && sf_has_boot_session(inner + 8, l)))) {
+				listen_socket_t *main_ls = obfs_resolve_main_ls(ls, addr);
+
+				if(main_ls) {
+					sf_udp_receive_obfs_boot(main_ls, inner, innerlen, addr, l);
+				}
+			}
+
 			return true;
 		}
+
 		return obfs_inject(ls, inner, innerlen, addr, NULL);
 	}
 
@@ -1751,6 +1840,86 @@ static bool obfs_accept(listen_socket_t *ls, obfs_link_t *l, obfs_keyset_t *ks, 
 	l->rx_since_dial = true;
 	obfs_link_activate_fd(l, addr, ls ? ls->udp.fd : -1, is_sf);
 	return obfs_inject(ls, inner, innerlen, addr, l);
+}
+
+static bool obfs_same_ip(const sockaddr_t *a, const sockaddr_t *b) {
+	if(a->sa.sa_family != b->sa.sa_family) {
+		return false;
+	}
+
+	if(a->sa.sa_family == AF_INET) {
+		return a->in.sin_addr.s_addr == b->in.sin_addr.s_addr;
+	}
+
+	if(a->sa.sa_family == AF_INET6) {
+		return !memcmp(&a->in6.sin6_addr, &b->in6.sin6_addr, sizeof(a->in6.sin6_addr));
+	}
+
+	return !sockaddrcmp(a, b);
+}
+
+static bool obfs_scan_allow(const sockaddr_t *addr, unsigned total) {
+	static time_t scan_time;
+	static int scan_budget;
+	static struct {
+		sockaddr_t addr;
+		int count;
+	} scan_srcs[OBFS_SCAN_SRC_SLOTS];
+	static unsigned scan_src_used;
+
+	if(now.tv_sec != scan_time) {
+		scan_time = now.tv_sec;
+		int limit = OBFS_SCAN_PER_SEC + (obfs_junk_count > 0 ? obfs_junk_count * 4 : 0);
+
+		if((int)total > limit) {
+			limit = (int)total;
+		}
+
+		if(limit > OBFS_SCAN_MAX) {
+			limit = OBFS_SCAN_MAX;
+		}
+
+		scan_budget = limit;
+		scan_src_used = 0;
+	}
+
+	if(scan_budget <= 0) {
+		return false;
+	}
+
+	int src_limit = (obfs_junk_count > 0 ? obfs_junk_count : 0) + 8;
+
+	if(src_limit < OBFS_SCAN_PER_SRC) {
+		src_limit = OBFS_SCAN_PER_SRC;
+	}
+
+	unsigned slot = OBFS_SCAN_SRC_SLOTS;
+
+	for(unsigned i = 0; i < scan_src_used; i++) {
+		if(obfs_same_ip(addr, &scan_srcs[i].addr)) {
+			if(scan_srcs[i].count >= src_limit) {
+				return false;
+			}
+
+			scan_srcs[i].count++;
+			slot = i;
+			break;
+		}
+	}
+
+	if(slot == OBFS_SCAN_SRC_SLOTS) {
+		if(scan_src_used < OBFS_SCAN_SRC_SLOTS) {
+			slot = scan_src_used++;
+		} else {
+			slot = (unsigned)scan_budget % OBFS_SCAN_SRC_SLOTS;
+		}
+
+		scan_srcs[slot].addr = *addr;
+		scan_srcs[slot].count = 1;
+	}
+
+	scan_budget--;
+	return true;
 }
 
 bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
@@ -1839,22 +2008,16 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 		return false;
 	}
 
-	/* Budget scales with the number of peers (capped), so the last node of a
-	   large mesh is still classified and a junk flood cannot starve cold
-	   starts (finding M5-6). A cursor persists across ticks for fairness when
-	   the budget is capped below the peer count. */
-	static time_t scan_time;
-	static int scan_budget;
-	static unsigned scan_cursor;
-
-	if(now.tv_sec != scan_time) {
-		scan_time = now.tv_sec;
-		scan_budget = total > OBFS_SCAN_PER_SEC ? (int)total : OBFS_SCAN_PER_SEC;
-
-		if(scan_budget > OBFS_SCAN_MAX) {
-			scan_budget = OBFS_SCAN_MAX;
-		}
+	/* Charge the global and per-source scan budget ONCE per incoming UDP
+	   datagram (H-TR-03), rather than inside the node_tree loop where a
+	   26+ node mesh or ObfsJunkPacketCount >= 3 exhausted the budget before
+	   the real SF_FLAG_SYN arrived. */
+	if(!obfs_scan_allow(&addr, total)) {
+		return false;
 	}
+
+	static unsigned scan_cursor;
+	scan_cursor %= total;
 
 	/* Round-robin from the persistent cursor, wrapping once. */
 	for(int pass = 0; pass < 2; pass++) {
@@ -1871,13 +2034,6 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 				continue;
 			}
 
-			if(scan_budget <= 0) {
-				return false;
-			}
-
-			scan_budget--;
-			scan_cursor = (pos + 1) % total;
-
 			if(!node_read_ecdsa_public_key(n)) {
 				continue;
 			}
@@ -1891,6 +2047,8 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 			ssize_t nlen = obfs_open(l, buf, len, inner, sizeof(inner), &ks, &seq, &ver);
 
 			if(nlen >= 0) {
+				scan_cursor = (pos + 1) % total;
+
 				if(debug_level >= DEBUG_CONNECTIONS) {
 					char *hostname = sockaddr2hostname(&addr);
 					logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Cold-classified an obfs datagram from %s as %s", hostname, n->name);
@@ -1902,6 +2060,7 @@ bool obfs_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
 		}
 	}
 
+	scan_cursor = (scan_cursor + 1) % total;
 	return false;
 }
 
@@ -1989,15 +2148,20 @@ bool obfs_dial(connection_t *c) {
 		return false;
 	}
 
-	if(!c->status.multipath_sub && !dseal_obfs_connected(n)) {
-		obfs_link_demote_sess(l);
-		l->ack_sent = false;
-	}
+	bool use_boot_dial = !c->status.multipath_sub && !dseal_obfs_connected(n);
 	obfs_link_activate_fd(l, &c->address, dial_fd, true);
 	l->rx_since_dial = false;
 	obfs_send_junk(sock >= 0 ? (size_t)sock : 0, &c->address);
 
-	return sf_dial_obfs(c, l);
+	if(!sf_dial_obfs(c, l)) {
+		return false;
+	}
+
+	if(use_boot_dial) {
+		sf_mark_boot_only(c, true);
+	}
+
+	return true;
 }
 
 /* Does any connection OTHER than `except' still serve `node'? Checked against
@@ -2132,6 +2296,8 @@ static void obfs_selfheal(void *data) {
 		if(l->sess_tx_ready && l->sess.valid) {
 			continue;
 		}
+
+		l->kex_done_at = 0;
 
 		/* A sealed direct path with no obfs meta connection under it: the
 		   session key is DSEAL_KEX's (rate-limited there). */
@@ -2476,6 +2642,17 @@ void dseal_node_unreachable(node_t *n) {
 
 	for list_each(obfs_link_t, l, &obfs_links) {
 		if(l->node == n) {
+			l->active = false;
+			l->have_addr = false;
+			l->addr_rx_fd = -1;
+			memset(l->have_alt_addr, 0, sizeof(l->have_alt_addr));
+			for(int i = 0; i < OBFS_ALT_ADDRS; i++) {
+				l->alt_rx_fd[i] = -1;
+			}
+			l->alt_addr_next = 0;
+			l->rx_fd = -1;
+			l->have_budget = false;
+			l->dseal_used = false;
 			obfs_link_demote_sess(l);
 			break;
 		}
@@ -2717,11 +2894,11 @@ void dseal_note_probe(node_t *to) {
    answers it. */
 
 static size_t dseal_kex_msglen(const char *from, const char *to) {
-	return sizeof("tincstack-dseal-kex-v1") + strlen(from) + 1 + strlen(to) + 1 + 1 + ECDH_SIZE;
+	return sizeof("tincstack-dseal-kex-v2") + strlen(from) + 1 + strlen(to) + 1 + 1 + 2 * ECDH_SIZE;
 }
 
-static size_t dseal_kex_msg(uint8_t *out, const char *from, const char *to, int flag, const uint8_t *pub) {
-	static const char ctx[] = "tincstack-dseal-kex-v1";
+static size_t dseal_kex_transcript(uint8_t *out, const char *from, const char *to, int flag, const uint8_t pub[ECDH_SIZE], const uint8_t ipub[ECDH_SIZE]) {
+	static const char ctx[] = "tincstack-dseal-kex-v2";
 	size_t n = 0;
 	memcpy(out + n, ctx, sizeof(ctx));
 	n += sizeof(ctx);
@@ -2731,10 +2908,12 @@ static size_t dseal_kex_msg(uint8_t *out, const char *from, const char *to, int 
 	n += strlen(to) + 1;
 	out[n++] = (uint8_t)flag;
 	memcpy(out + n, pub, ECDH_SIZE);
+	n += ECDH_SIZE;
+	memcpy(out + n, ipub, ECDH_SIZE);
 	return n + ECDH_SIZE;
 }
 
-static bool dseal_kex_send(obfs_link_t *l, int flag, const uint8_t pub[ECDH_SIZE]) {
+static bool dseal_kex_send(obfs_link_t *l, int flag, const uint8_t pub[ECDH_SIZE], const uint8_t ipub[ECDH_SIZE]) {
 	node_t *n = l->node;
 
 	if(!n || !n->status.reachable || !n->nexthop || !n->nexthop->connection || !myself->connection->ecdsa) {
@@ -2748,7 +2927,7 @@ static bool dseal_kex_send(obfs_link_t *l, int flag, const uint8_t pub[ECDH_SIZE
 	}
 
 	uint8_t *msg = xmalloc(dseal_kex_msglen(myself->name, n->name));
-	size_t mlen = dseal_kex_msg(msg, myself->name, n->name, flag, pub);
+	size_t mlen = dseal_kex_transcript(msg, myself->name, n->name, flag, pub, ipub);
 	uint8_t sig[64];
 	bool ok = ecdsa_sign(myself->connection->ecdsa, msg, mlen, sig);
 	free(msg);
@@ -2758,10 +2937,24 @@ static bool dseal_kex_send(obfs_link_t *l, int flag, const uint8_t pub[ECDH_SIZE
 	}
 
 	char pub64[B64_SIZE(ECDH_SIZE)];
+	char ipub64[B64_SIZE(ECDH_SIZE)];
 	char sig64[B64_SIZE(64)];
 	b64encode_tinc(pub, pub64, ECDH_SIZE);
+	b64encode_tinc(ipub, ipub64, ECDH_SIZE);
 	b64encode_tinc(sig, sig64, sizeof(sig));
-	return send_request(n->nexthop->connection, "%d %s %s %d %d %s %s", REQ_KEY, myself->name, n->name, DSEAL_KEX_REQ, flag, pub64, sig64);
+
+	if(flag == 0) {
+		return send_request(n->nexthop->connection, "%d %s %s %d %d %s %s", REQ_KEY, myself->name, n->name, DSEAL_KEX_REQ, flag, pub64, sig64);
+	}
+
+	return send_request(n->nexthop->connection, "%d %s %s %d %d %s %s %s", REQ_KEY, myself->name, n->name, DSEAL_KEX_REQ, flag, pub64, sig64, ipub64);
+}
+
+static void dseal_kex_install(obfs_link_t *l) {
+	obfs_link_promote(l);
+	l->kex_done_at = now.tv_sec ? now.tv_sec : 1;
+	l->peer_v3 = true;
+	l->peer_v2 = false;
 }
 
 static void dseal_kex_start(obfs_link_t *l) {
@@ -2791,7 +2984,7 @@ static void dseal_kex_start(obfs_link_t *l) {
 
 	l->dk_sent = now.tv_sec;
 
-	if(dseal_kex_send(l, 0, l->dk_pub)) {
+	if(dseal_kex_send(l, 0, l->dk_pub, l->dk_pub)) {
 		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Offered a direct-seal session key to %s", n->name);
 	}
 }
@@ -2816,13 +3009,17 @@ bool dseal_kex_h(node_t *from, const char *request) {
 	int flag;
 	char pub64[MAX_STRING_SIZE];
 	char sig64[MAX_STRING_SIZE];
+	char ipub64[MAX_STRING_SIZE] = "";
 
-	if(sscanf(request, "%*d %*s %*s %*d %d " MAX_STRING " " MAX_STRING, &flag, pub64, sig64) != 3 || flag < 0 || flag > 2) {
+	int nitems = sscanf(request, "%*d %*s %*s %*d %d " MAX_STRING " " MAX_STRING " " MAX_STRING, &flag, pub64, sig64, ipub64);
+
+	if(nitems < 3 || flag < 0 || flag > 2 || (flag > 0 && nitems < 4)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "DSEAL_KEX", from->name, from->hostname);
 		return true;
 	}
 
 	uint8_t pub[ECDH_SIZE];
+	uint8_t ipub[ECDH_SIZE];
 	uint8_t sig[64];
 
 	/* 32 bytes are exactly 43 base64 characters, 64 bytes 86; check before
@@ -2833,12 +3030,20 @@ bool dseal_kex_h(node_t *from, const char *request) {
 		return true;
 	}
 
+	if(flag == 0 && nitems == 3) {
+		memcpy(ipub, pub, ECDH_SIZE);
+	} else if(strlen(ipub64) != 43 || b64decode_tinc(ipub64, ipub, 43) != ECDH_SIZE ||
+	                (flag == 0 && memcmp(ipub, pub, ECDH_SIZE) != 0)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Got malformed %s ipub from %s (%s)", "DSEAL_KEX", from->name, from->hostname);
+		return true;
+	}
+
 	if(!node_read_ecdsa_public_key(from) || ecdsa_size(from->ecdsa) != sizeof(sig)) {
 		return true;
 	}
 
 	uint8_t *msg = xmalloc(dseal_kex_msglen(from->name, myself->name));
-	size_t mlen = dseal_kex_msg(msg, from->name, myself->name, flag, pub);
+	size_t mlen = dseal_kex_transcript(msg, from->name, myself->name, flag, pub, ipub);
 	bool ok = ecdsa_verify(from->ecdsa, msg, mlen, sig);
 	free(msg);
 
@@ -2890,14 +3095,17 @@ bool dseal_kex_h(node_t *from, const char *request) {
 			return true;
 		}
 
+		memcpy(l->dk_ipub, pub, ECDH_SIZE);
 		memset(shared, 0, sizeof(shared));
-		dseal_kex_send(l, 1, l->dk_rpub);
+		dseal_kex_send(l, 1, l->dk_rpub, l->dk_ipub);
 		return true;
 	}
 
 	case 1: {
-		if(!l->dk_ecdh) {
-			return true;   /* not ours, or already answered */
+		/* Reject delayed/replayed responses whose signed ipub does not match
+		   our active ephemeral offer, preserving l->dk_ecdh for the matching reply. */
+		if(!l->dk_ecdh || memcmp(ipub, l->dk_pub, ECDH_SIZE) != 0) {
+			return true;
 		}
 
 		ecdh_t *e = l->dk_ecdh;
@@ -2909,9 +3117,10 @@ bool dseal_kex_h(node_t *from, const char *request) {
 		}
 
 		if(dseal_build_next(l, shared, l->dk_pub, pub)) {
-			obfs_link_promote(l);
+			dseal_kex_install(l);
 			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Direct-seal session key established with %s", from->name);
-			dseal_kex_send(l, 2, pub);
+			dseal_kex_send(l, 2, pub, l->dk_pub);
+			memset(l->dk_pub, 0, sizeof(l->dk_pub));
 		}
 
 		memset(shared, 0, sizeof(shared));
@@ -2919,8 +3128,10 @@ bool dseal_kex_h(node_t *from, const char *request) {
 	}
 
 	default:
-		if(l->next.valid && !memcmp(pub, l->dk_rpub, ECDH_SIZE)) {
-			obfs_link_promote(l);
+		if(l->next.valid && !memcmp(pub, l->dk_rpub, ECDH_SIZE) && !memcmp(ipub, l->dk_ipub, ECDH_SIZE)) {
+			dseal_kex_install(l);
+			memset(l->dk_rpub, 0, sizeof(l->dk_rpub));
+			memset(l->dk_ipub, 0, sizeof(l->dk_ipub));
 			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "Direct-seal session key established with %s", from->name);
 		}
 

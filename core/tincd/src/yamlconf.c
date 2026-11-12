@@ -146,8 +146,8 @@ typedef struct {
 } parser_t;
 
 static int hexval(char c);
-static char *parse_dq_scalar(const char *s);
-static char *parse_sq_scalar(const char *s);
+static char *parse_dq_scalar(const char *s, bool *err, bool check_tail);
+static char *parse_sq_scalar(const char *s, bool *err, bool check_tail);
 
 /* Strip a YAML trailing `# ...` comment in place, respecting single- and
    double-quoted regions. Per YAML 1.2, `#` starts a comment only at the
@@ -180,9 +180,9 @@ static void strip_yaml_comment(char *raw) {
 			continue;
 		}
 
-		if(*p == '\'') {
+		if((*p == '\'') && (p == raw || isspace((unsigned char)p[-1]) || strchr("[,:-", p[-1]))) {
 			in_sq = true;
-		} else if(*p == '"') {
+		} else if((*p == '"') && (p == raw || isspace((unsigned char)p[-1]) || strchr("[,:-", p[-1]))) {
 			in_dq = true;
 		} else if(*p == '#' && (p == raw || p[-1] == ' ' || p[-1] == '\t')) {
 			*p = 0;
@@ -305,9 +305,9 @@ static yval_t *parse_flow_seq(const char *s, bool *err) {       /* "[a, b, c]" *
 		yval_t *it = yval_new(Y_SCALAR);
 
 		if(t[0] == '"') {
-			it->scalar = parse_dq_scalar(t);
+			it->scalar = parse_dq_scalar(t, err, true);
 		} else if(t[0] == '\'') {
-			it->scalar = parse_sq_scalar(t);
+			it->scalar = parse_sq_scalar(t, err, true);
 		} else {
 			it->scalar = strdup(unquote(t));
 		}
@@ -424,7 +424,7 @@ static int hexval(char c) {
    PyYAML emits this form for strings whose block representation would be
    ambiguous (e.g. lines with trailing spaces), encoding newlines as \n; the
    emitter below does the same. Output never exceeds the input length. */
-static char *parse_dq_scalar(const char *s) {
+static char *parse_dq_scalar(const char *s, bool *err, bool check_tail) {
 	if(*s == '"') {
 		s++;
 	}
@@ -433,7 +433,15 @@ static char *parse_dq_scalar(const char *s) {
 	size_t k = 0;
 
 	while(*s && *s != '"') {
-		if(*s == '\\' && s[1]) {
+		if(*s == '\\') {
+			if(!s[1]) {
+				if(err) {
+					*err = true;
+				}
+
+				break;
+			}
+
 			s++;
 
 			switch(*s) {
@@ -506,12 +514,32 @@ static char *parse_dq_scalar(const char *s) {
 		}
 	}
 
+	if(*s != '"') {
+		if(err) {
+			*err = true;
+		}
+	} else {
+		s++;
+
+		if(check_tail) {
+			while(*s == ' ' || *s == '\t') {
+				s++;
+			}
+
+			if(*s && *s != '#') {
+				if(err) {
+					*err = true;
+				}
+			}
+		}
+	}
+
 	out[k] = 0;
 	return out;
 }
 
 /* Parse a single-quoted YAML scalar, where '' escapes a literal '. */
-static char *parse_sq_scalar(const char *s) {
+static char *parse_sq_scalar(const char *s, bool *err, bool check_tail) {
 	if(*s == '\'') {
 		s++;
 	}
@@ -531,6 +559,26 @@ static char *parse_sq_scalar(const char *s) {
 		}
 
 		out[k++] = *s++;
+	}
+
+	if(*s != '\'') {
+		if(err) {
+			*err = true;
+		}
+	} else {
+		s++;
+
+		if(check_tail) {
+			while(*s == ' ' || *s == '\t') {
+				s++;
+			}
+
+			if(*s && *s != '#') {
+				if(err) {
+					*err = true;
+				}
+			}
+		}
 	}
 
 	out[k] = 0;
@@ -571,7 +619,7 @@ static yval_t *parse_map(parser_t *p, int indent) {
 			if(!*end) { p->error = true; break; }
 			colon = end + 1 + strspn(end + 1, " \t");
 			if(*colon != ':') { p->error = true; break; }
-			qkey = parse_dq_scalar(line);
+			qkey = parse_dq_scalar(line, &p->error, false);
 			key = qkey;
 		} else if(line[0] == '\'') {
 			/* 'single-quoted key': '' inside single quotes is an escaped '. */
@@ -586,7 +634,7 @@ static yval_t *parse_map(parser_t *p, int indent) {
 			if(!*end) { p->error = true; break; }
 			colon = end + 1 + strspn(end + 1, " \t");
 			if(*colon != ':') { p->error = true; break; }
-			qkey = parse_sq_scalar(line);
+			qkey = parse_sq_scalar(line, &p->error, false);
 			key = qkey;
 		} else {
 			colon = strchr(line, ':');
@@ -621,10 +669,10 @@ static yval_t *parse_map(parser_t *p, int indent) {
 			val = parse_block_scalar(p, indent, folded);
 		} else if(rest[0] == '"') {
 			val = yval_new(Y_SCALAR);
-			val->scalar = parse_dq_scalar(rest);
+			val->scalar = parse_dq_scalar(rest, &p->error, true);
 		} else if(rest[0] == '\'') {
 			val = yval_new(Y_SCALAR);
-			val->scalar = parse_sq_scalar(rest);
+			val->scalar = parse_sq_scalar(rest, &p->error, true);
 		} else if(rest[0] == '[') {
 			val = parse_flow_seq(rest, &p->error);
 		} else if(!strcmp(rest, "{}")) {
@@ -657,11 +705,11 @@ static yval_t *parse_seq(parser_t *p, int indent) {
 		} else if(item[0] == '"') {
 			p->i++;
 			val = yval_new(Y_SCALAR);
-			val->scalar = parse_dq_scalar(item);
+			val->scalar = parse_dq_scalar(item, &p->error, true);
 		} else if(item[0] == '\'') {
 			p->i++;
 			val = yval_new(Y_SCALAR);
-			val->scalar = parse_sq_scalar(item);
+			val->scalar = parse_sq_scalar(item, &p->error, true);
 		} else if(item[0] == '[') {
 			p->i++;
 			val = parse_flow_seq(item, &p->error);
@@ -989,8 +1037,10 @@ yamlconf_t *yamlconf_parse(char *text) {
 	return yc;
 }
 
+static bool yamlconf_lock_shared(const char *path);
+
 yamlconf_t *yamlconf_load(const char *path) {
-	bool locked = yamlconf_lock(path);
+	bool locked = yamlconf_lock_shared(path);
 	char *text = read_file(path);
 	if(locked) yamlconf_unlock();
 	if(!text) return NULL;
@@ -1031,6 +1081,7 @@ char *yamlconf_options_text(yamlconf_t *yc, const char *net) {
 	out[0] = 0;
 	for(size_t i = 0; i < opts->npairs; i++) {
 		const char *key = opts->keys[i];
+		if(!key || !*key || strpbrk(key, "\r\n\t =#")) continue;
 		const yval_t *v = opts->vals[i];
 		size_t nvals = (v->type == Y_SEQ) ? v->nitems : 1;
 		for(size_t k = 0; k < nvals; k++) {
@@ -1038,6 +1089,7 @@ char *yamlconf_options_text(yamlconf_t *yc, const char *net) {
 			                  ? (v->items[k]->type == Y_SCALAR ? bool_to_tinc(v->items[k]->scalar) : "")
 			                  : (v->type == Y_SCALAR ? bool_to_tinc(v->scalar) : "");
 			if(!val) val = "";
+			if(strpbrk(val, "\r\n")) continue;
 			size_t need = strlen(key) + strlen(val) + 8;
 			if(len + need > cap) { while(len + need > cap) cap *= 2; out = realloc(out, cap); }
 			len += sprintf(out + len, "%s = %s\n", key, val);
@@ -1083,6 +1135,17 @@ const char *yamlconf_first_network(yamlconf_t *yc) {
 	const yval_t *nets = map_get(yc->root, "networks");
 	if(!nets || nets->type != Y_MAP || !nets->npairs) return NULL;
 	return nets->keys[0];
+}
+
+const char **yamlconf_network_names(yamlconf_t *yc);
+const char **yamlconf_network_names(yamlconf_t *yc) {
+	const yval_t *nets = yc ? map_get(yc->root, "networks") : NULL;
+	size_t n = (nets && nets->type == Y_MAP) ? nets->npairs : 0;
+	const char **arr = malloc((n + 1) * sizeof(char *));
+	if(!arr) return NULL;
+	for(size_t i = 0; i < n; i++) arr[i] = nets->keys[i];
+	arr[n] = NULL;
+	return arr;
 }
 
 bool yamlconf_has_network(yamlconf_t *yc, const char *net) {
@@ -1165,7 +1228,7 @@ static bool plain_scalar_safe(const char *s) {
 		if(!(s[0] == '-' && isdigit((unsigned char) s[1]))) return false;
 	}
 	for(const unsigned char *p = (const unsigned char *) s; *p; p++) {
-		if(is_ctrl(*p)) return false;
+		if(is_ctrl(*p) || *p == '"' || *p == '\'') return false;
 	}
 	if(strstr(s, ": ") || strstr(s, " #")) return false;
 	return true;
@@ -1325,10 +1388,12 @@ static yval_t *net_node_create(yamlconf_t *yc, const char *net) {
 }
 
 void yamlconf_set_option(yamlconf_t *yc, const char *net, const char *key, const char *value) {
+	if(!yc || !net || !*net || !key || !*key || strlen(key) > YAML_MAX_KEY || !value) return;
 	map_set_scalar(map_get_or_create_map(net_node_create(yc, net), "options"), key, value);
 }
 
 void yamlconf_add_option_value(yamlconf_t *yc, const char *net, const char *key, const char *value) {
+	if(!yc || !net || !*net || !key || !*key || strlen(key) > YAML_MAX_KEY || !value) return;
 	yval_t *opts = map_get_or_create_map(net_node_create(yc, net), "options");
 	yval_t *v = map_get(opts, key);
 
@@ -1439,6 +1504,8 @@ static void host_add_line(yval_t *hosts, const char *name, const char *line) {
 
 void yamlconf_host_add_line(yamlconf_t *yc, const char *net, const char *name,
                             const char *key, const char *value) {
+	if(!yc || !net || !*net || !name || !*name || !key || !*key) return;
+	if(value && (strpbrk(key, "\r\n\t =#") || strpbrk(value, "\r\n"))) return;
 	yval_t *hosts = map_get_or_create_map(net_node_create(yc, net), "hosts");
 
 	if(value) {
@@ -1516,14 +1583,35 @@ bool yamlconf_script_del(yamlconf_t *yc, const char *net, const char *name) {
    caller that locks around a read-modify-write does not deadlock the save
    inside it. */
 static int lock_depth;
+static bool lock_is_shared;
 #ifdef _WIN32
 static HANDLE lock_handle = INVALID_HANDLE_VALUE;
 #else
 static int lock_fd = -1;
 #endif
 
-bool yamlconf_lock(const char *path) {
+static bool yamlconf_lock_mode(const char *path, bool shared) {
+	if(!path || !*path) {
+		return false;
+	}
+
 	if(lock_depth > 0) {
+		if(!shared && lock_is_shared) {
+#ifdef _WIN32
+			return false;
+#else
+			while(flock(lock_fd, LOCK_EX) == -1) {
+				if(errno == EINTR) continue;
+				return false;
+			}
+			struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0 };
+			while(fcntl(lock_fd, F_SETLKW, &fl) == -1) {
+				if(errno == EINTR) continue;
+				return false;
+			}
+			lock_is_shared = false;
+#endif
+		}
 		lock_depth++;
 		return true;
 	}
@@ -1533,31 +1621,73 @@ bool yamlconf_lock(const char *path) {
 	if(!lockpath) return false;
 	snprintf(lockpath, n, "%s.lock", path);
 #ifdef _WIN32
-	/* Exclusive open: a second opener fails until the first closes. Spin
-	   briefly instead of failing outright. */
+	/* Apply protected SYSTEM/Administrators (+ user if unelevated) DACL on the
+	   .lock file so unprivileged users on shared machines cannot hold it open
+	   to DoS elevated saves. Readers share FILE_SHARE_READ; writers take 0. */
+	PSECURITY_DESCRIPTOR sd = private_sd();
+	SECURITY_ATTRIBUTES sa = { sizeof(sa), sd, FALSE };
+	DWORD access = shared ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
+	DWORD share = shared ? FILE_SHARE_READ : 0;
+
 	for(int tries = 0; tries < 200; tries++) {
-		lock_handle = CreateFileA(lockpath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+		lock_handle = CreateFileA(lockpath, access, share, sd ? &sa : NULL,
 		                          OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 		if(lock_handle != INVALID_HANDLE_VALUE) break;
 		Sleep(50);
 	}
+	if(lock_handle != INVALID_HANDLE_VALUE && sd && !shared) {
+		SetFileSecurityA(lockpath, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, sd);
+	}
+	if(sd) LocalFree(sd);
 	free(lockpath);
 	if(lock_handle == INVALID_HANDLE_VALUE) return false;
 #else
-	lock_fd = open(lockpath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+	if(shared) {
+		lock_fd = open(lockpath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+		if(lock_fd < 0 && errno == ENOENT) {
+			lock_fd = open(lockpath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+		}
+	} else {
+		lock_fd = open(lockpath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+	}
 	free(lockpath);
 	if(lock_fd < 0) return false;
-	if(flock(lock_fd, LOCK_EX)) { close(lock_fd); lock_fd = -1; return false; }
-	struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0 };
-	while(fcntl(lock_fd, F_SETLKW, &fl) == -1 && errno == EINTR) {}
+	while(flock(lock_fd, shared ? LOCK_SH : LOCK_EX) == -1) {
+		if(errno == EINTR) continue;
+		close(lock_fd);
+		lock_fd = -1;
+		return false;
+	}
+	struct flock fl = {
+		.l_type = shared ? F_RDLCK : F_WRLCK,
+		.l_whence = SEEK_SET,
+		.l_start = 0,
+		.l_len = 0,
+	};
+	while(fcntl(lock_fd, F_SETLKW, &fl) == -1) {
+		if(errno == EINTR) continue;
+		close(lock_fd);
+		lock_fd = -1;
+		return false;
+	}
 #endif
+	lock_is_shared = shared;
 	lock_depth = 1;
 	return true;
+}
+
+static bool yamlconf_lock_shared(const char *path) {
+	return yamlconf_lock_mode(path, true);
+}
+
+bool yamlconf_lock(const char *path) {
+	return yamlconf_lock_mode(path, false);
 }
 
 void yamlconf_unlock(void) {
 	if(lock_depth <= 0) return;
 	if(--lock_depth > 0) return;
+	lock_is_shared = false;
 #ifdef _WIN32
 	CloseHandle(lock_handle);
 	lock_handle = INVALID_HANDLE_VALUE;

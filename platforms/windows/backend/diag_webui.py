@@ -598,7 +598,7 @@ async function apiGet(path) {
 async function apiPost(path, body) {
   const r = await fetch(path, {
     method: "POST",
-    headers: {"Content-Type": "application/json"},
+    headers: {"Content-Type": "application/json", "X-Diag-CSRF": "1"},
     credentials: "same-origin",
     body: JSON.stringify(body || {})
   });
@@ -613,7 +613,7 @@ async function logoutDiag() {
   try {
     await fetch("/api/logout", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {"Content-Type": "application/json", "X-Diag-CSRF": "1"},
       credentials: "same-origin",
       body: "{}"
     });
@@ -736,7 +736,7 @@ function renderIncidents() {
 function renderPeersTable(d) {
   const tbody = document.getElementById("peers-tbody");
   const nodes = d.nodes || [];
-  const choices = ["auto", "quic", "https", "obfs", "sf", "sftcp", "plain"];
+  const choices = ["auto", "quic", "h3", "https", "ws", "obfs", "sf", "sftcp", "dco", "plain"];
   tbody.innerHTML = nodes.map(n => {
     const safeName = esc(n.name);
     const linkBadge = n.is_self ? `<span class="badge info">★ this node</span>` :
@@ -1146,3 +1146,26 @@ refreshAll();
 </body>
 </html>
 """
+
+
+def _cli() -> int:
+    import argparse
+    import pathlib
+
+    ap = argparse.ArgumentParser(description="Sync or check shared Diagnostic WebUI HTML asset.")
+    ap.add_argument("--write", metavar="HTML_PATH", help="Write DIAG_WEBUI_HTML to target path")
+    ap.add_argument("--check", metavar="HTML_PATH", help="Verify target HTML matches DIAG_WEBUI_HTML")
+    args = ap.parse_args()
+    if args.write:
+        pathlib.Path(args.write).write_text(DIAG_WEBUI_HTML, encoding="utf-8")
+        return 0
+    if args.check:
+        current = pathlib.Path(args.check).read_text(encoding="utf-8")
+        if current != DIAG_WEBUI_HTML:
+            raise SystemExit(f"{args.check} is out of sync with platforms/windows/backend/diag_webui.py")
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

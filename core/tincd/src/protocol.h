@@ -131,6 +131,8 @@ extern bool send_tcppacket(struct connection_t *c, const struct vpn_packet_t *pa
 extern bool send_sptps_tcppacket(struct connection_t *c, const void *packet, size_t len);
 extern bool send_udp_info(struct node_t *from, struct node_t *to);
 extern bool send_mtu_info(struct node_t *from, struct node_t *to, int mtu);
+extern bool allow_transitive_forward(const char *from_name, const char *to_name, int kind, const char *payload);
+extern void exit_key_quorum(void);
 
 /* Request handlers  */
 

@@ -141,23 +141,29 @@ void setup_blocked_nodes(void) {
 		}
 	}
 
+	bool changed = false;
+
 	for list_each(connection_t, c, &blocked_victims) {
 		if(!connection_is_live(c)) {
 			continue;
 		}
 
 		if(c->outgoing) {
-			list_delete(&outgoing_list, c->outgoing);
+			outgoing_t *out = c->outgoing;
 			c->outgoing = NULL;
+			timeout_del(&out->ev);
+			list_delete(&outgoing_list, out);
 		}
 
 		terminate_connection(c, c->edge);
+		changed = true;
 	}
 
 	list_empty_list(&blocked_victims);
 
 	for list_each(outgoing_t, outgoing, &outgoing_list) {
 		if(outgoing->node && node_is_blocked(outgoing->node->name)) {
+			timeout_del(&outgoing->ev);
 			list_delete_node(&outgoing_list, node);
 		}
 	}
@@ -193,11 +199,36 @@ void setup_blocked_nodes(void) {
 					send_del_edge(everyone, e);
 				}
 
+				for splay_each(node_t, peer, &node_tree) {
+					if(peer->prevedge == e) {
+						peer->prevedge = NULL;
+					}
+				}
+
 				edge_del(e);
 			}
 		}
 
+		for splay_each(node_t, peer, &node_tree) {
+			if(peer->nexthop == n) {
+				peer->nexthop = NULL;
+			}
+
+			if(peer->via == n) {
+				peer->via = NULL;
+			}
+
+			if(peer->prev_nexthop == n) {
+				peer->prev_nexthop = NULL;
+			}
+		}
+
 		node_del(n);
+		changed = true;
+	}
+
+	if(changed && myself) {
+		graph();
 	}
 }
 
@@ -323,8 +354,7 @@ void setup_no_direct_nodes(void) {
 
 		if(c->node) {
 			c->node->status.no_direct = true;
-			c->node->last_no_direct_sent = now.tv_sec;
-			send_no_direct_signal(c->node, true);
+			c->node->last_no_direct_sent = (time_t)-1;
 		}
 
 		if(c->outgoing) {
@@ -399,6 +429,11 @@ void setup_no_direct_nodes(void) {
 			timeout_del(&n->punch_timer);
 			n->punch_go = (struct timeval) {0, 0};
 			n->last_lan_udp_rx = 0;
+
+			for(int i = 0; i < MAX_NODE_PATHS; i++) {
+				sockaddrfree(&n->paths[i].addr);
+			}
+
 			memset(n->paths, 0, sizeof(n->paths));
 		}
 	}
@@ -452,6 +487,10 @@ void free_node(node_t *n) {
 	list_empty_list(&n->quorum_voters);
 
 	sockaddrfree(&n->address);
+
+	for(int i = 0; i < MAX_NODE_PATHS; i++) {
+		sockaddrfree(&n->paths[i].addr);
+	}
 
 #ifndef DISABLE_LEGACY
 	cipher_free(n->incipher);
@@ -524,6 +563,10 @@ node_t *lookup_node_id(const node_id_t *id) {
 }
 
 node_t *lookup_node_udp(const sockaddr_t *sa) {
+	if(!sa || (sa->sa.sa_family != AF_INET && sa->sa.sa_family != AF_INET6)) {
+		return NULL;
+	}
+
 	node_t tmp = {.address = *sa};
 	node_t *found = splay_search(&node_udp_tree, &tmp);
 
@@ -590,7 +633,11 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 	splay_delete(&node_udp_tree, n);
 
 	if(sa) {
-		n->address = *sa;
+		if(&n->address != sa) {
+			sockaddrfree(&n->address);
+			sockaddrcpy(&n->address, sa);
+		}
+
 		n->sock = 0;
 
 		for(int i = 0; i < listen_sockets; i++) {
@@ -604,6 +651,9 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 		free(n->hostname);
 		n->hostname = sockaddr2hostname(&n->address);
 		logger(DEBUG_PROTOCOL, LOG_DEBUG, "UDP address of %s set to %s", n->name, n->hostname);
+	} else {
+		sockaddrfree(&n->address);
+		memset(&n->address, 0, sizeof(n->address));
 	}
 
 	/* invalidate UDP information - note that this is a security feature as well to make sure
@@ -615,6 +665,11 @@ void update_node_udp(node_t *n, const sockaddr_t *sa) {
 
 	if(!sa) {
 		n->last_lan_udp_rx = 0;
+
+		for(int i = 0; i < MAX_NODE_PATHS; i++) {
+			sockaddrfree(&n->paths[i].addr);
+		}
+
 		memset(n->paths, 0, sizeof(n->paths));
 	}
 

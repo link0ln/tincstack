@@ -24,7 +24,10 @@ import ch.qos.logback.classic.android.LogcatAppender
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.Context
-import ch.qos.logback.core.FileAppender
+import ch.qos.logback.core.rolling.FixedWindowRollingPolicy
+import ch.qos.logback.core.rolling.RollingFileAppender
+import ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy
+import ch.qos.logback.core.util.FileSize
 import org.slf4j.LoggerFactory
 
 /**
@@ -33,8 +36,11 @@ import org.slf4j.LoggerFactory
 object AppLogger {
   private const val LOGCAT_PATTERN = "[%thread] %msg%n%rEx"
   private const val LOGFILE_PATTERN = "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n%rEx"
+  private const val MAX_FILE_SIZE = "2MB"
+  private const val MAX_BACKUP_INDEX = 2
 
   fun configure() {
+    val logPath = AppPaths.appLogFile().absolutePath
     (LoggerFactory.getILoggerFactory() as LoggerContext)
       .apply { reset() }
       .let { loggerContext ->
@@ -46,11 +52,28 @@ object AppLogger {
               .apply { start() })
           }
           .apply {
-            addAppender(FileAppender<ILoggingEvent>()
-              .apply { context = loggerContext }
-              .apply { encoder = patternEncoder(loggerContext, LOGFILE_PATTERN) }
-              .apply { file = AppPaths.appLogFile().absolutePath }
-              .apply { start() })
+            val fileAppender = RollingFileAppender<ILoggingEvent>().apply {
+              context = loggerContext
+              file = logPath
+              encoder = patternEncoder(loggerContext, LOGFILE_PATTERN)
+            }
+            val rollingPolicy = FixedWindowRollingPolicy().apply {
+              context = loggerContext
+              setParent(fileAppender)
+              fileNamePattern = "$logPath.%i"
+              minIndex = 1
+              maxIndex = MAX_BACKUP_INDEX
+              start()
+            }
+            val triggerPolicy = SizeBasedTriggeringPolicy<ILoggingEvent>().apply {
+              context = loggerContext
+              maxFileSize = FileSize.valueOf(MAX_FILE_SIZE)
+              start()
+            }
+            fileAppender.rollingPolicy = rollingPolicy
+            fileAppender.triggeringPolicy = triggerPolicy
+            fileAppender.start()
+            addAppender(fileAppender)
           }
       }
   }

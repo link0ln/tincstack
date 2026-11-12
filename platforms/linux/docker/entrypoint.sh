@@ -144,7 +144,16 @@ valid_port() {
     [[ $p =~ ^[0-9]+$ ]] && (( 10#$p >= 1 && 10#$p <= 65535 ))
 }
 
+valid_port_or_zero() {
+    local p=$1
+    [[ $p =~ ^[0-9]+$ ]] && (( 10#$p >= 0 && 10#$p <= 65535 ))
+}
+
 if [[ -n $PORT ]]; then
+    if ! valid_port_or_zero "$PORT"; then
+        log "invalid PORT '$PORT': expected integer 0..65535"
+        exit 1
+    fi
     cli set Port "$PORT"
     env_state_add PORT
     log "options.Port = $PORT"
@@ -161,6 +170,10 @@ elif (( ! fresh )) && env_state_has PORT; then
 fi
 
 if [[ -n $FRONT_PORT ]]; then
+    if ! valid_port_or_zero "$FRONT_PORT"; then
+        log "invalid FRONT_PORT '$FRONT_PORT': expected integer 0..65535"
+        exit 1
+    fi
     cli set HttpsPort "$FRONT_PORT"
     cli set QuicPort "$FRONT_PORT"
     env_state_add FRONT_PORT
@@ -175,6 +188,10 @@ elif (( ! fresh )) && env_state_has FRONT_PORT; then
 fi
 
 if [[ -n $FRONT_PORT_PUBLIC ]]; then
+    if ! valid_port "$FRONT_PORT_PUBLIC"; then
+        log "invalid FRONT_PORT_PUBLIC '$FRONT_PORT_PUBLIC': expected integer 1..65535"
+        exit 1
+    fi
     cli set HttpsPortPublic "$FRONT_PORT_PUBLIC"
     cli set QuicPortPublic "$FRONT_PORT_PUBLIC"
     env_state_add FRONT_PORT_PUBLIC
@@ -189,6 +206,10 @@ elif (( ! fresh )) && env_state_has FRONT_PORT_PUBLIC; then
 fi
 
 if [[ -n $OBFS_PORT ]]; then
+    if ! valid_port_or_zero "$OBFS_PORT"; then
+        log "invalid OBFS_PORT '$OBFS_PORT': expected integer 0..65535"
+        exit 1
+    fi
     cli set ObfsPort "$OBFS_PORT"
     env_state_add OBFS_PORT
     log "options.ObfsPort = $OBFS_PORT (ensure UDP port $OBFS_PORT is published on the host, e.g. via compose.obfs.yml)"
@@ -201,6 +222,10 @@ elif (( ! fresh )) && env_state_has OBFS_PORT; then
 fi
 
 if [[ -n $OBFS_PORT_PUBLIC ]]; then
+    if ! valid_port "$OBFS_PORT_PUBLIC"; then
+        log "invalid OBFS_PORT_PUBLIC '$OBFS_PORT_PUBLIC': expected integer 1..65535"
+        exit 1
+    fi
     cli set ObfsPortPublic "$OBFS_PORT_PUBLIC"
     env_state_add OBFS_PORT_PUBLIC
     log "options.ObfsPortPublic = $OBFS_PORT_PUBLIC"
@@ -268,7 +293,14 @@ fi
 set_host_vars() {
     if (( ${#address_args[@]} > 0 )); then
         cli set "$name.Address" "${address_args[@]}"
+        env_state_add PUBLIC_ADDRESS
         log "hosts.$name Address = ${address_args[*]}"
+    elif (( ! fresh )) && env_state_has PUBLIC_ADDRESS; then
+        if [[ -n $(cli get "$name.Address" 2>/dev/null || true) ]]; then
+            cli del "$name.Address" >/dev/null 2>&1 || true
+            log "PUBLIC_ADDRESS unset: cleared env-managed hosts.$name Address"
+        fi
+        env_state_del PUBLIC_ADDRESS
     fi
 }
 
@@ -374,10 +406,19 @@ renew_loop() {
     done
 }
 
+if [[ ! $CERT_RENEW_INTERVAL =~ ^-?[0-9]+$ ]]; then
+    log "invalid CERT_RENEW_INTERVAL '$CERT_RENEW_INTERVAL': expected integer seconds"
+    exit 1
+fi
+
 if [[ $CERT_RENEW != 0 ]]; then
-    renew_loop &
-    renewer=$!
-    trap 'kill -TERM "$daemon" "$renewer" 2>/dev/null || true' TERM INT
+    if (( 10#$CERT_RENEW_INTERVAL > 0 )); then
+        renew_loop &
+        renewer=$!
+        trap 'kill -TERM "$daemon" "$renewer" 2>/dev/null || true' TERM INT
+    else
+        log "CERT_RENEW_INTERVAL=$CERT_RENEW_INTERVAL <= 0: background certificate renewal disabled"
+    fi
 fi
 
 rc=0

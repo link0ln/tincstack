@@ -125,7 +125,7 @@ static int subnet_compare_mac(const subnet_t *a, const subnet_t *b) {
 		return result;
 	}
 
-	result = a->weight - b->weight;
+	result = (a->weight > b->weight) - (a->weight < b->weight);
 
 	if(result || !a->owner || !b->owner) {
 		return result;
@@ -137,7 +137,8 @@ static int subnet_compare_mac(const subnet_t *a, const subnet_t *b) {
 static int subnet_compare_ipv4(const subnet_t *a, const subnet_t *b) {
 	int result;
 
-	result = b->net.ipv4.prefixlength - a->net.ipv4.prefixlength;
+	result = (b->net.ipv4.prefixlength > a->net.ipv4.prefixlength) -
+	         (b->net.ipv4.prefixlength < a->net.ipv4.prefixlength);
 
 	if(result) {
 		return result;
@@ -149,7 +150,7 @@ static int subnet_compare_ipv4(const subnet_t *a, const subnet_t *b) {
 		return result;
 	}
 
-	result = a->weight - b->weight;
+	result = (a->weight > b->weight) - (a->weight < b->weight);
 
 	if(result || !a->owner || !b->owner) {
 		return result;
@@ -161,7 +162,8 @@ static int subnet_compare_ipv4(const subnet_t *a, const subnet_t *b) {
 static int subnet_compare_ipv6(const subnet_t *a, const subnet_t *b) {
 	int result;
 
-	result = b->net.ipv6.prefixlength - a->net.ipv6.prefixlength;
+	result = (b->net.ipv6.prefixlength > a->net.ipv6.prefixlength) -
+	         (b->net.ipv6.prefixlength < a->net.ipv6.prefixlength);
 
 	if(result) {
 		return result;
@@ -173,7 +175,7 @@ static int subnet_compare_ipv6(const subnet_t *a, const subnet_t *b) {
 		return result;
 	}
 
-	result = a->weight - b->weight;
+	result = (a->weight > b->weight) - (a->weight < b->weight);
 
 	if(result || !a->owner || !b->owner) {
 		return result;
@@ -183,7 +185,7 @@ static int subnet_compare_ipv6(const subnet_t *a, const subnet_t *b) {
 }
 
 int subnet_compare(const subnet_t *a, const subnet_t *b) {
-	int result = (int)a->type - (int)b->type;
+	int result = (a->type > b->type) - (a->type < b->type);
 
 	if(result) {
 		return result;
@@ -209,8 +211,11 @@ int subnet_compare(const subnet_t *a, const subnet_t *b) {
 
 /* Ascii representation of subnets */
 
+#define SUBNET_WEIGHT_MIN (-100000000)
+#define SUBNET_WEIGHT_MAX 100000000
+
 bool str2net(subnet_t *subnet, const char *subnetstr) {
-	char str[64];
+	char str[128];
 	strncpy(str, subnetstr, sizeof(str));
 	str[sizeof(str) - 1] = 0;
 	int consumed;
@@ -220,15 +225,21 @@ bool str2net(subnet_t *subnet, const char *subnetstr) {
 
 	if(weight_separator) {
 		char *weight_str = weight_separator + 1;
+		char *endptr = NULL;
+		errno = 0;
+		long long w = strtoll(weight_str, &endptr, 10);
 
-		if(sscanf(weight_str, "%d%n", &weight, &consumed) < 1) {
+		if(endptr == weight_str || *endptr != '\0') {
 			return false;
 		}
 
-		if(weight_str[consumed]) {
-			return false;
+		if(w > SUBNET_WEIGHT_MAX) {
+			w = SUBNET_WEIGHT_MAX;
+		} else if(w < SUBNET_WEIGHT_MIN) {
+			w = SUBNET_WEIGHT_MIN;
 		}
 
+		weight = (int)w;
 		*weight_separator = 0;
 	}
 
@@ -311,8 +322,9 @@ bool str2net(subnet_t *subnet, const char *subnetstr) {
 }
 
 bool net2str(char *netstr, size_t len, const subnet_t *subnet) {
-	if(!netstr || !subnet) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "net2str() was called with netstr=%p, subnet=%p!", (void *)netstr, (void *)subnet);
+	if(!netstr || !subnet || len == 0) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "net2str() was called with netstr=%p, len=%zu, subnet=%p!",
+		       (void *)netstr, len, (void *)subnet);
 		return false;
 	}
 
@@ -321,17 +333,25 @@ bool net2str(char *netstr, size_t len, const subnet_t *subnet) {
 
 	switch(subnet->type) {
 	case SUBNET_MAC:
-		snprintf(netstr, len, "%02x:%02x:%02x:%02x:%02x:%02x",
-		         subnet->net.mac.address.x[0],
-		         subnet->net.mac.address.x[1],
-		         subnet->net.mac.address.x[2],
-		         subnet->net.mac.address.x[3],
-		         subnet->net.mac.address.x[4],
-		         subnet->net.mac.address.x[5]);
+		result = snprintf(netstr, len, "%02x:%02x:%02x:%02x:%02x:%02x",
+		                  subnet->net.mac.address.x[0],
+		                  subnet->net.mac.address.x[1],
+		                  subnet->net.mac.address.x[2],
+		                  subnet->net.mac.address.x[3],
+		                  subnet->net.mac.address.x[4],
+		                  subnet->net.mac.address.x[5]);
+
+		if(result < 0 || (size_t)result >= len) {
+			return false;
+		}
+
 		break;
 
 	case SUBNET_IPV4:
-		inet_ntop(AF_INET, &subnet->net.ipv4.address, netstr, len);
+		if(!inet_ntop(AF_INET, &subnet->net.ipv4.address, netstr, len)) {
+			return false;
+		}
+
 		prefixlength = subnet->net.ipv4.prefixlength;
 
 		if(prefixlength == 32) {
@@ -341,7 +361,10 @@ bool net2str(char *netstr, size_t len, const subnet_t *subnet) {
 		break;
 
 	case SUBNET_IPV6: {
-		inet_ntop(AF_INET6, &subnet->net.ipv6.address, netstr, len);
+		if(!inet_ntop(AF_INET6, &subnet->net.ipv6.address, netstr, len)) {
+			return false;
+		}
+
 		prefixlength = subnet->net.ipv6.prefixlength;
 
 		if(prefixlength == 128) {
@@ -362,12 +385,21 @@ bool net2str(char *netstr, size_t len, const subnet_t *subnet) {
 
 	if(prefixlength >= 0) {
 		result = snprintf(netstr, len, "/%d", prefixlength);
+
+		if(result < 0 || (size_t)result >= len) {
+			return false;
+		}
+
 		netstr += result;
-		len -= result;
+		len -= (size_t)result;
 	}
 
 	if(subnet->weight != DEFAULT_WEIGHT) {
-		snprintf(netstr, len, "#%d", subnet->weight);
+		result = snprintf(netstr, len, "#%d", subnet->weight);
+
+		if(result < 0 || (size_t)result >= len) {
+			return false;
+		}
 	}
 
 	return true;

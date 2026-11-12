@@ -32,6 +32,7 @@ void io_add(io_t *io, io_cb_t cb, void *data, int fd, int flags) {
 	}
 
 	io->fd = fd;
+	io->flags = 0;
 	io->cb = cb;
 	io->data = data;
 	io->node.data = io;
@@ -50,7 +51,7 @@ void io_set(io_t *io, int flags) {
 
 	io->flags = flags;
 
-	if(io->fd == -1) {
+	if(io->fd < 0 || io->fd >= FD_SETSIZE) {
 		return;
 	}
 
@@ -64,6 +65,10 @@ void io_set(io_t *io, int flags) {
 		FD_SET(io->fd, &writefds);
 	} else {
 		FD_CLR(io->fd, &writefds);
+	}
+
+	if(!flags) {
+		io_tree.generation++;
 	}
 }
 
@@ -85,14 +90,19 @@ bool event_loop(void) {
 		struct timeval diff;
 		struct timeval *tv = timeout_execute(&diff);
 
+		if(!running) {
+			break;
+		}
+
 		memcpy(&readable, &readfds, sizeof(readable));
 		memcpy(&writable, &writefds, sizeof(writable));
 
-		int maxfds =  0;
+		int maxfds = 0;
 
-		if(io_tree.tail) {
-			io_t *last = io_tree.tail->data;
-			maxfds = last->fd + 1;
+		for splay_each(io_t, io, &io_tree) {
+			if(io->fd >= 0 && io->fd < FD_SETSIZE && io->flags && io->fd + 1 > maxfds) {
+				maxfds = io->fd + 1;
+			}
 		}
 
 		int n = select(maxfds, &readable, &writable, NULL, tv);
@@ -109,12 +119,18 @@ bool event_loop(void) {
 			continue;
 		}
 
+		gettimeofday(&now, NULL);
+
 		unsigned int curgen = io_tree.generation;
 
 		for splay_each(io_t, io, &io_tree) {
-			if(FD_ISSET(io->fd, &writable)) {
+			if(io->fd < 0 || io->fd >= FD_SETSIZE || !io->cb) {
+				continue;
+			}
+
+			if((io->flags & IO_WRITE) && FD_ISSET(io->fd, &writable)) {
 				io->cb(io->data, IO_WRITE);
-			} else if(FD_ISSET(io->fd, &readable)) {
+			} else if((io->flags & IO_READ) && FD_ISSET(io->fd, &readable)) {
 				io->cb(io->data, IO_READ);
 			} else {
 				continue;
@@ -126,7 +142,7 @@ bool event_loop(void) {
 			    need to exit the loop if that happens. That's okay, since any remaining events will
 			    get picked up by the next select() call.
 			*/
-			if(curgen != io_tree.generation) {
+			if(!running || curgen != io_tree.generation) {
 				break;
 			}
 		}

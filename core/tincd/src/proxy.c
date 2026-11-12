@@ -188,24 +188,29 @@ static size_t create_socks5_req(void *buf, const sockaddr_t *sa) {
 	uint8_t *auth = (uint8_t *)buf + sizeof(socks5_greet_t);
 
 	if(proxyuser && proxypass) {
+		size_t userlen = strlen(proxyuser);
+		size_t passlen = strlen(proxypass);
+
+		if(userlen > 255 || passlen > 255) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "SOCKS 5 username/password exceeds 255 bytes!");
+			return 0;
+		}
+
 		req->authmethod = SOCKS5_AUTH_METHOD_PASSWORD;
 
 		// field  | VER | IDLEN |  ID   | PWLEN |   PW  |
-		// bytes  |  1  |   1   | 1-255 |   1   | 1-255 |
+		// bytes  |  1  |   1   | 0-255 |   1   | 0-255 |
 
 		// Assign the first field (auth protocol version)
 		*auth++ = SOCKS5_AUTH_VERSION;
 
-		size_t userlen = strlen(proxyuser);
-		size_t passlen = strlen(proxypass);
-
 		// Assign the username length, and copy the username
-		*auth++ = userlen;
+		*auth++ = (uint8_t)userlen;
 		memcpy(auth, proxyuser, userlen);
 		auth += userlen;
 
 		// Do the same for password
-		*auth++ = passlen;
+		*auth++ = (uint8_t)passlen;
 		memcpy(auth, proxypass, passlen);
 		auth += passlen;
 
@@ -263,8 +268,16 @@ size_t socks_req_len(proxytype_t type, const sockaddr_t *sa) {
 		              : sizeof(socks5_ipv6_t));
 
 		if(proxyuser && proxypass) {
+			size_t userlen = strlen(proxyuser);
+			size_t passlen = strlen(proxypass);
+
+			if(userlen > 255 || passlen > 255) {
+				logger(DEBUG_CONNECTIONS, LOG_ERR, "SOCKS 5 username/password exceeds 255 bytes");
+				return 0;
+			}
+
 			// version, userlen, user, passlen, pass
-			len += 1 + 1 + strlen(proxyuser) + 1 + strlen(proxypass);
+			len += 1 + 1 + userlen + 1 + passlen;
 		}
 
 		return len;

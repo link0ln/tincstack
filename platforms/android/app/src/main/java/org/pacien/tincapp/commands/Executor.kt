@@ -23,8 +23,11 @@ import java8.util.concurrent.CompletableFuture
 import java8.util.function.Supplier
 import java.io.IOException
 import java.io.InputStream
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.pacien.tincapp.context.AppPaths
 
 /**
@@ -33,7 +36,30 @@ import org.pacien.tincapp.context.AppPaths
 internal object Executor {
   class CommandExecutionException(msg: String) : Exception(msg)
 
-  private val ioPool = Executors.newCachedThreadPool()
+  private const val CONTROL_TIMEOUT_MS = 10_000L
+
+  private val ioThreadSeq = AtomicInteger(0)
+  private val cmdThreadSeq = AtomicInteger(0)
+
+  private val ioPool = ThreadPoolExecutor(
+    2,
+    16,
+    60L,
+    TimeUnit.SECONDS,
+    LinkedBlockingQueue(256),
+  ) { r ->
+    Thread(r, "tinc-io-${ioThreadSeq.incrementAndGet()}").apply { isDaemon = true }
+  }.apply { allowCoreThreadTimeOut(true) }
+
+  private val cmdPool = ThreadPoolExecutor(
+    2,
+    8,
+    30L,
+    TimeUnit.SECONDS,
+    ArrayBlockingQueue(64),
+  ) { r ->
+    Thread(r, "tinc-ctl-${cmdThreadSeq.incrementAndGet()}").apply { isDaemon = true }
+  }.apply { allowCoreThreadTimeOut(true) }
 
   private fun read(stream: InputStream): List<String> =
     stream.bufferedReader().use { it.readLines() }
@@ -94,19 +120,59 @@ internal object Executor {
     throw CommandExecutionException(e.message ?: "Could not start process.")
   }
 
-  fun call(cmd: Command): CompletableFuture<List<String>> = run(cmd).let { process ->
+  fun call(cmd: Command): CompletableFuture<List<String>> =
+    CompletableFuture.supplyAsync(Supplier {
+      val process = run(cmd)
+      try {
+        try {
+          process.outputStream.close()
+        } catch (_: Exception) {
+        }
+        var outLines: List<String> = emptyList()
+        var errLines: List<String> = emptyList()
+        val outThread = Thread({
+          try {
+            outLines = read(process.inputStream)
+          } catch (_: Exception) {
+          }
+        }, "tinc-ctl-out").apply { isDaemon = true; start() }
+        val errThread = Thread({
+          try {
+            errLines = read(process.errorStream)
+          } catch (_: Exception) {
+          }
+        }, "tinc-ctl-err").apply { isDaemon = true; start() }
+
+        val finished = waitForProcess(process, CONTROL_TIMEOUT_MS)
+        if (!finished) {
+          destroyProcessForcibly(process)
+          closeStreamsQuietly(process)
+          outThread.join(500L)
+          errThread.join(500L)
+          throw CommandExecutionException("Control command timed out after ${CONTROL_TIMEOUT_MS / 1000}s.")
+        }
+        outThread.join(1_000L)
+        errThread.join(1_000L)
+        val exitCode = process.exitValue()
+        if (exitCode == 0) outLines
+        else throw CommandExecutionException(errLines.lastOrNull() ?: "Non-zero exit status ($exitCode).")
+      } finally {
+        closeStreamsQuietly(process)
+      }
+    }, cmdPool)!!
+
+  private fun closeStreamsQuietly(process: Process) {
+    try {
+      process.inputStream.close()
+    } catch (_: Exception) {
+    }
+    try {
+      process.errorStream.close()
+    } catch (_: Exception) {
+    }
     try {
       process.outputStream.close()
     } catch (_: Exception) {
-    }
-    val stdoutFuture = supplyAsyncTask { read(process.inputStream) }
-    val stderrFuture = supplyAsyncTask { read(process.errorStream) }
-    supplyAsyncTask<List<String>> {
-      val exitCode = process.waitFor()
-      val out = stdoutFuture.get()
-      val err = stderrFuture.get()
-      if (exitCode == 0) out
-      else throw CommandExecutionException(err.lastOrNull() ?: "Non-zero exit status ($exitCode).")
     }
   }
 

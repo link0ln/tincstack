@@ -44,6 +44,10 @@
 
 #include "ed25519/sha512.h"
 
+#ifndef HAVE_WINDOWS
+#include <poll.h>
+#endif
+
 int addressfamily = AF_UNSPEC;
 
 /*
@@ -195,8 +199,114 @@ static char *conf_get(const char *filename, const char *var) {
 	return result;
 }
 
+static bool is_private_ipv4_host(uint32_t ip) {
+	return (ip >> 24) == 0 ||                          /* 0.0.0.0/8 */
+	       (ip >> 24) == 10 ||                         /* 10.0.0.0/8 (RFC 1918) */
+	       (ip & 0xffc00000u) == 0x64400000u ||        /* 100.64.0.0/10 (CGNAT) */
+	       (ip >> 24) == 127 ||                        /* 127.0.0.0/8 (loopback) */
+	       (ip & 0xffff0000u) == 0xa9fe0000u ||        /* 169.254.0.0/16 (link-local) */
+	       (ip & 0xfff00000u) == 0xac100000u ||        /* 172.16.0.0/12 (RFC 1918 / Docker / Hyper-V) */
+	       (ip & 0xffff0000u) == 0xc0a80000u ||        /* 192.168.0.0/16 (RFC 1918) */
+	       (ip & 0xfffe0000u) == 0xc6120000u ||        /* 198.18.0.0/15 */
+	       (ip >> 24) >= 224;                          /* multicast / reserved */
+}
+
+/* True if `raw` is a private/RFC1918/Docker/CGNAT/loopback/link-local IP
+   literal (or localhost/.local). Public IPs and routable DNS names return false. */
+static bool is_private_or_local_address(const char *raw) {
+	if(!raw || !*raw) {
+		return true;
+	}
+
+	char buf[256];
+	const char *s = raw;
+
+	if(*s == '[') {
+		const char *rb = strchr(s + 1, ']');
+
+		if(!rb || (size_t)(rb - (s + 1)) >= sizeof(buf)) {
+			return false;
+		}
+
+		memcpy(buf, s + 1, (size_t)(rb - (s + 1)));
+		buf[rb - (s + 1)] = 0;
+	} else {
+		size_t n = strcspn(s, " \t");
+
+		if(n >= sizeof(buf)) {
+			return false;
+		}
+
+		memcpy(buf, s, n);
+		buf[n] = 0;
+
+		/* Strip :port on IPv4/hostname (single colon). */
+		char *c1 = strchr(buf, ':');
+
+		if(c1 && !strchr(c1 + 1, ':')) {
+			*c1 = 0;
+		}
+	}
+
+	if(!strcasecmp(buf, "localhost")) {
+		return true;
+	}
+
+	size_t blen = strlen(buf);
+
+	if(blen > 6 && !strcasecmp(buf + blen - 6, ".local")) {
+		return true;
+	}
+
+	struct addrinfo hint = {0};
+	struct addrinfo *ai = NULL;
+	hint.ai_flags = AI_NUMERICHOST;
+	hint.ai_socktype = SOCK_STREAM;
+
+	if(getaddrinfo(buf, NULL, &hint, &ai) != 0 || !ai) {
+		if(ai) {
+			freeaddrinfo(ai);
+		}
+
+		return false; /* DNS hostname: treat as public/explicit */
+	}
+
+	bool is_priv = false;
+
+	if(ai->ai_family == AF_INET && ai->ai_addrlen >= sizeof(struct sockaddr_in)) {
+		const struct sockaddr_in *sin = (const struct sockaddr_in *)ai->ai_addr;
+		is_priv = is_private_ipv4_host(ntohl(sin->sin_addr.s_addr));
+	} else if(ai->ai_family == AF_INET6 && ai->ai_addrlen >= sizeof(struct sockaddr_in6)) {
+		const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)ai->ai_addr;
+		const uint8_t *b = sin6->sin6_addr.s6_addr;
+		bool all_zero = true;
+
+		for(int i = 0; i < 15; i++) {
+			if(b[i] != 0) {
+				all_zero = false;
+				break;
+			}
+		}
+
+		if(all_zero && (b[15] == 0 || b[15] == 1)) {
+			is_priv = true; /* :: or ::1 */
+		} else if((b[0] == 0xfe && (b[1] & 0xc0) == 0x80) || /* fe80::/10 link-local */
+		                (b[0] & 0xfe) == 0xfc ||             /* fc00::/7 ULA */
+		                b[0] == 0xff) {                      /* multicast */
+			is_priv = true;
+		} else if(memcmp(b, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12) == 0) {
+			uint32_t v4 = ((uint32_t)b[12] << 24) | ((uint32_t)b[13] << 16) |
+			              ((uint32_t)b[14] << 8) | (uint32_t)b[15];
+			is_priv = is_private_ipv4_host(v4);
+		}
+	}
+
+	freeaddrinfo(ai);
+	return is_priv;
+}
+
 static void scan_for_hostname(const char *filename, char **hostname, char **port, bool port_lines) {
-	if(!filename || (*hostname && *port)) {
+	if(!filename || (*hostname && !is_private_or_local_address(*hostname) && *port)) {
 		return;
 	}
 
@@ -237,17 +347,23 @@ static void scan_for_hostname(const char *filename, char **hostname, char **port
 		if(port_lines && !*port && !strcasecmp(line, "Port")) {
 			free(*port);
 			*port = xstrdup(q);
-		} else if(!*hostname && !strcasecmp(line, "Address")) {
-			free(*hostname);
-			*hostname = xstrdup(q);
+		} else if(!strcasecmp(line, "Address") && *q) {
+			bool cand_priv = is_private_or_local_address(q);
 
-			if(*p) {
-				free(*port);
-				*port = xstrdup(p);
+			/* Prefer an explicit public Address / DNS name over any private
+			   RFC1918 / Docker / link-local Address entry. */
+			if(!*hostname || (is_private_or_local_address(*hostname) && !cand_priv)) {
+				free(*hostname);
+				*hostname = xstrdup(q);
+
+				if(*p) {
+					free(*port);
+					*port = xstrdup(p);
+				}
 			}
 		}
 
-		if(*hostname && *port) {
+		if(*hostname && !is_private_or_local_address(*hostname) && *port) {
 			break;
 		}
 	}
@@ -516,11 +632,64 @@ static bool copy_config_replacing_port(FILE *out, const char *filename, const ch
 	}
 
 	char line[1024];
+	bool has_public_address = false;
+
+	while(fgets(line, sizeof(line), in)) {
+		const char *var_beg = line + strspn(line, "\t ");
+		const char *var_end = var_beg + strcspn(var_beg, "\t =\r\n");
+
+		if(var_end - var_beg == 7 && !strncasecmp(var_beg, "Address", 7)) {
+			const char *val = var_end + strspn(var_end, "\t ");
+
+			if(*val == '=') {
+				val += 1 + strspn(val + 1, "\t ");
+			}
+
+			char addr_tok[256];
+			size_t alen = strcspn(val, "\t \r\n");
+
+			if(alen > 0 && alen < sizeof(addr_tok)) {
+				memcpy(addr_tok, val, alen);
+				addr_tok[alen] = 0;
+
+				if(!is_private_or_local_address(addr_tok)) {
+					has_public_address = true;
+					break;
+				}
+			}
+		}
+	}
+
+	rewind(in);
+
 	bool port_seen = false;
 
 	while(fgets(line, sizeof(line), in)) {
 		const char *var_beg = line + strspn(line, "\t ");
-		const char *var_end = var_beg + strcspn(var_beg, "\t =");
+		const char *var_end = var_beg + strcspn(var_beg, "\t =\r\n");
+
+		/* When an explicit public Address is configured, do not leak private
+		   RFC1918 / Docker / Hyper-V / link-local interface IPs into the
+		   invitation payload. */
+		if(has_public_address && var_end - var_beg == 7 && !strncasecmp(var_beg, "Address", 7)) {
+			const char *val = var_end + strspn(var_end, "\t ");
+
+			if(*val == '=') {
+				val += 1 + strspn(val + 1, "\t ");
+			}
+
+			char addr_tok[256];
+			size_t alen = strcspn(val, "\t \r\n");
+
+			if(alen > 0 && alen < sizeof(addr_tok)) {
+				memcpy(addr_tok, val, alen);
+				addr_tok[alen] = 0;
+
+				if(is_private_or_local_address(addr_tok)) {
+					continue;
+				}
+			}
+		}
 
 		// Check the name of the variable we've read. If it's Port, replace it with
 		// a port we'll use in invitation URL. Otherwise, just copy the line.
@@ -1301,6 +1470,7 @@ bool invitation_yaml_apply(yamlconf_t *yc, const char *net, const char *name, co
 /* What finalize_join_yaml() changed on disk, so cmd_join() can undo it when
    the inviter never confirms (the invitee's key is then not stored anywhere,
    and a retry must start from a clean network). */
+static bool join_yaml_existed_at_start = false;
 static bool join_yaml_created_file = false;
 static bool join_yaml_wrote_network = false;
 
@@ -1339,8 +1509,10 @@ static bool finalize_join_yaml(const char *name) {
 		}
 	}
 
+	bool existed_before_write = (access(yamlconf_path, F_OK) == 0);
+
 	/* Start from what is on disk right now (we hold the lock). */
-	if(yamlconf_global && !access(yamlconf_path, F_OK) && !yamlconf_reload_global()) {
+	if(yamlconf_global && existed_before_write && !yamlconf_reload_global()) {
 		fprintf(stderr, "Could not re-read %s\n", yamlconf_path);
 		return false;
 	}
@@ -1354,14 +1526,13 @@ static bool finalize_join_yaml(const char *name) {
 	}
 
 	if(!yc) {
-		if(!access(yamlconf_path, F_OK)) {
+		if(existed_before_write) {
 			fprintf(stderr, "Refusing to overwrite unparsable YAML config %s\n", yamlconf_path);
 			return false;
 		}
 
 		yc = yamlconf_new();
 		yamlconf_global = yc;
-		join_yaml_created_file = true;
 	}
 
 	if(!invitation_yaml_apply(yc, netname, name, data, force)) {
@@ -1386,6 +1557,7 @@ static bool finalize_join_yaml(const char *name) {
 		return false;
 	}
 
+	join_yaml_created_file = !join_yaml_existed_at_start && !existed_before_write && (access(yamlconf_path, F_OK) == 0);
 	join_yaml_wrote_network = true;
 
 	/* Send the inviter our new Ed25519 public key. */
@@ -1735,7 +1907,7 @@ make_names:
 	ecdsa_free(key);
 
 #ifndef DISABLE_LEGACY
-	rsa_t *rsa = rsa_generate(2048, 0x1001);
+	rsa_t *rsa = rsa_generate(2048, 0x10001);
 	snprintf(filename, sizeof(filename), "%s" SLASH "rsa_key.priv", confbase);
 	f = fopenmask(filename, "w", 0600);
 
@@ -1953,7 +2125,15 @@ bool invitation_url_parse(char *url, char **address, char **port, void *hash18, 
 		prt = default_port;
 	}
 
-	if(!b64decode_tinc(slash, hash18, 24) || !b64decode_tinc(slash + 24, cookie18, 24)) {
+	for(size_t i = 0; i < 48; i++) {
+		unsigned char ch = (unsigned char)slash[i];
+
+		if(!isalnum(ch) && ch != '+' && ch != '/' && ch != '-' && ch != '_') {
+			return false;
+		}
+	}
+
+	if(b64decode_tinc(slash, hash18, 24) != 18 || b64decode_tinc(slash + 24, cookie18, 24) != 18) {
 		return false;
 	}
 
@@ -1961,6 +2141,8 @@ bool invitation_url_parse(char *url, char **address, char **port, void *hash18, 
 	*port = prt;
 	return true;
 }
+
+#define MAX_INVITATION_DATA_SIZE (1024U * 1024U)
 
 static bool invitation_receive(void *handle, uint8_t type, const void *msg, uint16_t len) {
 	(void)handle;
@@ -1970,6 +2152,11 @@ static bool invitation_receive(void *handle, uint8_t type, const void *msg, uint
 		return sptps_send_record(&sptps, 0, cookie, sizeof(cookie));
 
 	case 0:
+		if(datalen > MAX_INVITATION_DATA_SIZE - (size_t)len) {
+			fprintf(stderr, "Invitation payload exceeds maximum size (%u bytes)!\n", MAX_INVITATION_DATA_SIZE);
+			return false;
+		}
+
 		data = xrealloc(data, datalen + len + 1);
 		memcpy(data + datalen, msg, len);
 		datalen += len;
@@ -1993,13 +2180,23 @@ static bool invitation_receive(void *handle, uint8_t type, const void *msg, uint
 }
 
 bool wait_socket_recv(int fd) {
-	fd_set fds;
-	FD_ZERO(&fds);
-	FD_SET(fd, &fds);
+	if(fd < 0) {
+		return false;
+	}
 
-	struct timeval tv = {.tv_sec = 5};
+#ifdef HAVE_WINDOWS
+	WSAPOLLFD pfd = {.fd = (SOCKET)fd, .events = POLLRDNORM, .revents = 0};
+	int rc = WSAPoll(&pfd, 1, 5000);
+#else
+	struct pollfd pfd = {.fd = fd, .events = POLLIN, .revents = 0};
+	int rc;
 
-	if(select(fd + 1, &fds, NULL, NULL, &tv) != 1) {
+	do {
+		rc = poll(&pfd, 1, 5000);
+	} while(rc < 0 && errno == EINTR);
+#endif
+
+	if(rc <= 0) {
 		fprintf(stderr, "Timed out waiting for the server to reply.\n");
 		return false;
 	}
@@ -2011,6 +2208,10 @@ int cmd_join(int argc, char *argv[]) {
 	free(data);
 	data = NULL;
 	datalen = 0;
+	success = false;
+	join_yaml_existed_at_start = yamlconf_path && (access(yamlconf_path, F_OK) == 0);
+	join_yaml_created_file = false;
+	join_yaml_wrote_network = false;
 
 	if(argc > 2) {
 		fprintf(stderr, "Too many arguments!\n");
@@ -2028,7 +2229,7 @@ int cmd_join(int argc, char *argv[]) {
 	} else {
 		// Make sure confbase exists and is accessible.
 		if(!makedirs(DIR_CONFDIR | DIR_CONFBASE)) {
-			return false;
+			return 1;
 		}
 
 		if(access(confbase, R_OK | W_OK | X_OK)) {
@@ -2060,11 +2261,11 @@ int cmd_join(int argc, char *argv[]) {
 			return 1;
 		}
 
+		line[strcspn(line, "\r\n")] = 0;
 		invitation = line;
 	}
 
 	// Parse the invitation URL.
-	rstrip(line);
 
 	char *address = NULL;
 	char *port = NULL;
@@ -2239,17 +2440,25 @@ exit:
 		/* YAML mode: leave no half-joined network behind, so the same
 		   invitation can simply be retried. */
 		if(yamlconf_path && join_yaml_wrote_network) {
-			if(join_yaml_created_file) {
-				unlink(yamlconf_path);
-				fprintf(stderr, "Removed %s again (join did not complete).\n", yamlconf_path);
-			} else if(yamlconf_lock(yamlconf_path)) {
+			if(yamlconf_lock(yamlconf_path)) {
 				yamlconf_t *yc = yamlconf_load(yamlconf_path);
 
-				if(yc && yamlconf_del_network(yc, netname) && yamlconf_save(yc, yamlconf_path)) {
-					fprintf(stderr, "Removed network %s from %s again (join did not complete).\n", netname, yamlconf_path);
+				if(yc) {
+					yamlconf_del_network(yc, netname);
+
+					if(join_yaml_created_file && !yamlconf_first_network(yc)) {
+						unlink(yamlconf_path);
+						fprintf(stderr, "Removed %s again (join did not complete).\n", yamlconf_path);
+					} else if(yamlconf_save(yc, yamlconf_path)) {
+						fprintf(stderr, "Removed network %s from %s again (join did not complete).\n", netname, yamlconf_path);
+					}
+
+					yamlconf_free(yc);
+				} else if(join_yaml_created_file) {
+					unlink(yamlconf_path);
+					fprintf(stderr, "Removed %s again (join did not complete).\n", yamlconf_path);
 				}
 
-				yamlconf_free(yc);
 				yamlconf_unlock();
 			}
 		}

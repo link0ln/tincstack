@@ -26,6 +26,7 @@ import android.graphics.Typeface
 import android.os.Build
 import android.view.View
 import android.view.inputmethod.InputMethodManager
+import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.LifecycleOwner
 import com.google.zxing.integration.android.IntentIntegrator
@@ -57,6 +58,7 @@ class JoinPanel(
   private var lastClipStamp: Long? = null
   private var detailsShown = false
   private var wasInvitation = false
+  private var initiatedByThisPanel = false
 
   init {
     // the invitation itself is monospace (a 48-character token); the label is not
@@ -176,6 +178,7 @@ class JoinPanel(
     binding.invitationInput.clearFocus()
     // show exactly what is sent: blanks, line breaks and surrounding text gone
     useInvitation(invitation)
+    initiatedByThisPanel = true
     JoinController.start(invitation)
   }
 
@@ -194,8 +197,10 @@ class JoinPanel(
   }
 
   private fun render(state: JoinController.State) {
+    if (!binding.root.isVisible && !initiatedByThisPanel) return
     when (state) {
       JoinController.State.Idle -> {
+        initiatedByThisPanel = false
         setBusy(false)
         binding.joinError.visibility = View.GONE
       }
@@ -211,6 +216,7 @@ class JoinPanel(
       }
 
       is JoinController.State.Failed -> {
+        initiatedByThisPanel = false
         setBusy(false)
         binding.joinError.visibility = View.VISIBLE
         binding.joinErrorMessage.text = listOf(failureMessage(state), activity.getString(R.string.join_nothing_saved))
@@ -221,6 +227,7 @@ class JoinPanel(
       }
 
       is JoinController.State.Joined -> {
+        initiatedByThisPanel = false
         setBusy(false)
         binding.invitationInput.text = null
         clipboardInvitation = null

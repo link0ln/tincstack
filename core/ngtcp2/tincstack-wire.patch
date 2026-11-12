@@ -303,7 +303,7 @@
          conn, type, ngtcp2_ppe_left(&ppe), write_datalen,
          (rtb_entry_flags & NGTCP2_RTB_ENTRY_FLAG_ACK_ELICITING) != 0,
          require_padding)) {
-@@ -3127,6 +3228,91 @@
+@@ -3127,6 +3228,105 @@
   * NGTCP2_ERR_CALLBACK_FAILURE
   *     User-defined callback function failed.
   */
@@ -331,62 +331,76 @@
 +     AEAD tag. */
 +  size_t reserve = NGTCP2_MIN_LONG_HEADERLEN + conn->dcid.current.cid.datalen +
 +                   conn->oscid.datalen + conn->local.settings.tokenlen + 128;
-+  ngtcp2_ssize nwrite, hs_nwrite, in_nwrite;
++  ngtcp2_ssize nwrite, hs_nwrite = 0, in_nwrite;
 +  ngtcp2_ack_range ack_ranges[NGTCP2_MAX_ACK_RANGES];
 +  ngtcp2_frame fr;
 +
-+  if (dgramlen <= reserve) {
-+    return 0;
-+  }
-+
-+  hs_nwrite = conn_write_handshake_pkt(conn, pi, tail, dgramlen - reserve, 0,
-+                                       NGTCP2_PKT_HANDSHAKE,
-+                                       NGTCP2_WRITE_PKT_FLAG_NONE,
-+                                       write_datalen, ts);
-+  if (hs_nwrite < 0) {
-+    assert(hs_nwrite != NGTCP2_ERR_NOBUF);
-+    return hs_nwrite;
-+  }
-+
-+  taillen += (size_t)hs_nwrite;
-+
-+  if (conn->pktns.crypto.tx.ckm) {
-+    fr.ack.ranges = ack_ranges;
-+    if (ngtcp2_acktr_create_ack_frame(
-+          &conn->pktns.acktr, &fr.ack, NGTCP2_PKT_1RTT, ts,
-+          /* ack_delay = */ 0,
-+          conn->local.transport_params.ack_delay_exponent) == 0) {
-+      /* OpenSSL acknowledges these packets with ACK Delay 0. */
-+      fr.ack.ack_delay_unscaled = 0;
-+      fr.ack.ack_delay = 0;
-+      nwrite = ngtcp2_conn_write_single_frame_pkt(
-+        conn, pi, tail + taillen, dgramlen - reserve - taillen,
-+        NGTCP2_PKT_1RTT, NGTCP2_WRITE_PKT_FLAG_NONE, &conn->dcid.current.cid,
-+        &fr, NGTCP2_RTB_ENTRY_FLAG_NONE, NULL, ts);
-+      if (nwrite < 0) {
-+        assert(nwrite != NGTCP2_ERR_NOBUF);
-+        return nwrite;
++  if (dgramlen > reserve) {
++    hs_nwrite = conn_write_handshake_pkt(conn, pi, tail, dgramlen - reserve, 0,
++                                         NGTCP2_PKT_HANDSHAKE,
++                                         NGTCP2_WRITE_PKT_FLAG_NONE,
++                                         write_datalen, ts);
++    if (hs_nwrite < 0) {
++      if (hs_nwrite != NGTCP2_ERR_NOBUF) {
++        return hs_nwrite;
 +      }
++      hs_nwrite = 0;
++    }
 +
-+      conn->dcid.current.bytes_sent += (uint64_t)nwrite;
-+      taillen += (size_t)nwrite;
++    taillen += (size_t)hs_nwrite;
++
++    if (hs_nwrite > 0 && conn->pktns.crypto.tx.ckm &&
++        dgramlen - reserve > taillen) {
++      fr.ack.ranges = ack_ranges;
++      if (ngtcp2_acktr_create_ack_frame(
++            &conn->pktns.acktr, &fr.ack, NGTCP2_PKT_1RTT, ts,
++            /* ack_delay = */ 0,
++            conn->local.transport_params.ack_delay_exponent) == 0) {
++        /* OpenSSL acknowledges these packets with ACK Delay 0. */
++        fr.ack.ack_delay_unscaled = 0;
++        fr.ack.ack_delay = 0;
++        nwrite = ngtcp2_conn_write_single_frame_pkt(
++          conn, pi, tail + taillen, dgramlen - reserve - taillen,
++          NGTCP2_PKT_1RTT, NGTCP2_WRITE_PKT_FLAG_NONE,
++          &conn->dcid.current.cid, &fr, NGTCP2_RTB_ENTRY_FLAG_NONE, NULL, ts);
++        if (nwrite < 0) {
++          if (nwrite != NGTCP2_ERR_NOBUF) {
++            return nwrite;
++          }
++        } else {
++          conn->dcid.current.bytes_sent += (uint64_t)nwrite;
++          taillen += (size_t)nwrite;
++        }
++      }
 +    }
 +  }
 +
 +  conn->local.wire.initial_dgramlen = dgramlen - taillen;
 +  in_nwrite = conn_write_handshake_pkt(
 +    conn, pi, dest, dgramlen - taillen, 0, NGTCP2_PKT_INITIAL,
-+    NGTCP2_WRITE_PKT_FLAG_NONE, write_datalen, ts);
++    taillen ? NGTCP2_WRITE_PKT_FLAG_NONE
++            : NGTCP2_WRITE_PKT_FLAG_REQUIRE_PADDING,
++    write_datalen, ts);
 +  conn->local.wire.initial_dgramlen = 0;
 +  if (in_nwrite < 0) {
-+    assert(in_nwrite != NGTCP2_ERR_NOBUF);
-+    return in_nwrite;
++    if (in_nwrite != NGTCP2_ERR_NOBUF || taillen == 0) {
++      return in_nwrite;
++    }
++    in_nwrite = 0;
 +  }
 +
-+  memcpy(dest + in_nwrite, tail, taillen);
++  if (taillen) {
++    memcpy(dest + in_nwrite, tail, taillen);
++  }
 +
-+  if (hs_nwrite) {
++  if (hs_nwrite &&
++      (in_nwrite > 0 ||
++       !ngtcp2_acktr_require_active_ack(&conn->in_pktns->acktr, 0, ts))) {
 +    ngtcp2_conn_discard_initial_state(conn, ts);
++  }
++
++  if (in_nwrite + (ngtcp2_ssize)taillen > 0) {
++    conn->local.wire.flight_done = 1;
 +  }
 +
 +  return in_nwrite + (ngtcp2_ssize)taillen;
@@ -395,7 +409,7 @@
  static ngtcp2_ssize conn_write_handshake_pkts(ngtcp2_conn *conn,
                                                ngtcp2_pkt_info *pi,
                                                uint8_t *dest, size_t destlen,
-@@ -3151,6 +3337,14 @@
+@@ -3151,6 +3351,14 @@
       pending Initial ACK, Initial packet number space is discarded
       after writing the first Handshake packet.
     */
@@ -410,7 +424,7 @@
    if (!conn->server && conn->hs_pktns->crypto.tx.ckm && conn->in_pktns &&
        !ngtcp2_acktr_require_active_ack(&conn->in_pktns->acktr,
                                         /* max_ack_delay = */ 0, ts) &&
-@@ -3370,8 +3564,20 @@
+@@ -3370,8 +3578,20 @@
        goto fail;
      }
  
@@ -433,7 +447,7 @@
  
      assert(NGTCP2_MAX_SCID_POOL_SIZE > conn->scid.num_in_flight);
  
-@@ -3448,6 +3654,13 @@
+@@ -3448,6 +3668,13 @@
   * into account header protection sample.
   */
  static size_t conn_min_pktlen(const ngtcp2_conn *conn) {
@@ -447,7 +461,7 @@
    return conn->oscid.datalen + NGTCP2_MIN_PKT_EXPANDLEN;
  }
  
-@@ -3503,6 +3716,99 @@
+@@ -3503,6 +3730,99 @@
  }
  
  /*
@@ -547,7 +561,7 @@
   * conn_write_pkt writes a protected packet in the buffer pointed by
   * |dest| whose length if |destlen|.  |dgram_offset| is the offset in
   * UDP datagram payload where this QUIC packet is positioned at.
-@@ -3568,7 +3874,6 @@
+@@ -3568,7 +3888,6 @@
    size_t min_pktlen = conn_min_pktlen(conn);
    int min_padded = 0;
    int padded = 0;
@@ -555,7 +569,7 @@
    uint64_t stream_offset;
    ngtcp2_ssize num_reclaimed;
    uint64_t target_max_data;
-@@ -3701,7 +4006,7 @@
+@@ -3701,7 +4020,7 @@
  
      ngtcp2_pkt_hd_init(hd, hd_flags, type, &conn->dcid.current.cid, scid,
                         pktns->tx.last_pkt_num + 1,
@@ -564,7 +578,7 @@
  
      ngtcp2_ppe_init(ppe, dest, destlen, dgram_offset, cc);
  
-@@ -3766,7 +4071,19 @@
+@@ -3766,7 +4085,19 @@
      }
  
    build_pkt:
@@ -585,7 +599,7 @@
        if ((*pfrc)->binder &&
            ((*pfrc)->binder->flags & NGTCP2_FRAME_CHAIN_BINDER_FLAG_ACK)) {
          frc = *pfrc;
-@@ -3874,46 +4191,10 @@
+@@ -3874,46 +4205,10 @@
      }
  
      if (*pfrc == NULL) {
@@ -636,7 +650,7 @@
        }
      }
  
-@@ -4097,8 +4378,8 @@
+@@ -4097,8 +4392,8 @@
  
          left = ngtcp2_ppe_left(ppe);
  
@@ -647,7 +661,7 @@
  
          if (left == (size_t)-1) {
            break;
-@@ -4115,6 +4396,8 @@
+@@ -4115,6 +4410,8 @@
            break;
          }
  
@@ -656,7 +670,7 @@
          rv = conn_ppe_write_frame_hd_log(conn, ppe, &hd_logged, hd, &nfrc->fr);
          if (rv != 0) {
            ngtcp2_unreachable();
-@@ -4249,9 +4532,9 @@
+@@ -4249,9 +4546,9 @@
    left = ngtcp2_ppe_left(ppe);
  
    if (*pfrc == NULL && send_stream && ngtcp2_pq_empty(&conn->tx.strmq) &&
@@ -669,7 +683,7 @@
        (wdatalen == ndatalen || wdatalen >= NGTCP2_MIN_STREAM_DATALEN) &&
        (wdatalen || datalen == 0)) {
      ndatalen = wdatalen;
-@@ -4270,7 +4553,7 @@
+@@ -4270,7 +4567,7 @@
      }
  
      nfrc->fr.stream.type = NGTCP2_FRAME_STREAM;
@@ -678,7 +692,7 @@
      nfrc->fr.stream.fin = 0;
      nfrc->fr.stream.stream_id = vmsg->stream.strm->stream_id;
      nfrc->fr.stream.offset = vmsg->stream.strm->tx.offset;
-@@ -4688,7 +4971,7 @@
+@@ -4688,7 +4985,7 @@
    cc.hp_mask = conn->callbacks.hp_mask;
  
    ngtcp2_pkt_hd_init(&hd, hd_flags, type, dcid, scid,
@@ -687,7 +701,7 @@
                       version);
  
    ngtcp2_ppe_init(&ppe, dest, destlen, 0, &cc);
-@@ -8259,6 +8542,22 @@
+@@ -8259,6 +8556,22 @@
    ngtcp2_dcid dcid;
    int rv;
  
@@ -710,7 +724,7 @@
    if (conn->dcid.current.seq < conn->dcid.retire_prior_to) {
      if (ngtcp2_dcidtr_unused_empty(&conn->dcid.dtr)) {
        return 0;
-@@ -12013,10 +12312,52 @@
+@@ -12013,10 +12326,52 @@
  ngtcp2_ssize ngtcp2_conn_encode_local_transport_params2(const ngtcp2_conn *conn,
                                                          uint8_t *dest,
                                                          size_t destlen) {
@@ -763,20 +777,21 @@
  int ngtcp2_conn_open_bidi_stream(ngtcp2_conn *conn, int64_t *pstream_id,
                                   void *stream_user_data) {
    int rv;
-@@ -12339,6 +12680,12 @@
+@@ -12339,6 +12694,13 @@
  
++      /* conn_write_openssl_client_flight has completed the datagram
++         already. */
++      if (conn->local.wire.flight_done) {
++        conn->local.wire.flight_done = 0;
++        return nwrite;
++      }
++
        if (ngtcp2_pkt_get_type_long(conn->negotiated_version, dest[0]) ==
            NGTCP2_PKT_INITIAL) {
-+        /* conn_write_openssl_client_flight has filled the datagram
-+           already. */
-+        if (conn->local.wire.openssl_client && (size_t)nwrite >= destlen) {
-+          return nwrite;
-+        }
-+
          wflags |= NGTCP2_WRITE_PKT_FLAG_REQUIRE_PADDING;
        }
  
-@@ -12411,7 +12758,8 @@
+@@ -12411,7 +12773,8 @@
          }
        }
      }
@@ -786,7 +801,7 @@
        return res;
      }
      break;
-@@ -13596,6 +13944,10 @@
+@@ -13596,6 +13959,10 @@
      return rv;
    }
  
@@ -821,7 +836,7 @@
      } tx;
  
      struct {
-@@ -484,6 +499,26 @@
+@@ -484,6 +499,29 @@
           local endpoint opens next. */
        int64_t next_stream_id;
      } uni;
@@ -838,6 +853,9 @@
 +         set while the client writes the datagram that carries its
 +         Handshake flight. */
 +      size_t initial_dgramlen;
++      /* flight_done is nonzero when conn_write_openssl_client_flight
++         has completed the current datagram. */
++      int flight_done;
 +      /* dcid_switched is nonzero once the client has moved to the
 +         first connection ID the server issued. */
 +      int dcid_switched;

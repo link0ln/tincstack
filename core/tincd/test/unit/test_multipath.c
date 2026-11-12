@@ -1,6 +1,8 @@
 #include "unittest.h"
 #include "../../src/xalloc.h"
 #include "../../src/connection.h"
+#include "../../src/edge.h"
+#include "../../src/netutl.h"
 #include "../../src/node.h"
 #include "../../src/multipath.h"
 
@@ -159,12 +161,75 @@ static void test_multipath_udp_paths_scheduling(void **state) {
 	multipath_mode = MULTIPATH_FAILOVER;
 }
 
+static void test_multipath_promote_survivor_teardown_and_af_unknown(void **state) {
+	(void)state;
+	node_t *from_node = new_node("self_mp");
+	node_t *n = new_node("peer_mp");
+
+	outgoing_t out = {0};
+	out.node = n;
+	out.timeout = -1; /* Intentional teardown (e.g. dnsrefresh_apply / removed ConnectTo) */
+
+	connection_t *c1 = new_connection();
+	c1->name = xstrdup("peer_mp");
+	c1->hostname = xstrdup("peer_mp.example");
+	c1->node = n;
+	c1->status.active = true;
+	c1->outgoing = &out;
+
+	edge_t *e = new_edge();
+	e->from = from_node;
+	e->to = n;
+	e->connection = c1;
+	c1->edge = e;
+
+	connection_t *c2 = new_connection();
+	c2->name = xstrdup("peer_mp");
+	c2->hostname = xstrdup("peer_mp.example");
+	c2->node = n;
+	c2->status.active = true;
+	c2->address.sa.sa_family = AF_UNKNOWN;
+	c2->address.unknown.address = xstrdup("standby.example.org");
+	c2->address.unknown.port = xstrdup("655");
+
+	n->connection = c1;
+	multipath_node_add_connection(n, c1);
+	multipath_mode = MULTIPATH_FAILOVER;
+	assert_true(multipath_accept_secondary(n, c2));
+
+	assert_true(multipath_promote_survivor(n, c1));
+	assert_ptr_equal(c2, n->connection);
+	/* H-DP-04: outgoing with timeout == -1 must NOT be hijacked by survivor */
+	assert_null(c2->outgoing);
+	assert_ptr_equal(&out, c1->outgoing);
+
+	/* C-DP-01: AF_UNKNOWN address on transferred edge must be deep-copied */
+	assert_int_equal(AF_UNKNOWN, e->address.sa.sa_family);
+	assert_non_null(e->address.unknown.address);
+	assert_ptr_not_equal(c2->address.unknown.address, e->address.unknown.address);
+	assert_string_equal("standby.example.org", e->address.unknown.address);
+	assert_string_equal("655", e->address.unknown.port);
+
+	c1->outgoing = NULL;
+	c2->edge = NULL;
+	multipath_node_del_connection(n, c2);
+	n->connection = NULL;
+	free_connection(c1);
+	free_connection(c2);
+	/* Verify e->address remains valid after c2's AF_UNKNOWN strings were freed! */
+	assert_string_equal("standby.example.org", e->address.unknown.address);
+	free_edge(e);
+	free_node(n);
+	free_node(from_node);
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_multipath_mode_parse_and_name),
 		cmocka_unit_test(test_multipath_flow_hash_deterministic),
 		cmocka_unit_test(test_multipath_connection_pooling_and_failover),
 		cmocka_unit_test(test_multipath_udp_paths_scheduling),
+		cmocka_unit_test(test_multipath_promote_survivor_teardown_and_af_unknown),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

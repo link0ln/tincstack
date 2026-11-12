@@ -177,6 +177,36 @@ class VpnInterfaceConfigurationTest {
     assertEquals(listOf(CidrAddress("10.165.0.5", 32)), cfg2.addresses)
   }
 
+  @Test
+  fun ipv4MappedIpv6InterfaceRoutesConvertPrefixAndRejectSub96() {
+    val cfg = VpnInterfaceConfiguration.fromTincYaml(file("""
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      InterfaceAddress: 10.77.1.9/24
+      |      InterfaceRoute:
+      |        - "::ffff:192.0.2.5/120"
+      |        - "::ffff:198.51.100.7/128"
+      |""".trimMargin()), "mynet")
+    assertEquals(
+      listOf(CidrAddress("192.0.2.0", 24), CidrAddress("198.51.100.7", 32)),
+      cfg.routes,
+    )
+  }
+
+  @Test(expected = TincYaml.InvalidConfigurationException::class)
+  fun ipv4MappedIpv6RouteWithPrefixBelow96IsRejected() {
+    VpnInterfaceConfiguration.fromTincYaml(file("""
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      InterfaceAddress: 10.77.1.9/24
+      |      InterfaceRoute: "::ffff:192.0.2.5/64"
+      |""".trimMargin()), "mynet")
+  }
+
   companion object {
     const val JOINED_RESOURCE = "/joined-tinc.yaml"
 

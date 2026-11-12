@@ -24,6 +24,7 @@
 #include "xalloc.h"
 #include "yamlconf.h"
 #include "zeroconf.h"
+#include "ed25519/sha512.h"
 
 #ifndef DISABLE_LEGACY
 #include "rsagen.h"
@@ -148,7 +149,72 @@ bool zeroconf_pool_first_host(const char *pool, char *out, size_t outlen) {
 	return true;
 }
 
-static bool zeroconf_pool_next_free_host(yamlconf_t *yc, const char *net, const char *pool, char *out, size_t outlen) {
+static bool zeroconf_ip_taken_in_hosts(yamlconf_t *yc, const char *net, const char **hosts, int prefix, uint32_t cand) {
+	if(!hosts) {
+		return false;
+	}
+
+	for(size_t i = 0; hosts[i]; i++) {
+		char *htext = yamlconf_host_text(yc, net, hosts[i]);
+
+		if(!htext) {
+			continue;
+		}
+
+		bool taken = false;
+
+		for(const char *p = htext; p && *p; p = strchr(p, '\n') ? strchr(p, '\n') + 1 : NULL) {
+			while(*p == ' ' || *p == '\t') {
+				p++;
+			}
+
+			if(strncasecmp(p, "Subnet", 6) || (p[6] != ' ' && p[6] != '\t' && p[6] != '=')) {
+				continue;
+			}
+
+			const char *v = p + 6;
+
+			while(*v == ' ' || *v == '\t' || *v == '=') {
+				v++;
+			}
+
+			unsigned int a, b, c, d, bits = 32;
+			int parsed = sscanf(v, "%u.%u.%u.%u/%u", &a, &b, &c, &d, &bits);
+
+			if(parsed >= 4 &&
+			   a <= 255 && b <= 255 && c <= 255 && d <= 255 &&
+			   (parsed == 4 || bits <= 32)) {
+				uint32_t ip = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | (uint32_t)d;
+
+				if(bits == 32) {
+					if(ip == cand) {
+						taken = true;
+						break;
+					}
+				} else if(bits >= 24 || (bits >= 20 && bits >= (unsigned int)prefix)) {
+					uint32_t smask = 0xffffffffu << (32 - bits);
+
+					if((cand & smask) == (ip & smask)) {
+						taken = true;
+						break;
+					}
+				}
+			}
+		}
+
+		free(htext);
+
+		if(taken) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool zeroconf_pool_next_free_host(yamlconf_t *yc, const char *net, const char *pool,
+                                         const char *node_name, const char *ed_pub,
+                                         char *out, size_t outlen) {
 	uint32_t network;
 	int prefix;
 
@@ -160,61 +226,54 @@ static bool zeroconf_pool_next_free_host(yamlconf_t *yc, const char *net, const 
 	uint32_t bcast = network | hostmask;
 	const char **hosts = yc && net ? yamlconf_host_names(yc, net) : NULL;
 
-	for(uint32_t cand = network + 1; cand < bcast && cand - network <= 4096; cand++) {
-		bool taken = false;
+	/* Reserve .1 for the founding/creator node (no ConnectTo and no peer host
+	   records). Non-creator nodes derive their starting host offset
+	   deterministically from SHA-512 of their Ed25519 public key (falling back
+	   to node_name) across [2 .. hostmask - 1] so independent zeroconf nodes do
+	   not universally collide on .1. */
+	bool has_peer_hosts = false;
 
-		if(hosts) {
-			for(size_t i = 0; hosts[i] && !taken; i++) {
-				char *htext = yamlconf_host_text(yc, net, hosts[i]);
+	if(hosts) {
+		for(size_t i = 0; hosts[i]; i++) {
+			if(!node_name || strcmp(hosts[i], node_name) != 0) {
+				has_peer_hosts = true;
+				break;
+			}
+		}
+	}
 
-				if(!htext) {
-					continue;
-				}
+	bool is_creator = !(yc && net && yamlconf_has_option(yc, net, "ConnectTo")) && !has_peer_hosts;
 
-				for(const char *p = htext; p && *p; p = strchr(p, '\n') ? strchr(p, '\n') + 1 : NULL) {
-					while(*p == ' ' || *p == '\t') {
-						p++;
-					}
+	if(!is_creator && hostmask >= 3) {
+		uint32_t usable = hostmask - 2; /* offsets [2 .. hostmask - 1], >= 1 */
+		const char *seed = (ed_pub && *ed_pub) ? ed_pub : (node_name && *node_name ? node_name : "tinc");
+		uint8_t digest[64];
+		uint64_t h64 = 0;
 
-					if(strncasecmp(p, "Subnet", 6) || (p[6] != ' ' && p[6] != '\t' && p[6] != '=')) {
-						continue;
-					}
-
-					const char *v = p + 6;
-
-					while(*v == ' ' || *v == '\t' || *v == '=') {
-						v++;
-					}
-
-					unsigned int a, b, c, d, bits = 32;
-					int parsed = sscanf(v, "%u.%u.%u.%u/%u", &a, &b, &c, &d, &bits);
-
-					if(parsed >= 4 &&
-					   a <= 255 && b <= 255 && c <= 255 && d <= 255 &&
-					   (parsed == 4 || bits <= 32)) {
-						uint32_t ip = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | (uint32_t)d;
-
-						if(bits == 32) {
-							if(ip == cand) {
-								taken = true;
-								break;
-							}
-						} else if(bits >= 24 || (bits >= 20 && bits >= (unsigned int)prefix)) {
-							uint32_t smask = 0xffffffffu << (32 - bits);
-
-							if((cand & smask) == (ip & smask)) {
-								taken = true;
-								break;
-							}
-						}
-					}
-				}
-
-				free(htext);
+		if(sha512(seed, strlen(seed), digest) == 0) {
+			for(int b = 0; b < 8; b++) {
+				h64 = (h64 << 8) | digest[b];
 			}
 		}
 
-		if(!taken) {
+		uint32_t start_idx = (uint32_t)(h64 % usable);
+		uint32_t max_probes = usable < 4096 ? usable : 4096;
+
+		for(uint32_t step = 0; step < max_probes; step++) {
+			uint32_t off = 2 + ((start_idx + step) % usable);
+			uint32_t cand = network + off;
+
+			if(!zeroconf_ip_taken_in_hosts(yc, net, hosts, prefix, cand)) {
+				free(hosts);
+				snprintf(out, outlen, "%u.%u.%u.%u/32",
+				         (cand >> 24) & 255, (cand >> 16) & 255, (cand >> 8) & 255, cand & 255);
+				return true;
+			}
+		}
+	}
+
+	for(uint32_t cand = network + 1; cand < bcast && cand - network <= 4096; cand++) {
+		if(!zeroconf_ip_taken_in_hosts(yc, net, hosts, prefix, cand)) {
 			free(hosts);
 			snprintf(out, outlen, "%u.%u.%u.%u/32",
 			         (cand >> 24) & 255, (cand >> 16) & 255, (cand >> 8) & 255, cand & 255);
@@ -862,6 +921,53 @@ static bool zeroconf_materialise_locked(bool reread) {
 		}
 	}
 
+	/* --- Ed25519 key pair (materialised before Subnet so non-creator nodes can
+	   derive a deterministic host address from their Ed25519 public key) --- */
+	const char *ed_pem = yamlconf_key_pem(yc, netname, "ed25519_priv");
+	ecdsa_t *ed = NULL;
+	char *own_ed_pub = NULL;
+
+	if(!ed_pem) {
+		ed = ecdsa_generate();
+
+		if(!ed) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Ed25519 key generation failed");
+			free(name);
+			yamlconf_free(fresh ? yc : NULL);
+			return false;
+		}
+
+		char *pem = capture_pem(write_ecdsa_priv, ed);
+
+		if(!pem) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Could not serialise Ed25519 private key");
+			ecdsa_free(ed);
+			free(name);
+			yamlconf_free(fresh ? yc : NULL);
+			return false;
+		}
+
+		yamlconf_set_key_pem(yc, netname, "ed25519_priv", pem);
+		memzero(pem, strlen(pem));
+		free(pem);
+		ed_pem = yamlconf_key_pem(yc, netname, "ed25519_priv");
+		changed = true;
+		NOTE("ed25519_priv ");
+	}
+
+	if(!ed && ed_pem) {
+		FILE *f = yamlconf_content_fp(ed_pem);
+
+		if(f) {
+			ed = ecdsa_read_pem_private_key(f);
+			fclose(f);
+		}
+	}
+
+	if(ed) {
+		own_ed_pub = ecdsa_get_base64_public_key(ed);
+	}
+
 	/* --- AddressPool --- */
 	const char *pool = yamlconf_get_option(yc, netname, "AddressPool");
 	char poolbuf[64];
@@ -875,8 +981,12 @@ static bool zeroconf_materialise_locked(bool reread) {
 		NOTE("AddressPool=%s ", pool);
 	}
 
-	if(!zeroconf_pool_next_free_host(yc, netname, pool, first, sizeof(first))) {
+	if(!zeroconf_pool_next_free_host(yc, netname, pool, name, own_ed_pub, first, sizeof(first))) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Invalid AddressPool `%s' in `%s' (expected IPv4 a.b.c.d/8..30)", pool, yamlconf_path);
+		free(own_ed_pub);
+		if(ed) {
+			ecdsa_free(ed);
+		}
 		free(name);
 		yamlconf_free(fresh ? yc : NULL);
 		return false;
@@ -934,6 +1044,10 @@ static bool zeroconf_materialise_locked(bool reread) {
 
 		if(!tls_generate_pem(TLS_DEFAULT_CN, &cert, &key)) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "TLS certificate generation failed");
+			free(own_ed_pub);
+			if(ed) {
+				ecdsa_free(ed);
+			}
 			free(name);
 			yamlconf_free(fresh ? yc : NULL);
 			return false;
@@ -963,65 +1077,27 @@ static bool zeroconf_materialise_locked(bool reread) {
 
 #endif
 
-	/* --- Ed25519 key pair --- */
-	const char *ed_pem = yamlconf_key_pem(yc, netname, "ed25519_priv");
-	ecdsa_t *ed = NULL;
-
-	if(!ed_pem) {
-		ed = ecdsa_generate();
-
-		if(!ed) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Ed25519 key generation failed");
-			free(name);
-			yamlconf_free(fresh ? yc : NULL);
-			return false;
-		}
-
-		char *pem = capture_pem(write_ecdsa_priv, ed);
-
-		if(!pem) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Could not serialise Ed25519 private key");
-			ecdsa_free(ed);
-			free(name);
-			yamlconf_free(fresh ? yc : NULL);
-			return false;
-		}
-
-		yamlconf_set_key_pem(yc, netname, "ed25519_priv", pem);
-		memzero(pem, strlen(pem));
-		free(pem);
-		changed = true;
-		NOTE("ed25519_priv ");
-	}
-
 	host = yamlconf_host_text(yc, netname, name);
 
 	if(!host_text_has(host, "Ed25519PublicKey", NULL)) {
-		if(!ed) {
-			FILE *f = yamlconf_content_fp(ed_pem);
-
-			if(f) {
-				ed = ecdsa_read_pem_private_key(f);
-				fclose(f);
-			}
-		}
-
-		if(!ed) {
+		if(!own_ed_pub) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Could not read Ed25519 private key from `%s'", yamlconf_path);
 			free(host);
+			if(ed) {
+				ecdsa_free(ed);
+			}
 			free(name);
 			yamlconf_free(fresh ? yc : NULL);
 			return false;
 		}
 
-		char *pub = ecdsa_get_base64_public_key(ed);
-		yamlconf_host_add_line(yc, netname, name, "Ed25519PublicKey", pub);
-		free(pub);
+		yamlconf_host_add_line(yc, netname, name, "Ed25519PublicKey", own_ed_pub);
 		changed = true;
 		NOTE("Ed25519PublicKey ");
 	}
 
 	free(host);
+	free(own_ed_pub);
 
 	if(ed) {
 		ecdsa_free(ed);

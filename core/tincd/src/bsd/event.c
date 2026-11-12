@@ -52,6 +52,7 @@ void io_add(io_t *io, io_cb_t cb, void *data, int fd, int flags) {
 	}
 
 	io->fd = fd;
+	io->flags = 0;
 	io->cb = cb;
 	io->data = data;
 	io->node.data = io;
@@ -62,7 +63,9 @@ void io_add(io_t *io, io_cb_t cb, void *data, int fd, int flags) {
 void io_set(io_t *io, int flags) {
 	event_init();
 
-	if(flags == io->flags) {
+	int prev_flags = io->flags;
+
+	if(flags == prev_flags) {
 		return;
 	}
 
@@ -72,33 +75,37 @@ void io_set(io_t *io, int flags) {
 		return;
 	}
 
-	const struct kevent change[] = {
-		{
-			.ident = io->fd,
-			.filter = EVFILT_READ,
-			.flags = EV_RECEIPT | (flags & IO_READ ? EV_ADD : EV_DELETE),
-			.udata = io,
-		},
-		{
-			.ident = io->fd,
-			.filter = EVFILT_WRITE,
-			.flags = EV_RECEIPT | (flags & IO_WRITE ? EV_ADD : EV_DELETE),
-			.udata = io,
-		},
-	};
+	struct kevent change[2];
 	struct kevent result[2];
+	int nchanges = 0;
 
-	if(kevent(kq, change, 2, result, 2, NULL) < 0) {
-		logger(DEBUG_ALWAYS, LOG_EMERG, "kevent failed: %s", strerror(errno));
-		abort();
+	if((flags & IO_READ) != (prev_flags & IO_READ)) {
+		EV_SET(&change[nchanges++], io->fd, EVFILT_READ,
+		       EV_RECEIPT | ((flags & IO_READ) ? (EV_ADD | EV_ENABLE) : EV_DELETE),
+		       0, 0, io);
 	}
 
-	int rerr = (int)result[0].data;
-	int werr = (int)result[1].data;
+	if((flags & IO_WRITE) != (prev_flags & IO_WRITE)) {
+		EV_SET(&change[nchanges++], io->fd, EVFILT_WRITE,
+		       EV_RECEIPT | ((flags & IO_WRITE) ? (EV_ADD | EV_ENABLE) : EV_DELETE),
+		       0, 0, io);
+	}
 
-	if((rerr && rerr != ENOENT) || (werr && werr != ENOENT)) {
-		logger(DEBUG_ALWAYS, LOG_EMERG, "kevent errors: %s, %s", strerror(rerr), strerror(werr));
-		abort();
+	if(nchanges > 0) {
+		if(kevent(kq, change, nchanges, result, nchanges, NULL) < 0) {
+			logger(DEBUG_ALWAYS, LOG_EMERG, "kevent failed: %s", strerror(errno));
+			abort();
+		}
+
+		for(int i = 0; i < nchanges; i++) {
+			int err = (result[i].flags & EV_ERROR) ? (int)result[i].data : 0;
+
+			if(err && err != ENOENT) {
+				logger(DEBUG_ALWAYS, LOG_EMERG, "kevent filter %d error: %s",
+				       (int)result[i].filter, strerror(err));
+				abort();
+			}
+		}
 	}
 
 	if(!flags) {
@@ -130,8 +137,14 @@ bool event_loop(void) {
 		const struct timespec *tsp = NULL;
 
 		if(tv) {
-			ts.tv_sec = tv->tv_sec;
-			ts.tv_nsec = tv->tv_usec * 1000;
+			if(tv->tv_sec < 0 || (tv->tv_sec == 0 && tv->tv_usec <= 0)) {
+				ts.tv_sec = 0;
+				ts.tv_nsec = 0;
+			} else {
+				ts.tv_sec = tv->tv_sec;
+				ts.tv_nsec = tv->tv_usec * 1000;
+			}
+
 			tsp = &ts;
 		}
 
@@ -155,12 +168,20 @@ bool event_loop(void) {
 
 		for(int i = 0; i < n; i++) {
 			const struct kevent *evt = &events[i];
-			const io_t *io = evt->udata;
+			io_t *io = evt->udata;
 
-			if(evt->filter == EVFILT_WRITE) {
+			if(!io || !io->cb || io->flags == 0) {
+				continue;
+			}
+
+			if(evt->filter == EVFILT_WRITE && (io->flags & IO_WRITE)) {
 				io->cb(io->data, IO_WRITE);
-			} else if(evt->filter == EVFILT_READ) {
+			} else if(evt->filter == EVFILT_READ && (io->flags & IO_READ)) {
 				io->cb(io->data, IO_READ);
+			} else if((evt->flags & EV_EOF) && (io->flags & IO_READ)) {
+				io->cb(io->data, IO_READ);
+			} else if((evt->flags & EV_EOF) && (io->flags & IO_WRITE)) {
+				io->cb(io->data, IO_WRITE);
 			} else {
 				continue;
 			}

@@ -27,6 +27,15 @@
         domain="file"
         path="./"
         requireFlags="deviceToDeviceTransfer" />
+    <exclude
+        domain="file"
+        path="networks" />
+    <exclude
+        domain="file"
+        path="joining" />
+    <exclude
+        domain="file"
+        path="diag-events" />
 
     <include
         domain="external"

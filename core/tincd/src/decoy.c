@@ -110,6 +110,28 @@ static const char default_page[] =
 static void decoy_reap_finished(void);
 static void decoy_cancel_all(void);
 static timeout_t decoy_reaper;
+static size_t decoy_active_bytes;
+
+bool decoy_budget_acquire(size_t bytes) {
+	if(bytes > DECOY_MAX_RESP_BUDGET || decoy_active_bytes > DECOY_MAX_RESP_BUDGET - bytes) {
+		return false;
+	}
+
+	decoy_active_bytes += bytes;
+	return true;
+}
+
+void decoy_budget_release(size_t bytes) {
+	if(bytes >= decoy_active_bytes) {
+		decoy_active_bytes = 0;
+	} else {
+		decoy_active_bytes -= bytes;
+	}
+}
+
+size_t decoy_budget_used(void) {
+	return decoy_active_bytes;
+}
 
 static void decoy_free_config(void) {
 	free(decoy_root);
@@ -121,19 +143,147 @@ static void decoy_free_config(void) {
 	decoy_upstream_ready = false;
 }
 
+static bool parse_port_slice(const char *p, size_t len, char *out, size_t outlen) {
+	if(!len || len > 5 || len >= outlen) {
+		return false;
+	}
+
+	unsigned long val = 0;
+
+	for(size_t i = 0; i < len; i++) {
+		if(p[i] < '0' || p[i] > '9') {
+			return false;
+		}
+
+		val = val * 10 + (unsigned long)(p[i] - '0');
+	}
+
+	if(val < 1 || val > 65535) {
+		return false;
+	}
+
+	memcpy(out, p, len);
+	out[len] = 0;
+	return true;
+}
+
+bool decoy_parse_upstream_hostport(const char *spec, char *host, size_t hostlen,
+                                   char *port, size_t portlen,
+                                   char *hosthdr, size_t hosthdrlen) {
+	if(!spec || !host || !port || !hosthdr || hostlen < 2 || portlen < 3 || hosthdrlen < 4) {
+		return false;
+	}
+
+	const char *s = spec;
+
+	while(*s == ' ' || *s == '\t') {
+		s++;
+	}
+
+	size_t n = strlen(s);
+
+	while(n && (s[n - 1] == ' ' || s[n - 1] == '\t')) {
+		n--;
+	}
+
+	if(!n) {
+		return false;
+	}
+
+	for(size_t i = 0; i < n; i++) {
+		unsigned char c = (unsigned char)s[i];
+
+		if(c <= 0x20 || c == 0x7f || c == '/') {
+			return false;
+		}
+	}
+
+	const char *end = s + n;
+
+	if(s[0] == '[') {
+		const char *rb = memchr(s + 1, ']', (size_t)(end - (s + 1)));
+
+		if(!rb || rb == s + 1) {
+			return false;
+		}
+
+		size_t hlen = (size_t)(rb - (s + 1));
+
+		if(memchr(s + 1, '[', hlen) || hlen >= hostlen || hlen + 2 >= hosthdrlen) {
+			return false;
+		}
+
+		if(rb + 1 == end) {
+			strcpy(port, "80");
+		} else if(rb[1] == ':' && parse_port_slice(rb + 2, (size_t)(end - (rb + 2)), port, portlen)) {
+			/* valid explicit port */
+		} else {
+			return false;
+		}
+
+		memcpy(host, s + 1, hlen);
+		host[hlen] = 0;
+
+		struct in6_addr v6;
+
+		if(inet_pton(AF_INET6, host, &v6) != 1) {
+			return false;
+		}
+
+		int w = !strcmp(port, "80")
+		        ? snprintf(hosthdr, hosthdrlen, "[%s]", host)
+		        : snprintf(hosthdr, hosthdrlen, "[%s]:%s", host, port);
+		return w > 0 && (size_t)w < hosthdrlen;
+	}
+
+	const char *colon = NULL;
+
+	for(const char *p = s; p < end; p++) {
+		if(*p == '[' || *p == ']') {
+			return false;
+		}
+
+		if(*p == ':') {
+			if(colon) {
+				/* Bare IPv6 without brackets is ambiguous with host:port */
+				return false;
+			}
+
+			colon = p;
+		}
+	}
+
+	size_t hlen = colon ? (size_t)(colon - s) : n;
+
+	if(!hlen || hlen >= hostlen || hlen >= hosthdrlen) {
+		return false;
+	}
+
+	if(colon) {
+		if(!parse_port_slice(colon + 1, (size_t)(end - (colon + 1)), port, portlen)) {
+			return false;
+		}
+	} else {
+		strcpy(port, "80");
+	}
+
+	memcpy(host, s, hlen);
+	host[hlen] = 0;
+	int w = !strcmp(port, "80")
+	        ? snprintf(hosthdr, hosthdrlen, "%s", host)
+	        : snprintf(hosthdr, hosthdrlen, "%s:%s", host, port);
+	return w > 0 && (size_t)w < hosthdrlen;
+}
+
 /* Resolve HttpsDecoyUpstream once, here, at (re)load time. A blocking DNS
    lookup is acceptable while reading the config; it must never happen on the
    probe path (M5-1). */
 static void resolve_upstream(void) {
-	char host[256];
-	strncpy(host, decoy_upstream, sizeof(host) - 1);
-	host[sizeof(host) - 1] = 0;
-	char *colon = strrchr(host, ':');
-	const char *port = "80";
+	char host[256], port[16], hosthdr[260];
 
-	if(colon) {
-		*colon = 0;
-		port = colon + 1;
+	if(!decoy_parse_upstream_hostport(decoy_upstream, host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr))) {
+		logger(DEBUG_ALWAYS, LOG_WARNING, "Decoy upstream %s is malformed; serving the static page instead", decoy_upstream);
+		return;
 	}
 
 	struct addrinfo *ai = str2addrinfo(host, port, SOCK_STREAM);
@@ -145,7 +295,7 @@ static void resolve_upstream(void) {
 
 	if(ai->ai_addrlen <= sizeof(decoy_upstream_sa)) {
 		memcpy(&decoy_upstream_sa, ai->ai_addr, ai->ai_addrlen);
-		decoy_upstream_host = xstrdup(host);
+		decoy_upstream_host = xstrdup(hosthdr);
 		decoy_upstream_ready = true;
 	}
 
@@ -183,11 +333,27 @@ static void http_date(time_t t, char *out, size_t outlen) {
 	static const char *const wd[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 	static const char *const mo[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 	struct tm tm;
+	memset(&tm, 0, sizeof(tm));
 #ifdef HAVE_WINDOWS
-	tm = *gmtime(&t);
+	struct tm *gtm = gmtime(&t);
+
+	if(!gtm) {
+		snprintf(out, outlen, "Thu, 01 Jan 1970 00:00:00 GMT");
+		return;
+	}
+
+	tm = *gtm;
 #else
-	gmtime_r(&t, &tm);
+	if(!gmtime_r(&t, &tm)) {
+		snprintf(out, outlen, "Thu, 01 Jan 1970 00:00:00 GMT");
+		return;
+	}
 #endif
+	if(tm.tm_wday < 0 || tm.tm_wday > 6 || tm.tm_mon < 0 || tm.tm_mon > 11) {
+		snprintf(out, outlen, "Thu, 01 Jan 1970 00:00:00 GMT");
+		return;
+	}
+
 	snprintf(out, outlen, "%s, %02d %s %04d %02d:%02d:%02d GMT", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon],
 	         tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
@@ -376,6 +542,68 @@ static bool set_host(decoy_request_t *r, const char *v, size_t vlen) {
 	return true;
 }
 
+static bool is_http_tchar(unsigned char c) {
+	if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+		return true;
+	}
+
+	switch(c) {
+	case '!':
+	case '#':
+	case '$':
+	case '%':
+	case '&':
+	case '\'':
+	case '*':
+	case '+':
+	case '-':
+	case '.':
+	case '^':
+	case '_':
+	case '`':
+	case '|':
+	case '~':
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+static bool parse_content_length_value(const char *v, size_t vl, long long *out) {
+	while(vl && (*v == ' ' || *v == '\t')) {
+		v++;
+		vl--;
+	}
+
+	while(vl && (v[vl - 1] == ' ' || v[vl - 1] == '\t')) {
+		vl--;
+	}
+
+	if(!vl) {
+		return false;
+	}
+
+	long long acc = 0;
+
+	for(size_t i = 0; i < vl; i++) {
+		if(v[i] < '0' || v[i] > '9') {
+			return false;
+		}
+
+		int d = v[i] - '0';
+
+		if(acc > (LLONG_MAX - d) / 10) {
+			return false;
+		}
+
+		acc = acc * 10 + d;
+	}
+
+	*out = acc;
+	return true;
+}
+
 void decoy_parse_request(const char *head, size_t len, decoy_request_t *r) {
 	memset(r, 0, sizeof(*r));
 	r->status = 400;
@@ -548,6 +776,7 @@ void decoy_parse_request(const char *head, size_t len, decoy_request_t *r) {
 	bool host_seen = false, close = false, keep = false;
 	bool ims_seen = false, ius_seen = false, ifr_seen = false, cl_seen = false;
 	bool complete = false;
+	size_t body_avail = 0;
 
 	for(const char *l = eol + 1; l < end; ) {
 		const char *le = memchr(l, '\n', (size_t)(end - l));
@@ -574,6 +803,7 @@ void decoy_parse_request(const char *head, size_t len, decoy_request_t *r) {
 			}
 
 			complete = true;
+			body_avail = (size_t)(end - (le + 1));
 			break;
 		}
 
@@ -589,6 +819,14 @@ void decoy_parse_request(const char *head, size_t len, decoy_request_t *r) {
 		}
 
 		size_t nl = (size_t)(colon - l);
+
+		/* RFC 9112 §5.1: reject any whitespace or non-token byte before ':' */
+		for(size_t i = 0; i < nl; i++) {
+			if(!is_http_tchar((unsigned char)l[i])) {
+				return;
+			}
+		}
+
 		const char *v = colon + 1;
 		size_t vl = ll - nl - 1;
 
@@ -641,11 +879,23 @@ void decoy_parse_request(const char *head, size_t len, decoy_request_t *r) {
 		} else if(IS("Via")) {
 			r->has_via = true;
 		} else if(IS("Content-Length")) {
-			if(cl_seen) {
+			long long cl = 0;
+
+			if(cl_seen || r->has_transfer_encoding || !parse_content_length_value(v, vl, &cl)) {
 				return;
 			}
 
 			cl_seen = r->has_content_length = true;
+			r->content_length = cl;
+		} else if(IS("Transfer-Encoding")) {
+			char te[128];
+			copy_value(te, sizeof(te), v, vl);
+
+			if(cl_seen || !te[0]) {
+				return;
+			}
+
+			r->has_transfer_encoding = true;
 		}
 
 #undef IS
@@ -670,6 +920,14 @@ void decoy_parse_request(const char *head, size_t len, decoy_request_t *r) {
 	}
 
 	r->keep_alive = close ? false : keep ? true : r->version >= 1001;
+
+	/* Never keep the connection open when a request body was not fully buffered
+	   (or uses Transfer-Encoding), so unconsumed body bytes are never parsed as
+	   a pipelined request. */
+	if(r->has_transfer_encoding || (r->has_content_length && (uint64_t)r->content_length > (uint64_t)body_avail)) {
+		r->keep_alive = false;
+	}
+
 	r->status = 0;
 }
 
@@ -787,6 +1045,8 @@ static const char *reason_for(int status) {
 	case 412: return "Precondition Failed";
 	case 414: return "Request-URI Too Large";
 	case 416: return "Requested Range Not Satisfiable";
+	case 502: return "Bad Gateway";
+	case 503: return "Service Temporarily Unavailable";
 	case 505: return "HTTP Version Not Supported";
 	default: return "Bad Request";
 	}
@@ -824,7 +1084,7 @@ static void error_answer(decoy_answer_t *a, int status, bool keep_alive) {
 
 	/* ngx_http_special_response_handler(): these end the connection. */
 	a->keep_alive = keep_alive && status != 400 && status != 413 && status != 414 &&
-	                status != 500 && status != 501 && status != 505;
+	                status != 500 && status != 501 && status != 503 && status != 505;
 }
 
 /* nginx's mime.types for the extensions a decoy site plausibly has. */
@@ -862,6 +1122,7 @@ typedef enum node_kind_t {
 	NODE_FILE,
 	NODE_DIR,
 	NODE_FORBIDDEN,
+	NODE_OVERLOAD,
 } node_kind_t;
 
 static node_kind_t site_lookup(const char *uri, char **data, size_t *len, time_t *mtime) {
@@ -873,9 +1134,15 @@ static node_kind_t site_lookup(const char *uri, char **data, size_t *len, time_t
 		}
 
 		if(!strcmp(uri, "/index.html")) {
+			size_t plen = sizeof(default_page) - 1;
+
+			if(plen > DECOY_MAX_RESP_BUDGET || decoy_active_bytes > DECOY_MAX_RESP_BUDGET - plen) {
+				return NODE_OVERLOAD;
+			}
+
 			*data = xmalloc(sizeof(default_page));
-			memcpy(*data, default_page, sizeof(default_page) - 1);
-			*len = sizeof(default_page) - 1;
+			memcpy(*data, default_page, plen);
+			*len = plen;
 			*mtime = DEFAULT_PAGE_MTIME;
 			return NODE_FILE;
 		}
@@ -909,8 +1176,14 @@ static node_kind_t site_lookup(const char *uri, char **data, size_t *len, time_t
 	}
 
 	/* a trailing '/' on a file: ENOTDIR for nginx */
-	if(!S_ISREG(st.st_mode) || uri[strlen(uri) - 1] == '/' || st.st_size > 64 * 1024 * 1024) {
+	if(!S_ISREG(st.st_mode) || uri[strlen(uri) - 1] == '/' || st.st_size < 0 || st.st_size > DECOY_MAX_FILE_SIZE) {
 		return NODE_NONE;
+	}
+
+	size_t fsize = (size_t) st.st_size;
+
+	if(fsize > DECOY_MAX_RESP_BUDGET || decoy_active_bytes > DECOY_MAX_RESP_BUDGET - fsize) {
+		return NODE_OVERLOAD;
 	}
 
 	FILE *f = fopen(path, "rb");
@@ -919,8 +1192,8 @@ static node_kind_t site_lookup(const char *uri, char **data, size_t *len, time_t
 		return errno == EACCES ? NODE_FORBIDDEN : NODE_NONE;
 	}
 
-	*data = xmalloc((size_t) st.st_size + 1);
-	*len = fread(*data, 1, (size_t) st.st_size, f);
+	*data = xmalloc(fsize + 1);
+	*len = fread(*data, 1, fsize, f);
 	fclose(f);
 	*mtime = st.st_mtime;
 	return NODE_FILE;
@@ -1494,7 +1767,7 @@ void decoy_answer(const decoy_request_t *r, const decoy_origin_t *at, decoy_answ
 		return;
 	}
 
-	char uri[DECOY_PATH_MAX + 16];
+	char uri[DECOY_PATH_MAX + 32];
 	snprintf(uri, sizeof(uri), "%s", r->uri);
 	size_t ul = strlen(uri);
 	char *data = NULL;
@@ -1504,12 +1777,16 @@ void decoy_answer(const decoy_request_t *r, const decoy_origin_t *at, decoy_answ
 
 	if(uri[ul - 1] == '/') {
 		/* the index module: <uri>index.html, else 403 for a directory that exists */
-		char idx[DECOY_PATH_MAX + 32];
+		char idx[DECOY_PATH_MAX + 48];
 		snprintf(idx, sizeof(idx), "%sindex.html", uri);
 		kind = site_lookup(idx, &data, &len, &mtime);
 
 		if(kind == NODE_FILE) {
-			snprintf(uri, sizeof(uri), "%s", idx);
+			snprintf(uri, sizeof(uri), "%.*s", (int)(sizeof(uri) - 1), idx);
+		} else if(kind == NODE_OVERLOAD) {
+			free(data);
+			finish_error(r, a, 503);
+			return;
 		} else {
 			free(data);
 			node_kind_t dir = site_lookup(uri, &data, &len, &mtime);
@@ -1521,6 +1798,12 @@ void decoy_answer(const decoy_request_t *r, const decoy_origin_t *at, decoy_answ
 		kind = site_lookup(uri, &data, &len, &mtime);
 	}
 
+	if(kind == NODE_OVERLOAD) {
+		free(data);
+		finish_error(r, a, 503);
+		return;
+	}
+
 	if(kind == NODE_FORBIDDEN) {
 		free(data);
 		finish_error(r, a, 403);
@@ -1529,7 +1812,7 @@ void decoy_answer(const decoy_request_t *r, const decoy_origin_t *at, decoy_answ
 
 	if(kind == NODE_DIR) {
 		/* 301 to the directory with a slash (and the query) */
-		char path[2 * DECOY_PATH_MAX + 8];
+		char path[2 * DECOY_PATH_MAX + 64];
 		snprintf(path, sizeof(path), "%s/%s%s", uri, r->args[0] ? "?" : "", r->args);
 		error_answer(a, 301, r->keep_alive);
 		a->location = absolute_location(r, at, path);
@@ -1693,6 +1976,19 @@ char *decoy_respond_static(const char *request, size_t reqlen, size_t *resplen) 
 	return decoy_respond(request, reqlen, &at, resplen);
 }
 
+char *decoy_respond_503(const decoy_origin_t *at, size_t *resplen) {
+	decoy_request_t r;
+	decoy_answer_t a;
+	memset(&r, 0, sizeof(r));
+	r.status = 503;
+	r.version = 1001;
+	decoy_answer(&r, at, &a);
+	finish_framing(&r, at, &a);
+	char *out = decoy_answer_http1(&a, resplen);
+	decoy_answer_free(&a);
+	return out;
+}
+
 /* Plain HTTP on the TLS port: nginx's 497 page for a request, 400 for
    anything else; both close. */
 static char *respond_plain_on_tls(const char *request, size_t reqlen, size_t *resplen) {
@@ -1762,9 +2058,37 @@ void decoy_origin_of(int fd, bool tls, decoy_origin_t *at) {
    are the ones nginx does not forward (Keep-Alive, TE, Expect). What the
    upstream sees is an ordinary request. The body bytes that arrived with the
    head follow it unchanged. */
-static bool header_is(const char *line, size_t linelen, const char *name) {
-	size_t n = strlen(name);
-	return linelen >= n && !strncasecmp(line, name, n);
+static bool header_name_eq(const char *line, size_t linelen, const char *name) {
+	const char *colon = memchr(line, ':', linelen);
+
+	if(!colon) {
+		return false;
+	}
+
+	size_t nl = (size_t)(colon - line);
+
+	while(nl && (line[nl - 1] == ' ' || line[nl - 1] == '\t')) {
+		nl--;
+	}
+
+	return nl == strlen(name) && !strncasecmp(line, name, nl);
+}
+
+static bool header_name_prefix(const char *line, size_t linelen, const char *prefix) {
+	const char *colon = memchr(line, ':', linelen);
+
+	if(!colon) {
+		return false;
+	}
+
+	size_t nl = (size_t)(colon - line);
+
+	while(nl && (line[nl - 1] == ' ' || line[nl - 1] == '\t')) {
+		nl--;
+	}
+
+	size_t plen = strlen(prefix);
+	return nl >= plen && !strncasecmp(line, prefix, plen);
 }
 
 static char *rewrite_request(const char *request, size_t reqlen, const char *host, size_t *outlen) {
@@ -1783,15 +2107,21 @@ static char *rewrite_request(const char *request, size_t reqlen, const char *hos
 			break;
 		}
 
-		if(l != request && header_is(l, (size_t)(eol - l), "Content-Length:")) {
-			const char *v = l + 15;
+		size_t ll = (size_t)(eol - l);
 
-			while(v < eol && (*v == ' ' || *v == '\t')) {
-				v++;
-			}
+		if(ll && l[ll - 1] == '\r') {
+			ll--;
+		}
 
-			if(v < eol && isdigit((unsigned char)*v)) {
-				clen = strtoll(v, NULL, 10);
+		if(l != request && header_name_eq(l, ll, "Content-Length")) {
+			const char *colon = memchr(l, ':', ll);
+
+			if(colon) {
+				long long parsed = -1;
+
+				if(parse_content_length_value(colon + 1, ll - (size_t)(colon - l) - 1, &parsed)) {
+					clen = parsed;
+				}
 			}
 
 			break;
@@ -1832,12 +2162,12 @@ static char *rewrite_request(const char *request, size_t reqlen, const char *hos
 			memcpy(out + olen, line, (size_t)(req_end - line));
 			olen += (size_t)(req_end - line);
 			break;
-		} else if(header_is(line, linelen, "Host:") || header_is(line, linelen, "Connection:") ||
-		          (clen >= 0 && header_is(line, linelen, "Content-Length:")) ||
-		          header_is(line, linelen, "Cookie:") || header_is(line, linelen, "Upgrade:") ||
-		          header_is(line, linelen, "Sec-WebSocket-") || header_is(line, linelen, "Authorization:") ||
-		          header_is(line, linelen, "Keep-Alive:") || header_is(line, linelen, "TE:") ||
-		          header_is(line, linelen, "Expect:")) {
+		} else if(header_name_eq(line, linelen, "Host") || header_name_eq(line, linelen, "Connection") ||
+		          header_name_eq(line, linelen, "Content-Length") || header_name_eq(line, linelen, "Transfer-Encoding") ||
+		          header_name_eq(line, linelen, "Cookie") || header_name_eq(line, linelen, "Upgrade") ||
+		          header_name_prefix(line, linelen, "Sec-WebSocket-") || header_name_eq(line, linelen, "Authorization") ||
+		          header_name_eq(line, linelen, "Keep-Alive") || header_name_eq(line, linelen, "TE") ||
+		          header_name_eq(line, linelen, "Expect")) {
 			/* dropped */
 		} else {
 			memcpy(out + olen, line, linelen);
@@ -2058,6 +2388,7 @@ struct decoy_fetch_t {
 
 	char *resp;
 	size_t rlen, rcap;
+	size_t rbuf_budget;
 
 	decoy_cb_t cb;
 	void *data;
@@ -2073,6 +2404,11 @@ static void fetch_release(decoy_fetch_t *f) {
 	if(f->fd >= 0) {
 		closesocket(f->fd);
 		f->fd = -1;
+	}
+
+	if(f->rbuf_budget) {
+		decoy_budget_release(f->rbuf_budget);
+		f->rbuf_budget = 0;
 	}
 
 	free(f->req);
@@ -2199,7 +2535,16 @@ static void fetch_io(void *data, int flags) {
 				return;
 			}
 
-			f->rcap = f->rcap ? f->rcap * 2 : 16384;
+			size_t next_cap = f->rcap ? f->rcap * 2 : 16384;
+			size_t delta = next_cap - f->rcap;
+
+			if(!decoy_budget_acquire(delta)) {
+				fetch_deliver(f);
+				return;
+			}
+
+			f->rbuf_budget += delta;
+			f->rcap = next_cap;
 			f->resp = xrealloc(f->resp, f->rcap);
 		}
 
@@ -2220,31 +2565,129 @@ static void fetch_io(void *data, int flags) {
 	}
 }
 
+static size_t find_head_end(const char *buf, size_t len) {
+	for(size_t i = 0; i + 4 <= len; i++) {
+		if(!memcmp(buf + i, "\r\n\r\n", 4)) {
+			return i + 4;
+		}
+	}
+
+	return 0;
+}
+
+static bool extract_head_framing(const char *buf, size_t head_end, long long *cl_out, bool *te_out) {
+	*cl_out = -1;
+	*te_out = false;
+	const char *end = buf + head_end;
+	const char *eol = memchr(buf, '\n', head_end);
+
+	if(!eol) {
+		return false;
+	}
+
+	for(const char *l = eol + 1; l < end;) {
+		const char *le = memchr(l, '\n', (size_t)(end - l));
+
+		if(!le) {
+			break;
+		}
+
+		size_t ll = (size_t)(le - l);
+
+		if(ll && l[ll - 1] == '\r') {
+			ll--;
+		}
+
+		if(!ll) {
+			break;
+		}
+
+		const char *colon = memchr(l, ':', ll);
+
+		if(!colon || colon == l) {
+			return false;
+		}
+
+		size_t nl = (size_t)(colon - l);
+
+		for(size_t i = 0; i < nl; i++) {
+			if(!is_http_tchar((unsigned char)l[i])) {
+				return false;
+			}
+		}
+
+		const char *v = colon + 1;
+		size_t vl = ll - nl - 1;
+
+		if(nl == 14 && !strncasecmp(l, "Content-Length", 14)) {
+			long long cl = 0;
+
+			if(*cl_out >= 0 || *te_out || !parse_content_length_value(v, vl, &cl)) {
+				return false;
+			}
+
+			*cl_out = cl;
+		} else if(nl == 17 && !strncasecmp(l, "Transfer-Encoding", 17)) {
+			if(*cl_out >= 0) {
+				return false;
+			}
+
+			*te_out = true;
+		}
+
+		l = le + 1;
+	}
+
+	return true;
+}
+
+bool decoy_request_ready(const char *buf, size_t len, size_t maxbuf) {
+	if(len >= maxbuf) {
+		return true;
+	}
+
+	size_t head_end = find_head_end(buf, len);
+
+	if(!head_end) {
+		return len > 0 && decoy_request_refused(buf, len);
+	}
+
+	long long cl = -1;
+	bool te = false;
+
+	if(!extract_head_framing(buf, head_end, &cl, &te)) {
+		return true;
+	}
+
+	if(te || cl <= 0) {
+		return true;
+	}
+
+	if((uint64_t)head_end + (uint64_t)cl > (uint64_t)maxbuf) {
+		return true;
+	}
+
+	return len >= head_end + (size_t)cl;
+}
+
 /* Bytes of buf[0..len) the first request takes: its head and whatever part
    of a Content-Length body has arrived. All of it without a complete head. */
 static size_t request_span(const char *buf, size_t len) {
-	size_t used = len;
+	size_t head_end = find_head_end(buf, len);
 
-	for(size_t i = 0; i + 4 <= len; i++) {
-		if(!memcmp(buf + i, "\r\n\r\n", 4)) {
-			used = i + 4;
-			break;
-		}
+	if(!head_end) {
+		return len;
 	}
 
-	for(size_t i = 0; i + 16 <= used; i++) {
-		if(buf[i] == '\n' && !strncasecmp(buf + i + 1, "content-length:", 15)) {
-			long n = strtol(buf + i + 16, NULL, 10);
+	long long cl = -1;
+	bool te = false;
 
-			if(n > 0) {
-				used += (size_t)n < len - used ? (size_t)n : len - used;
-			}
-
-			break;
-		}
+	if(extract_head_framing(buf, head_end, &cl, &te) && cl > 0) {
+		size_t rem = len - head_end;
+		return head_end + ((uint64_t)cl < (uint64_t)rem ? (size_t)cl : rem);
 	}
 
-	return used;
+	return head_end;
 }
 
 size_t decoy_next_request(char *buf, size_t len) {
@@ -2254,14 +2697,20 @@ size_t decoy_next_request(char *buf, size_t len) {
 }
 
 decoy_fetch_t *decoy_fetch_start(const char *request, size_t reqlen, const decoy_origin_t *at, decoy_cb_t cb, void *data) {
-	if(!decoy_upstream_ready) {
+	if(!decoy_upstream_ready || fetches.count >= DECOY_MAX_FETCHES) {
 		return NULL;
 	}
 
-	/* A request nginx refuses by itself never reaches its upstream. */
+	size_t span = request_span(request, reqlen);
+	size_t head_end = find_head_end(request, span);
+	size_t body_avail = head_end ? span - head_end : 0;
+
+	/* A request nginx refuses by itself (or whose body was not fully buffered)
+	   never reaches its upstream. */
 	decoy_request_t *r = xmalloc(sizeof(*r));
-	decoy_parse_request(request, request_span(request, reqlen), r);
-	bool refused = r->status || r->version == 9;
+	decoy_parse_request(request, span, r);
+	bool refused = r->status || r->version == 9 || r->has_transfer_encoding ||
+	               (r->has_content_length && (uint64_t)r->content_length > (uint64_t)body_avail);
 	free(r);
 
 	if(refused) {
@@ -2299,7 +2748,7 @@ decoy_fetch_t *decoy_fetch_start(const char *request, size_t reqlen, const decoy
 	f->fd = fd;
 	f->cb = cb;
 	f->data = data;
-	reqlen = request_span(request, reqlen); /* not a pipelined one after it */
+	reqlen = span; /* not a pipelined one after it */
 	f->orig = xmalloc(reqlen + 1);
 	memcpy(f->orig, request, reqlen);
 	f->orig[reqlen] = 0;
@@ -2352,8 +2801,20 @@ typedef struct plain_decoy_t {
 	decoy_fetch_t *fetch;
 	char *resp;
 	size_t wlen, woff;
+	size_t resp_budget;
 	bool on_tls_port;       /* plain HTTP on the HttpsPort listener */
 } plain_decoy_t;
+
+static void plain_release_resp(plain_decoy_t *p) {
+	if(p->resp_budget) {
+		decoy_budget_release(p->resp_budget);
+		p->resp_budget = 0;
+	}
+
+	free(p->resp);
+	p->resp = NULL;
+	p->wlen = p->woff = 0;
+}
 
 static void plain_close(connection_t *c) {
 	plain_decoy_t *p = c->transport_data;
@@ -2363,7 +2824,7 @@ static void plain_close(connection_t *c) {
 	}
 
 	decoy_fetch_cancel(p->fetch);
-	free(p->resp);
+	plain_release_resp(p);
 	free(p);
 	c->transport_data = NULL;
 }
@@ -2393,7 +2854,21 @@ bool decoy_keeps_alive(const char *resp, size_t len) {
 }
 
 static void plain_prepare_write(plain_decoy_t *p, char *resp, size_t len) {
-	free(p->resp);
+	plain_release_resp(p);
+
+	if(decoy_budget_acquire(len)) {
+		p->resp_budget = len;
+	} else {
+		free(resp);
+		decoy_origin_t at;
+		decoy_origin_of(p->c->socket, false, &at);
+		resp = decoy_respond_503(&at, &len);
+
+		if(decoy_budget_acquire(len)) {
+			p->resp_budget = len;
+		}
+	}
+
 	p->resp = resp;
 	p->wlen = len;
 	p->woff = 0;
@@ -2424,9 +2899,7 @@ static void plain_pump(plain_decoy_t *p) {
 		connection_t *c = p->c;
 
 		if(p->state == PS_READ_REQ) {
-			bool have_req = (p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) ||
-			                (p->rlen > 0 && decoy_request_refused(p->req, p->rlen)) ||
-			                (p->rlen >= sizeof(p->req) - 1);
+			bool have_req = decoy_request_ready(p->req, p->rlen, sizeof(p->req) - 1);
 
 			while(!have_req) {
 				ssize_t n = recv(c->socket, p->req + p->rlen, sizeof(p->req) - 1 - p->rlen, 0);
@@ -2437,9 +2910,7 @@ static void plain_pump(plain_decoy_t *p) {
 
 					/* nginx answers a request line it cannot parse at once, without
 					   waiting for the rest of a head that will never come. */
-					if((p->rlen >= 4 && mem_has(p->req, p->rlen, "\r\n\r\n", 4)) ||
-					   decoy_request_refused(p->req, p->rlen) ||
-					   p->rlen >= sizeof(p->req) - 1) {
+					if(decoy_request_ready(p->req, p->rlen, sizeof(p->req) - 1)) {
 						have_req = true;
 					}
 
@@ -2516,9 +2987,7 @@ static void plain_pump(plain_decoy_t *p) {
 			/* Keep-alive, as the response said: wait for the next request, for
 			   nginx's keepalive_timeout (the web-front reaper counts from
 			   last_ping_time with the header timeout). */
-			free(p->resp);
-			p->resp = NULL;
-			p->wlen = p->woff = 0;
+			plain_release_resp(p);
 			p->rlen = decoy_next_request(p->req, p->rlen);
 			p->req[p->rlen] = 0;
 			p->state = PS_READ_REQ;
@@ -2581,17 +3050,88 @@ void decoy_serve_plain_tls_port(connection_t *c) {
 	serve_plain(c, true);
 }
 
-bool decoy_front_full(void) {
-	int n = 0;
+static bool same_client_ip(const connection_t *a, const connection_t *b) {
+	if(a->address.sa.sa_family != b->address.sa.sa_family) {
+		return false;
+	}
 
-	for list_each(connection_t, c, &connection_list) {
-		if(c->transport && c->transport->id == TRANSPORT_QUIC) {
-			continue;
-		}
-		if(c->status.web_front && !c->edge && !c->status.active && ++n >= DECOY_MAX_WEB_CLIENTS) {
-			return true;
-		}
+	if(a->address.sa.sa_family == AF_INET) {
+		return !memcmp(&a->address.in.sin_addr, &b->address.in.sin_addr, sizeof(a->address.in.sin_addr));
+	}
+
+	if(a->address.sa.sa_family == AF_INET6) {
+		return !memcmp(&a->address.in6.sin6_addr, &b->address.in6.sin6_addr, sizeof(a->address.in6.sin6_addr));
 	}
 
 	return false;
+}
+
+static bool conn_older(const connection_t *a, const connection_t *b) {
+	if(a->start.tv_sec != b->start.tv_sec) {
+		return a->start.tv_sec < b->start.tv_sec;
+	}
+
+	return a->start.tv_usec < b->start.tv_usec;
+}
+
+bool decoy_front_full(void) {
+	for(int guard = 0; guard < 16; guard++) {
+		connection_t *pool[DECOY_MAX_WEB_CLIENTS + 32];
+		int m = 0;
+		int total = 0;
+
+		for list_each(connection_t, c, &connection_list) {
+			if(c->transport && c->transport->id == TRANSPORT_QUIC) {
+				continue;
+			}
+
+			if(c->status.web_front && !c->edge && !c->status.active) {
+				total++;
+
+				if(m < (int)(sizeof(pool) / sizeof(pool[0]))) {
+					pool[m++] = c;
+				}
+			}
+		}
+
+		if(total < DECOY_MAX_WEB_CLIENTS) {
+			return false;
+		}
+
+		if(!m) {
+			return true;
+		}
+
+		connection_t *oldest_any = pool[0];
+		connection_t *oldest_dup = NULL;
+		int max_dup = 1;
+
+		for(int i = 0; i < m; i++) {
+			if(conn_older(pool[i], oldest_any)) {
+				oldest_any = pool[i];
+			}
+
+			int cnt = 0;
+
+			for(int j = 0; j < m; j++) {
+				if(same_client_ip(pool[i], pool[j])) {
+					cnt++;
+				}
+			}
+
+			if(cnt > max_dup || (cnt == max_dup && cnt > 1 && (!oldest_dup || conn_older(pool[i], oldest_dup)))) {
+				max_dup = cnt;
+				oldest_dup = pool[i];
+			}
+		}
+
+		connection_t *victim = oldest_dup ? oldest_dup : oldest_any;
+		logger(DEBUG_CONNECTIONS, LOG_INFO, "Web front: pool at %d/%d, evicting unauthenticated connection from %s",
+		       total, DECOY_MAX_WEB_CLIENTS, victim->hostname ? victim->hostname : "unknown");
+		victim->status.tarpit = false;
+		victim->status.no_tarpit = true;
+		terminate_connection(victim, false);
+	}
+
+	return true;
 }

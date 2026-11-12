@@ -155,9 +155,9 @@ typedef struct quic_session_t {
 		bool hdr_seen, hdr_bad;
 		bool hdr_blocked;       /* HEADERS whole, waiting for the dynamic table */
 		uint8_t *resp;          /* HEADERS + DATA; one allocation, never moved,
-		                           kept until the session ends */
-		size_t resp_len, resp_sent;
-		bool responded, blocked, done;
+		                           kept until all bytes are ACKed or stream closes */
+		size_t resp_len, resp_sent, acked_len, resp_budget;
+		bool responded, blocked, fin_sent, done;
 	} req[QUIC_REQ_SLOTS];
 	int nreq;
 
@@ -533,20 +533,33 @@ static const uint8_t *ok_headers_payload(size_t *len) {
 	return payload;
 }
 
+static void req_release_resp(struct quic_req *r) {
+	if(r->resp_budget) {
+		decoy_budget_release(r->resp_budget);
+		r->resp_budget = 0;
+	}
+
+	free(r->resp);
+	r->resp = NULL;
+}
+
 /* Server: the slot of a request stream, created on first sight. -1 when all
    slots are taken (the stream is refused, as a server at its limit would). */
-static int req_slot(quic_session_t *s, int64_t id) {
+static int req_slot(quic_session_t *s, int64_t id, uint64_t offset) {
 	for(int i = 0; i < s->nreq; i++) {
 		if(s->req[i].id == id) {
 			return i;
 		}
 	}
 
+	if(offset > 0) {
+		return -1;
+	}
+
 	if(s->nreq == QUIC_REQ_SLOTS) {
 		for(int i = 0; i < s->nreq; i++) {
-			if(s->req[i].done && s->req[i].id != s->stream_id && !s->req[i].hdr_blocked) {
-				decoy_fetch_cancel(s->req[i].fetch);
-				free(s->req[i].resp);
+			if(s->req[i].done && !s->req[i].resp && !s->req[i].fetch &&
+			                s->req[i].id != s->stream_id && !s->req[i].hdr_blocked) {
 				free(s->req[i].hdr);
 				free(s->req[i].fields);
 				memset(&s->req[i], 0, sizeof(s->req[i]));
@@ -604,24 +617,49 @@ static char *req_as_http1(const h3_req_fields_t *f) {
 	return r;
 }
 
+static bool req_install_h3_resp(quic_session_t *s, struct quic_req *q, char *http1, size_t len, bool from_upstream) {
+	q->resp = h3_from_http1(http1, len, from_upstream, &q->resp_len, NULL);
+	free(http1);
+
+	if(q->resp && !decoy_budget_acquire(q->resp_len)) {
+		free(q->resp);
+		q->resp = NULL;
+		q->resp_len = 0;
+
+		size_t r503_len = 0;
+		decoy_origin_t at = {.tls = true, .h3 = true, .port = quic_port ? quic_port : 443};
+		char *r503 = decoy_respond_503(&at, &r503_len);
+		q->resp = h3_from_http1(r503, r503_len, false, &q->resp_len, NULL);
+		free(r503);
+
+		if(q->resp && decoy_budget_acquire(q->resp_len)) {
+			q->resp_budget = q->resp_len;
+		}
+	} else if(q->resp) {
+		q->resp_budget = q->resp_len;
+	}
+
+	if(!q->resp) {
+		q->fin_sent = true;
+		q->done = true;
+		ngtcp2_conn_shutdown_stream(s->conn, 0, q->id, H3_REQUEST_REJECTED);
+		return false;
+	}
+
+	return true;
+}
+
 static void req_decoy_fetched(void *data, char *resp, size_t len) {
 	struct quic_req *q = data;
 	quic_session_t *s = q->owner;
 	q->fetch = NULL;
 
-	if(!s || s->dead || !s->conn) {
+	if(!s || s->dead || !s->conn || q->done || q->id < 0) {
 		free(resp);
 		return;
 	}
 
-	q->resp = h3_from_http1(resp, len, true, &q->resp_len, NULL);
-	free(resp);
-
-	if(!q->resp) {
-		q->done = true;
-		ngtcp2_conn_shutdown_stream(s->conn, 0, q->id, H3_REQUEST_REJECTED);
-	}
-
+	req_install_h3_resp(s, q, resp, len, true);
 	quic_flush(s);
 }
 
@@ -647,12 +685,8 @@ static void req_respond_decoy(quic_session_t *s, int i) {
 
 	char *r = decoy_respond(request, strlen(request), &at, &rl);
 	free(request);
-	s->req[i].resp = h3_from_http1(r, rl, false, &s->req[i].resp_len, NULL);
-	free(r);
 
-	if(!s->req[i].resp) {
-		s->req[i].done = true;
-		ngtcp2_conn_shutdown_stream(s->conn, 0, s->req[i].id, H3_REQUEST_REJECTED);
+	if(!req_install_h3_resp(s, &s->req[i], r, rl, false)) {
 		return;
 	}
 
@@ -693,10 +727,13 @@ static bool req_token(quic_session_t *s, int i) {
 
 				if(expected && expected != (size_t) -1 && expected == n) {
 					uint8_t exporter[AUTHN_EXPORTER_LEN];
+					uint8_t own_fp[TLS_FP_LEN];
 					char *name = NULL;
 
+					tls_ssl_own_fp(s->tls.ssl, own_fp);
+
 					if(!quic_tls_exporter(&s->tls, exporter, sizeof(exporter)) ||
-					                !authn_verify(payload, n, tls_own_fp, exporter, "quic", s->c->hostname, &name)) {
+					                !authn_verify(payload, n, own_fp, exporter, "quic", s->c->hostname, &name)) {
 						logger(DEBUG_CONNECTIONS, LOG_INFO, "quic: authenticator from %s rejected", s->c->hostname);
 						return false;
 					}
@@ -706,6 +743,7 @@ static bool req_token(quic_session_t *s, int i) {
 					free(s->c->name);
 					s->c->name = name;
 					s->authenticated = true;
+					s->c->status.web_front = false;
 					logger(DEBUG_CONNECTIONS, LOG_NOTICE, "quic: authenticated peer %s (%s) by its request headers", s->c->name, s->c->hostname);
 					return true;
 				}
@@ -1047,16 +1085,17 @@ static int cb_recv_stream_data(ngtcp2_conn *conn, uint32_t flags, int64_t stream
 			}
 		}
 	} else {
-		int i = req_slot(s, stream_id);
+		int i = req_slot(s, stream_id, offset);
 
 		if(i < 0) {
 			/* nginx tells the encoder when it drops an unread stream. */
 			if(!offset) {
 				uint8_t cancel[16];
 				decoder_append(s, cancel, h3_qpack_stream_cancel(stream_id, cancel));
+				ngtcp2_conn_shutdown_stream(conn, 0, stream_id, H3_REQUEST_REJECTED);
+			} else {
+				ngtcp2_conn_shutdown_stream_read(conn, 0, stream_id, H3_NO_ERROR);
 			}
-
-			ngtcp2_conn_shutdown_stream(conn, 0, stream_id, H3_REQUEST_REJECTED);
 		} else {
 			rx_ctx_t x = {s, i, stream_id};
 
@@ -1116,7 +1155,22 @@ static int cb_acked_stream_data_offset(ngtcp2_conn *conn, int64_t stream_id, uin
 		}
 	}
 
-	return 0;       /* a decoy answer: one allocation, freed with the session */
+	for(int i = 0; i < s->nreq; i++) {
+		if(s->req[i].id == stream_id) {
+			if(acked > s->req[i].acked_len) {
+				s->req[i].acked_len = (size_t)acked;
+			}
+
+			if(s->req[i].fin_sent && s->req[i].acked_len >= s->req[i].resp_len) {
+				req_release_resp(&s->req[i]);
+				s->req[i].done = true;
+			}
+
+			return 0;
+		}
+	}
+
+	return 0;
 }
 
 static int cb_stream_open(ngtcp2_conn *conn, int64_t stream_id, void *user_data) {
@@ -1125,6 +1179,51 @@ static int cb_stream_open(ngtcp2_conn *conn, int64_t stream_id, void *user_data)
 	(void)conn;
 	(void)stream_id;
 	(void)user_data;
+	return 0;
+}
+
+static int cb_stream_close(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id,
+                           uint64_t app_error_code, void *user_data, void *stream_user_data) {
+	(void)conn;
+	(void)flags;
+	(void)app_error_code;
+	(void)stream_user_data;
+	quic_session_t *s = user_data;
+
+	if(s->dead) {
+		return 0;
+	}
+
+	if(stream_id == s->stream_id) {
+		quic_fail(s, true);
+		return 0;
+	}
+
+	for(int i = 0; i < s->nreq; i++) {
+		if(s->req[i].id == stream_id) {
+			if(s->req[i].hdr_blocked) {
+				s->req[i].hdr_blocked = false;
+
+				if(s->nblocked > 0) {
+					s->nblocked--;
+				}
+			}
+
+			decoy_fetch_cancel(s->req[i].fetch);
+			s->req[i].fetch = NULL;
+			req_release_resp(&s->req[i]);
+			free(s->req[i].hdr);
+			s->req[i].hdr = NULL;
+			s->req[i].hdr_len = 0;
+			free(s->req[i].fields);
+			s->req[i].fields = NULL;
+			s->req[i].fin_sent = true;
+			s->req[i].done = true;
+			s->req[i].id = -1;
+			break;
+		}
+	}
+
 	return 0;
 }
 
@@ -1342,6 +1441,7 @@ static void quic_callbacks(ngtcp2_callbacks *cb, bool server) {
 	cb->recv_stream_data = cb_recv_stream_data;
 	cb->acked_stream_data_offset = cb_acked_stream_data_offset;
 	cb->stream_open = cb_stream_open;
+	cb->stream_close = cb_stream_close;
 	cb->recv_datagram = cb_recv_datagram;
 	cb->path_validation = cb_path_validation;
 	cb->extend_max_stream_data = cb_extend_max_stream_data;
@@ -1575,6 +1675,12 @@ static void quic_flush(quic_session_t *s) {
 			nwrite = ngtcp2_conn_writev_datagram(s->conn, &ps.path, &pi, buf, QUIC_PKT_BUF, &accepted, dflags,
 			                                     ++s->dgram_id, &v, 1, ts);
 
+			if(nwrite == NGTCP2_ERR_NOBUF) {
+				s->dgram_head = (s->dgram_head + 1) % QUIC_DGRAM_QUEUE;
+				s->dgram_n--;
+				continue;
+			}
+
 			if(nwrite < 0) {
 				quic_send_pkts(s, pkts, pkt_lens, dests, destlens, npkts);
 				ngtcp2_ccerr_set_liberr(&s->ccerr, (int)nwrite, NULL, 0);
@@ -1643,7 +1749,7 @@ static void quic_flush(quic_session_t *s) {
 			}
 
 			for(int i = 0; i < s->nreq && sid < 0; i++) {
-				if(s->req[i].resp && !s->req[i].done && !s->req[i].blocked) {
+				if(s->req[i].resp && !s->req[i].fin_sent && !s->req[i].done && !s->req[i].blocked) {
 					v[0].base = s->req[i].resp + s->req[i].resp_sent;
 					v[0].len = s->req[i].resp_len - s->req[i].resp_sent;
 					cnt = v[0].len ? 1 : 0;
@@ -1686,16 +1792,44 @@ static void quic_flush(quic_session_t *s) {
 					s->req[req].resp_sent += (size_t)pdatalen;
 
 					if(wflags & NGTCP2_WRITE_STREAM_FLAG_FIN) {
-						s->req[req].done = true;        /* the FIN is in this packet */
+						s->req[req].fin_sent = true;
+
+						if(s->req[req].acked_len >= s->req[req].resp_len) {
+							req_release_resp(&s->req[req]);
+							s->req[req].done = true;
+						}
 					}
 				}
 
 				continue;
 			}
 
-			if((nwrite == NGTCP2_ERR_STREAM_SHUT_WR || nwrite == NGTCP2_ERR_STREAM_NOT_FOUND) && req >= 0) {
-				s->req[req].done = true;        /* the client gave up on that request */
+			if(nwrite == NGTCP2_ERR_STREAM_NOT_FOUND && req >= 0) {
+				req_release_resp(&s->req[req]);
+				s->req[req].fin_sent = true;
+				s->req[req].done = true;
 				continue;
+			}
+
+			if(nwrite == NGTCP2_ERR_STREAM_SHUT_WR && req >= 0) {
+				/* Keep resp pinned until cb_stream_close confirms ngtcp2 no
+				   longer holds retransmission pointers into s->req[req].resp. */
+				s->req[req].fin_sent = true;
+				ngtcp2_conn_shutdown_stream_write(s->conn, 0, s->req[req].id, H3_REQUEST_REJECTED);
+				continue;
+			}
+
+			if(nwrite == NGTCP2_ERR_NOBUF) {
+				if(write_more) {
+					write_more = false;
+					nwrite = ngtcp2_conn_writev_stream(s->conn, &ps.path, &pi, buf, QUIC_PKT_BUF, NULL, 0, -1, NULL, 0, ts);
+
+					if(nwrite == NGTCP2_ERR_NOBUF || nwrite == 0) {
+						break;
+					}
+				} else {
+					break;
+				}
 			}
 
 			if(nwrite < 0) {
@@ -1711,9 +1845,14 @@ static void quic_flush(quic_session_t *s) {
 				} else if(req >= 0) {
 					s->req[req].resp_sent += (size_t)pdatalen;
 
-					/* All of it, FIN included, is in a packet. */
+					/* All of it, FIN included, is in a packet; wait for ACKs before freeing resp. */
 					if((wflags & NGTCP2_WRITE_STREAM_FLAG_FIN) && nwrite > 0) {
-						s->req[req].done = true;
+						s->req[req].fin_sent = true;
+
+						if(s->req[req].acked_len >= s->req[req].resp_len) {
+							req_release_resp(&s->req[req]);
+							s->req[req].done = true;
+						}
 					}
 				} else {
 					quic_txq_sent(&s->tx, (size_t)pdatalen);
@@ -1872,7 +2011,8 @@ static void free_session(quic_session_t *s) {
 
 	for(int i = 0; i < s->nreq; i++) {
 		decoy_fetch_cancel(s->req[i].fetch);
-		free(s->req[i].resp);
+		s->req[i].fetch = NULL;
+		req_release_resp(&s->req[i]);
 		free(s->req[i].hdr);
 		free(s->req[i].fields);
 	}
@@ -1894,23 +2034,42 @@ static void free_session(quic_session_t *s) {
 static bool quic_front_full(void) {
 	int n = 0;
 	quic_session_t *oldest_unest = NULL;
+	quic_session_t *oldest_dup_ip = NULL;
+	quic_session_t *oldest_any = NULL;
 
 	for list_each(quic_session_t, s, &quic_sessions) {
 		if(s->dead || !s->is_server || !s->c) {
 			continue;
 		}
-		if(s->c->status.web_front && !s->c->edge && !s->c->status.active) {
+		if(!s->authenticated && s->c->status.web_front && !s->c->edge && !s->c->status.active) {
 			n++;
-			if(!s->authenticated && (!s->conn || !ngtcp2_conn_get_handshake_completed(s->conn)) && !oldest_unest) {
+			if(!oldest_any) {
+				oldest_any = s;
+			}
+			if((!s->conn || !ngtcp2_conn_get_handshake_completed(s->conn)) && !oldest_unest) {
 				oldest_unest = s;
+			}
+			if(!oldest_dup_ip) {
+				for list_each(quic_session_t, other, &quic_sessions) {
+					if(other == s || other->dead || !other->is_server || !other->c) {
+						continue;
+					}
+					if(!other->authenticated && other->c->status.web_front &&
+					                !other->c->edge && !other->c->status.active &&
+					                !sockaddrcmp_noport(&s->peer, &other->peer)) {
+						oldest_dup_ip = s;
+						break;
+					}
+				}
 			}
 		}
 	}
 
 	if(n >= DECOY_MAX_WEB_CLIENTS) {
-		if(oldest_unest) {
-			connection_t *c = oldest_unest->c;
-			terminate_connection(c, c->edge);
+		quic_session_t *victim = oldest_unest ? oldest_unest : (oldest_dup_ip ? oldest_dup_ip : oldest_any);
+		if(victim && victim->c) {
+			connection_t *c = victim->c;
+			terminate_connection(c, false);
 			return false;
 		}
 		return true;
@@ -2242,16 +2401,24 @@ void quic_udp_receive(listen_socket_t *ls, const uint8_t *buf, size_t len, const
 /* ---- outbound: dial ------------------------------------------------------ */
 
 static char *choose_sni(connection_t *c) {
+	char clean[256];
 	char *sni = NULL;
 
 	if(get_config_string(lookup_config(&config_tree, "QuicSni"), &sni) && sni && *sni) {
-		return sni;
+		if(tls_extract_sni_hostname(sni, clean, sizeof(clean))) {
+			free(sni);
+			return xstrdup(clean);
+		}
 	}
 
 	free(sni);
+	sni = NULL;
 
 	if(get_config_string(lookup_config(&config_tree, "HttpsSni"), &sni) && sni && *sni) {
-		return sni;
+		if(tls_extract_sni_hostname(sni, clean, sizeof(clean))) {
+			free(sni);
+			return xstrdup(clean);
+		}
 	}
 
 	free(sni);
@@ -2261,28 +2428,15 @@ static char *choose_sni(connection_t *c) {
 	char *addr = NULL;
 
 	if(read_host_config(tree, c->name, false)) {
-		char *a = NULL;
+		for(config_t *cfg = lookup_config(tree, "Address"); cfg && !addr; cfg = lookup_config_next(tree, cfg)) {
+			char *a = NULL;
 
-		if(get_config_string(lookup_config(tree, "Address"), &a) && a && *a) {
-			bool looks_like_name = false;
-
-			for(char *p = a; *p; p++) {
-				if(isalpha((uint8_t) *p) && !strchr("abcdefABCDEF", *p)) {
-					looks_like_name = true;
-					break;
-				}
+			if(get_config_string(cfg, &a) && a && tls_extract_sni_hostname(a, clean, sizeof(clean))) {
+				addr = xstrdup(clean);
 			}
 
-			if(strchr(a, ':')) {
-				looks_like_name = false;
-			}
-
-			if(looks_like_name) {
-				addr = xstrdup(a);
-			}
+			free(a);
 		}
-
-		free(a);
 	}
 
 	exit_configuration(tree);
@@ -2973,15 +3127,37 @@ bool quic_read_config(void) {
 	}
 
 	char before[TLS_FP_HEX_LEN];
+	uint8_t before_chain[TLS_FP_LEN];
 	strncpy(before, tls_own_fp_hex, sizeof(before));
+	before[sizeof(before) - 1] = 0;
+	memcpy(before_chain, tls_own_chain_fp, sizeof(before_chain));
 
 	if(!tls_init()) {
 		return false;
 	}
 
-	if(strcmp(before, tls_own_fp_hex)) {
+	if(strcmp(before, tls_own_fp_hex) || memcmp(before_chain, tls_own_chain_fp, sizeof(before_chain))) {
 		logger(DEBUG_ALWAYS, LOG_INFO, "quic: node certificate changed; rebuilding the server credential");
-		return quic_init();
+		char *cert_pem = NULL, *key_pem = NULL;
+
+		if(!tls_current_pem(&cert_pem, &key_pem)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "quic carrier: could not load the node certificate PEM; keeping the one already in use");
+			return false;
+		}
+
+		bool ok = quic_tls_set_server_cert(cert_pem, key_pem);
+		free(cert_pem);
+
+		if(key_pem) {
+			memzero(key_pem, strlen(key_pem));
+		}
+
+		free(key_pem);
+
+		if(!ok) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "quic carrier: could not build the server credential; keeping the one already in use");
+			return false;
+		}
 	}
 
 	return true;

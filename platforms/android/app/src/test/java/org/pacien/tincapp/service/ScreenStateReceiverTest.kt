@@ -24,6 +24,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
 import android.os.Looper
+import android.os.PowerManager
 import androidx.test.core.app.ApplicationProvider
 import java8.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -51,6 +52,7 @@ class ScreenStateReceiverTest {
   private val context: Context = ApplicationProvider.getApplicationContext()
   private val keyguard = shadowOf(context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager)
   private val audio = shadowOf(context.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
+  private val power = shadowOf(context.getSystemService(Context.POWER_SERVICE) as PowerManager)
 
   private var state: State = State.Idle
   private val actions = mutableListOf<Action>()
@@ -64,7 +66,8 @@ class ScreenStateReceiverTest {
     shadowOf(Looper.getMainLooper()).idle()
   }
 
-  private fun connect() {
+  private fun connect(interactive: Boolean = true) {
+    power.setIsInteractive(interactive)
     state = SessionStateMachine.next(State.Idle, Event.SessionStarted("net", DaemonRun(1, 0), true)).state
     receiver.register(context)
   }
@@ -82,7 +85,7 @@ class ScreenStateReceiverTest {
     keyguard.setKeyguardLocked(false)
     broadcast(Intent.ACTION_USER_PRESENT)
     assertEquals(State.Connected("net", DaemonRun(1, 1), true), state)
-    assertEquals(listOf(Action.StopDaemon("net"), Action.StartDaemon("net", DaemonRun(1, 1))), actions)
+    assertEquals(listOf(Action.StopDaemon("net", 1), Action.StartDaemon("net", DaemonRun(1, 1))), actions)
   }
 
   @Test
@@ -141,7 +144,7 @@ class ScreenStateReceiverTest {
     // After grace period expires without audio resuming -> daemon suspends
     shadowOf(Looper.getMainLooper()).idleFor(4, TimeUnit.SECONDS)
     assertEquals(State.Suspended("net", DaemonRun(1, 0)), state)
-    assertEquals(listOf(Action.StopDaemon("net")), actions)
+    assertEquals(listOf(Action.StopDaemon("net", 1)), actions)
   }
 
   @Test
@@ -157,6 +160,14 @@ class ScreenStateReceiverTest {
     audio.setIsMusicActive(true)
     receiver.handleAudioStateChanged(context)
     assertEquals(State.Connected("net", DaemonRun(1, 1), suspendOnScreenOff = true, screenLocked = true, mediaPlaying = true), state)
-    assertEquals(listOf(Action.StopDaemon("net"), Action.StartDaemon("net", DaemonRun(1, 1))), actions)
+    assertEquals(listOf(Action.StopDaemon("net", 1), Action.StartDaemon("net", DaemonRun(1, 1))), actions)
+  }
+
+  @Test
+  fun registerWhenScreenAlreadyNonInteractiveImmediatelySuspends() {
+    audio.setIsMusicActive(false)
+    connect(interactive = false)
+    assertEquals(State.Suspended("net", DaemonRun(1, 0)), state)
+    assertEquals(listOf(Action.StopDaemon("net", 1)), actions)
   }
 }

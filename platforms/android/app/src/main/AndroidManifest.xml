@@ -40,16 +40,22 @@
     <!-- in-app update installer launches the system package installer for a verified release APK -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- signature-level permission guarding external CONNECT / DISCONNECT automation intents -->
+    <permission
+        android:name="org.pacien.tincapp.permission.CONTROL_VPN"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="org.pacien.tincapp.permission.CONTROL_VPN" />
+
     <application
         android:name="org.pacien.tincapp.context.App"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Tincstack"
-        tools:ignore="GoogleAppIndexingWarning"
+        tools:ignore="GoogleAppIndexingWarning,DataExtractionRules"
         tools:targetApi="s">
 
         <activity
@@ -73,6 +79,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <activity-alias
+            android:name=".AutomationActivity"
+            android:exported="true"
+            android:permission="org.pacien.tincapp.permission.CONTROL_VPN"
+            android:targetActivity=".activities.main.MainActivity" />
 
         <activity
             android:name=".activities.join.JoinActivity"

@@ -10,4 +10,6 @@
 services:
   node:
     ports:
-      - "${OBFS_PORT:?set OBFS_PORT in .env or environment}:${OBFS_PORT}/udp"
+      - target: ${OBFS_PORT:?set OBFS_PORT in .env or environment}
+        published: "${OBFS_PORT}"
+        protocol: udp

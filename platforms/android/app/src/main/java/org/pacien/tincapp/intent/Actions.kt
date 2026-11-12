@@ -33,6 +33,9 @@ object Actions {
   const val EVENT_DISCONNECTED = "$PREFIX.DISCONNECTED"
   const val EVENT_ABORTED = "$PREFIX.ABORTED"
   const val TINC_SCHEME = "tinc"
+  const val PERMISSION_CONTROL_VPN = "org.pacien.tincapp.permission.CONTROL_VPN"
+  const val EXTRA_INTERNAL_TOKEN = "org.pacien.tincapp.extra.INTERNAL_TOKEN"
+  val internalToken: String = java.util.UUID.randomUUID().toString()
 
   fun buildNetworkUri(netName: String): Uri =
     Uri.Builder().scheme(TINC_SCHEME).opaquePart(netName).build()

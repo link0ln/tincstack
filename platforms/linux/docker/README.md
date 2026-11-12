@@ -56,14 +56,16 @@ docker compose down -v                             # destroy the node incl. keys
 |---|---|---|
 | `NETNAME` | network name (`tincd -n`), also the tun interface name | `tincstack` |
 | `NODE_NAME` | node name, honoured on the first start only | derived from the hostname by the daemon |
-| `PUBLIC_ADDRESS` | `host` or `host:port` written to the node's own host record as `Address`; used verbatim in invitations | unset: the CLI falls back to a local-address guess and warns |
-| `PORT` | listen port and the port published on the host; written to `options.Port` with `tinc set Port` | unset: daemon rule (655 founding node, ephemeral invitee) |
-| `FRONT_PORT` | port of the `https` (TCP) and `quic` (UDP) fronts and the port published for them; written to `options.HttpsPort` and `options.QuicPort`. A listening node advertises it to peers, so it must be reachable from outside as is, unless `FRONT_PORT_PUBLIC` says otherwise | unset: `443` |
-| `FRONT_PORT_PUBLIC` | the port peers reach the fronts on when a router forwards another external port to `FRONT_PORT` (e.g. 8443 → 443); written to `options.HttpsPortPublic` and `options.QuicPortPublic`. The node advertises it and still listens on `FRONT_PORT`. Unsetting it later leaves the options in place (`tincstack-cli del HttpsPortPublic`) | unset: advertise `FRONT_PORT` |
+| `PUBLIC_ADDRESS` | `host` or `host:port` written to the node's own host record as `Address`; used verbatim in invitations. Unsetting it later clears the env-managed `Address` entry | unset: the CLI falls back to a local-address guess and warns |
+| `PORT` | listen port (`0..65535`) and the port published on the host; written to `options.Port` with `tinc set Port` (`0` disables listening; include `:compose.leaf.yml` when `PORT=0`) | unset: daemon rule (655 founding node, ephemeral invitee) |
+| `FRONT_PORT` | port (`0..65535`) of the `https` (TCP) and `quic` (UDP) fronts and the port published for them; written to `options.HttpsPort` and `options.QuicPort`. Set `FRONT_PORT=0` with `:compose.nofront.yml` in `COMPOSE_FILE` to disable fronts while keeping `PORT` published. A listening node advertises it to peers unless `FRONT_PORT_PUBLIC` says otherwise | unset: `443` |
+| `FRONT_PORT_PUBLIC` | the port (`1..65535`) peers reach the fronts on when a router forwards another external port to `FRONT_PORT` (e.g. 8443 → 443); written to `options.HttpsPortPublic` and `options.QuicPortPublic`. Unsetting it later clears those env-managed options | unset: advertise `FRONT_PORT` |
+| `OBFS_PORT` | UDP port (`0..65535`) for the `obfs` carrier; written to `options.ObfsPort`. Add `:compose.obfs.yml` to `COMPOSE_FILE` when publishing a dedicated UDP port | unset: shares `PORT` |
+| `OBFS_PORT_PUBLIC` | external UDP port (`1..65535`) peers reach `OBFS_PORT` on through a port forward; written to `options.ObfsPortPublic` | unset: advertise `OBFS_PORT` |
 | `INVITE` | invitation string, `tinc join` on the first start only (`join.sh` sets it) | unset |
 | `LOG_LEVEL` | `tincd -d` | `1` |
 | `CERT_RENEW` | `1`: run `tinc cert renew` on a timer when `CertDomain` and `CloudflareToken` are set. Peers follow a renewed certificate on their own (they re-pin it after SPTPS authenticates this node). `0` turns it off | `1` |
-| `CERT_RENEW_INTERVAL` | seconds between those checks. The command is a no-op while more than `AcmeRenewDays` remain | `43200` (12 h) |
+| `CERT_RENEW_INTERVAL` | seconds between those checks (`<= 0` disables the background renewal loop). The command is a no-op while more than `AcmeRenewDays` remain | `43200` (12 h) |
 | `TINCSTACK_TAG` | tag of the `tincstack/core` and `tincstack/node` images | `dev` |
 
 An existing identity in the volume always wins: `NODE_NAME` and `INVITE` are
@@ -106,8 +108,13 @@ full bring-up.
   removed on start so it cannot shadow the built-in.
 - `tincstack-cli` — `tinc -n $NETNAME -c /etc/tincstack/tinc.yaml "$@"`.
 - `invite.sh`, `join.sh` — the two onboarding commands.
-- `compose.leaf.yml` — publishes no host port; `join.sh` adds it for a node
-  that only dials out (`PORT` unset).
+- `compose.leaf.yml` — publishes no base host port; `join.sh` adds it (before
+  any transport overlay such as `compose.obfs.yml`) for a node that only dials
+  out (`PORT` unset or `0`).
+- `compose.nofront.yml` — publishes only `PORT` (no `FRONT_PORT`); use when
+  `FRONT_PORT=0` on a listening node (`join.sh` adds it automatically when
+  `PORT` is set and `FRONT_PORT=0`).
+- `compose.obfs.yml` — publishes a dedicated `${OBFS_PORT}/udp` on the host.
 - `compose.lab.yml` + `two-nodes.sh` (bash only: `sh two-nodes.sh` exits 2
   with a message instead of dying on `set -o pipefail`) — PLAN.md M6 proof (b): two projects on
   one docker network, invite on a, join on b, ping across the tunnel, one

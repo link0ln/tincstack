@@ -131,6 +131,8 @@ tasks.register('buildTincCore', Exec) {
   group 'build'
   inputs.dir(rootProject.file('../../core/tincd/src'))
   inputs.file(rootProject.file('../../core/tincd/meson.build'))
+  inputs.file(rootProject.file('../../core/tincd/meson_options.txt'))
+  inputs.file(rootProject.file('../../core/ngtcp2/tincstack-wire.patch'))
   inputs.file(rootProject.file('native/build-core.sh'))
   inputs.property('abis', coreAbis)
   inputs.property('crypto', (project.findProperty('tincCrypto') ?: 'openssl').toString())

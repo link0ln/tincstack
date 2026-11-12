@@ -43,21 +43,31 @@ services:
       INVITE: ${INVITE:-}
       LOG_LEVEL: ${LOG_LEVEL:-1}
     ports:
-      # A founding node must be reachable here. An invitee with PORT unset
-      # only dials out: join.sh adds compose.leaf.yml, which publishes none
-      # of these ports (Docker would reserve them on the host all the same).
-      - "${PORT:-655}:${PORT:-655}/tcp"
-      - "${PORT:-655}:${PORT:-655}/udp"
+      # A founding node must be reachable here. An invitee with PORT unset or 0
+      # only dials out: join.sh adds compose.leaf.yml, which publishes none of
+      # these ports (long syntax lets compose.leaf.yml / compose.nofront.yml
+      # reset or override ports cleanly even when PORT=0 or FRONT_PORT=0).
+      - target: ${PORT:-655}
+        published: "${PORT:-655}"
+        protocol: tcp
+      - target: ${PORT:-655}
+        published: "${PORT:-655}"
+        protocol: udp
       # The https and quic fronts (docs/transports.md 3.1): TLS and QUIC on 443,
       # where they look like the web, not on tinc's port. All meta and VPN data
       # for the negotiated carrier flow over its single port (FRONT_PORT for
       # https/quic, OBFS_PORT or PORT for obfs, PORT for sf/plain). Host port
-      # 443 taken by a web server: set FRONT_PORT to a free one (8443). A router
-      # that forwards another external port to it: set FRONT_PORT_PUBLIC.
+      # 443 taken by a web server: set FRONT_PORT to a free one (8443), or set
+      # FRONT_PORT=0 with `:compose.nofront.yml` in COMPOSE_FILE to disable
+      # fronts completely. A router forwarding an external port: FRONT_PORT_PUBLIC.
       # Separate OBFS_PORT (UDP): add `:compose.obfs.yml` to COMPOSE_FILE so
-      # Docker also publishes `${OBFS_PORT}:${OBFS_PORT}/udp` on the host.
-      - "${FRONT_PORT:-443}:${FRONT_PORT:-443}/tcp"
-      - "${FRONT_PORT:-443}:${FRONT_PORT:-443}/udp"
+      # Docker also publishes `${OBFS_PORT}/udp` on the host.
+      - target: ${FRONT_PORT:-443}
+        published: "${FRONT_PORT:-443}"
+        protocol: tcp
+      - target: ${FRONT_PORT:-443}
+        published: "${FRONT_PORT:-443}"
+        protocol: udp
     volumes:
       - data:/etc/tincstack
 

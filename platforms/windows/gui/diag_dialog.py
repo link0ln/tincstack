@@ -50,12 +50,15 @@ class DiagnosticsDialog(QtWidgets.QDialog):
         collector: diagnostics.TelemetryCollector,
         net: str | None,
         skip_confirm: bool = False,
+        pool: Any = None,
     ) -> None:
         super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.server = server
         self.collector = collector
         self.net = net or ""
         self.skip_confirm = skip_confirm
+        self.pool = pool
         self.setWindowTitle("Diagnostics & Remote Web Panel")
         self.resize(760, 560)
 
@@ -229,12 +232,28 @@ class DiagnosticsDialog(QtWidgets.QDialog):
     def toggle_server(self) -> None:
         if self.server.enabled:
             self.server.stop(wait=False)
-        else:
-            if not self.confirm_enable():
-                return
-            ok, msg = self.server.start(self.port_spin.value())
-            if not ok:
-                QtWidgets.QMessageBox.warning(self, "Diagnostic Web Server", msg)
+            self.refresh_ui()
+            self.state_changed.emit()
+            return
+        if not self.confirm_enable():
+            return
+        port = self.port_spin.value()
+        if self.pool is not None:
+            self.toggle_btn.setEnabled(False)
+
+            def _on_started(res: tuple[bool, str]) -> None:
+                ok, msg = res
+                self.toggle_btn.setEnabled(True)
+                if not ok:
+                    QtWidgets.QMessageBox.warning(self, "Diagnostic Web Server", msg)
+                self.refresh_ui()
+                self.state_changed.emit()
+
+            self.pool.run(self.server.start, port, on_done=_on_started, tag="diag-server-toggle")
+            return
+        ok, msg = self.server.start(port)
+        if not ok:
+            QtWidgets.QMessageBox.warning(self, "Diagnostic Web Server", msg)
         self.refresh_ui()
         self.state_changed.emit()
 
@@ -319,6 +338,17 @@ class DiagnosticsDialog(QtWidgets.QDialog):
 
     def refresh_logs(self) -> None:
         src = str(self.log_source_combo.currentData() or "crash")
+        if self.pool is not None:
+            self.pool.run(
+                self.server.build_logs,
+                self.net,
+                source=src,
+                lines=350,
+                on_done=lambda res: self.log_view.setPlainText((res or {}).get("text") or "(empty)"),
+                tag="diag-logs-refresh",
+                rerun=True,
+            )
+            return
         res = self.server.build_logs(self.net, source=src, lines=350)
         self.log_view.setPlainText(res.get("text") or "(empty)")
 

@@ -34,6 +34,7 @@
 #include "control_common.h"
 #include "edge.h"
 #include "ethernet.h"
+#include "graph.h"
 #include "ipv4.h"
 #include "ipv6.h"
 #include "logger.h"
@@ -47,6 +48,7 @@
 #include "route.h"
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
+#include "transport_quic.h"
 #include "utils.h"
 #include "xalloc.h"
 
@@ -151,34 +153,50 @@ static void handle_uplink_udp_v4(void *data, int flags) {
 	}
 
 	vpn_packet_t pkt;
-	sockaddr_t addr = {0};
-	socklen_t addrlen = sizeof(addr);
-	pkt.offset = 0;
 
-	ssize_t len = recvfrom(multipath_uplinks[idx].udp_fd_v4, (void *)DATA(&pkt), MAXSIZE, 0, &addr.sa, &addrlen);
+	quic_batch_begin();
 
-	if(len <= 0 || (size_t)len > MAXSIZE) {
-		return;
-	}
-
-	pkt.len = (size_t)len;
-	multipath_uplinks[idx].rx_packets++;
-	multipath_uplinks[idx].rx_bytes += (uint64_t)len;
-
-	listen_socket_t u_ls;
-	memset(&u_ls, 0, sizeof(u_ls));
-	u_ls.sa.sa.sa_family = AF_INET;
-	u_ls.tcp.fd = -1;
-
-	for(int i = 0; i < listen_sockets; i++) {
-		if(listen_socket[i].sa.sa.sa_family == AF_INET) {
-			u_ls = listen_socket[i];
+	for(int batch = 0; batch < 64; batch++) {
+		if(!multipath_uplinks[idx].in_use || multipath_uplinks[idx].udp_fd_v4 < 0) {
 			break;
 		}
+
+		sockaddr_t addr = {0};
+		socklen_t addrlen = sizeof(addr);
+		pkt.offset = 0;
+
+		ssize_t len = recvfrom(multipath_uplinks[idx].udp_fd_v4, (void *)DATA(&pkt), MAXSIZE, 0, &addr.sa, &addrlen);
+
+		if(len <= 0 || (size_t)len > MAXSIZE) {
+			if(len < 0 && !sockwouldblock(sockerrno)) {
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "multipath: recvfrom IPv4 on uplink %s failed: %s",
+				       multipath_uplinks[idx].name, sockstrerror(sockerrno));
+			}
+
+			break;
+		}
+
+		pkt.len = (size_t)len;
+		multipath_uplinks[idx].rx_packets++;
+		multipath_uplinks[idx].rx_bytes += (uint64_t)len;
+
+		listen_socket_t u_ls;
+		memset(&u_ls, 0, sizeof(u_ls));
+		u_ls.sa.sa.sa_family = AF_INET;
+		u_ls.tcp.fd = -1;
+
+		for(int i = 0; i < listen_sockets; i++) {
+			if(listen_socket[i].sa.sa.sa_family == AF_INET) {
+				u_ls = listen_socket[i];
+				break;
+			}
+		}
+
+		u_ls.udp.fd = multipath_uplinks[idx].udp_fd_v4;
+		handle_incoming_vpn_packet_uplink(idx, &u_ls, &pkt, &addr);
 	}
 
-	u_ls.udp.fd = multipath_uplinks[idx].udp_fd_v4;
-	handle_incoming_vpn_packet_uplink(idx, &u_ls, &pkt, &addr);
+	quic_batch_end();
 }
 
 static void handle_uplink_udp_v6(void *data, int flags) {
@@ -190,34 +208,50 @@ static void handle_uplink_udp_v6(void *data, int flags) {
 	}
 
 	vpn_packet_t pkt;
-	sockaddr_t addr = {0};
-	socklen_t addrlen = sizeof(addr);
-	pkt.offset = 0;
 
-	ssize_t len = recvfrom(multipath_uplinks[idx].udp_fd_v6, (void *)DATA(&pkt), MAXSIZE, 0, &addr.sa, &addrlen);
+	quic_batch_begin();
 
-	if(len <= 0 || (size_t)len > MAXSIZE) {
-		return;
-	}
-
-	pkt.len = (size_t)len;
-	multipath_uplinks[idx].rx_packets++;
-	multipath_uplinks[idx].rx_bytes += (uint64_t)len;
-
-	listen_socket_t u_ls;
-	memset(&u_ls, 0, sizeof(u_ls));
-	u_ls.sa.sa.sa_family = AF_INET6;
-	u_ls.tcp.fd = -1;
-
-	for(int i = 0; i < listen_sockets; i++) {
-		if(listen_socket[i].sa.sa.sa_family == AF_INET6) {
-			u_ls = listen_socket[i];
+	for(int batch = 0; batch < 64; batch++) {
+		if(!multipath_uplinks[idx].in_use || multipath_uplinks[idx].udp_fd_v6 < 0) {
 			break;
 		}
+
+		sockaddr_t addr = {0};
+		socklen_t addrlen = sizeof(addr);
+		pkt.offset = 0;
+
+		ssize_t len = recvfrom(multipath_uplinks[idx].udp_fd_v6, (void *)DATA(&pkt), MAXSIZE, 0, &addr.sa, &addrlen);
+
+		if(len <= 0 || (size_t)len > MAXSIZE) {
+			if(len < 0 && !sockwouldblock(sockerrno)) {
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "multipath: recvfrom IPv6 on uplink %s failed: %s",
+				       multipath_uplinks[idx].name, sockstrerror(sockerrno));
+			}
+
+			break;
+		}
+
+		pkt.len = (size_t)len;
+		multipath_uplinks[idx].rx_packets++;
+		multipath_uplinks[idx].rx_bytes += (uint64_t)len;
+
+		listen_socket_t u_ls;
+		memset(&u_ls, 0, sizeof(u_ls));
+		u_ls.sa.sa.sa_family = AF_INET6;
+		u_ls.tcp.fd = -1;
+
+		for(int i = 0; i < listen_sockets; i++) {
+			if(listen_socket[i].sa.sa.sa_family == AF_INET6) {
+				u_ls = listen_socket[i];
+				break;
+			}
+		}
+
+		u_ls.udp.fd = multipath_uplinks[idx].udp_fd_v6;
+		handle_incoming_vpn_packet_uplink(idx, &u_ls, &pkt, &addr);
 	}
 
-	u_ls.udp.fd = multipath_uplinks[idx].udp_fd_v6;
-	handle_incoming_vpn_packet_uplink(idx, &u_ls, &pkt, &addr);
+	quic_batch_end();
 }
 
 static void close_uplink_sockets(multipath_uplink_t *u) {
@@ -240,6 +274,22 @@ static void close_uplink_sockets(multipath_uplink_t *u) {
 	}
 }
 
+static void set_uplink_udp_buffer(int fd, int optname, int size) {
+	if(size <= 0) {
+		return;
+	}
+
+#if defined(SOL_SOCKET) && defined(SO_RCVBUFFORCE) && defined(SO_SNDBUFFORCE)
+	int force_opt = (optname == SO_RCVBUF) ? SO_RCVBUFFORCE : ((optname == SO_SNDBUF) ? SO_SNDBUFFORCE : 0);
+
+	if(force_opt && !setsockopt(fd, SOL_SOCKET, force_opt, (const void *)&size, sizeof(size))) {
+		return;
+	}
+#endif
+
+	setsockopt(fd, SOL_SOCKET, optname, (const void *)&size, sizeof(size));
+}
+
 static int open_uplink_udp_socket(int idx, int af) {
 	int fd = socket(af, SOCK_DGRAM, IPPROTO_UDP);
 
@@ -252,19 +302,66 @@ static int open_uplink_udp_socket(int idx, int af) {
 #endif
 
 #ifdef O_NONBLOCK
-	int flags = fcntl(fd, F_GETFL);
-	fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-#elif defined(HAVE_WINDOWS)
-	unsigned long arg = 1;
-	ioctlsocket(fd, FIONBIO, &arg);
+	{
+		int flags = fcntl(fd, F_GETFL);
+
+		if(flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+			closesocket(fd);
+			return -1;
+		}
+	}
+#elif defined(HAVE_WINDOWS) || defined(WIN32)
+	{
+		unsigned long arg = 1;
+
+		if(ioctlsocket(fd, FIONBIO, &arg) != 0) {
+			closesocket(fd);
+			return -1;
+		}
+
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
+		BOOL new_behavior = FALSE;
+		DWORD bytes_returned = 0;
+		WSAIoctl(fd, SIO_UDP_CONNRESET, &new_behavior, sizeof(new_behavior), NULL, 0, &bytes_returned, NULL, NULL);
+	}
+#endif
+
+	int bcast = 1;
+	setsockopt(fd, SOL_SOCKET, SO_BROADCAST, (const void *)&bcast, sizeof(bcast));
+	set_uplink_udp_buffer(fd, SO_RCVBUF, udp_rcvbuf);
+	set_uplink_udp_buffer(fd, SO_SNDBUF, udp_sndbuf);
 
 #if defined(IPV6_V6ONLY)
 	if(af == AF_INET6) {
 		int option = 1;
-		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (void *)&option, sizeof(option));
+		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const void *)&option, sizeof(option));
 	}
 #endif
+
+	if(myself && (myself->options & OPTION_PMTU_DISCOVERY)) {
+		if(af == AF_INET) {
+#if defined(IP_MTU_DISCOVER) && defined(IP_PMTUDISC_DO)
+			int pmtu = IP_PMTUDISC_DO;
+			setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, (const void *)&pmtu, sizeof(pmtu));
+#elif defined(IP_DONTFRAGMENT)
+			int df = 1;
+			setsockopt(fd, IPPROTO_IP, IP_DONTFRAGMENT, (const void *)&df, sizeof(df));
+#elif defined(IP_DONTFRAG)
+			int df = 1;
+			setsockopt(fd, IPPROTO_IP, IP_DONTFRAG, (const void *)&df, sizeof(df));
+#endif
+		} else if(af == AF_INET6) {
+#if defined(IPV6_MTU_DISCOVER) && defined(IPV6_PMTUDISC_DO)
+			int pmtu6 = IPV6_PMTUDISC_DO;
+			setsockopt(fd, IPPROTO_IPV6, IPV6_MTU_DISCOVER, (const void *)&pmtu6, sizeof(pmtu6));
+#elif defined(IPV6_DONTFRAG)
+			int df6 = 1;
+			setsockopt(fd, IPPROTO_IPV6, IPV6_DONTFRAG, (const void *)&df6, sizeof(df6));
+#endif
+		}
+	}
 
 	if(!multipath_bind_socket(fd, af, idx)) {
 		closesocket(fd);
@@ -993,24 +1090,25 @@ static void multipath_transfer_edge(connection_t *from, connection_t *to) {
 	e->connection = to;
 	e->options = to->options;
 
-	if(to_is_single_flow_udp) {
-		e->address = to->address;
-	} else {
-		e->address = to->address;
-
-		if(listen_port) {
-			set_sockaddr_port_net(&e->address, listen_port);
-		}
+	if(&e->address != &to->address) {
+		sockaddrfree(&e->address);
+		sockaddrcpy(&e->address, &to->address);
 	}
 
-	sockaddr_t local_sa;
+	if(!to_is_single_flow_udp && listen_port) {
+		set_sockaddr_port_net(&e->address, listen_port);
+	}
+
+	sockaddr_t local_sa = {0};
 
 	if(transport_local_address(to, &local_sa)) {
 		if(!to_is_single_flow_udp) {
 			sockaddr_setport(&local_sa, myport.udp);
 		}
 
-		e->local_address = local_sa;
+		sockaddrfree(&e->local_address);
+		sockaddrcpy(&e->local_address, &local_sa);
+		sockaddrfree(&local_sa);
 	}
 
 	if(e->to && e->from) {
@@ -1024,6 +1122,12 @@ static void multipath_transfer_edge(connection_t *from, connection_t *to) {
 	if(e->to) {
 		node_t *n = e->to;
 
+		if(n->connection == from) {
+			from->status.multipath_sub = true;
+			to->status.multipath_sub = false;
+			n->connection = to;
+		}
+
 		if(n->prevedge == e) {
 			n->options = e->options;
 
@@ -1031,10 +1135,10 @@ static void multipath_transfer_edge(connection_t *from, connection_t *to) {
 				n->options |= OPTION_TCPONLY;
 			}
 
-			bool indirect = myself->status.indirect || (e->options & OPTION_INDIRECT) ||
+			bool indirect = (myself ? myself->status.indirect : false) || (e->options & OPTION_INDIRECT) ||
 			                n->status.no_direct || n->remote_no_direct;
 			n->status.indirect = indirect;
-			n->via = indirect ? myself->via : n;
+			n->via = indirect ? (myself ? myself->via : n) : n;
 		}
 
 		bool from_dgram = from->transport && from->transport->send_datagram != NULL;
@@ -1065,6 +1169,14 @@ static void multipath_transfer_edge(connection_t *from, connection_t *to) {
 	}
 
 	from->edge = NULL;
+
+	if(myself && e->from == myself && !tunnelserver) {
+		send_add_edge(everyone, e);
+	}
+
+	if(myself) {
+		graph();
+	}
 }
 
 /* Called in ack_h() when a new connection `c` to `n` completes authentication
@@ -1119,21 +1231,22 @@ bool multipath_accept_secondary(node_t *n, connection_t *c) {
 
 	/* If the existing primary connection is on a downed uplink or waiting on
 	   a ping timeout while `c` is fresh and healthy, seamlessly promote `c`
-	   to primary right now without deleting the edge or running graph()! */
+	   to primary right now! */
 	connection_t *old_primary = n->connection;
 	bool old_unhealthy = !multipath_uplink_is_healthy(old_primary->uplink_idx) ||
 	                     old_primary->status.pinged;
 
 	if(old_unhealthy && old_primary->edge) {
-		multipath_transfer_edge(old_primary, c);
 		old_primary->status.multipath_sub = true;
 		c->status.multipath_sub = false;
 		n->connection = c;
 
-		if(old_primary->outgoing && !c->outgoing) {
+		if(old_primary->outgoing && old_primary->outgoing->timeout != -1 && !c->outgoing) {
 			c->outgoing = old_primary->outgoing;
 			old_primary->outgoing = NULL;
 		}
+
+		multipath_transfer_edge(old_primary, c);
 
 		logger(DEBUG_CONNECTIONS, LOG_NOTICE,
 		       "multipath: seamlessly promoted new connection with %s (%s) to primary (0-ms handover)",
@@ -1190,17 +1303,19 @@ bool multipath_promote_survivor(node_t *n, connection_t *dying) {
 		return false;
 	}
 
-	if(dying->edge) {
-		multipath_transfer_edge(dying, survivor);
-	}
-
-	if(dying->outgoing && !survivor->outgoing) {
+	/* Do NOT transfer outgoing_t if it is being intentionally torn down
+	   (timeout == -1, e.g. dnsrefresh_apply or removed ConnectTo on reload). */
+	if(dying->outgoing && dying->outgoing->timeout != -1 && !survivor->outgoing) {
 		survivor->outgoing = dying->outgoing;
 		dying->outgoing = NULL;
 	}
 
 	survivor->status.multipath_sub = false;
 	n->connection = survivor;
+
+	if(dying->edge) {
+		multipath_transfer_edge(dying, survivor);
+	}
 
 	if(n->connections.count == 1 && (survivor->sptps.state || survivor->status.encryptout)) {
 		send_request(survivor, "%d solo", PING);
@@ -1223,11 +1338,7 @@ void multipath_peer_promoted_solo(connection_t *c) {
 	if(n->connection && n->connection != c) {
 		connection_t *old = n->connection;
 
-		if(old->edge) {
-			multipath_transfer_edge(old, c);
-		}
-
-		if(old->outgoing && !c->outgoing) {
+		if(old->outgoing && old->outgoing->timeout != -1 && !c->outgoing) {
 			c->outgoing = old->outgoing;
 			old->outgoing = NULL;
 		}
@@ -1235,6 +1346,10 @@ void multipath_peer_promoted_solo(connection_t *c) {
 		old->status.multipath_sub = true;
 		c->status.multipath_sub = false;
 		n->connection = c;
+
+		if(old->edge) {
+			multipath_transfer_edge(old, c);
+		}
 	}
 
 	bool found_stale;
@@ -1259,7 +1374,8 @@ void multipath_peer_promoted_solo(connection_t *c) {
 
 void multipath_record_udp_rx(node_t *n, int uplink_idx, int sock_idx,
                              const sockaddr_t *addr, size_t len) {
-	if(!n || !addr || n == myself) {
+	if(!n || !addr || n == myself ||
+	                (addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6)) {
 		return;
 	}
 
@@ -1293,11 +1409,12 @@ void multipath_record_udp_rx(node_t *n, int uplink_idx, int sock_idx,
 	node_path_t *p = &n->paths[idx];
 
 	if(match_idx < 0) {
+		sockaddrfree(&p->addr);
 		memset(p, 0, sizeof(*p));
 		p->active = true;
 		p->uplink_idx = uplink_idx;
 		p->sock_idx = sock_idx >= 0 ? sock_idx : (int)n->sock;
-		p->addr = clean;
+		sockaddrcpy(&p->addr, &clean);
 		p->srtt_us = n->udp_ping_rtt > 0 ? (uint32_t)n->udp_ping_rtt : 50000;
 	}
 
@@ -1308,7 +1425,8 @@ void multipath_record_udp_rx(node_t *n, int uplink_idx, int sock_idx,
 }
 
 void multipath_update_udp_rtt(node_t *n, const sockaddr_t *addr, uint32_t rtt_us) {
-	if(!n || !addr || rtt_us == 0) {
+	if(!n || !addr || rtt_us == 0 ||
+	                (addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6)) {
 		return;
 	}
 
@@ -1323,50 +1441,83 @@ void multipath_update_udp_rtt(node_t *n, const sockaddr_t *addr, uint32_t rtt_us
 				p->srtt_us = rtt_us;
 			} else {
 				/* EWMA: 7/8 old + 1/8 new */
-				p->srtt_us = (p->srtt_us * 7 + rtt_us) / 8;
+				p->srtt_us = (uint32_t)(((uint64_t)p->srtt_us * 7 + rtt_us) / 8);
 			}
 		}
 	}
 }
 
-void multipath_probe_node_paths(node_t *n, const void *probe_pkt, size_t len) {
-	if(!n || n->status.no_direct || !probe_pkt || !len || multipath_mode == MULTIPATH_OFF || multipath_uplink_count <= 0) {
+void multipath_probe_node_paths(node_t *n, const void *probe_payload, size_t payload_len) {
+	if(!n || n->status.no_direct || n->remote_no_direct || !probe_payload || !payload_len ||
+	                !n->status.sptps || !n->sptps.outstate || multipath_mode == MULTIPATH_OFF) {
 		return;
 	}
 
-	const sockaddr_t *dst = &n->address;
+	/* Collect distinct resolved remote UDP endpoints for `n` (primary n->address
+	   plus any confirmed secondary n->paths[i].addr). */
+	const sockaddr_t *dsts[MAX_NODE_PATHS + 1];
+	size_t dst_socks[MAX_NODE_PATHS + 1];
+	int dst_uplinks[MAX_NODE_PATHS + 1];
+	int ndsts = 0;
 
-	if(dst->sa.sa_family != AF_INET && dst->sa.sa_family != AF_INET6) {
+	if(n->address.sa.sa_family == AF_INET || n->address.sa.sa_family == AF_INET6) {
+		dsts[ndsts] = &n->address;
+		dst_socks[ndsts] = n->sock;
+		dst_uplinks[ndsts] = -1;
+		ndsts++;
+	}
+
+	for(int i = 0; i < MAX_NODE_PATHS && ndsts < MAX_NODE_PATHS + 1; i++) {
+		const node_path_t *p = &n->paths[i];
+
+		if(!p->active || (p->addr.sa.sa_family != AF_INET && p->addr.sa.sa_family != AF_INET6)) {
+			continue;
+		}
+
+		bool seen = false;
+
+		for(int j = 0; j < ndsts; j++) {
+			if(!sockaddrcmp(&p->addr, dsts[j])) {
+				seen = true;
+				break;
+			}
+		}
+
+		if(!seen) {
+			dsts[ndsts] = &p->addr;
+			dst_socks[ndsts] = p->sock_idx >= 0 ? (size_t)p->sock_idx : n->sock;
+			dst_uplinks[ndsts] = p->uplink_idx;
+			ndsts++;
+		}
+	}
+
+	if(ndsts <= 0) {
 		return;
 	}
 
-	for(int u = 0; u < MAX_UPLINKS; u++) {
-		if(!multipath_uplinks[u].in_use || !multipath_uplinks[u].is_up) {
-			continue;
+	/* When dedicated uplinks are configured, encode a fresh SPTPS probe record
+	   (unique seqno + standard obfs/DirectSeal pipeline) per (uplink, remote_addr). */
+	if(multipath_uplink_count > 0) {
+		for(int u = 0; u < MAX_UPLINKS; u++) {
+			if(!multipath_uplinks[u].in_use || !multipath_uplinks[u].is_up) {
+				continue;
+			}
+
+			for(int d = 0; d < ndsts; d++) {
+				send_sptps_probe_on_path(n, u, dst_socks[d], dsts[d], probe_payload, payload_len);
+			}
 		}
+	} else {
+		/* No dedicated local uplinks, but peer may have multiple confirmed remote
+		   addresses in n->paths: probe alternate addresses beyond dsts[0] (&n->address). */
+		for(int d = 0; d < ndsts; d++) {
+			if((n->address.sa.sa_family == AF_INET || n->address.sa.sa_family == AF_INET6) &&
+			                !sockaddrcmp(dsts[d], &n->address)) {
+				continue;
+			}
 
-		int fd = multipath_get_udp_fd(u, dst->sa.sa_family, n->sock);
-
-		if(fd < 0) {
-			continue;
+			send_sptps_probe_on_path(n, dst_uplinks[d], dst_socks[d], dsts[d], probe_payload, payload_len);
 		}
-
-		size_t excess = 0;
-
-		if(obfs_wrap_send_fd(fd, n->sock, dst, probe_pkt, len, n, &excess) != OBFS_SEND_PLAIN) {
-			continue;
-		}
-
-		dseal_verdict_t dv = dseal_verdict(n);
-
-		if(dv == DSEAL_SEND_SEAL) {
-			obfs_seal_send_fd(fd, n->sock, dst, probe_pkt, len, n, &excess);
-			continue;
-		} else if(dv == DSEAL_SEND_HOLD || dv == DSEAL_SEND_BLOCK) {
-			continue;
-		}
-
-		sendto(fd, probe_pkt, len, 0, &dst->sa, SALEN(dst->sa));
 	}
 }
 
@@ -1816,18 +1967,21 @@ void multipath_maintain(void) {
 		if(!multipath_uplink_is_healthy(n->connection->uplink_idx)) {
 			for list_each(connection_t, cand, &n->connections) {
 				if(cand != n->connection && cand->status.active && multipath_uplink_is_healthy(cand->uplink_idx)) {
-					if(n->connection->edge) {
-						multipath_transfer_edge(n->connection, cand);
+					connection_t *old_c = n->connection;
+
+					if(old_c->outgoing && old_c->outgoing->timeout != -1 && !cand->outgoing) {
+						cand->outgoing = old_c->outgoing;
+						old_c->outgoing = NULL;
 					}
 
-					if(n->connection->outgoing && !cand->outgoing) {
-						cand->outgoing = n->connection->outgoing;
-						n->connection->outgoing = NULL;
-					}
-
-					n->connection->status.multipath_sub = true;
+					old_c->status.multipath_sub = true;
 					cand->status.multipath_sub = false;
 					n->connection = cand;
+
+					if(old_c->edge) {
+						multipath_transfer_edge(old_c, cand);
+					}
+
 					logger(DEBUG_CONNECTIONS, LOG_NOTICE,
 					       "multipath: switched primary connection of %s to healthy uplink %d",
 					       n->name, cand->uplink_idx);

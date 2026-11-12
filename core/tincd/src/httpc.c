@@ -98,41 +98,96 @@ char *httpc_header(const http_response_t *res, const char *name) {
 }
 
 /* https://host[:port]/path -> the three pieces. False if it is not an https
-   URL we can dial. */
-static bool split_url(const char *url, char *host, size_t hostlen, char *port, size_t portlen,
-                      char *path, size_t pathlen) {
-	if(strncmp(url, "https://", 8)) {
+   URL we can dial, contains control/whitespace characters, or has a bad
+   host/IPv6 literal or port. */
+bool httpc_split_url(const char *url, char *host, size_t hostlen, char *port, size_t portlen,
+                     char *path, size_t pathlen) {
+	if(!url || strncmp(url, "https://", 8)) {
 		return false;
+	}
+
+	for(const unsigned char *u = (const unsigned char *)url; *u; u++) {
+		if(*u <= 0x20 || *u == 0x7f) {
+			return false;
+		}
 	}
 
 	const char *h = url + 8;
 	const char *slash = strchr(h, '/');
 	const char *hostend = slash ? slash : h + strlen(h);
-	const char *colon = memchr(h, ':', (size_t)(hostend - h));
+	const char *colon = NULL;
 
-	size_t hl = (size_t)((colon ? colon : hostend) - h);
+	if(*h == '[') {
+		const char *rb = memchr(h + 1, ']', (size_t)(hostend - (h + 1)));
 
-	if(!hl || hl >= hostlen) {
-		return false;
+		if(!rb) {
+			return false;
+		}
+
+		size_t hl = (size_t)(rb - (h + 1));
+
+		if(!hl || hl >= hostlen) {
+			return false;
+		}
+
+		memcpy(host, h + 1, hl);
+		host[hl] = 0;
+
+		struct in6_addr v6;
+
+		if(inet_pton(AF_INET6, host, &v6) != 1) {
+			return false;
+		}
+
+		if(rb + 1 < hostend) {
+			if(rb[1] != ':') {
+				return false;
+			}
+
+			colon = rb + 1;
+		}
+	} else {
+		colon = memchr(h, ':', (size_t)(hostend - h));
+		size_t hl = (size_t)((colon ? colon : hostend) - h);
+
+		if(!hl || hl >= hostlen) {
+			return false;
+		}
+
+		for(size_t i = 0; i < hl; i++) {
+			char c = h[i];
+
+			if(c == '[' || c == ']' || c == '@' || c == '?' || c == '#') {
+				return false;
+			}
+		}
+
+		memcpy(host, h, hl);
+		host[hl] = 0;
 	}
-
-	memcpy(host, h, hl);
-	host[hl] = 0;
 
 	if(colon) {
 		size_t pl = (size_t)(hostend - colon - 1);
 
-		if(!pl || pl >= portlen) {
+		if(!pl || pl > 5 || pl >= portlen) {
 			return false;
 		}
 
 		memcpy(port, colon + 1, pl);
 		port[pl] = 0;
 
+		unsigned long pnum = 0;
+
 		for(const char *d = port; *d; d++) {
-			if(!isdigit((uint8_t) * d)) {
+			if(!isdigit((unsigned char)*d)) {
 				return false;
 			}
+
+			pnum = pnum * 10 + (unsigned long)(*d - '0');
+		}
+
+		if(pnum < 1 || pnum > 65535) {
+			return false;
 		}
 	} else {
 		if(portlen < 4) {
@@ -289,10 +344,42 @@ static bool dechunk(char *body, size_t len, size_t *outlen) {
 			chunk = (chunk << 4) | (size_t) h;
 		}
 
+		while(p < eol && (*p == ' ' || *p == '\t')) {
+			p++;
+		}
+
+		if(p < eol && *p != '\r' && *p != ';') {
+			return false;
+		}
+
 		in = (size_t)(eol - body) + 1;
 
 		if(!chunk) {
-			break;                        /* the last chunk; trailers ignored */
+			/* Require the terminating empty line (0\r\n...\r\n) after any
+			   optional trailers so a truncated final chunk is rejected. */
+			bool end_ok = false;
+
+			while(in < len) {
+				char *teol = memchr(body + in, '\n', len - in);
+
+				if(!teol) {
+					break;
+				}
+
+				size_t tlen = (size_t)(teol - (body + in));
+				in = (size_t)(teol - body) + 1;
+
+				if(tlen == 0 || (tlen == 1 && teol[-1] == '\r')) {
+					end_ok = true;
+					break;
+				}
+			}
+
+			if(!end_ok) {
+				return false;
+			}
+
+			break;
 		}
 
 		if(chunk > len - in) {
@@ -319,46 +406,108 @@ static bool dechunk(char *body, size_t len, size_t *outlen) {
 	return true;
 }
 
-/* A status whose response never has a body (RFC 9110 section 6.4.1). */
+/* Count occurrences of a header name in res->headers (case-insensitive). */
+static size_t header_count(const http_response_t *res, const char *name) {
+	if(!res || !res->headers) {
+		return 0;
+	}
+
+	size_t namelen = strlen(name), count = 0;
+	const char *p = res->headers;
+
+	while(*p) {
+		const char *eol = strchr(p, '\n');
+		size_t linelen = eol ? (size_t)(eol - p) : strlen(p);
+
+		if(linelen > namelen && !strncasecmp(p, name, namelen) && p[namelen] == ':') {
+			count++;
+		}
+
+		if(!eol) {
+			break;
+		}
+
+		p = eol + 1;
+	}
+
+	return count;
+}
+
+static bool has_ctl_or_crlf(const char *s) {
+	if(!s) {
+		return false;
+	}
+
+	for(const unsigned char *p = (const unsigned char *)s; *p; p++) {
+		if((*p < 0x20 && *p != '\t') || *p == 0x7f) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* A status whose final response never has a body (RFC 9110 section 6.4.1). */
 static bool bodiless_status(int status) {
 	return (status >= 100 && status < 200) || status == 204 || status == 304;
 }
 
-bool httpc_parse_response(const char *buf, size_t len, bool head, const char *host,
-                          http_response_t *res, char *err, size_t errlen) {
+bool httpc_parse_response_ex(const char *buf, size_t len, bool head, bool clean_eof,
+                             const char *host, http_response_t *res, char *err, size_t errlen) {
 	memset(res, 0, sizeof(*res));
 
-	/* The header block ends at the first empty line; searched with a bound,
-	   so `buf' need not be NUL-terminated. */
 	size_t headlen = 0, seplen = 0;
+	int status = 0;
 
-	for(size_t i = 0; i < len; i++) {
-		if(buf[i] != '\n') {
+	/* Skip 1xx interim responses (e.g. 100 Continue, 102 Processing, 103 Early
+	   Hints) until we reach the final HTTP response header block (M-TR-06). */
+	for(int interim = 0; ; interim++) {
+		if(interim > 8) {
+			snprintf(err, errlen, "too many 1xx interim responses from %s", host);
+			return false;
+		}
+
+		headlen = 0;
+		seplen = 0;
+
+		for(size_t i = 0; i < len; i++) {
+			if(buf[i] != '\n') {
+				continue;
+			}
+
+			if(i + 1 < len && buf[i + 1] == '\n') {
+				headlen = i;
+				seplen = 2;
+				break;
+			}
+
+			if(i + 2 < len && buf[i + 1] == '\r' && buf[i + 2] == '\n') {
+				headlen = i > 0 && buf[i - 1] == '\r' ? i - 1 : i;
+				seplen = i + 3 - headlen;
+				break;
+			}
+		}
+
+		/* "HTTP/1.1 200": the version, one space, three digits. */
+		if(!seplen || headlen < 12 || strncmp(buf, "HTTP/", 5) || buf[8] != ' '
+		                || !isdigit((unsigned char) buf[9]) || !isdigit((unsigned char) buf[10])
+		                || !isdigit((unsigned char) buf[11])) {
+			snprintf(err, errlen, "malformed HTTP response from %s", host);
+			return false;
+		}
+
+		status = (buf[9] - '0') * 100 + (buf[10] - '0') * 10 + (buf[11] - '0');
+
+		if(status >= 100 && status < 200 && status != 101) {
+			buf += headlen + seplen;
+			len -= headlen + seplen;
 			continue;
 		}
 
-		if(i + 1 < len && buf[i + 1] == '\n') {
-			headlen = i;
-			seplen = 2;
-			break;
-		}
-
-		if(i + 2 < len && buf[i + 1] == '\r' && buf[i + 2] == '\n') {
-			headlen = i > 0 && buf[i - 1] == '\r' ? i - 1 : i;
-			seplen = i + 3 - headlen;
-			break;
-		}
+		break;
 	}
 
-	/* "HTTP/1.1 200": the version, one space, three digits. */
-	if(!seplen || headlen < 12 || strncmp(buf, "HTTP/", 5) || buf[8] != ' '
-	                || !isdigit((unsigned char) buf[9]) || !isdigit((unsigned char) buf[10])
-	                || !isdigit((unsigned char) buf[11])) {
-		snprintf(err, errlen, "malformed HTTP response from %s", host);
-		return false;
-	}
-
-	res->status = (buf[9] - '0') * 100 + (buf[10] - '0') * 10 + (buf[11] - '0');
+	res->status = status;
 	res->headers = xmalloc(headlen + 1);
 	memcpy(res->headers, buf, headlen);
 	res->headers[headlen] = 0;
@@ -369,19 +518,28 @@ bool httpc_parse_response(const char *buf, size_t len, bool head, const char *ho
 	res->body[bodylen] = 0;
 	res->body_len = bodylen;
 
-	/* A HEAD answer and a 1xx/204/304 carry the headers of a body that is
+	/* A HEAD answer and a 101/204/304 carry the headers of a body that is
 	   not sent: nothing to check. */
 	if(head || bodiless_status(res->status)) {
 		return true;
 	}
 
 	char *te = httpc_header(res, "Transfer-Encoding");
+	char *cl = httpc_header(res, "Content-Length");
+
+	if(te && cl) {
+		free(te);
+		free(cl);
+		snprintf(err, errlen, "conflicting Transfer-Encoding and Content-Length from %s", host);
+		httpc_free(res);
+		return false;
+	}
 
 	if(te) {
 		bool chunked = header_has(te, "chunked");
 		free(te);
 
-		if(chunked && !dechunk(res->body, res->body_len, &res->body_len)) {
+		if(!chunked || !dechunk(res->body, res->body_len, &res->body_len)) {
 			snprintf(err, errlen, "truncated or malformed chunked response from %s", host);
 			httpc_free(res);
 			return false;
@@ -390,10 +548,21 @@ bool httpc_parse_response(const char *buf, size_t len, bool head, const char *ho
 		return true;
 	}
 
-	char *cl = httpc_header(res, "Content-Length");
-
 	if(!cl) {
-		return true;                      /* delimited by the close */
+		if(!clean_eof) {
+			snprintf(err, errlen, "truncated response from %s: TLS closed without close_notify", host);
+			httpc_free(res);
+			return false;
+		}
+
+		return true;                      /* delimited by a clean TLS close_notify */
+	}
+
+	if(header_count(res, "Content-Length") > 1) {
+		free(cl);
+		snprintf(err, errlen, "duplicate Content-Length from %s", host);
+		httpc_free(res);
+		return false;
 	}
 
 	/* Digits only: strtoul would take "-1", " 12", "12abc" and overflow. */
@@ -431,6 +600,11 @@ bool httpc_parse_response(const char *buf, size_t len, bool head, const char *ho
 	return true;
 }
 
+bool httpc_parse_response(const char *buf, size_t len, bool head, const char *host,
+                          http_response_t *res, char *err, size_t errlen) {
+	return httpc_parse_response_ex(buf, len, head, true, host, res, err, errlen);
+}
+
 bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, size_t errlen) {
 	if(err && errlen) {
 		*err = 0;
@@ -438,10 +612,22 @@ bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, 
 
 	memset(res, 0, sizeof(*res));
 
+	if(!req || !req->method || !*req->method || has_ctl_or_crlf(req->method) || has_ctl_or_crlf(req->content_type)) {
+		snprintf(err, errlen, "malformed HTTP request parameters");
+		return false;
+	}
+
+	for(size_t i = 0; i < req->nheaders; i++) {
+		if(!req->headers[i] || has_ctl_or_crlf(req->headers[i])) {
+			snprintf(err, errlen, "malformed HTTP request header");
+			return false;
+		}
+	}
+
 	char host[256], port[8], path[2048];
 
-	if(!split_url(req->url, host, sizeof(host), port, sizeof(port), path, sizeof(path))) {
-		snprintf(err, errlen, "not a usable https URL: %s", req->url);
+	if(!httpc_split_url(req->url, host, sizeof(host), port, sizeof(port), path, sizeof(path))) {
+		snprintf(err, errlen, "not a usable https URL: %s", req->url ? req->url : "(null)");
 		return false;
 	}
 
@@ -488,12 +674,26 @@ bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, 
 		return false;
 	}
 
-	SSL_set_tlsext_host_name(ssl, host);
-	SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+	struct in_addr v4;
+	struct in6_addr v6;
+	bool is_v6 = inet_pton(AF_INET6, host, &v6) == 1;
+	bool is_ip = is_v6 || inet_pton(AF_INET, host, &v4) == 1;
 
-	if(!SSL_set1_host(ssl, host)) {
-		snprintf(err, errlen, "cannot pin the hostname %s", host);
-		goto fail;
+	if(is_ip) {
+		X509_VERIFY_PARAM *param = SSL_get0_param(ssl);
+
+		if(!param || !X509_VERIFY_PARAM_set1_ip_asc(param, host)) {
+			snprintf(err, errlen, "cannot pin the IP address %s", host);
+			goto fail;
+		}
+	} else {
+		SSL_set_tlsext_host_name(ssl, host);
+		SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+
+		if(!SSL_set1_host(ssl, host)) {
+			snprintf(err, errlen, "cannot pin the hostname %s", host);
+			goto fail;
+		}
 	}
 
 	SSL_set_fd(ssl, fd);
@@ -510,10 +710,18 @@ bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, 
 	   point at port 443, and the next request goes nowhere. */
 	char hostport[280];
 
-	if(!strcmp(port, "443")) {
-		snprintf(hostport, sizeof(hostport), "%s", host);
+	if(is_v6) {
+		if(!strcmp(port, "443")) {
+			snprintf(hostport, sizeof(hostport), "[%s]", host);
+		} else {
+			snprintf(hostport, sizeof(hostport), "[%s]:%s", host, port);
+		}
 	} else {
-		snprintf(hostport, sizeof(hostport), "%s:%s", host, port);
+		if(!strcmp(port, "443")) {
+			snprintf(hostport, sizeof(hostport), "%s", host);
+		} else {
+			snprintf(hostport, sizeof(hostport), "%s:%s", host, port);
+		}
 	}
 
 	char head[4096];
@@ -558,6 +766,7 @@ bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, 
 	/* ---- response: read to EOF, then parse ---- */
 	size_t cap = 8192, len = 0;
 	char *buf = xmalloc(cap);
+	bool clean_eof = false;
 
 	for(;;) {
 		if(len + 4096 > cap) {
@@ -580,20 +789,37 @@ bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, 
 
 		int e = SSL_get_error(ssl, r);
 
-		if(e == SSL_ERROR_ZERO_RETURN || (e == SSL_ERROR_SYSCALL && !ERR_peek_error())) {
-			break;                        /* clean close, or the peer just hung up */
+		if(e == SSL_ERROR_ZERO_RETURN) {
+			clean_eof = true;
+			break;
 		}
 
-		if(!len) {
-			ssl_error(err, errlen, "cannot read the response", ssl);
-			free(buf);
-			goto fail;
+		if(e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) {
+			continue;
 		}
 
-		break;
+		unsigned long peek = ERR_peek_error();
+#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
+		bool unexpected_eof = (e == SSL_ERROR_SSL && ERR_GET_REASON(peek) == SSL_R_UNEXPECTED_EOF_WHILE_READING);
+#else
+		bool unexpected_eof = false;
+#endif
+
+		/* Only allow parsing buffered bytes on a clean TCP EOF without TLS
+		   close_notify when at least a header arrived; unframed bodies will
+		   still be rejected via clean_eof == false, whereas timeouts (r < 0),
+		   resets, or TLS record errors always fail immediately (M-TR-06). */
+		if(len > 0 && ((e == SSL_ERROR_SYSCALL && r == 0 && !peek) || unexpected_eof)) {
+			ERR_clear_error();
+			break;
+		}
+
+		ssl_error(err, errlen, "cannot read the response", ssl);
+		free(buf);
+		goto fail;
 	}
 
-	bool parsed = httpc_parse_response(buf, len, !strcmp(req->method, "HEAD"), host, res, err, errlen);
+	bool parsed = httpc_parse_response_ex(buf, len, !strcmp(req->method, "HEAD"), clean_eof, host, res, err, errlen);
 	free(buf);
 
 	if(!parsed) {

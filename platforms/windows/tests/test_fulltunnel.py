@@ -501,9 +501,10 @@ def test_second_split_route_failure_rolls_back_first_half():
     assert t.state.startswith("not applied: adding 128.0.0.0/1")
 
 
-def test_cached_connect_to_skips_dns_while_split_active_and_bounds_timeout():
-    """WL-08: while split routes are active, cached ConnectTo hostnames are not
-    re-queried over a potentially dead tunnel, and hung DNS times out."""
+def test_ddns_refresh_on_every_maintainer_step_and_cached_fallback_on_timeout():
+    """H-WIN-01: Maintainer._step() (refresh_dns=True) and RESOLVE_TTL expiry
+    re-resolve ConnectTo hostnames even while split_if is active, updating /32
+    pins when DDNS rotates while keeping cached IPs if DNS fails/times out."""
     s = FakeSystem()
     now = [100.0]
     t = ft.FullTunnel(
@@ -511,19 +512,172 @@ def test_cached_connect_to_skips_dns_while_split_active_and_bounds_timeout():
         system=s, clock=lambda: now[0], resolve_timeout=0.05,
     )
     hosts = {"ruvds2": "Address = ruvds.example 8443\n"}
-    t.step(snapshot(), OPTIONS, hosts, OWN)
+    snap = snapshot()
+    # Suppose live edge has not flipped yet; ConnectTo DDNS rotates to a new IP
+    snap.nodes["ruvds2"].address = "ruvds.example"
+    snap.edges = [e for e in snap.edges if e.to != "ruvds2" and e.frm != "ruvds2"]
+    snap.edges.extend([
+        Edge(frm=OWN, to="ruvds2", address="ruvds.example", port="8443"),
+        Edge(frm="ruvds2", to="euvds", address="88.218.122.166", port="444"),
+    ])
+
+    t.step(snap, OPTIONS, hosts, OWN, refresh_dns=True)
     assert t.split_if == TUN
     assert s.resolved == ["ruvds.example"]
-
-    # Advance past RESOLVE_TTL while split_if is active: must reuse cached IP without calling resolve()
-    now[0] += ft.RESOLVE_TTL + 10.0
-    t.step(snapshot(), OPTIONS, hosts, OWN)
-    assert s.resolved == ["ruvds.example"]
     assert "80.87.200.39/32" in pinned(s)
+
+    # DDNS rotates while split_if is active -> refresh_dns=True updates /32 pin!
+    s.dns["ruvds.example"] = ["198.51.100.77"]
+    t.step(snap, OPTIONS, hosts, OWN, refresh_dns=True)
+    assert len(s.resolved) == 2
+    assert "198.51.100.77/32" in pinned(s)
+    assert "80.87.200.39/32" not in pinned(s)
+
+    # Transient DNS failure while split_if is active -> keeps cached 198.51.100.77/32 pin!
+    del s.dns["ruvds.example"]
+    t.step(snap, OPTIONS, hosts, OWN, refresh_dns=True)
+    assert "198.51.100.77/32" in pinned(s)
+    assert t.split_if == TUN
 
     # Verify _resolve_with_timeout aborts a hung resolver promptly
     with pytest.raises(OSError, match="timed out"):
         ft._resolve_with_timeout(lambda _h: time.sleep(1.0) or ["1.2.3.4"], "hung.example", 0.05)
+
+
+def test_ipv6_endpoint_pinned_before_split_v6_and_unpinnable_v6_skips_split_v6():
+    """H-WIN-01: IPv6 /128 peer endpoints are pinned via physical IPv6 gateway
+    BEFORE ::/1 and 8000::/1 are installed on Wintun, and if an active IPv6-only
+    carrier cannot be pinned on the physical interface, SPLIT_V6 is NOT installed."""
+    class DualStackSystem(FakeSystem):
+        def __init__(self, with_v6_gw: bool = True):
+            super().__init__()
+            self.table_v6 = (
+                [Route("::/0", "fe80::1", PHYS, 25)] if with_v6_gw else []
+            )
+            self.local_v6 = ["2001:db8:1::/64"]
+
+        def supports_ipv6(self):
+            return True
+
+        def route_table_v6(self):
+            return list(self.table_v6)
+
+        def local_nets_v6(self):
+            return list(self.local_v6)
+
+        def add_route(self, prefix, ifindex, via=""):
+            self.calls.append(("add", prefix, ifindex, via))
+            if ":" in prefix:
+                self.table_v6.append(Route(prefix, via or "::", ifindex, 0))
+                return True, "Ok."
+            return super().add_route(prefix, ifindex, via)
+
+        def delete_route(self, prefix, ifindex, via=""):
+            self.calls.append(("del", prefix, ifindex, via))
+            if ":" in prefix:
+                self.table_v6 = [r for r in self.table_v6 if not (r.prefix == prefix and r.ifindex == ifindex)]
+                return True, "Ok."
+            return super().delete_route(prefix, ifindex, via)
+
+        def prefixes_on_all(self, ifindex):
+            return sorted(
+                [r.prefix for r in self.table if r.ifindex == ifindex]
+                + [r.prefix for r in self.table_v6 if r.ifindex == ifindex]
+            )
+
+    # Case 1: Dual-stack physical gateway exists -> /128 pin added BEFORE ::/1 and 8000::/1
+    s1 = DualStackSystem(with_v6_gw=True)
+    snap_v6 = snapshot()
+    snap_v6.nodes["ruvds2"].address = "2001:db8:99::42"
+    snap_v6.edges[0] = Edge(frm=OWN, to="ruvds2", address="2001:db8:99::42", port="8443")
+    hosts_v6 = {"ruvds2": "Address = 2001:db8:99::42\nSubnet = 10.8.179.1/32\n"}
+    t1 = tunnel(s1)
+    t1.step(snap_v6, OPTIONS, hosts_v6, OWN)
+    pin_idx = next(i for i, c in enumerate(s1.calls) if c[1] == "2001:db8:99::42/128")
+    split_v6_idxs = [i for i, c in enumerate(s1.calls) if c[1] in ft.SPLIT_V6]
+    assert split_v6_idxs and pin_idx < min(split_v6_idxs)
+    assert s1.calls[pin_idx] == ("add", "2001:db8:99::42/128", PHYS, "fe80::1")
+    assert set(ft.SPLIT_V6) <= set(s1.prefixes_on_all(TUN))
+    t1.stop()
+    assert s1.prefixes_on_all(TUN) == []
+    assert not [r for r in s1.table_v6 if r.prefix == "2001:db8:99::42/128"]
+
+    # Case 2: Active carrier is IPv6-only, but physical IPv6 gateway is missing ->
+    # SPLIT_V6 must NOT be installed (otherwise Wintun hijacks the outer IPv6 carrier!)
+    s2 = DualStackSystem(with_v6_gw=False)
+    t2 = tunnel(s2)
+    t2.step(snap_v6, OPTIONS, hosts_v6, OWN)
+    assert s2.prefixes_on_all(TUN) == ["0.0.0.0/1", "128.0.0.0/1"]
+
+
+def test_journal_persisted_before_mutating_routes_and_guid_dns_rollback(tmp_path):
+    """H-WIN-01: rollback journal is persisted BEFORE adding split routes/DNS,
+    and DNS crash recovery uses adapter GUID + alias rather than stale ifindex."""
+    import json
+    jpath = tmp_path / "ft-journal.json"
+    observed_journal_before_split = []
+    cleared_dns_ids = []
+    cleared_ifindexes = []
+
+    class TrackingSystem(FakeSystem):
+        def adapter_guid(self, ifindex):
+            if self.tunnel is not None and int(ifindex) == self.tunnel:
+                return "{11111111-2222-3333-4444-555555555555}"
+            # Recycled foreign adapter now occupying the old ephemeral ifindex!
+            return "{99999999-8888-7777-6666-555555555555}"
+
+        def set_tunnel_dns(self, ifindex, dns_servers):
+            # Journal must already record DNS rollback metadata BEFORE set_tunnel_dns runs!
+            data = json.loads(jpath.read_text(encoding="utf-8"))
+            assert data["dns_if"] == TUN
+            assert data["dns_guid"] == "{11111111-2222-3333-4444-555555555555}"
+            assert data["dns_alias"] == "tincstack"
+            return True, "dns set"
+
+        def clear_tunnel_dns(self, ifindex):
+            cleared_ifindexes.append(int(ifindex))
+            return True, ""
+
+        def clear_tunnel_dns_by_id(self, alias="", guid=""):
+            cleared_dns_ids.append((alias, guid))
+            return True, ""
+
+        def add_route(self, prefix, ifindex, via=""):
+            if prefix in ft.SPLIT:
+                observed_journal_before_split.append(jpath.is_file())
+            return super().add_route(prefix, ifindex, via)
+
+    s = TrackingSystem()
+    t = ft.FullTunnel(net="tincstack", exit_node="euvds", aliases=["tincstack"],
+                      system=s, journal_path=str(jpath))
+    t.step(snapshot(), OPTIONS, HOSTS, OWN)
+    assert observed_journal_before_split == [True, True]
+
+    # Simulate reboot where ephemeral ifindex TUN was recycled to a foreign adapter:
+    # cleanup_journal MUST NOT wipe DNS on recycled TUN, and instead clears by alias + GUID!
+    s.tunnel = None
+    assert ft.cleanup_journal(str(jpath), s, ["tincstack"])
+    assert cleared_ifindexes == []
+    assert cleared_dns_ids == [("tincstack", "{11111111-2222-3333-4444-555555555555}")]
+
+
+def test_single_network_full_tunnel_exclusivity(tmp_path, monkeypatch):
+    """M-WIN-02: Runtime refuses enabling active full_tunnel on a second network
+    while another network already owns full_tunnel."""
+    cfg = tmp_path / "tinc.yaml"
+    cfg.write_text("networks:\n  net1:\n    full_tunnel: gw1\n    options:\n      Name: a\n  net2:\n    full_tunnel: gw2\n    options:\n      Name: b\n")
+    app = yc.load(str(cfg))
+    rt = rt_mod.Runtime(app, ft_system=FakeSystem(), ft_interval=60.0)
+    monkeypatch.setattr(rt, "is_running", lambda net: True)
+    try:
+        m1 = rt.full_tunnel_sync("net1")
+        assert "starting" in m1 or "full tunnel via gw1" in m1
+        assert rt.active_full_tunnel_net() == "net1"
+        m2 = rt.full_tunnel_sync("net2")
+        assert "refused" in m2 and "net1" in m2
+        assert "net2" not in rt._ft
+    finally:
+        rt.stop_all()
 
 
 def test_ipv6_leak_guard_installed_when_system_supports_ipv6():

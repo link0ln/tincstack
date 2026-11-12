@@ -270,13 +270,15 @@ def remove_now(alias: str, subnet: str) -> tuple[bool, str]:
 
 
 def adapter_aliases(options: dict, net_name: str) -> list[str]:
-    """Names the tunnel adapter may go by, most specific first — the same list
-    runtime.py uses to find it for the MTU clamp."""
+    """Names the tunnel adapter may go by, most specific first — matching
+    wintun_device.c (`WintunInterface` -> `netname` -> `Interface`)."""
     out = []
-    for key in ("WintunInterface", "Interface"):
-        v = options.get(key)
-        if v and str(v) not in out:
-            out.append(str(v))
+    wintun_if = options.get("WintunInterface")
+    if wintun_if and str(wintun_if) not in out:
+        out.append(str(wintun_if))
     if net_name and net_name not in out:
         out.append(net_name)
+    iface = options.get("Interface")
+    if iface and str(iface) not in out:
+        out.append(str(iface))
     return out

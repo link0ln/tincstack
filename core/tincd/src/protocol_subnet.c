@@ -60,12 +60,18 @@ bool add_subnet_h(connection_t *c, const char *request) {
 		return false;
 	}
 
-	/* Check if subnet string is valid */
+	/* Check if subnet string is valid and canonical */
 
-	if(!str2net(&s, subnetstr)) {
+	if(!str2net(&s, subnetstr) || !subnetcheck(s)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ADD_SUBNET", c->name,
 		       c->hostname, "invalid subnet string");
 		return false;
+	}
+
+	if(s.weight < -100000000) {
+		s.weight = -100000000;
+	} else if(s.weight > 100000000) {
+		s.weight = 100000000;
 	}
 
 	if(seen_request(request)) {
@@ -197,12 +203,18 @@ bool del_subnet_h(connection_t *c, const char *request) {
 		return false;
 	}
 
-	/* Check if subnet string is valid */
+	/* Check if subnet string is valid and canonical */
 
-	if(!str2net(&s, subnetstr)) {
+	if(!str2net(&s, subnetstr) || !subnetcheck(s)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "DEL_SUBNET", c->name,
 		       c->hostname, "invalid subnet string");
 		return false;
+	}
+
+	if(s.weight < -100000000) {
+		s.weight = -100000000;
+	} else if(s.weight > 100000000) {
+		s.weight = 100000000;
 	}
 
 	if(seen_request(request)) {

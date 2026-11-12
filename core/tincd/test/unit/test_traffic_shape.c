@@ -31,6 +31,7 @@ typedef struct https_session_t {
 	char *host;
 	char *wbuf;
 	size_t wlen, woff;
+	size_t wbuf_budget;
 	char *rbuf;
 	size_t rlen, rcap;
 	uint8_t server_fp[32];
@@ -38,6 +39,7 @@ typedef struct https_session_t {
 	bool pin_pending;
 	bool established_after_write;
 	bool decoy_keep_alive;
+	bool read_wants_write;
 	void *fetch;
 	size_t pad_budget;
 } https_session_t;

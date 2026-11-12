@@ -516,6 +516,7 @@ let STATE = {
   net: "",
   overview: null,
   rawLogs: "",
+  baseRawYaml: "",
   activeTab: "overview"
 };
 
@@ -582,7 +583,7 @@ async function apiGet(path) {
 async function apiPost(path, body) {
   const r = await fetch(path, {
     method: "POST",
-    headers: {"Content-Type": "application/json"},
+    headers: {"Content-Type": "application/json", "X-Diag-CSRF": "1"},
     body: JSON.stringify(body || {})
   });
   if (r.status === 401 && path !== "/api/login") {
@@ -1109,20 +1110,25 @@ async function loadConfigTab() {
   const cfg = await apiGet("/api/config" + q);
   document.getElementById("cfg-transports").value = cfg.transports || "";
   document.getElementById("cfg-pref-transports").value = cfg.preferred_transports || "";
-  document.getElementById("raw-yaml-editor").value = cfg.raw_yaml || "";
+  STATE.baseRawYaml = cfg.raw_yaml || "";
+  document.getElementById("raw-yaml-editor").value = STATE.baseRawYaml;
 
   const ftSel = document.getElementById("cfg-full-tunnel");
-  const peers = (STATE.overview && STATE.overview.nodes || []).filter(n => !n.is_self);
+  const selfName = (STATE.overview && STATE.overview.self_node) || (cfg.options && cfg.options.Name && cfg.options.Name[0]) || "";
+  const peerNamesSet = new Set();
+  ((STATE.overview && STATE.overview.nodes) || []).filter(n => !n.is_self && n.name).forEach(n => peerNamesSet.add(String(n.name)));
+  Object.keys(cfg.hosts || {}).filter(h => h && h !== selfName).forEach(h => peerNamesSet.add(String(h)));
+  if (cfg.full_tunnel) peerNamesSet.add(String(cfg.full_tunnel));
   ftSel.textContent = "";
   const offOpt = document.createElement("option");
   offOpt.value = "";
   offOpt.textContent = "Выключено (только подсети VPN)";
   ftSel.appendChild(offOpt);
-  peers.forEach(n => {
+  Array.from(peerNamesSet).sort().forEach(name => {
     const opt = document.createElement("option");
-    opt.value = String(n.name || "");
-    opt.textContent = "Весь трафик (0.0.0.0/0) через " + String(n.name || "");
-    opt.selected = (cfg.full_tunnel === n.name);
+    opt.value = name;
+    opt.textContent = "Весь трафик (0.0.0.0/0) через " + name;
+    opt.selected = (cfg.full_tunnel === name);
     ftSel.appendChild(opt);
   });
 
@@ -1156,8 +1162,14 @@ async function saveTransportSettings() {
 
 async function saveRawYaml() {
   const raw_yaml = document.getElementById("raw-yaml-editor").value;
-  const res = await apiPost("/api/action", {net: STATE.net, action: "save_raw_yaml", raw_yaml});
+  const res = await apiPost("/api/action", {
+    net: STATE.net,
+    action: "save_raw_yaml",
+    raw_yaml,
+    base_yaml: STATE.baseRawYaml || ""
+  });
   showToast(res.message || "YAML сохранён", !res.ok);
+  if (res.ok) await loadConfigTab();
   refreshAll();
 }
 

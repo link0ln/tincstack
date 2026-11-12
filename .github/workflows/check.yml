@@ -96,13 +96,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: test_authn (§43 guard)
+      - name: unit tests (core/Dockerfile.build test stage)
         uses: docker/build-push-action@v6
         with:
           context: core
           file: core/Dockerfile.build
           target: test
           cache-from: type=gha
+
+  windows-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pytest and PyYAML
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-pytest python3-yaml
+      - name: Run Windows Python unit tests
+        run: pytest platforms/windows/tests
+      - uses: docker/setup-buildx-action@v3
+      - name: Cross-build Windows core (core/Dockerfile.build-win, cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: core
+          file: core/Dockerfile.build-win
+          load: true
+          tags: tincstack/core-win:${{ env.TAG }}
+          cache-from: type=gha,scope=core-win
+          cache-to: type=gha,mode=max,scope=core-win
 
   smoke:
     needs: build

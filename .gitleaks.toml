@@ -16,8 +16,8 @@ id = "private-key"
 regexTarget = "match"
 regexes = [
   # placeholder bodies, allowing for a raw-string margin between banner and
-  # body: AAAA..., base64("secret"), REDACTED..., or a literal "..." in docs
-  '''-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[^-]{0,40}?(A{16,}|c2VjcmV0|REDACTED|\.\.\.)''',
+  # body: AAAA..., base64("secret"), REDACTED..., SECRET_*, or a literal "..." in docs
+  '''-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[^-]{0,40}?(A{16,}|c2VjcmV0|REDACTED|SECRET_[A-Z0-9_]+|\.\.\.)''',
   # the PEM banner quoted in code, docs and assertions, with no body at all
   '''-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----("|\\n|[^-]{0,4}-----END)''',
 ]
@@ -39,4 +39,7 @@ regexes = [
   # the synthetic invitation token of the Android unit test (with TEST-NET-3
   # 203.0.113.7), InvitationTest.kt; it was never issued by any node.
   '''^Qx3kL9mZpR2vT8wYbN4cF6hJ1sD5gA7eU0iO-_KqWrXtYzMn$''',
+  # Base58 password alphabet constant and lowercase option-name literal in DiagManager / diagnostics.py.
+  '''^ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789$''',
+  '''^ed25519privatekey$''',
 ]

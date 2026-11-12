@@ -157,12 +157,17 @@ object ConnectivityChangeReceiver : BroadcastReceiver() {
     }
   }
 
-  internal fun normalizeMultipathMode(raw: String?): String =
-    raw?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "failover"
+  internal val ACTIVE_MULTIPATH_MODES = setOf("failover", "flowhash", "redundant", "split")
 
-  internal fun isMultipathEnabled(rawMode: String?): Boolean {
-    val mode = normalizeMultipathMode(rawMode)
-    return mode != "off" && mode != "no" && mode != "false" && mode != "0"
+  internal fun normalizeMultipathMode(raw: String?): String =
+    raw?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "off"
+
+  internal fun isMultipathEnabled(rawMode: String?, rawMultipathFlag: String? = null): Boolean {
+    val explicitMode = rawMode?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+    if (explicitMode != null) {
+      return explicitMode in ACTIVE_MULTIPATH_MODES
+    }
+    return TincYaml.asTincBoolean(rawMultipathFlag, false)
   }
 
   private fun extractSourceIp(
@@ -320,7 +325,10 @@ object ConnectivityChangeReceiver : BroadcastReceiver() {
       if (netName != null) {
         val yaml = TincYaml(AppPaths.tincYamlFile(netName))
         val stanza = yaml.resolveNetwork(netName)
-        isMultipathEnabled(yaml.optionValue(stanza, "MultipathMode"))
+        isMultipathEnabled(
+          yaml.optionValue(stanza, "MultipathMode"),
+          yaml.optionValue(stanza, "Multipath"),
+        )
       } else {
         false
       }

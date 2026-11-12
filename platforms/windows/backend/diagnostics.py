@@ -20,6 +20,7 @@ import hmac
 import http.cookies
 import ipaddress
 import json
+import math
 import os
 import platform
 import re
@@ -37,6 +38,7 @@ from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
+import fulltunnel
 import management
 import paths
 import routes
@@ -51,10 +53,37 @@ DEFAULT_DIAG_PORT = 8655
 DIAG_SESSION_COOKIE = "tinc_diag_sid"
 DIAG_SESSION_TTL = 86400.0
 DIAG_SESSION_MAX = 64
+DIAG_CSRF_HEADER = "X-Diag-CSRF"
+LOGIN_MAX_FAILURES = 5
+LOGIN_MAX_LOCKOUT_SEC = 60.0
 _DIAG_PASS_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 REDACTED_PLACEHOLDER = "***REDACTED***"
 _PUBLIC_KEY_ENTRIES = frozenset({"tls_cert"})
-_SECRET_OPTION_NAMES_LOWER = frozenset({"cloudflaretoken", "ed25519privatekey", "privatekey"})
+_SECRET_OPTION_NAMES_LOWER = frozenset({
+    "cloudflaretoken",
+    "ed25519privatekey",
+    "privatekey",
+    "acme_account",
+    "acmeaccount",
+    "acmeaccountkey",
+    "obfspassword",
+    "obfsinitmagicheader",
+    "obfstransportmagicheader",
+    "proxy",
+})
+_FORBIDDEN_WEBUI_OPTIONS_LOWER = frozenset({"scriptsinterpreter", "scriptsextension"})
+_CANON_MULTI_OPTIONS: dict[str, str] = {
+    k.lower(): k for k in (
+        "Transports", "PreferredTransports", "NoDirectNodes", "BlockedNodes",
+        "ConnectTo", "Subnet", "Address", "InterfaceRoute", "InterfaceAddress",
+        "Ifconfig", "AddressPool", "MultipathInterface", "BindToAddress",
+        "ListenAddress", "LocalDiscoveryAddress",
+    )
+}
+
+
+class WebUISecurityError(PermissionError):
+    """Raised when a WebUI request attempts a forbidden privileged mutation."""
 _NET_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
@@ -103,14 +132,186 @@ def _is_secret_option_name(opt_name: str) -> bool:
     return opt_name.strip().lower() in _SECRET_OPTION_NAMES_LOWER
 
 
+def redact_host_text(host_text: str) -> str:
+    """Mask any secret option lines accidentally placed inside a host file."""
+    if not host_text:
+        return ""
+    out_lines: list[str] = []
+    for raw in host_text.splitlines():
+        if "=" in raw and not raw.lstrip().startswith("#"):
+            k, _, _v = raw.partition("=")
+            if _is_secret_option_name(k):
+                out_lines.append(f"{k.strip()} = {REDACTED_PLACEHOLDER}")
+                continue
+        out_lines.append(raw)
+    return "\n".join(out_lines) + ("\n" if host_text.endswith("\n") else "")
+
+
+def select_node_vpn_ips(
+    options: dict[str, Any] | None,
+    host_text: str = "",
+    snap_node: Node | None = None,
+) -> list[str]:
+    """Return ordered VPN host IPs for a node, strictly prioritizing `Ifconfig` /
+    `InterfaceAddress` / `WintunAddress` host addresses and `/32` (`/128`) host
+    `Subnet` entries while ignoring network prefixes like `10.0.0.0/24` or `0.0.0.0/0`."""
+    found: list[str] = []
+
+    def _add_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
+        if ip_obj.is_unspecified or ip_obj.is_loopback or ip_obj.is_multicast:
+            return
+        s = str(ip_obj)
+        if s not in found:
+            found.append(s)
+
+    if isinstance(options, dict):
+        opts_ci = {str(k).strip().lower(): v for k, v in options.items()}
+        for key_low in ("ifconfig", "interfaceaddress", "wintunaddress"):
+            raw_val = opts_ci.get(key_low)
+            vals = raw_val if isinstance(raw_val, (list, tuple)) else ([raw_val] if raw_val else [])
+            for item in vals:
+                parts = str(item).strip().split()
+                if not parts:
+                    continue
+                tok = parts[0]
+                try:
+                    if "/" in tok:
+                        ifc = ipaddress.ip_interface(tok)
+                        if ifc.network.prefixlen == ifc.network.max_prefixlen or ifc.ip != ifc.network.network_address:
+                            _add_ip(ifc.ip)
+                    elif len(parts) >= 2:
+                        try:
+                            ifc = ipaddress.ip_interface(f"{tok}/{parts[1]}")
+                            if ifc.network.prefixlen == ifc.network.max_prefixlen or ifc.ip != ifc.network.network_address:
+                                _add_ip(ifc.ip)
+                                continue
+                        except ValueError:
+                            pass
+                        _add_ip(ipaddress.ip_address(tok))
+                    else:
+                        _add_ip(ipaddress.ip_address(tok))
+                except ValueError:
+                    continue
+
+    if snap_node is not None and snap_node.vpn_address:
+        try:
+            _add_ip(ipaddress.ip_address(snap_node.vpn_address.split("/")[0].strip()))
+        except ValueError:
+            pass
+
+    subnet_candidates: list[str] = []
+    if snap_node is not None:
+        subnet_candidates.extend(str(s) for s in (snap_node.subnets or []))
+    if host_text:
+        subnet_candidates.extend(parse_host_endpoints(host_text).get("subnets") or [])
+
+    for sub in subnet_candidates:
+        clean = str(sub).split("#", 1)[0].strip()
+        if not clean:
+            continue
+        try:
+            net = ipaddress.ip_network(clean, strict=False)
+        except ValueError:
+            continue
+        if net.prefixlen == net.max_prefixlen:
+            _add_ip(net.network_address)
+
+    return found
+
+
+def select_primary_vpn_ip(
+    options: dict[str, Any] | None,
+    host_text: str = "",
+    snap_node: Node | None = None,
+) -> str:
+    ips = select_node_vpn_ips(options, host_text, snap_node)
+    for ip in ips:
+        if ":" not in ip:
+            return ip
+    return ips[0] if ips else ""
+
+
+def _extract_forbidden_webui_opts(opts: dict[str, Any] | None) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in (opts or {}).items():
+        kl = str(k).strip().lower()
+        if kl in _FORBIDDEN_WEBUI_OPTIONS_LOWER:
+            out[kl] = v
+    return out
+
+
+def _normalize_multi_options(opts: dict[str, Any]) -> dict[str, Any]:
+    """Normalize multi-value tinc options to canonical casing and list/scalar forms."""
+    merged: dict[str, Any] = {}
+    for raw_k, raw_v in opts.items():
+        canon = _CANON_MULTI_OPTIONS.get(str(raw_k).strip().lower(), str(raw_k).strip())
+        if canon in merged:
+            prev = merged[canon]
+            prev_list = list(prev) if isinstance(prev, list) else [prev]
+            add_list = list(raw_v) if isinstance(raw_v, list) else [raw_v]
+            merged[canon] = prev_list + add_list
+        else:
+            merged[canon] = raw_v
+    for ck in ("Transports", "PreferredTransports"):
+        if ck in merged:
+            vals = transports.parse_carrier_list(merged[ck])
+            if vals:
+                merged[ck] = vals
+            else:
+                merged.pop(ck, None)
+    for nk in ("NoDirectNodes", "BlockedNodes", "ConnectTo"):
+        if nk in merged:
+            vals = transports.parse_node_list(merged[nk])
+            if not vals:
+                merged.pop(nk, None)
+            elif nk == "ConnectTo" and len(vals) == 1:
+                merged[nk] = vals[0]
+            else:
+                merged[nk] = vals
+    return merged
+
+
 def redact_options_dict(opts: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in (opts or {}).items():
-        if _is_secret_option_name(str(k)) and v not in (None, ""):
+        if _is_secret_option_name(str(k)) and v not in (None, "", []):
             out[k] = REDACTED_PLACEHOLDER
         else:
             out[k] = copy.deepcopy(v)
     return out
+
+
+def restore_redacted_host_text(new_text: str, orig_text: str) -> str:
+    """Restore any `Key = ***REDACTED***` lines in `new_text` from `orig_text`."""
+    if not new_text or REDACTED_PLACEHOLDER not in new_text:
+        return new_text
+    orig_map: dict[str, str] = {}
+    for raw in (orig_text or "").splitlines():
+        if "=" in raw and not raw.lstrip().startswith("#"):
+            k, _, _v = raw.partition("=")
+            if _is_secret_option_name(k):
+                orig_map[k.strip().lower()] = raw
+    out_lines: list[str] = []
+    for raw in new_text.splitlines():
+        if "=" in raw and not raw.lstrip().startswith("#"):
+            k, _, v = raw.partition("=")
+            if _is_secret_option_name(k) and v.strip() == REDACTED_PLACEHOLDER:
+                orig_line = orig_map.get(k.strip().lower())
+                if orig_line is not None:
+                    out_lines.append(orig_line)
+                continue
+        out_lines.append(raw)
+    return "\n".join(out_lines) + ("\n" if new_text.endswith("\n") else "")
+
+
+def _norm_scripts_dict(scripts_obj: Any) -> dict[str, str]:
+    if not isinstance(scripts_obj, dict):
+        return {}
+    return {
+        str(k).strip(): str(v).rstrip("\r\n")
+        for k, v in scripts_obj.items()
+        if v is not None and str(v).strip() != ""
+    }
 
 
 def redact_yaml_document(doc: dict[str, Any]) -> dict[str, Any]:
@@ -129,8 +330,13 @@ def redact_yaml_document(doc: dict[str, Any]) -> dict[str, Any]:
             opts = nd.get("options")
             if isinstance(opts, dict):
                 for ok, ov in list(opts.items()):
-                    if _is_secret_option_name(str(ok)) and ov not in (None, ""):
+                    if _is_secret_option_name(str(ok)) and ov not in (None, "", []):
                         opts[ok] = REDACTED_PLACEHOLDER
+            hosts = nd.get("hosts")
+            if isinstance(hosts, dict):
+                for hk, hv in list(hosts.items()):
+                    if isinstance(hv, str):
+                        hosts[hk] = redact_host_text(hv)
     return redacted
 
 
@@ -150,6 +356,7 @@ def restore_redacted_yaml_document(new_doc: dict[str, Any], orig_doc: dict[str, 
         orig_nd = orig_nets.get(net_name)
         orig_keys = orig_nd.get("keys") if isinstance(orig_nd, dict) else None
         orig_opts = orig_nd.get("options") if isinstance(orig_nd, dict) else None
+        orig_hosts = orig_nd.get("hosts") if isinstance(orig_nd, dict) else None
 
         new_keys = nd.get("keys")
         if isinstance(new_keys, dict):
@@ -174,7 +381,15 @@ def restore_redacted_yaml_document(new_doc: dict[str, Any], orig_doc: dict[str, 
                         new_opts[ok] = copy.deepcopy(orig_opts_ci[str(ok).lower()])
                     else:
                         new_opts.pop(ok, None)
+
+        new_hosts = nd.get("hosts")
+        if isinstance(new_hosts, dict) and isinstance(orig_hosts, dict):
+            for hk, hv in list(new_hosts.items()):
+                if isinstance(hv, str) and isinstance(orig_hosts.get(hk), str):
+                    new_hosts[hk] = restore_redacted_host_text(hv, orig_hosts[hk])
     return merged
+
+
 SERIES_MAX_POINTS = 3600       # ~2.5 hours at 2.5s interval
 INCIDENTS_MAX = 500
 EVENTS_FILE_MAX_BYTES = 2 * 1024 * 1024
@@ -204,7 +419,9 @@ def _append_rotated(path: str, text: str, max_bytes: int = LOG_MAX_BYTES) -> Non
         return
     with _log_lock:
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
             if os.path.isfile(path) and os.path.getsize(path) > max_bytes:
                 with open(path, "rb") as rf:
                     rf.seek(-max_bytes // 2, os.SEEK_END)
@@ -212,9 +429,8 @@ def _append_rotated(path: str, text: str, max_bytes: int = LOG_MAX_BYTES) -> Non
                 nl = tail.find(b"\n")
                 if nl >= 0:
                     tail = tail[nl + 1:]
-                with open(path, "wb") as wf:
-                    wf.write(tail)
-            with open(path, "a", encoding="utf-8", errors="replace") as f:
+                paths.write_private(path, tail)
+            with paths.open_private_append(path) as f:
                 f.write(text)
                 f.flush()
         except OSError:
@@ -294,8 +510,7 @@ def clear_crash_log(base_dir: str = "") -> bool:
     with _log_lock:
         try:
             if os.path.isfile(path):
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write("")
+                paths.write_private(path, b"")
             return True
         except OSError:
             return False
@@ -321,7 +536,7 @@ def install_crash_handlers(
             os.makedirs(base_dir, exist_ok=True)
             cpath = crash_log_path(base_dir)
             if _crash_fd is None:
-                _crash_fd = open(cpath, "a", encoding="utf-8", errors="replace")
+                _crash_fd = paths.open_private_append(cpath)
                 faulthandler.enable(file=_crash_fd, all_threads=True)
         except Exception:
             pass
@@ -453,14 +668,16 @@ class TelemetryCollector:
             return
         path = self._events_path(ev.net)
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
             if os.path.isfile(path) and os.path.getsize(path) > EVENTS_FILE_MAX_BYTES:
                 bak = path + ".1"
                 try:
                     os.replace(path, bak)
                 except OSError:
                     pass
-            with open(path, "a", encoding="utf-8") as f:
+            with paths.open_private_append(path) as f:
                 f.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
         except OSError:
             pass
@@ -854,11 +1071,9 @@ class ActiveProber:
         app = self.app_fn()
         nc = app.net(net) if app else None
         if nc and target in nc.hosts:
-            ep = parse_host_endpoints(nc.hosts[target])
-            for sub in ep["subnets"]:
-                ip = sub.split("/")[0].strip()
-                if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", ip) and ip != "0.0.0.0":
-                    return ip, target
+            ip = select_primary_vpn_ip(None, nc.hosts[target], None)
+            if ip:
+                return ip, target
         return target, target
 
     def _resolve_peer_outer_host(self, net: str, target: str) -> tuple[str, dict[str, Any]]:
@@ -917,7 +1132,7 @@ class ActiveProber:
                 msg = "Specify a peer name or VPN IPv4 address."
                 return {"ok": False, "output": msg, "formatted": msg}
             count = max(1, min(int(params.get("count") or 4), 20))
-            size = max(0, min(int(params.get("size") or 56), 9000))
+            size = max(0, min(int(params.get("size") or 56), 1472))
             df = bool(params.get("df", False))
             res = self.tc.in_tunnel_ping(net, ip, count=count, size=size, df=df, timeout_ms=2000)
             lines = [f"=== In-Tunnel ICMP Ping to {label} ({ip}) — {count} probes, {size} bytes, DF={1 if df else 0} ==="]
@@ -1087,21 +1302,23 @@ class ActiveProber:
             return {"ok": False, "output": msg, "formatted": msg}
         lines = [f"=== Carrier & Transport Handshake Prober for '{target}' (host={host}) ==="]
 
-        # 1. DNS Resolution
+        # 1. DNS Resolution (bounded timeout so slow resolvers never hang WebUI/export)
         t0 = time.perf_counter()
         ips: list[str] = []
-        try:
-            infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-            for info in infos:
-                ip = info[4][0]
-                if ip not in ips:
-                    ips.append(ip)
-            dns_ms = (time.perf_counter() - t0) * 1000.0
-            lines.append(f"[DNS] {host} -> {', '.join(ips)} ({dns_ms:.1f} ms)")
-        except Exception as e:
-            lines.append(f"[DNS] FAILED to resolve {host}: {e}")
+        raw_ips = fulltunnel._resolve_with_timeout(
+            lambda h: [i[4][0] for i in socket.getaddrinfo(h, None, socket.AF_UNSPEC, socket.SOCK_STREAM)],
+            host,
+            2.0,
+        )
+        for ip in raw_ips:
+            if ip not in ips:
+                ips.append(ip)
+        if not ips:
+            lines.append(f"[DNS] FAILED or timed out resolving {host}")
             out_str = "\n".join(lines)
             return {"ok": False, "output": out_str, "formatted": out_str}
+        dns_ms = (time.perf_counter() - t0) * 1000.0
+        lines.append(f"[DNS] {host} -> {', '.join(ips)} ({dns_ms:.1f} ms)")
 
         ip = ips[0]
         port = ep.get("port") or 655
@@ -1200,13 +1417,16 @@ class ActiveProber:
                         lines.append(f"  Host {hname:15s} : {addr}:{port or ep['port']} -> SKIPPED (invalid address)")
                         continue
                     t0 = time.perf_counter()
-                    try:
-                        infos = socket.getaddrinfo(clean_addr, None, socket.AF_UNSPEC, socket.SOCK_DGRAM)
-                        ips = sorted({i[4][0] for i in infos})
-                        ms = (time.perf_counter() - t0) * 1000.0
-                        lines.append(f"  Host {hname:15s} : {addr}:{port or ep['port']} -> {', '.join(ips)} ({ms:.1f} ms)")
-                    except Exception as e:
-                        lines.append(f"  Host {hname:15s} : {addr}:{port or ep['port']} -> ERROR: {e}")
+                    resolved = fulltunnel._resolve_with_timeout(
+                        lambda h: sorted({i[4][0] for i in socket.getaddrinfo(h, None, socket.AF_UNSPEC, socket.SOCK_DGRAM)}),
+                        clean_addr,
+                        2.0,
+                    )
+                    ms = (time.perf_counter() - t0) * 1000.0
+                    if resolved:
+                        lines.append(f"  Host {hname:15s} : {addr}:{port or ep['port']} -> {', '.join(resolved)} ({ms:.1f} ms)")
+                    else:
+                        lines.append(f"  Host {hname:15s} : {addr}:{port or ep['port']} -> ERROR: DNS failed or timed out ({ms:.1f} ms)")
 
         rdir = os.path.join(self.base_dir, net)
         dns_state = os.path.join(rdir, "dnsrefresh.state")
@@ -1270,6 +1490,10 @@ class ActiveProber:
 # Opt-In Remote Diagnostic HTTP Server
 # ---------------------------------------------------------------------------
 
+def _web_settings_path(base_dir: str) -> str:
+    return os.path.join(base_dir, "diag_web.json")
+
+
 def _settings_path(base_dir: str) -> str:
     return os.path.join(base_dir, "diag_settings.json")
 
@@ -1290,30 +1514,43 @@ def _read_raw_diag_settings(path: str) -> dict[str, Any]:
     return {}
 
 
-def _write_raw_diag_settings(path: str, payload: dict[str, Any]) -> None:
+def _load_merged_diag_settings(base_dir: str) -> dict[str, Any]:
+    primary = _read_raw_diag_settings(_web_settings_path(base_dir))
+    legacy = _read_raw_diag_settings(_settings_path(base_dir))
+    if primary:
+        if not str(primary.get("password") or "").strip() and str(legacy.get("password") or "").strip():
+            merged = dict(primary)
+            merged["password"] = legacy["password"]
+            return merged
+        return primary
+    return legacy
+
+
+def _write_raw_diag_settings(base_dir: str, payload: dict[str, Any]) -> None:
     raw = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    paths.write_private(path, raw)
+    for p in (_web_settings_path(base_dir), _settings_path(base_dir)):
+        paths.write_private(p, raw)
 
 
 def ensure_diag_password(base_dir: str) -> str:
-    """Ensure a persistent random password exists in `diag_settings.json` (protected
-    with `paths.private_sddl` on Windows / 0600 on POSIX) and return it."""
+    """Ensure a persistent random password exists in `diag_web.json` / `diag_settings.json`
+    (protected with `paths.private_sddl` on Windows / 0600 on POSIX) and return it."""
     if not base_dir:
         return ""
-    path = _settings_path(base_dir)
     with _settings_lock:
-        data = _read_raw_diag_settings(path)
+        data = _load_merged_diag_settings(base_dir)
         pwd = str(data.get("password") or "").strip()
-        if pwd:
+        if pwd and os.path.isfile(_web_settings_path(base_dir)) and os.path.isfile(_settings_path(base_dir)):
             return pwd
-        pwd = _generate_diag_password(16)
+        if not pwd:
+            pwd = _generate_diag_password(16)
         payload = {
             "enabled": bool(data.get("enabled", False)),
             "port": int(data.get("port", DEFAULT_DIAG_PORT)),
             "password": pwd,
         }
         try:
-            _write_raw_diag_settings(path, payload)
+            _write_raw_diag_settings(base_dir, payload)
         except OSError:
             pass
         return pwd
@@ -1322,9 +1559,8 @@ def ensure_diag_password(base_dir: str) -> str:
 def load_diag_settings(base_dir: str, ensure_password: bool = True) -> dict[str, Any]:
     if not base_dir:
         return {"enabled": False, "port": DEFAULT_DIAG_PORT, "password": ""}
-    path = _settings_path(base_dir)
     with _settings_lock:
-        data = _read_raw_diag_settings(path)
+        data = _load_merged_diag_settings(base_dir)
         enabled = bool(data.get("enabled", False))
         try:
             port = int(data.get("port", DEFAULT_DIAG_PORT))
@@ -1339,9 +1575,8 @@ def load_diag_settings(base_dir: str, ensure_password: bool = True) -> dict[str,
 def save_diag_settings(base_dir: str, enabled: bool, port: int, password: str | None = None) -> None:
     if not base_dir:
         return
-    path = _settings_path(base_dir)
     with _settings_lock:
-        data = _read_raw_diag_settings(path)
+        data = _load_merged_diag_settings(base_dir)
         pwd = (password or "").strip() or str(data.get("password") or "").strip()
         if not pwd:
             pwd = _generate_diag_password(16)
@@ -1351,7 +1586,7 @@ def save_diag_settings(base_dir: str, enabled: bool, port: int, password: str | 
             "password": pwd,
         }
         try:
-            _write_raw_diag_settings(path, payload)
+            _write_raw_diag_settings(base_dir, payload)
         except OSError:
             pass
 
@@ -1508,7 +1743,7 @@ DIAG_LOGIN_HTML = """<!DOCTYPE html>
     try {
       const r = await fetch('/api/login', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'X-Diag-CSRF': '1'},
         credentials: 'same-origin',
         body: JSON.stringify({password: pwdInput.value || ''})
       });
@@ -1585,6 +1820,8 @@ class DiagWebServer:
         self._port: int = DEFAULT_DIAG_PORT
         self._enabled: bool = False
         self._sessions: dict[str, float] = {}
+        self._login_attempts: dict[str, tuple[int, float]] = {}
+        self._config_baseline: dict[str, Any] | None = None
         self._fallback_password: str = _generate_diag_password(16)
         if self.base_dir:
             ensure_diag_password(self.base_dir)
@@ -1593,6 +1830,37 @@ class DiagWebServer:
         if self.base_dir:
             return ensure_diag_password(self.base_dir)
         return self._fallback_password
+
+    def _check_login_backoff(self, client_ip: str) -> int:
+        """Return seconds remaining in login rate-limit lockout for `client_ip` (0 if allowed)."""
+        now = time.monotonic()
+        with self._lock:
+            entry = self._login_attempts.get(client_ip)
+            if not entry:
+                return 0
+            _fails, blocked_until = entry
+            if blocked_until <= now:
+                return 0
+            return max(1, int(math.ceil(blocked_until - now)))
+
+    def _record_login_result(self, client_ip: str, ok: bool) -> int:
+        """Update failed-login counter for `client_ip`; return lockout seconds (>0 when 429)."""
+        now = time.monotonic()
+        with self._lock:
+            if ok:
+                self._login_attempts.pop(client_ip, None)
+                return 0
+            if len(self._login_attempts) >= 256 and client_ip not in self._login_attempts:
+                oldest_ip = min(self._login_attempts, key=lambda k: self._login_attempts[k][1])
+                self._login_attempts.pop(oldest_ip, None)
+            prev_fails, _ = self._login_attempts.get(client_ip, (0, 0.0))
+            fails = prev_fails + 1
+            if fails >= LOGIN_MAX_FAILURES:
+                delay = min(LOGIN_MAX_LOCKOUT_SEC, float(2 ** min(fails - LOGIN_MAX_FAILURES, 10)))
+                self._login_attempts[client_ip] = (fails, now + delay)
+                return max(1, int(math.ceil(delay)))
+            self._login_attempts[client_ip] = (fails, 0.0)
+            return 0
 
     def _create_session(self) -> str:
         now = time.time()
@@ -1634,25 +1902,15 @@ class DiagWebServer:
         if app:
             for net_name, nc in app.networks.items():
                 snap = self.collector.get_latest_snapshot(net_name)
+                self_snap_node: Node | None = None
                 if snap and not snap.error:
                     for n in snap.nodes.values():
-                        if n.is_self and n.vpn_address:
-                            ip = n.vpn_address.split("/")[0].strip().lower()
-                            if ip:
-                                allowed.add(ip)
-                if nc.node_name and nc.node_name in nc.hosts:
-                    ep = parse_host_endpoints(nc.hosts[nc.node_name])
-                    for sub in ep["subnets"]:
-                        ip = sub.split("/")[0].strip().lower()
-                        if ip and ip not in ("0.0.0.0", "::"):
-                            allowed.add(ip)
-                for key in ("InterfaceAddress", "WintunAddress"):
-                    raw_val = nc.options.get(key)
-                    vals = raw_val if isinstance(raw_val, (list, tuple)) else ([raw_val] if raw_val else [])
-                    for item in vals:
-                        ip = str(item).strip().split()[0].split("/")[0].strip().lower()
-                        if ip and ip not in ("0.0.0.0", "::"):
-                            allowed.add(ip)
+                        if n.is_self:
+                            self_snap_node = n
+                            break
+                host_txt = nc.hosts.get(nc.node_name, "") if (nc.node_name and nc.node_name in nc.hosts) else ""
+                for ip in select_node_vpn_ips(nc.options, host_txt, self_snap_node):
+                    allowed.add(ip.lower())
         return allowed
 
     def _notify_config_changed(self, net: str, action: str) -> None:
@@ -1692,7 +1950,7 @@ class DiagWebServer:
             closing = self._closing_thread
         if closing is not None and closing.is_alive():
             closing.join(timeout=2.0)
-        self.stop(wait=True)
+        self.stop(wait=True, persist=False)
 
         server_ref = self
 
@@ -1733,10 +1991,11 @@ class DiagWebServer:
                 try:
                     split_h = urllib.parse.urlsplit(f"//{host_hdr}")
                     req_host = (split_h.hostname or "").lower()
-                    _ = split_h.port
+                    req_port = split_h.port
                 except ValueError:
                     req_host = ""
-                if not req_host or req_host not in allowed:
+                    req_port = None
+                if not req_host or req_host not in allowed or req_port != server_ref.port:
                     self._send_json({"ok": False, "error": "Invalid Host header"}, status=403)
                     return False, allowed
                 return True, allowed
@@ -1855,17 +2114,49 @@ class DiagWebServer:
                     return
                 parsed = urllib.parse.urlparse(self.path)
 
+                csrf_val = (self.headers.get(DIAG_CSRF_HEADER) or "").strip()
+                if csrf_val != "1":
+                    self._send_json(
+                        {"ok": False, "error": f"Missing or invalid {DIAG_CSRF_HEADER} header"},
+                        status=403,
+                    )
+                    return
+
                 origin = (self.headers.get("Origin") or "").strip()
+                referer = (self.headers.get("Referer") or "").strip()
                 if origin:
                     if origin.lower() == "null":
                         self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
                         return
                     try:
-                        o_host = (urllib.parse.urlparse(origin).hostname or "").lower()
-                        if not o_host or o_host not in allowed_hosts:
-                            self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
-                            return
+                        parsed_orig = urllib.parse.urlparse(origin)
+                        o_scheme = (parsed_orig.scheme or "").lower()
+                        o_host = (parsed_orig.hostname or "").lower()
+                        o_port = parsed_orig.port
                     except Exception:
+                        o_scheme, o_host, o_port = "", "", None
+                    if (
+                        o_scheme not in ("http", "https")
+                        or not o_host
+                        or o_host not in allowed_hosts
+                        or o_port != server_ref.port
+                    ):
+                        self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
+                        return
+                elif referer:
+                    try:
+                        parsed_ref = urllib.parse.urlparse(referer)
+                        r_scheme = (parsed_ref.scheme or "").lower()
+                        r_host = (parsed_ref.hostname or "").lower()
+                        r_port = parsed_ref.port
+                    except Exception:
+                        r_scheme, r_host, r_port = "", "", None
+                    if (
+                        r_scheme not in ("http", "https")
+                        or not r_host
+                        or r_host not in allowed_hosts
+                        or r_port != server_ref.port
+                    ):
                         self._send_json({"ok": False, "error": "Cross-origin POST rejected"}, status=403)
                         return
 
@@ -1886,12 +2177,37 @@ class DiagWebServer:
                     payload = {}
 
                 if parsed.path == "/api/login":
+                    client_ip = str(self.client_address[0]) if self.client_address else "local"
+                    wait_s = server_ref._check_login_backoff(client_ip)
+                    if wait_s > 0:
+                        self._send_json(
+                            {
+                                "ok": False,
+                                "auth_required": True,
+                                "error": f"Too many failed login attempts. Retry in {wait_s}s.",
+                            },
+                            status=429,
+                            headers={"Retry-After": str(wait_s)},
+                        )
+                        return
                     provided = str(payload.get("password") or "")
                     expected = server_ref.get_password()
-                    if expected and hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+                    is_ok = bool(expected and hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")))
+                    lockout_s = server_ref._record_login_result(client_ip, is_ok)
+                    if is_ok:
                         sid = server_ref._create_session()
                         cookie = f"{DIAG_SESSION_COOKIE}={sid}; HttpOnly; SameSite=Strict; Path=/"
                         self._send_json({"ok": True, "message": "Authenticated"}, headers={"Set-Cookie": cookie})
+                    elif lockout_s > 0:
+                        self._send_json(
+                            {
+                                "ok": False,
+                                "auth_required": True,
+                                "error": f"Too many failed login attempts. Retry in {lockout_s}s.",
+                            },
+                            status=429,
+                            headers={"Retry-After": str(lockout_s)},
+                        )
                     else:
                         self._send_json(
                             {"ok": False, "auth_required": True, "error": "Invalid password"},
@@ -1953,12 +2269,19 @@ class DiagWebServer:
                     action = str(payload.get("action") or "").strip()
                     try:
                         ok, msg, extra = server_ref.handle_action(target_net, action, payload)
+                    except WebUISecurityError as e:
+                        self._send_json({"ok": False, "error": str(e)}, status=403)
+                        return
                     except ValueError as e:
                         self._send_json({"ok": False, "error": str(e)}, status=400)
                         return
+                    extra_copy = dict(extra or {})
+                    status_code = int(extra_copy.pop("_http_status", 200 if ok else 400))
                     resp = {"ok": ok, "message": msg}
-                    resp.update(extra)
-                    self._send_json(resp, status=200 if ok else 400)
+                    if not ok:
+                        resp.setdefault("error", msg)
+                    resp.update(extra_copy)
+                    self._send_json(resp, status=status_code)
                     return
 
                 self._send_json({"ok": False, "error": "Not found"}, status=404)
@@ -1988,7 +2311,7 @@ class DiagWebServer:
         self.sync_tincd_bridge()
         return True, f"Diagnostic Web Server listening on port {port}"
 
-    def stop(self, wait: bool = True) -> tuple[bool, str]:
+    def stop(self, wait: bool = True, persist: bool = True) -> tuple[bool, str]:
         with self._lock:
             httpd = self._httpd
             self._httpd = None
@@ -2001,7 +2324,8 @@ class DiagWebServer:
             with _active_servers_lock:
                 if _active_servers.get(key) is self:
                     _active_servers.pop(key, None)
-        save_diag_settings(self.base_dir, False, port)
+        if persist:
+            save_diag_settings(self.base_dir, False, port)
         self.sync_tincd_bridge()
         if httpd is not None:
             def _shutdown_server() -> None:
@@ -2104,23 +2428,19 @@ class DiagWebServer:
         urls: list[str] = []
         app = self.app_fn()
         if app:
-            for net in app.networks:
+            for net, nc in app.networks.items():
                 snap = self.collector.get_latest_snapshot(net)
+                self_snap_node: Node | None = None
                 if snap and not snap.error:
                     for n in snap.nodes.values():
-                        if n.is_self and n.vpn_address:
-                            u = f"http://{n.vpn_address.split('/')[0]}:{port}/"
-                            if u not in urls:
-                                urls.append(u)
-                nc = app.net(net)
-                if nc and nc.node_name and nc.node_name in nc.hosts:
-                    ep = parse_host_endpoints(nc.hosts[nc.node_name])
-                    for sub in ep["subnets"]:
-                        ip = sub.split("/")[0].strip()
-                        if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", ip) and ip != "0.0.0.0":
-                            u = f"http://{ip}:{port}/"
-                            if u not in urls:
-                                urls.append(u)
+                        if n.is_self:
+                            self_snap_node = n
+                            break
+                host_txt = nc.hosts.get(nc.node_name, "") if (nc.node_name and nc.node_name in nc.hosts) else ""
+                for ip in select_node_vpn_ips(nc.options, host_txt, self_snap_node):
+                    u = f"http://[{ip}]:{port}/" if ":" in ip else f"http://{ip}:{port}/"
+                    if u not in urls:
+                        urls.append(u)
         urls.append(f"http://127.0.0.1:{port}/")
         return urls
 
@@ -2145,14 +2465,14 @@ class DiagWebServer:
         nodes_list: list[dict[str, Any]] = []
         my_vpn_ip = ""
         self_node = nc.node_name if nc else ""
+        self_snap_node: Node | None = None
         total_rx = 0
         total_tx = 0
         if snap and not snap.error:
             for n in sorted(snap.nodes.values(), key=lambda x: (not x.is_self, x.name)):
                 if n.is_self:
                     self_node = n.name
-                    if n.vpn_address:
-                        my_vpn_ip = n.vpn_address
+                    self_snap_node = n
                 else:
                     total_rx += n.rx_bytes
                     total_tx += n.tx_bytes
@@ -2162,6 +2482,16 @@ class DiagWebServer:
                     n.no_direct
                     or sdict.get("no_direct")
                     or (nc and transports.is_peer_no_direct(nc.options, nc.hosts.get(n.name, ""), n.name))
+                )
+                node_vpn = select_primary_vpn_ip(
+                    nc.options if (nc and n.is_self) else None,
+                    nc.hosts.get(n.name, "") if nc else "",
+                    n,
+                )
+                diag_url = (
+                    f"http://[{node_vpn}]:{self.port}/"
+                    if (node_vpn and ":" in node_vpn)
+                    else (f"http://{node_vpn}:{self.port}/" if node_vpn else "")
                 )
                 nodes_list.append({
                     "name": n.name,
@@ -2186,7 +2516,7 @@ class DiagWebServer:
                     "address": n.address,
                     "configured_address": pcfg.get("configured_address", ""),
                     "port": n.port,
-                    "vpn_address": n.vpn_address,
+                    "vpn_address": node_vpn,
                     "subnets": n.subnets,
                     "routable_subnets": [s for s in n.subnets if routes.routable(s)],
                     "default_subnets": [s for s in n.subnets if routes.is_full_tunnel(s)],
@@ -2194,8 +2524,14 @@ class DiagWebServer:
                     "status": sdict,
                     "options_hex": f"0x{n.options}",
                     "has_host_block": bool(nc and n.name in nc.hosts),
-                    "web_diag_url": f"http://{n.vpn_address.split('/')[0]}:{self.port}/" if n.vpn_address else "",
+                    "web_diag_url": diag_url,
                 })
+
+        my_vpn_ip = select_primary_vpn_ip(
+            nc.options if nc else None,
+            nc.hosts.get(self_node, "") if (nc and self_node) else "",
+            self_snap_node,
+        )
 
         active_routes: list[str] = []
         if nc:
@@ -2312,11 +2648,14 @@ class DiagWebServer:
             if app and app.path and os.path.isfile(app.path):
                 try:
                     doc = yaml_config.read_document(app.path)
+                    self._config_baseline = copy.deepcopy(doc)
                     raw_yaml = yaml_config.dump_text(redact_yaml_document(doc))
                 except (yaml_config.ConfigError, OSError):
                     raw_yaml = ""
             elif app:
-                raw_yaml = yaml_config.dump_text(redact_yaml_document(yaml_config.to_dict(app)))
+                doc = yaml_config.to_dict(app)
+                self._config_baseline = copy.deepcopy(doc)
+                raw_yaml = yaml_config.dump_text(redact_yaml_document(doc))
             tr_val = nc.options.get("Transports", "") if nc else ""
             pref_val = nc.options.get("PreferredTransports", "") if nc else ""
             if isinstance(tr_val, list):
@@ -2324,7 +2663,7 @@ class DiagWebServer:
             if isinstance(pref_val, list):
                 pref_val = ", ".join(str(x) for x in pref_val)
             safe_opts = redact_options_dict(nc.options) if nc else {}
-            hosts_copy = dict(nc.hosts) if nc else {}
+            hosts_copy = {hk: redact_host_text(hv) for hk, hv in nc.hosts.items()} if nc else {}
             autostart = nc.autostart if nc else False
             wintun_mtu = (nc.wintun_mtu or 1400) if nc else 1400
             full_tunnel = nc.full_tunnel if nc else ""
@@ -2353,6 +2692,11 @@ class DiagWebServer:
         # Scrub private keys and tokens from export bundle for safety
         cfg.pop("raw_yaml", None)
         cfg["options"] = redact_options_dict(dict(cfg.get("options") or {}))
+        cfg["options_conf"] = yaml_config.options_to_conf(cfg["options"]) if cfg["options"] else ""
+        cfg["hosts"] = {
+            hk: redact_host_text(str(hv))
+            for hk, hv in (cfg.get("hosts") or {}).items()
+        }
         return {
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "overview": self.build_overview(target_net),
@@ -2361,6 +2705,22 @@ class DiagWebServer:
             "dns_cache": self.prober.run_probe(target_net, "dns", {}),
             "os_routes": self.prober.run_probe(target_net, "routes", {}),
         }
+
+    def _other_full_tunnel_net(self, app: yaml_config.AppConfig, target_net: str) -> str:
+        if self.runtime and hasattr(self.runtime, "active_full_tunnel_net"):
+            active = self.runtime.active_full_tunnel_net(exclude=target_net)
+            if active:
+                return active
+        for nname, onc in app.networks.items():
+            if nname != target_net and onc.full_tunnel:
+                return nname
+        return ""
+
+    def _atomic_mutate(self, app: yaml_config.AppConfig, mutator: Callable[[yaml_config.AppConfig, dict], Any]) -> Any:
+        res = yaml_config.atomic_update(app, mutator, baseline_doc=self._config_baseline)
+        with yaml_config._MEM_LOCK:
+            self._config_baseline = copy.deepcopy(app.baseline)
+        return res
 
     def handle_action(self, net: str, action: str, payload: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
         if self.action_handler is not None:
@@ -2434,21 +2794,24 @@ class DiagWebServer:
             carrier = str(payload.get("carrier") or payload.get("transport") or "auto").strip()
             if not nc or not peer:
                 return False, "Invalid network or peer", {}
-            with yaml_config._MEM_LOCK:
-                if os.path.exists(app.path):
-                    try:
-                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                    except Exception:
-                        pass
-                nc.hosts[peer] = transports.set_host_preferred_transport(nc.hosts.get(peer, ""), carrier)
+
+            def _mut_transport(cur_app: yaml_config.AppConfig, _disk: dict) -> None:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
+                cur_nc.hosts[peer] = transports.set_host_preferred_transport(cur_nc.hosts.get(peer, ""), carrier)
                 if (carrier != "auto"
-                        and not transports.is_peer_no_direct(nc.options, nc.hosts.get(peer, ""), peer)
-                        and re.search(r"^[ \t]*Address[ \t]*=", nc.hosts[peer], re.I | re.M)):
-                    ct_list = transports.parse_node_list(nc.options.get("ConnectTo"))
+                        and not transports.is_peer_no_direct(cur_nc.options, cur_nc.hosts.get(peer, ""), peer)
+                        and re.search(r"^[ \t]*Address[ \t]*=", cur_nc.hosts[peer], re.I | re.M)):
+                    ct_list = transports.parse_node_list(cur_nc.options.get("ConnectTo"))
                     if peer not in ct_list:
                         ct_list.append(peer)
-                    nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
-                yaml_config.save(app)
+                    cur_nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
+
+            try:
+                self._atomic_mutate(app, _mut_transport)
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
             self._notify_config_changed(net, action)
             res = self.tc.switch_peer_transport(net, peer)
             self.collector.add_incident(
@@ -2460,23 +2823,27 @@ class DiagWebServer:
             peer = str(payload.get("peer") or "").strip()
             if not nc or not peer:
                 return False, "Invalid network or peer", {}
-            with yaml_config._MEM_LOCK:
-                if os.path.exists(app.path):
-                    try:
-                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                    except Exception:
-                        pass
+
+            def _mut_direct(cur_app: yaml_config.AppConfig, _disk: dict) -> bool:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
                 if "no_direct" in payload:
-                    no_direct = bool(payload.get("no_direct"))
+                    nd_val = bool(payload.get("no_direct"))
                 elif "direct" in payload:
-                    no_direct = not bool(payload.get("direct"))
+                    nd_val = not bool(payload.get("direct"))
                 else:
-                    no_direct = not transports.is_peer_no_direct(nc.options, nc.hosts.get(peer, ""), peer)
-                old_host = nc.hosts.get(peer, "")
-                new_host = transports.set_peer_no_direct(nc.options, old_host, peer, no_direct)
-                if peer in nc.hosts or new_host:
-                    nc.hosts[peer] = new_host
-                yaml_config.save(app)
+                    nd_val = not transports.is_peer_no_direct(cur_nc.options, cur_nc.hosts.get(peer, ""), peer)
+                old_host = cur_nc.hosts.get(peer, "")
+                new_host = transports.set_peer_no_direct(cur_nc.options, old_host, peer, nd_val)
+                if peer in cur_nc.hosts or new_host:
+                    cur_nc.hosts[peer] = new_host
+                return nd_val
+
+            try:
+                no_direct = self._atomic_mutate(app, _mut_direct)
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
             self._notify_config_changed(net, action)
             res = self.tc.reload(net)
             mode_str = "Relay only (no direct connect)" if no_direct else "Direct connect allowed"
@@ -2491,18 +2858,21 @@ class DiagWebServer:
             subnet = str(payload.get("subnet") or "").strip()
             vpn_ip = str(payload.get("vpn_ip") or "").strip()
             enable = bool(payload.get("enable", True))
-            with yaml_config._MEM_LOCK:
-                if os.path.exists(app.path):
-                    try:
-                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                    except Exception:
-                        pass
+
+            def _mut_route(cur_app: yaml_config.AppConfig, _disk: dict) -> list[str]:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
                 if enable:
-                    routes.add(nc.options, subnet, vpn_ip)
+                    routes.add(cur_nc.options, subnet, vpn_ip)
                 else:
-                    routes.remove(nc.options, subnet)
-                yaml_config.save(app)
-                alias = routes.adapter_aliases(nc.options, net)
+                    routes.remove(cur_nc.options, subnet)
+                return routes.adapter_aliases(cur_nc.options, net)
+
+            try:
+                alias = self._atomic_mutate(app, _mut_route)
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
             self._notify_config_changed(net, action)
             if alias:
                 if enable:
@@ -2510,19 +2880,26 @@ class DiagWebServer:
                 else:
                     routes.remove_now(alias[0], subnet)
             return True, f"Route {subnet} {'enabled' if enable else 'disabled'}", {}
-        if action == "toggle_full_tunnel":
+        if action in ("toggle_full_tunnel", "full_tunnel"):
             if not nc:
                 return False, "Network not found", {}
             peer = str(payload.get("peer") or "").strip()
             enable = bool(payload.get("enable", False))
-            with yaml_config._MEM_LOCK:
-                if os.path.exists(app.path):
-                    try:
-                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                    except Exception:
-                        pass
-                nc.full_tunnel = peer if enable else ""
-                yaml_config.save(app)
+
+            def _mut_ft(cur_app: yaml_config.AppConfig, _disk: dict) -> None:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
+                if enable and peer:
+                    conflict = self._other_full_tunnel_net(cur_app, net)
+                    if conflict:
+                        raise ValueError(f"Full tunnel is already enabled on '{conflict}'")
+                cur_nc.full_tunnel = peer if enable else ""
+
+            try:
+                self._atomic_mutate(app, _mut_ft)
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
             self._notify_config_changed(net, action)
             msg = self.runtime.full_tunnel_sync(net) if self.runtime else "saved"
             return True, msg, {}
@@ -2533,19 +2910,23 @@ class DiagWebServer:
             content = str(payload.get("content") or payload.get("text") or "").rstrip("\n")
             if not host:
                 return False, "Host name is empty", {}
-            with yaml_config._MEM_LOCK:
-                if os.path.exists(app.path):
-                    try:
-                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                    except Exception:
-                        pass
-                nc.hosts[host] = content
-                blocked_list = [b for b in transports.parse_node_list(nc.options.get("BlockedNodes")) if b != host]
+
+            def _mut_save_host(cur_app: yaml_config.AppConfig, _disk: dict) -> None:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
+                restored_host = restore_redacted_host_text(content, cur_nc.hosts.get(host, ""))
+                cur_nc.hosts[host] = restored_host
+                blocked_list = [b for b in transports.parse_node_list(cur_nc.options.get("BlockedNodes")) if b != host]
                 if blocked_list:
-                    nc.options["BlockedNodes"] = blocked_list
+                    cur_nc.options["BlockedNodes"] = blocked_list
                 else:
-                    nc.options.pop("BlockedNodes", None)
-                yaml_config.save(app)
+                    cur_nc.options.pop("BlockedNodes", None)
+
+            try:
+                self._atomic_mutate(app, _mut_save_host)
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
             self._notify_config_changed(net, action)
             self.tc.reload(net)
             return True, f"Saved host '{host}'", {}
@@ -2555,23 +2936,26 @@ class DiagWebServer:
             host = str(payload.get("host") or payload.get("peer") or "").strip()
             if not host:
                 return False, "Host name is empty", {}
-            with yaml_config._MEM_LOCK:
-                if os.path.exists(app.path):
-                    try:
-                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                    except Exception:
-                        pass
-                nc.hosts.pop(host, None)
-                ct_list = [c for c in transports.parse_node_list(nc.options.get("ConnectTo")) if c != host]
+
+            def _mut_del_host(cur_app: yaml_config.AppConfig, _disk: dict) -> None:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
+                cur_nc.hosts.pop(host, None)
+                ct_list = [c for c in transports.parse_node_list(cur_nc.options.get("ConnectTo")) if c != host]
                 if ct_list:
-                    nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
+                    cur_nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
                 else:
-                    nc.options.pop("ConnectTo", None)
-                blocked_list = transports.parse_node_list(nc.options.get("BlockedNodes"))
+                    cur_nc.options.pop("ConnectTo", None)
+                blocked_list = transports.parse_node_list(cur_nc.options.get("BlockedNodes"))
                 if host not in blocked_list:
                     blocked_list.append(host)
-                nc.options["BlockedNodes"] = blocked_list
-                yaml_config.save(app)
+                cur_nc.options["BlockedNodes"] = blocked_list
+
+            try:
+                self._atomic_mutate(app, _mut_del_host)
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
             self._notify_config_changed(net, action)
             self.tc.reload(net)
             return True, f"Deleted and blocked host '{host}'", {}
@@ -2580,13 +2964,18 @@ class DiagWebServer:
                 return False, "Network not found", {}
             tr_str = str(payload.get("transports") or "").strip()
             pref_str = str(payload.get("preferred_transports") or "").strip()
-            with yaml_config._MEM_LOCK:
-                if os.path.exists(app.path):
-                    try:
-                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                    except Exception:
-                        pass
-                cand_opts = copy.deepcopy(nc.options)
+
+            def _mut_settings(cur_app: yaml_config.AppConfig, _disk: dict) -> None:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
+                if "full_tunnel" in payload:
+                    wanted_ft = str(payload.get("full_tunnel") or "").strip()
+                    if wanted_ft:
+                        conflict = self._other_full_tunnel_net(cur_app, net)
+                        if conflict:
+                            raise ValueError(f"Full tunnel is already enabled on '{conflict}'")
+                cand_opts = copy.deepcopy(cur_nc.options)
                 if tr_str:
                     cand_opts["Transports"] = transports.parse_carrier_list(tr_str)
                 else:
@@ -2597,11 +2986,15 @@ class DiagWebServer:
                     cand_opts.pop("PreferredTransports", None)
                 errs = transports.validate(cand_opts)
                 if errs:
-                    return False, "; ".join(errs), {}
-                nc.options = cand_opts
+                    raise ValueError("; ".join(errs))
+                cur_nc.options = cand_opts
                 if "full_tunnel" in payload:
-                    nc.full_tunnel = str(payload.get("full_tunnel") or "").strip()
-                yaml_config.save(app)
+                    cur_nc.full_tunnel = str(payload.get("full_tunnel") or "").strip()
+
+            try:
+                self._atomic_mutate(app, _mut_settings)
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
             self._notify_config_changed(net, action)
             self.tc.reload(net)
             if self.runtime:
@@ -2610,38 +3003,48 @@ class DiagWebServer:
         if action == "save_options":
             if not nc:
                 return False, "Network not found", {}
+            raw_opts_dict = payload.get("options")
             conf_text = str(payload.get("options_conf") or "")
-            with yaml_config._MEM_LOCK:
-                if os.path.exists(app.path):
-                    try:
-                        yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                    except Exception:
-                        pass
-                new_opts = yaml_config.conf_to_options(conf_text)
-                orig_ci = {str(k).lower(): v for k, v in nc.options.items()}
+
+            def _mut_options(cur_app: yaml_config.AppConfig, _disk: dict) -> None:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
+                parsed_opts = (
+                    copy.deepcopy(raw_opts_dict)
+                    if isinstance(raw_opts_dict, dict)
+                    else yaml_config.conf_to_options(conf_text)
+                )
+                new_opts = _normalize_multi_options(parsed_opts)
+                orig_ci = {str(k).lower(): v for k, v in cur_nc.options.items()}
                 for ok, ov in list(new_opts.items()):
                     if _is_secret_option_name(str(ok)) and isinstance(ov, str) and ov.strip() == REDACTED_PLACEHOLDER:
-                        if ok in nc.options:
-                            new_opts[ok] = copy.deepcopy(nc.options[ok])
+                        if ok in cur_nc.options:
+                            new_opts[ok] = copy.deepcopy(cur_nc.options[ok])
                         elif str(ok).lower() in orig_ci:
                             new_opts[ok] = copy.deepcopy(orig_ci[str(ok).lower()])
                         else:
                             new_opts.pop(ok, None)
-                for k in ("Transports", "PreferredTransports"):
-                    if k in new_opts:
-                        new_opts[k] = transports.parse_carrier_list(new_opts[k])
+                if _extract_forbidden_webui_opts(new_opts) != _extract_forbidden_webui_opts(cur_nc.options):
+                    raise WebUISecurityError("Creating or modifying ScriptsInterpreter via WebUI is forbidden")
                 errs = transports.validate(new_opts)
                 if errs:
-                    return False, "; ".join(errs), {}
-                nc.options = new_opts
+                    raise ValueError("; ".join(errs))
+                cur_nc.options = new_opts
                 if "autostart" in payload:
-                    nc.autostart = bool(payload["autostart"])
+                    cur_nc.autostart = bool(payload["autostart"])
                 if "wintun_mtu" in payload:
                     try:
-                        nc.wintun_mtu = int(payload["wintun_mtu"])
+                        cur_nc.wintun_mtu = int(payload["wintun_mtu"])
                     except ValueError:
                         pass
-                yaml_config.save(app)
+
+            try:
+                self._atomic_mutate(app, _mut_options)
+            except WebUISecurityError as e:
+                return False, str(e), {"_http_status": 403}
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
             self._notify_config_changed(net, action)
             self.tc.reload(net)
             return True, "Saved network options", {}
@@ -2654,22 +3057,61 @@ class DiagWebServer:
             except yaml_config.ConfigError as e:
                 return False, str(e), {}
             with yaml_config._MEM_LOCK:
-                try:
-                    orig_doc = yaml_config.read_document(app.path) if os.path.isfile(app.path) else yaml_config.to_dict(app)
-                except yaml_config.ConfigError:
-                    orig_doc = yaml_config.to_dict(app)
-                restored_doc = restore_redacted_yaml_document(incoming_doc, orig_doc)
-                for nname, nd in (restored_doc.get("networks") or {}).items():
-                    if isinstance(nd, dict):
-                        errs = transports.validate(dict(nd.get("options") or {}))
-                        if errs:
-                            return False, f"{nname}: {'; '.join(errs)}", {}
-                final_text = yaml_config.dump_text(restored_doc)
-                try:
-                    yaml_config.save_text(app.path, final_text)
-                    yaml_config.refresh_in_place(app, yaml_config.read_document(app.path))
-                except yaml_config.ConfigError as e:
-                    return False, str(e), {}
+                with yaml_config._file_lock(app.path):
+                    try:
+                        orig_doc = (
+                            yaml_config.read_document(app.path)
+                            if (app.path and os.path.isfile(app.path))
+                            else yaml_config.to_dict(app)
+                        )
+                    except yaml_config.ConfigError as e:
+                        return False, str(e), {}
+                    orig_nets = orig_doc.get("networks") if isinstance(orig_doc, dict) else {}
+                    if not isinstance(orig_nets, dict):
+                        orig_nets = {}
+                    in_nets = incoming_doc.get("networks") if isinstance(incoming_doc, dict) else {}
+                    if not isinstance(in_nets, dict):
+                        in_nets = {}
+                    ft_nets: list[str] = []
+                    for nname, nd in in_nets.items():
+                        if not isinstance(nd, dict):
+                            continue
+                        orig_nd = orig_nets.get(nname) if isinstance(orig_nets.get(nname), dict) else {}
+                        if _norm_scripts_dict(nd.get("scripts")) != _norm_scripts_dict(orig_nd.get("scripts")):
+                            return (
+                                False,
+                                f"{nname}: Creating or modifying hook scripts via WebUI is forbidden",
+                                {"_http_status": 403},
+                            )
+                        if _extract_forbidden_webui_opts(nd.get("options")) != _extract_forbidden_webui_opts(orig_nd.get("options")):
+                            return (
+                                False,
+                                f"{nname}: Creating or modifying ScriptsInterpreter via WebUI is forbidden",
+                                {"_http_status": 403},
+                            )
+                        if str(nd.get("full_tunnel") or "").strip():
+                            ft_nets.append(nname)
+                    if len(ft_nets) > 1:
+                        return False, f"Full tunnel cannot be active on multiple networks ({', '.join(ft_nets)})", {}
+
+                    restored_doc = restore_redacted_yaml_document(incoming_doc, orig_doc)
+                    for nname, nd in (restored_doc.get("networks") or {}).items():
+                        if isinstance(nd, dict):
+                            errs = transports.validate(dict(nd.get("options") or {}))
+                            if errs:
+                                return False, f"{nname}: {'; '.join(errs)}", {}
+                    base_doc = self._config_baseline if self._config_baseline is not None else app.baseline
+                    if base_doc:
+                        patch = yaml_config.diff_documents(base_doc, restored_doc)
+                        merged = yaml_config.apply_patch(orig_doc, patch, base_doc) if patch else orig_doc
+                    else:
+                        merged = yaml_config._preserve_daemon_state_without_baseline(orig_doc, restored_doc)
+                    try:
+                        yaml_config.atomic_write_text(app.path, yaml_config.dump_text(merged))
+                        yaml_config.refresh_in_place(app, merged)
+                        self._config_baseline = copy.deepcopy(merged)
+                    except (yaml_config.ConfigError, OSError) as e:
+                        return False, str(e), {}
             self._notify_config_changed(net, action)
             if net:
                 self.tc.reload(net)

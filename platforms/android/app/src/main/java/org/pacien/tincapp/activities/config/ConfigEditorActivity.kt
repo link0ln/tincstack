@@ -33,6 +33,8 @@ import android.widget.LinearLayout
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.isVisible
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.chip.Chip
@@ -72,9 +74,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ConfigEditorActivity : BaseActivity() {
   private lateinit var binding: ActivityConfigEditorBinding
   override val snackbarRoot: View get() = binding.configRoot
-  private val netName by lazy { intent.getStringExtra(EXTRA_NET_NAME)!! }
-  private val focusNode by lazy { intent.getStringExtra(EXTRA_FOCUS_NODE) }
+  private var netName: String = ""
+  private val focusNode by lazy { intent?.getStringExtra(EXTRA_FOCUS_NODE) }
   private val yaml by lazy { TincYaml(AppPaths.tincYamlFile(netName)) }
+  private lateinit var draftVm: EditorDraftViewModel
   private lateinit var stanza: String
   private var ownNode: String? = null
   private val saving = AtomicBoolean(false)
@@ -133,10 +136,35 @@ class ConfigEditorActivity : BaseActivity() {
       )
 
     enum class Kind { OPTION, HOST, HEADER }
+
+    fun copyRow(): Row = copy().also { it.pending = this.pending }
+  }
+
+  class EditorDraftViewModel : ViewModel() {
+    var initialized: Boolean = false
+    var netName: String = ""
+    var stanza: String = ""
+    var ownNode: String? = null
+    var allRows: List<Row> = emptyList()
+    var removedRows: List<Row> = emptyList()
+    var knownNodes: List<String> = emptyList()
+    var initialNodes: Set<String> = emptySet()
+    var deletedNodes: Set<String> = emptySet()
+    var rawOriginalText: String = ""
+    var rawPendingText: String? = null
+    var currentScope: Scope = Scope.Options
+    var dirty: Boolean = false
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    val extraNet = intent?.getStringExtra(EXTRA_NET_NAME)?.takeIf { it.isNotBlank() }
+    if (extraNet == null) {
+      finish()
+      return
+    }
+    netName = extraNet
+    draftVm = ViewModelProvider(this)[EditorDraftViewModel::class.java]
     binding = ActivityConfigEditorBinding.inflate(layoutInflater)
     setContentView(binding.root)
     setupToolbar(binding.toolbar, up = true)
@@ -144,6 +172,7 @@ class ConfigEditorActivity : BaseActivity() {
 
     binding.configList.layoutManager = LinearLayoutManager(this)
     binding.configList.adapter = adapter
+    binding.configSave.isEnabled = false
 
     binding.configAdd.setOnClickListener {
       val targetNode = (currentScope as? Scope.Node)?.name
@@ -166,7 +195,183 @@ class ConfigEditorActivity : BaseActivity() {
     })
 
     stanza = netName
-    loadFromDiskAsync()
+    if (draftVm.initialized && draftVm.netName == netName) {
+      restoreFromViewModel()
+    } else if (savedInstanceState != null && restoreFromBundle(savedInstanceState)) {
+      syncToViewModel()
+    } else {
+      loadFromDiskAsync()
+    }
+  }
+
+  override fun onSaveInstanceState(outState: Bundle) {
+    syncToViewModel()
+    super.onSaveInstanceState(outState)
+    outState.putBoolean(STATE_HAS_DRAFT, draftVm.initialized)
+    if (!draftVm.initialized) return
+    outState.putString(STATE_STANZA, stanza)
+    outState.putString(STATE_OWN_NODE, ownNode)
+    outState.putBoolean(STATE_DIRTY, dirty.get())
+    outState.putStringArrayList(STATE_KNOWN_NODES, ArrayList(knownNodes))
+    outState.putStringArrayList(STATE_INITIAL_NODES, ArrayList(initialNodes))
+    outState.putStringArrayList(STATE_DELETED_NODES, ArrayList(deletedNodes))
+    when (val s = currentScope) {
+      Scope.Options -> outState.putString(STATE_SCOPE_KIND, "options")
+      Scope.All -> outState.putString(STATE_SCOPE_KIND, "all")
+      Scope.RawYaml -> outState.putString(STATE_SCOPE_KIND, "raw")
+      is Scope.Node -> {
+        outState.putString(STATE_SCOPE_KIND, "node")
+        outState.putString(STATE_SCOPE_NODE, s.name)
+      }
+    }
+    outState.putStringArrayList(STATE_ALL_ROWS, encodeRowsForBundle(allRows))
+    outState.putStringArrayList(STATE_REMOVED_ROWS, encodeRowsForBundle(removedRows))
+    if (rawOriginalText.length <= MAX_BUNDLE_TEXT_CHARS) {
+      outState.putString(STATE_RAW_ORIGINAL, rawOriginalText)
+    }
+    val pendingRaw = rawPendingText
+    if (pendingRaw != null && pendingRaw.length <= MAX_BUNDLE_TEXT_CHARS) {
+      outState.putString(STATE_RAW_PENDING, pendingRaw)
+    }
+  }
+
+  private fun syncToViewModel() {
+    if (!::draftVm.isInitialized) return
+    draftVm.netName = netName
+    draftVm.stanza = if (::stanza.isInitialized) stanza else netName
+    draftVm.ownNode = ownNode
+    draftVm.allRows = allRows.map { it.copyRow() }
+    draftVm.removedRows = removedRows.map { it.copyRow() }
+    draftVm.knownNodes = knownNodes.toList()
+    draftVm.initialNodes = initialNodes.toSet()
+    draftVm.deletedNodes = deletedNodes.toSet()
+    draftVm.rawOriginalText = rawOriginalText
+    draftVm.rawPendingText = rawPendingText
+    draftVm.currentScope = currentScope
+    draftVm.dirty = dirty.get()
+  }
+
+  private fun restoreFromViewModel() {
+    stanza = draftVm.stanza
+    ownNode = draftVm.ownNode
+    allRows.clear()
+    allRows.addAll(draftVm.allRows.map { it.copyRow() })
+    removedRows.clear()
+    removedRows.addAll(draftVm.removedRows.map { it.copyRow() })
+    knownNodes.clear()
+    knownNodes.addAll(draftVm.knownNodes)
+    initialNodes.clear()
+    initialNodes.addAll(draftVm.initialNodes)
+    deletedNodes.clear()
+    deletedNodes.addAll(draftVm.deletedNodes)
+    rawOriginalText = draftVm.rawOriginalText
+    rawPendingText = draftVm.rawPendingText
+    currentScope = draftVm.currentScope
+    dirty.set(draftVm.dirty)
+    binding.configSave.isEnabled = draftVm.dirty
+
+    suppressRawWatcher = true
+    binding.configRawEdit.setText(rawPendingText ?: rawOriginalText)
+    suppressRawWatcher = false
+
+    invalidateOptionsMenu()
+    renderScopeChips()
+    applyScope()
+  }
+
+  private fun encodeRowsForBundle(rows: List<Row>): ArrayList<String> {
+    val out = ArrayList<String>(rows.size)
+    for (r in rows) {
+      if (r.header) continue
+      // Tab-separated fields; values in form rows are single-line scalars
+      val kindStr = if (r.kind == Row.Kind.OPTION) "O" else "H"
+      val nodeStr = r.node.orEmpty()
+      val newStr = if (r.newlyAdded) "1" else "0"
+      val hasPending = if (r.pending != null) "1" else "0"
+      val origEsc = r.original.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+      val pendEsc = (r.pending ?: "").replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+      out.add("$kindStr\t${r.net}\t$nodeStr\t${r.k}\t$newStr\t$hasPending\t$origEsc\t$pendEsc")
+    }
+    return out
+  }
+
+  private fun unescapeBundleField(s: String): String = buildString(s.length) {
+    var i = 0
+    while (i < s.length) {
+      val c = s[i]
+      if (c == '\\' && i + 1 < s.length) {
+        when (val next = s[i + 1]) {
+          't' -> append('\t')
+          'n' -> append('\n')
+          '\\' -> append('\\')
+          else -> append(next)
+        }
+        i += 2
+      } else {
+        append(c)
+        i++
+      }
+    }
+  }
+
+  private fun decodeRowsFromBundle(encoded: List<String>?): List<Row> {
+    if (encoded == null) return emptyList()
+    return encoded.mapNotNull { line ->
+      val parts = line.split('\t', limit = 8)
+      if (parts.size < 8) return@mapNotNull null
+      val isOpt = parts[0] == "O"
+      Row(
+        kind = if (isOpt) Row.Kind.OPTION else Row.Kind.HOST,
+        sectionTitle = if (isOpt) R.string.config_section_options else R.string.config_section_hosts,
+        sectionSort = if (isOpt) 0 else 1,
+        net = parts[1],
+        node = parts[2].ifEmpty { null },
+        k = parts[3],
+        original = unescapeBundleField(parts[6]),
+        newlyAdded = parts[4] == "1",
+      ).apply {
+        if (parts[5] == "1") {
+          pending = unescapeBundleField(parts[7])
+        }
+      }
+    }
+  }
+
+  private fun restoreFromBundle(state: Bundle): Boolean {
+    if (!state.getBoolean(STATE_HAS_DRAFT, false)) return false
+    stanza = state.getString(STATE_STANZA) ?: netName
+    ownNode = state.getString(STATE_OWN_NODE)
+    allRows.clear()
+    allRows.addAll(decodeRowsFromBundle(state.getStringArrayList(STATE_ALL_ROWS)))
+    removedRows.clear()
+    removedRows.addAll(decodeRowsFromBundle(state.getStringArrayList(STATE_REMOVED_ROWS)))
+    knownNodes.clear()
+    knownNodes.addAll(state.getStringArrayList(STATE_KNOWN_NODES).orEmpty())
+    initialNodes.clear()
+    initialNodes.addAll(state.getStringArrayList(STATE_INITIAL_NODES).orEmpty())
+    deletedNodes.clear()
+    deletedNodes.addAll(state.getStringArrayList(STATE_DELETED_NODES).orEmpty())
+    rawOriginalText = state.getString(STATE_RAW_ORIGINAL).orEmpty()
+    rawPendingText = state.getString(STATE_RAW_PENDING)
+    currentScope = when (state.getString(STATE_SCOPE_KIND)) {
+      "all" -> Scope.All
+      "raw" -> Scope.RawYaml
+      "node" -> Scope.Node(state.getString(STATE_SCOPE_NODE).orEmpty())
+      else -> Scope.Options
+    }
+    val wasDirty = state.getBoolean(STATE_DIRTY, false)
+    dirty.set(wasDirty)
+    binding.configSave.isEnabled = wasDirty
+    draftVm.initialized = true
+
+    suppressRawWatcher = true
+    binding.configRawEdit.setText(rawPendingText ?: rawOriginalText)
+    suppressRawWatcher = false
+
+    invalidateOptionsMenu()
+    renderScopeChips()
+    applyScope()
+    return true
   }
 
   override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -285,6 +490,8 @@ class ConfigEditorActivity : BaseActivity() {
         invalidateOptionsMenu()
         renderScopeChips()
         applyScope()
+        draftVm.initialized = true
+        syncToViewModel()
       }
     }.exceptionallyAccept { e ->
       runOnUiThread {
@@ -314,6 +521,7 @@ class ConfigEditorActivity : BaseActivity() {
         setOnClickListener {
           if (currentScope != scope) {
             currentScope = scope
+            syncToViewModel()
             applyScope()
             renderScopeChips()
           }
@@ -830,6 +1038,7 @@ class ConfigEditorActivity : BaseActivity() {
   private fun markDirty() {
     dirty.set(true)
     binding.configSave.isEnabled = true
+    syncToViewModel()
   }
 
   private fun save() {
@@ -839,6 +1048,7 @@ class ConfigEditorActivity : BaseActivity() {
     // Raw edits apply no matter which scope is on screen now: switching
     // tabs after typing YAML used to silently drop every raw change.
     val rawTextToWrite = rawPendingText
+    val baseRawSnap = rawOriginalText
     val rawChanged = rawTextToWrite != null && rawTextToWrite != rawOriginalText
     val stanzaSnap = stanza
     val deletedNodesSnap = deletedNodes.toList()
@@ -848,19 +1058,30 @@ class ConfigEditorActivity : BaseActivity() {
 
     val removedOptionKeys = removedRows.filter { it.kind == Row.Kind.OPTION }.map { it.key() }
     val changedOptions = allRows.filter { it.kind == Row.Kind.OPTION && it.changed() }.map { r ->
-      val sep = if (isTokenListKey(r.key())) Regex("[\\s,;]+") else Regex(",")
-      val vals = r.value().split(sep).map { it.trim() }.filter { it.isNotEmpty() }
-      r.key() to vals.ifEmpty { null }
+      r.key() to splitOptionValues(r.key(), r.value())
     }
     val hostMutations = knownNodes.mapNotNull { node ->
       val hostChanges = LinkedHashMap<String, List<String>?>()
       for (r in removedRows.filter { it.kind == Row.Kind.HOST && it.node == node }) {
         hostChanges[r.key()] = null
+        if (isPreferredTransportKey(r.key())) {
+          hostChanges["PreferredTransports"] = null
+          hostChanges["PreferredTransport"] = null
+        }
       }
       for (r in allRows.filter { it.kind == Row.Kind.HOST && it.node == node }) {
         if (!r.changed()) continue
-        val vals = r.value().split(',').map { it.trim() }.filter { it.isNotEmpty() }
-        hostChanges[r.key()] = vals.ifEmpty { null }
+        if (isPreferredTransportKey(r.key())) {
+          val vals = splitHostValues(r.key(), r.value())
+          if (vals == null) {
+            hostChanges["PreferredTransports"] = null
+            hostChanges["PreferredTransport"] = null
+          } else {
+            hostChanges[r.key()] = vals
+          }
+        } else {
+          hostChanges[r.key()] = splitHostValues(r.key(), r.value())
+        }
       }
       val isNewNode = node !in initialNodes
       if (hostChanges.isNotEmpty() || isNewNode) node to hostChanges else null
@@ -868,7 +1089,7 @@ class ConfigEditorActivity : BaseActivity() {
 
     Executor.supplyAsyncTask {
       if (rawChanged && rawTextToWrite != null) {
-        yaml.writeRawText(rawTextToWrite)
+        yaml.writeRawText(rawTextToWrite, baseRawText = baseRawSnap)
       }
       if (!rawChanged || structuredChange) {
         yaml.editBatch {
@@ -1027,11 +1248,13 @@ class ConfigEditorActivity : BaseActivity() {
           text = preset
           isCheckable = false
           setOnClickListener {
-            val nextVal = if (multiValueKey && !preset.contains(',')) {
+            val nextVal = if (isPreferredTransportKey(row.key()) && preset.equals("auto", ignoreCase = true)) {
+              "auto"
+            } else if (multiValueKey && !preset.contains(',')) {
               val currentItems = editText.text?.toString()
                 ?.split(Regex("[\\s,;]+"))
                 ?.map { it.trim() }
-                ?.filter { it.isNotEmpty() }
+                ?.filter { it.isNotEmpty() && !(isPreferredTransportKey(row.key()) && it.equals("auto", ignoreCase = true)) }
                 .orEmpty()
               val updated = if (currentItems.any { it.equals(preset, ignoreCase = true) }) {
                 currentItems.filterNot { it.equals(preset, ignoreCase = true) }
@@ -1070,6 +1293,20 @@ class ConfigEditorActivity : BaseActivity() {
     private const val VIEW_TYPE_HEADER = 0
     private const val VIEW_TYPE_KEY = 1
     private const val MENU_DELETE_NODE = 100
+    private const val MAX_BUNDLE_TEXT_CHARS = 128 * 1024
+    private const val STATE_HAS_DRAFT = "has_draft"
+    private const val STATE_STANZA = "stanza"
+    private const val STATE_OWN_NODE = "own_node"
+    private const val STATE_DIRTY = "dirty"
+    private const val STATE_KNOWN_NODES = "known_nodes"
+    private const val STATE_INITIAL_NODES = "initial_nodes"
+    private const val STATE_DELETED_NODES = "deleted_nodes"
+    private const val STATE_SCOPE_KIND = "scope_kind"
+    private const val STATE_SCOPE_NODE = "scope_node"
+    private const val STATE_ALL_ROWS = "all_rows"
+    private const val STATE_REMOVED_ROWS = "removed_rows"
+    private const val STATE_RAW_ORIGINAL = "raw_original"
+    private const val STATE_RAW_PENDING = "raw_pending"
 
     private val KEY_NAME_RE = Regex("^[A-Za-z][A-Za-z0-9_]*$")
     private val NODE_NAME_RE = Regex("^[A-Za-z0-9][A-Za-z0-9_]*$")
@@ -1330,12 +1567,79 @@ class ConfigEditorActivity : BaseActivity() {
       ),
     )
 
+    private val TOKEN_LIST_KEYS = setOf(
+      "connectto",
+      "nodirectnodes",
+      "blockednodes",
+      "transports",
+      "preferredtransports",
+      "preferredtransport",
+    )
+
+    private val COMMA_LIST_OPTION_KEYS = setOf(
+      "subnet",
+      "address",
+      "interfaceroute",
+      "interfaceaddress",
+      "dnsserver",
+      "searchdomain",
+      "allowapplication",
+      "disallowapplication",
+      "allowfamily",
+      "multipathinterface",
+    )
+
+    private val COMMA_LIST_HOST_KEYS = setOf(
+      "subnet",
+      "address",
+    )
+
+    fun isPreferredTransportKey(key: String): Boolean =
+      key.equals("PreferredTransports", ignoreCase = true) ||
+        key.equals("PreferredTransport", ignoreCase = true)
+
     fun isTokenListKey(key: String): Boolean =
-      key.equals("ConnectTo", ignoreCase = true) ||
-        key.equals("NoDirectNodes", ignoreCase = true) ||
-        key.equals("BlockedNodes", ignoreCase = true) ||
-        key.equals("Transports", ignoreCase = true) ||
-        key.equals("PreferredTransports", ignoreCase = true)
+      key.trim().lowercase() in TOKEN_LIST_KEYS
+
+    internal fun splitOptionValues(key: String, rawValue: String): List<String>? {
+      val trimmed = rawValue.trim()
+      if (trimmed.isEmpty()) return null
+      if (isPreferredTransportKey(key) && trimmed.equals("auto", ignoreCase = true)) return null
+      val lower = key.trim().lowercase()
+      return when {
+        lower in TOKEN_LIST_KEYS ->
+          trimmed.split(Regex("[\\s,;]+"))
+            .map(String::trim)
+            .filter { it.isNotEmpty() && !(isPreferredTransportKey(key) && it.equals("auto", ignoreCase = true)) }
+            .ifEmpty { null }
+        lower in COMMA_LIST_OPTION_KEYS ->
+          trimmed.split(',')
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .ifEmpty { null }
+        else -> listOf(trimmed)
+      }
+    }
+
+    internal fun splitHostValues(key: String, rawValue: String): List<String>? {
+      val trimmed = rawValue.trim()
+      if (trimmed.isEmpty()) return null
+      if (isPreferredTransportKey(key) && trimmed.equals("auto", ignoreCase = true)) return null
+      val lower = key.trim().lowercase()
+      return when {
+        lower in TOKEN_LIST_KEYS ->
+          trimmed.split(Regex("[\\s,;]+"))
+            .map(String::trim)
+            .filter { it.isNotEmpty() && !(isPreferredTransportKey(key) && it.equals("auto", ignoreCase = true)) }
+            .ifEmpty { null }
+        lower in COMMA_LIST_HOST_KEYS ->
+          trimmed.split(',')
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .ifEmpty { null }
+        else -> listOf(trimmed)
+      }
+    }
 
     fun findKeySpec(isOption: Boolean, key: String): KeySpec? {
       val list = if (isOption) OPTION_SPECS else HOST_SPECS

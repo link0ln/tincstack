@@ -40,6 +40,7 @@ RUN curl -fsSL -o ngtcp2.tar.xz \
     && cd "ngtcp2-${NGTCP2_VERSION}" \
     && patch -p1 < /build/tincstack-wire.patch \
     && ./configure --prefix=/usr/local --with-openssl --without-gnutls --enable-lib-only \
+        CPPFLAGS="-DNDEBUG" CFLAGS="-O2 -DNDEBUG" \
     && make -j"$(nproc)" \
     && make DESTDIR=/install install \
     && rm -rf /build/*
@@ -73,15 +74,16 @@ RUN meson setup build --prefix=/usr/local --localstatedir=/var \
 # plain `make build-core` would build this test image instead (485 MB, debug,
 # no tincd on PATH) and every harness that auto-builds the core would break.
 #
-# Only `test_authn` is gated. The wider unit suite has never been green on this
-# fork (PLAN.md 🟡 "the upstream tinc test suite has never run on this fork"),
-# so running it here would fail the build for reasons unrelated to this tree.
+# All tincstack unit tests + compatible core utility unit tests are gated;
+# legacy upstream suites (`net`, `protocol`) have never been green on this fork
+# (PLAN.md 🟡 "the upstream tinc test suite has never run on this fork"),
+# so running the full suite unfiltered would fail for reasons unrelated to this tree.
 #
 # TINC_AUTHN_REPORT_ONLY keeps the *timing* assertions off a shared CI runner
 # (they need a quiet host and a tuned round count); the deterministic checks --
 # above all "an unknown name writes no log line" -- still gate. The quicdeps
 # and build layers are reused from the `build` stage, so only the debug tinc
-# and the test binary compile here.
+# and the test binaries compile here.
 FROM build AS test
 ARG QUIC=enabled
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -90,7 +92,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN meson setup build-test --localstatedir=/var \
         -Dbuildtype=debug -Dminiupnpc=disabled -Dtests=enabled -Ddocs=disabled \
         -Dquic=${QUIC} \
-    && TINC_AUTHN_REPORT_ONLY=1 meson test -C build-test --suite unit --print-errorlogs authn dnsrefresh traffic_shape multipath sptps_seqno key_quorum
+    && TINC_AUTHN_REPORT_ONLY=1 meson test -C build-test --suite unit --print-errorlogs \
+        authn dnsrefresh traffic_shape multipath sptps_seqno key_quorum \
+        decoy httpc h3 quic_txq json subnet netutl fs proxy
 
 # Runtime image. Kept LAST so `docker build` with no --target produces it.
 FROM debian:13-slim AS runtime

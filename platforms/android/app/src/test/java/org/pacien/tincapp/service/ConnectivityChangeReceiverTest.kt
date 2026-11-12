@@ -63,15 +63,22 @@ class ConnectivityChangeReceiverTest {
   }
 
   @Test
-  fun unvalidatedCaptivePortalWifiBecomesBackupAndDefaultModeIsFailover() {
+  fun unvalidatedCaptivePortalWifiBecomesBackupAndAbsentMultipathDefaultsToOff() {
     assertEquals(100 to false, ConnectivityChangeReceiver.effectiveUplinkPolicy(100, baseBackup = false, validated = true))
     assertEquals(25 to true, ConnectivityChangeReceiver.effectiveUplinkPolicy(100, baseBackup = false, validated = false))
     assertEquals(50 to true, ConnectivityChangeReceiver.effectiveUplinkPolicy(50, baseBackup = true, validated = true))
 
-    assertEquals("failover", ConnectivityChangeReceiver.normalizeMultipathMode(null))
-    assertEquals("failover", ConnectivityChangeReceiver.normalizeMultipathMode("  "))
-    assertTrue(ConnectivityChangeReceiver.isMultipathEnabled(null))
+    // Unset MultipathMode must NOT hold background cellular radio active (H-AND-04)
+    assertEquals("off", ConnectivityChangeReceiver.normalizeMultipathMode(null))
+    assertEquals("off", ConnectivityChangeReceiver.normalizeMultipathMode("  "))
+    assertEquals("failover", ConnectivityChangeReceiver.normalizeMultipathMode(" Failover "))
+    assertFalse(ConnectivityChangeReceiver.isMultipathEnabled(null))
+    assertFalse(ConnectivityChangeReceiver.isMultipathEnabled("  "))
+    assertTrue(ConnectivityChangeReceiver.isMultipathEnabled(null, rawMultipathFlag = "yes"))
     assertTrue(ConnectivityChangeReceiver.isMultipathEnabled("failover"))
+    assertTrue(ConnectivityChangeReceiver.isMultipathEnabled("flowhash"))
+    assertTrue(ConnectivityChangeReceiver.isMultipathEnabled("redundant"))
+    assertTrue(ConnectivityChangeReceiver.isMultipathEnabled("split"))
     assertFalse(ConnectivityChangeReceiver.isMultipathEnabled("off"))
     assertFalse(ConnectivityChangeReceiver.isMultipathEnabled("no"))
   }

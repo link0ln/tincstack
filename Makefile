@@ -46,6 +46,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  platforms/linux/docker/yaml-scripts.sh \
                  platforms/linux/docker/obfs-rekey-test.sh \
                  platforms/linux/docker/reload-test.sh \
+                 platforms/linux/docker/invite.sh platforms/linux/docker/tincstack-cli \
                  platforms/linux/docker/join.sh platforms/linux/docker/leaf-ports-test.sh \
                  testing/transports/singleflow-test.sh testing/transports/tls-front-test.sh \
                  testing/transports/https-carrier-test.sh testing/transports/quic-carrier-test.sh \

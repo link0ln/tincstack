@@ -133,13 +133,16 @@ def _fmt(v: Any) -> str:
 
 _STR_OPTIONS = frozenset(k.lower() for k in (
     "Name", "Interface", "WintunInterface", "WintunAddress", "InterfaceAddress",
-    "InterfaceRoute", "AddressPool", "ConnectTo", "NoDirectNodes", "BlockedNodes",
+    "InterfaceRoute", "Ifconfig", "Subnet", "Address", "BindToAddress",
+    "ListenAddress", "LocalDiscoveryAddress", "Cipher", "Digest",
+    "AddressPool", "ConnectTo", "NoDirectNodes", "BlockedNodes",
     "HttpsSni", "QuicSni", "QuicAlpn", "CertDomain", "CloudflareToken",
     "CloudflareApi", "AcmeContact", "AcmeDirectory", "AcmeCaFile",
     "Device", "DeviceType", "Mode", "AddressFamily", "Broadcast", "Forwarding",
     "SingleFlow", "MultipathMode", "MultipathInterface", "ScriptsInterpreter",
     "ScriptsExtension", "HttpsDecoyRoot", "HttpsDecoyUpstream", "TlsCert", "TlsKey",
-    "ObfsInitMagicHeader", "ObfsTransportMagicHeader", "Proxy",
+    "ObfsPassword", "ObfsInitMagicHeader", "ObfsTransportMagicHeader", "DirectSeal",
+    "Proxy",
     "Ed25519PrivateKey", "Ed25519PrivateKeyFile", "PrivateKey", "PrivateKeyFile",
 ))
 _INT_RE = re.compile(r"(?:0|-?[1-9]\d*)")
@@ -232,15 +235,17 @@ def atomic_write_text(path: str, text: str, mode: int = 0o600) -> None:
     DACL -- the one the core writes the config with -- and the rename keeps it,
     so the keys never sit under an inherited ACL (Program Files: Users may
     read). mkstemp's mode bits mean nothing to Windows."""
+    import paths
     path = os.path.abspath(path)
+    paths.reject_reparse_point(path)
     d = os.path.dirname(path) or "."
+    paths.reject_reparse_point(d)
     os.makedirs(d, exist_ok=True)
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)   # keep the existing mode
     except OSError:
         pass
     if sys.platform == "win32":
-        import paths
         tmp = os.path.join(d, f".tinc.yaml.{os.getpid()}.{secrets.token_hex(6)}.tmp")
         fd = paths.open_private_new(tmp)
     else:
@@ -393,6 +398,7 @@ def diff_documents(old: dict, new: dict, path: tuple = ()) -> dict[tuple, Any]:
 _HOST_LEARNED_KV_SPECS = (
     ("Ed25519PublicKey", re.compile(r"^[ \t]*Ed25519PublicKey[ \t]*=[ \t]*(.+?)[ \t]*$", re.IGNORECASE | re.MULTILINE)),
     ("TlsFingerprint", re.compile(r"^[ \t]*TlsFingerprint[ \t]*=[ \t]*(.+?)[ \t]*$", re.IGNORECASE | re.MULTILINE)),
+    ("DirectSeal", re.compile(r"^[ \t]*DirectSeal[ \t]*=[ \t]*(.+?)[ \t]*$", re.IGNORECASE | re.MULTILINE)),
 )
 _HOST_RSA_PEM_RE = re.compile(
     r"-----BEGIN RSA PUBLIC KEY-----.*?-----END RSA PUBLIC KEY-----",
@@ -471,42 +477,130 @@ _MEM_LOCK = threading.RLock()
 
 @contextmanager
 def _file_lock(path: str):
-    """Acquire `<path>.lock` using the same protocol as C `yamlconf_lock()` so
-    concurrent daemon/CLI/GUI read-modify-writes serialize cleanly."""
-    lockpath = os.path.abspath(path) + ".lock"
+    """Acquire `<path>.lock` with a protected DACL (SYSTEM + Administrators when
+    elevated/under Program Files) and byte-range LockFileEx so unprivileged
+    `BUILTIN\\Users` cannot open or hold `<path>.lock` to DoS config saves."""
+    import paths
+    abs_target = os.path.abspath(path)
+    paths.reject_reparse_point(abs_target)
+    lockpath = abs_target + ".lock"
+    paths.reject_reparse_point(lockpath)
     d = os.path.dirname(lockpath)
     if d:
+        paths.reject_reparse_point(d)
         os.makedirs(d, exist_ok=True)
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
+        import management
+
+        class _SA(ctypes.Structure):
+            _fields_ = [
+                ("nLength", wintypes.DWORD),
+                ("lpSecurityDescriptor", wintypes.LPVOID),
+                ("bInheritHandle", wintypes.BOOL),
+            ]
+
+        class _OVERLAPPED(ctypes.Structure):
+            _fields_ = [
+                ("Internal", ctypes.c_size_t),
+                ("InternalHigh", ctypes.c_size_t),
+                ("Offset", wintypes.DWORD),
+                ("OffsetHigh", wintypes.DWORD),
+                ("hEvent", wintypes.HANDLE),
+            ]
+
+        adv = ctypes.WinDLL("advapi32", use_last_error=True)
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.ULONG),
+        ]
+        adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+        k32.LocalFree.argtypes = [wintypes.HLOCAL]
+        k32.LocalFree.restype = wintypes.HLOCAL
         k32.CreateFileW.argtypes = [
             wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+            ctypes.POINTER(_SA), wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
         ]
         k32.CreateFileW.restype = wintypes.HANDLE
+        k32.LockFileEx.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+            wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(_OVERLAPPED),
+        ]
+        k32.LockFileEx.restype = wintypes.BOOL
+        k32.UnlockFileEx.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+            wintypes.DWORD, ctypes.POINTER(_OVERLAPPED),
+        ]
+        k32.UnlockFileEx.restype = wintypes.BOOL
         k32.CloseHandle.argtypes = [wintypes.HANDLE]
         k32.CloseHandle.restype = wintypes.BOOL
+
+        elevated = management.is_admin() or paths._under_protected_dir(lockpath)
+        sid = None if elevated else paths._current_user_sid()
+        sddl = paths.private_sddl(elevated, sid)
+        sd = wintypes.LPVOID()
+        sa_ptr = None
+        if adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(sd), None):
+            sa = _SA(ctypes.sizeof(_SA), sd, False)
+            sa_ptr = ctypes.byref(sa)
+
         invalid = wintypes.HANDLE(-1).value
         handle = None
-        for _ in range(200):
-            h = k32.CreateFileW(lockpath, 0xC0000000, 0, None, 4, 0x80, None)
-            if h not in (None, 0, -1, invalid):
-                handle = h
-                break
-            time.sleep(0.05)
+        ov = _OVERLAPPED()
+        existed_before = os.path.exists(lockpath)
+        # Share read/write across handles and enforce exclusivity via LockFileEx
+        # (LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY = 0x03), while
+        # keeping the file DACL restricted to SYSTEM/Administrators.
+        share_rw = 0x00000001 | 0x00000002
+        try:
+            if existed_before:
+                paths.lock_down_acl(lockpath)
+            for _ in range(200):
+                paths.reject_reparse_point(lockpath)
+                h = k32.CreateFileW(lockpath, 0xC0000000, share_rw, sa_ptr, 4, 0x80, None)
+                if h not in (None, 0, -1, invalid):
+                    if k32.LockFileEx(h, 0x00000003, 0, 1, 0, ctypes.byref(ov)):
+                        handle = h
+                        break
+                    k32.CloseHandle(h)
+                time.sleep(0.05)
+        finally:
+            if sd.value:
+                k32.LocalFree(sd)
         if handle is None:
             raise ConfigError(f"{path}: timed out waiting for lock {lockpath}")
         try:
             yield
         finally:
-            k32.CloseHandle(handle)
+            try:
+                k32.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(ov))
+            finally:
+                k32.CloseHandle(handle)
     else:
+        import errno
         import fcntl
-        fd = os.open(lockpath, os.O_RDWR | os.O_CREAT, 0o600)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(lockpath, flags, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError:
+                pass
+            deadline = time.monotonic() + 10.0
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as e:
+                    if e.errno == errno.EINTR:
+                        continue
+                    if e.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise ConfigError(f"{path}: timed out waiting for lock {lockpath}") from e
+                    time.sleep(0.05)
             yield
         finally:
             try:
@@ -574,12 +668,85 @@ def refresh_in_place(app: AppConfig, doc: dict) -> None:
         app.baseline = copy.deepcopy(doc)
 
 
-def save_text(path: str, text: str) -> None:
-    """Raw-editor save: validate the text as a config document, then write it
+def atomic_update(
+    app: AppConfig,
+    mutator: Any,
+    baseline_doc: dict | None = None,
+) -> Any:
+    """Atomically re-read `app.path` under `_MEM_LOCK` + `_file_lock(app.path)`,
+    run `mutator(app, disk_doc)`, 3-way merge against `disk_doc` (preserving
+    daemon-learned `TlsFingerprint`, `DirectSeal`, `keys:`, and newly joined
+    `hosts:`), write atomically, and refresh `app` in place."""
+    with _MEM_LOCK:
+        target = app.path
+        if not target:
+            raise ConfigError("no path to save to")
+        prior_base = copy.deepcopy(baseline_doc if baseline_doc is not None else app.baseline)
+        with _file_lock(target):
+            disk_doc = read_document(target)
+            if disk_doc:
+                refresh_in_place(app, disk_doc)
+            result = mutator(app, disk_doc)
+            wanted = to_dict(app)
+            patch = diff_documents(disk_doc, wanted)
+            merged = apply_patch(disk_doc, patch, prior_base) if patch else disk_doc
+            if patch or not os.path.exists(target):
+                atomic_write_text(target, dump_text(merged))
+            refresh_in_place(app, merged)
+            return result
+
+
+def _preserve_daemon_state_without_baseline(disk_doc: dict, wanted_doc: dict) -> dict:
+    """When saving a raw document without an explicit baseline, still preserve
+    daemon-materialized `keys:`, newly joined `hosts:`, and learned peer keys
+    (`Ed25519PublicKey`, `TlsFingerprint`, `DirectSeal`, `RSA PUBLIC KEY`) on
+    existing networks unless explicitly replaced in `wanted_doc`."""
+    merged = copy.deepcopy(wanted_doc)
+    d_nets = disk_doc.get("networks") if isinstance(disk_doc, dict) else None
+    w_nets = merged.get("networks")
+    if not isinstance(d_nets, dict) or not isinstance(w_nets, dict):
+        return merged
+    for net_name, w_nd in w_nets.items():
+        d_nd = d_nets.get(net_name)
+        if not isinstance(w_nd, dict) or not isinstance(d_nd, dict):
+            continue
+        d_keys = d_nd.get("keys")
+        if isinstance(d_keys, dict) and d_keys:
+            w_keys = w_nd.get("keys")
+            if not isinstance(w_keys, dict):
+                w_keys = {}
+            for kk, kv in d_keys.items():
+                if kk not in w_keys and kv not in (None, ""):
+                    w_keys[kk] = copy.deepcopy(kv)
+            if w_keys:
+                w_nd["keys"] = w_keys
+        d_hosts = d_nd.get("hosts")
+        w_hosts = w_nd.get("hosts")
+        if isinstance(d_hosts, dict) and isinstance(w_hosts, dict):
+            for hname, htext in list(w_hosts.items()):
+                if isinstance(htext, str) and isinstance(d_hosts.get(hname), str):
+                    w_hosts[hname] = merge_learned_host_keys("", d_hosts[hname], htext)
+    return merged
+
+
+def save_text(path: str, text: str, baseline: dict | None = None) -> dict:
+    """Raw-editor save: validate the text as a config document, then 3-way merge
+    against the current on-disk file under `_MEM_LOCK` + `_file_lock` and write
     atomically. Raises ConfigError instead of writing a broken file."""
-    parse_text(text, path)
-    with _file_lock(path):
-        atomic_write_text(path, text if text.endswith("\n") else text + "\n")
+    wanted = parse_text(text, path)
+    with _MEM_LOCK:
+        with _file_lock(path):
+            if os.path.isfile(path):
+                current = read_document(path)
+                if baseline is not None:
+                    patch = diff_documents(baseline, wanted)
+                    merged = apply_patch(current, patch, baseline) if patch else current
+                else:
+                    merged = _preserve_daemon_state_without_baseline(current, wanted)
+                atomic_write_text(path, dump_text(merged))
+                return merged
+            atomic_write_text(path, text if text.endswith("\n") else text + "\n")
+            return wanted
 
 
 if __name__ == "__main__":

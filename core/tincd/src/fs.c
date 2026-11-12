@@ -73,6 +73,9 @@ FILE *fopenmask(const char *filename, const char *mode, mode_t perms) {
 	perms &= ~mask;
 	umask(~perms & 0777);
 	FILE *f = fopen(filename, mode);
+	int saved_errno = errno;
+	umask(mask);
+	errno = saved_errno;
 
 	if(!f) {
 		fprintf(stderr, "Could not open %s: %s\n", filename, strerror(errno));
@@ -86,7 +89,6 @@ FILE *fopenmask(const char *filename, const char *mode, mode_t perms) {
 	}
 
 #endif
-	umask(mask);
 	return f;
 }
 

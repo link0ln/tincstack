@@ -80,6 +80,7 @@ import org.pacien.tincapp.extensions.Java.defaultMessage
 import org.pacien.tincapp.extensions.Java.exceptionallyAccept
 import org.pacien.tincapp.intent.Actions
 import org.pacien.tincapp.service.ConnectionState
+import org.pacien.tincapp.service.ConnectivityChangeReceiver
 import org.pacien.tincapp.service.TincVpnService
 import org.pacien.tincapp.service.VpnStatus
 import org.pacien.tincapp.utils.AppUpdater
@@ -123,6 +124,7 @@ class MainActivity : BaseActivity() {
 
   private var availableUpdate: AppUpdater.Release? = null
   private var updateDownloading: Boolean = false
+  private var detachUpdateProgress: (() -> Unit)? = null
   private var pendingInstallApk: File? = null
 
   private val notificationPermission =
@@ -190,11 +192,22 @@ class MainActivity : BaseActivity() {
     VpnStatus.state.observe(this) { onStatus(it) }
     networkList.observe(this) { onNetworks(it) }
 
+    AppUpdater.activeDownloadRelease?.let { activeRel ->
+      showUpdateBanner(activeRel)
+      attachToInFlightDownload(activeRel)
+    }
+
     if (savedInstanceState == null) {
       handleIntent(intent)
       if (CrashRecorder.hasPreviouslyCrashed()) showCrashDialog()
       checkForUpdates(manual = false)
     }
+  }
+
+  override fun onDestroy() {
+    detachUpdateProgress?.invoke()
+    detachUpdateProgress = null
+    super.onDestroy()
   }
 
   override fun onNewIntent(intent: Intent) {
@@ -237,6 +250,7 @@ class MainActivity : BaseActivity() {
     val hasNetworks = !networks.isNullOrEmpty()
     menu.findItem(R.id.menu_add_network).isVisible = hasNetworks
     menu.findItem(R.id.menu_remove_network).isVisible = hasNetworks
+    menu.findItem(R.id.menu_allow_automation)?.isChecked = prefs.getBoolean(PREF_ALLOW_AUTOMATION, false)
     return super.onPrepareOptionsMenu(menu)
   }
 
@@ -253,6 +267,14 @@ class MainActivity : BaseActivity() {
       selected?.let { confirmRemove(it) }; true
     }
 
+    R.id.menu_allow_automation -> {
+      val next = !prefs.getBoolean(PREF_ALLOW_AUTOMATION, false)
+      prefs.edit().putBoolean(PREF_ALLOW_AUTOMATION, next).apply()
+      item.isChecked = next
+      notify(if (next) R.string.automation_enabled else R.string.automation_disabled)
+      true
+    }
+
     R.id.menu_check_updates -> {
       checkForUpdates(manual = true); true
     }
@@ -266,23 +288,66 @@ class MainActivity : BaseActivity() {
 
   // ---- intents --------------------------------------------------------------
 
+  private fun isAutomationAuthorized(intent: Intent): Boolean {
+    if (intent.getStringExtra(Actions.EXTRA_INTERNAL_TOKEN) == Actions.internalToken) return true
+    if (prefs.getBoolean(PREF_ALLOW_AUTOMATION, false)) return true
+    if (intent.component?.className?.endsWith(".AutomationActivity") == true) return true
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+      val uid = launchedFromUid
+      if (uid == android.os.Process.myUid() || uid == 0 || uid == 2000) return true
+      if (uid > 0 && checkPermission(Actions.PERMISSION_CONTROL_VPN, -1, uid) == PackageManager.PERMISSION_GRANTED) {
+        return true
+      }
+      return false
+    }
+    val callerPkg = callingActivity?.packageName
+    if (callerPkg != null && packageManager.checkPermission(Actions.PERMISSION_CONTROL_VPN, callerPkg) == PackageManager.PERMISSION_GRANTED) {
+      return true
+    }
+    return false
+  }
+
   private fun handleIntent(intent: Intent?) {
-    when (intent?.action) {
-      Actions.ACTION_CONNECT -> intent.data?.takeIf { it.scheme == Actions.TINC_SCHEME }?.schemeSpecificPart?.let { net ->
-        if (net in Networks.list()) {
-          select(net)
-          if (!(status.active && status.netName == net)) connect(net)
-        } else {
-          notify(getString(R.string.error_no_config_format, net))
+    if (intent == null) return
+    val joinedNet = intent.getStringExtra(EXTRA_JOINED_NET)
+    if (!joinedNet.isNullOrBlank() && intent.getStringExtra(Actions.EXTRA_INTERNAL_TOKEN) == Actions.internalToken) {
+      intent.removeExtra(EXTRA_JOINED_NET)
+      onJoined(joinedNet)
+      return
+    }
+    when (intent.action) {
+      Actions.ACTION_CONNECT -> {
+        if (!isAutomationAuthorized(intent)) {
+          log.warn("Blocked unauthorized external ACTION_CONNECT intent")
+          notify(R.string.automation_blocked)
+          return
+        }
+        intent.data?.takeIf { it.scheme == Actions.TINC_SCHEME }?.schemeSpecificPart?.let { net ->
+          if (net in Networks.list()) {
+            select(net)
+            if (!(status.active && status.netName == net)) connect(net)
+          } else {
+            notify(getString(R.string.error_no_config_format, net))
+          }
         }
       }
 
-      Actions.ACTION_DISCONNECT -> TincVpnService.disconnect()
+      Actions.ACTION_DISCONNECT -> {
+        if (!isAutomationAuthorized(intent)) {
+          log.warn("Blocked unauthorized external ACTION_DISCONNECT intent")
+          notify(R.string.automation_blocked)
+          return
+        }
+        TincVpnService.disconnect()
+      }
     }
   }
 
   private fun onJoined(net: String) {
     notify(getString(R.string.joined_format, net))
+    if (status.active && status.netName != null && status.netName != net) {
+      return
+    }
     select(net)
     connect(net)
   }
@@ -582,8 +647,13 @@ class MainActivity : BaseActivity() {
       try {
         val yaml = TincYaml(AppPaths.tincYamlFile(net))
         val s = Networks.summary(net)
-        val mpMode = yaml.optionValue(s.stanza, "MultipathMode")?.trim()?.lowercase()
-          ?.takeIf { it in MULTIPATH_MODES } ?: "failover"
+        val rawMpMode = yaml.optionValue(s.stanza, "MultipathMode")
+        val rawMpFlag = yaml.optionValue(s.stanza, "Multipath")
+        val mpMode = if (ConnectivityChangeReceiver.isMultipathEnabled(rawMpMode, rawMpFlag)) {
+          rawMpMode?.trim()?.lowercase()?.takeIf { it in MULTIPATH_MODES && it != "off" } ?: "failover"
+        } else {
+          "off"
+        }
         val mpConns = yaml.optionValue(s.stanza, "MultipathConnections")?.trim()?.toIntOrNull()
           ?.coerceIn(1, 8) ?: 1
         NetworkSettings(
@@ -629,7 +699,7 @@ class MainActivity : BaseActivity() {
 
     binding.transportRow.rowSummary.setText(Labels.transportName(s?.transport ?: Transport.PLAIN))
 
-    val mpMode = s?.multipathMode ?: "failover"
+    val mpMode = s?.multipathMode ?: "off"
     val mpConns = s?.multipathConnections ?: 1
     val mpTitle = getString(multipathModeTitle(mpMode))
     binding.multipathRow.rowSummary.text = if (mpMode == "off") {
@@ -713,11 +783,16 @@ class MainActivity : BaseActivity() {
       text = getString(R.string.diag_action_copy_password)
       layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
     }
+    val resetPwdBtn = android.widget.Button(this).apply {
+      text = getString(R.string.diag_action_reset_password)
+      layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    }
     val copyBtn = android.widget.Button(this).apply {
       text = getString(R.string.diag_action_copy_url)
       layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
     }
     btnRowTop.addView(copyPwdBtn)
+    btnRowTop.addView(resetPwdBtn)
     btnRowTop.addView(copyBtn)
     root.addView(btnRowTop)
 
@@ -758,6 +833,11 @@ class MainActivity : BaseActivity() {
         ClipData.newPlainText("Diagnostic Password", pwd),
       )
       notify(R.string.diag_password_copied)
+    }
+    resetPwdBtn.setOnClickListener {
+      val newPwd = DiagManager.regeneratePassword(this)
+      passwordText.text = getString(R.string.diag_password_label_format, newPwd)
+      notify(R.string.diag_password_reset)
     }
     markBtn.setOnClickListener {
       if (net.isNotEmpty()) {
@@ -1102,16 +1182,17 @@ class MainActivity : BaseActivity() {
 
   private fun showUpdateBanner(rel: AppUpdater.Release) {
     availableUpdate = rel
+    updateDownloading = AppUpdater.isDownloading()
     binding.updateBannerTitle.text = getString(R.string.update_banner_title_format, rel.version)
     binding.updateBannerSummary.text = getString(R.string.update_banner_summary_format, BuildConfig.VERSION_NAME)
-    binding.updateBannerProgress.isVisible = false
+    binding.updateBannerProgress.isVisible = updateDownloading
     binding.updateInstallButton.isEnabled = !updateDownloading
     binding.updateBannerCard.isVisible = true
     renderUpdateRow()
   }
 
-  private fun downloadAndInstallUpdate(rel: AppUpdater.Release) {
-    if (updateDownloading) return
+  private fun attachToInFlightDownload(rel: AppUpdater.Release) {
+    val future = AppUpdater.currentInFlightDownload() ?: return
     updateDownloading = true
     binding.updateBannerCard.isVisible = true
     binding.updateInstallButton.isEnabled = false
@@ -1119,15 +1200,15 @@ class MainActivity : BaseActivity() {
     binding.updateBannerProgress.isVisible = true
     binding.updateBannerSummary.text = getString(R.string.update_downloading_format, rel.version)
 
-    val destDir = AppPaths.updatesDir()
+    detachUpdateProgress?.invoke()
     var lastPct = -1
-    Executor.supplyAsyncTask {
-      AppUpdater.fetchApk(rel, destDir) { read, total ->
-        if (total > 0) {
-          val pct = ((read * 100L) / total).toInt().coerceIn(0, 100)
-          if (pct != lastPct) {
-            lastPct = pct
-            runOnUiThread {
+    detachUpdateProgress = AppUpdater.attachProgressListener { read, total ->
+      if (total > 0) {
+        val pct = ((read * 100L) / total).toInt().coerceIn(0, 100)
+        if (pct != lastPct) {
+          lastPct = pct
+          runOnUiThread {
+            if (!isFinishing && !isDestroyed) {
               binding.updateBannerProgress.isIndeterminate = false
               binding.updateBannerProgress.progress = pct
               binding.updateBannerSummary.text = getString(R.string.update_downloading_pct_format, rel.version, pct)
@@ -1136,26 +1217,47 @@ class MainActivity : BaseActivity() {
         }
       }
     }
-      .thenAccept { apkFile ->
-        runOnUiThread {
-          updateDownloading = false
+
+    future.thenAccept { apkFile ->
+      runOnUiThread {
+        detachUpdateProgress?.invoke()
+        detachUpdateProgress = null
+        updateDownloading = false
+        if (!isFinishing && !isDestroyed) {
           binding.updateBannerProgress.isVisible = false
           binding.updateInstallButton.isEnabled = true
           binding.updateBannerSummary.text = getString(R.string.update_banner_summary_format, BuildConfig.VERSION_NAME)
           installApkFile(apkFile)
         }
       }
-      .exceptionallyAccept { e ->
-        val msg = e.cause?.defaultMessage() ?: e.defaultMessage()
-        log.error("Failed to download/verify update {}: {}", rel.version, msg)
-        runOnUiThread {
-          updateDownloading = false
+    }.exceptionally { e ->
+      val msg = e.cause?.defaultMessage() ?: e.defaultMessage()
+      log.error("Failed to download/verify update {}: {}", rel.version, msg)
+      runOnUiThread {
+        detachUpdateProgress?.invoke()
+        detachUpdateProgress = null
+        updateDownloading = false
+        if (!isFinishing && !isDestroyed) {
           binding.updateBannerProgress.isVisible = false
           binding.updateInstallButton.isEnabled = true
           binding.updateBannerSummary.text = getString(R.string.update_download_failed_format, msg)
           notify(getString(R.string.update_download_failed_format, msg))
         }
       }
+      null
+    }
+  }
+
+  private fun downloadAndInstallUpdate(rel: AppUpdater.Release) {
+    if (updateDownloading || AppUpdater.isDownloading()) {
+      attachToInFlightDownload(rel)
+      return
+    }
+    val destDir = AppPaths.updatesDir()
+    AppUpdater.startOrJoinDownload(rel, destDir) { task ->
+      Executor.runAsyncTask { task.run() }
+    }
+    attachToInFlightDownload(rel)
   }
 
   private fun installApkFile(apkFile: File) {
@@ -1202,11 +1304,21 @@ class MainActivity : BaseActivity() {
   }
 
   companion object {
+    const val EXTRA_JOINED_NET = "joined_net"
     private const val PREFS = "ui"
     private const val PREF_SELECTED = "selected_network"
     private const val PREF_ASKED_NOTIFICATIONS = "asked_notifications"
     private const val PREF_LAST_UPDATE_CHECK = "last_update_check_ms"
+    private const val PREF_ALLOW_AUTOMATION = "allow_external_automation"
     private const val STATE_PENDING_CONNECT = "pending_connect"
     private val MULTIPATH_MODES = listOf("off", "failover", "flowhash", "redundant", "split")
+
+    fun forgetNetworkSelection(netName: String) {
+      val ctx = org.pacien.tincapp.context.App.getContext()
+      val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+      if (p.getString(PREF_SELECTED, null) == netName) {
+        p.edit().remove(PREF_SELECTED).apply()
+      }
+    }
   }
 }

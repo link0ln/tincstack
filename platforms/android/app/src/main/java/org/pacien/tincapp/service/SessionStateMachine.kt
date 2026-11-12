@@ -105,8 +105,8 @@ object SessionStateMachine {
   }
 
   sealed class Action {
-    /** Stop tincd, keep the tun fd and the session. */
-    data class StopDaemon(val netName: String) : Action()
+    /** Stop tincd for [session], keep the tun fd and the session. */
+    data class StopDaemon(val netName: String, val session: Long) : Action()
 
     /** Relaunch tincd as [run] on the kept tun fd. */
     data class StartDaemon(val netName: String, val run: DaemonRun) : Action()
@@ -135,7 +135,7 @@ object SessionStateMachine {
       is State.Connected ->
         if (!state.suspendOnScreenOff) Transition(state)
         else if (state.mediaPlaying) Transition(state.copy(screenLocked = true))
-        else Transition(State.Suspended(state.netName, state.run), listOf(Action.StopDaemon(state.netName)))
+        else Transition(State.Suspended(state.netName, state.run), listOf(Action.StopDaemon(state.netName, state.run.session)))
 
       else -> Transition(state)
     }
@@ -160,7 +160,7 @@ object SessionStateMachine {
     Event.MediaStopped -> when (state) {
       is State.Connected ->
         if (state.suspendOnScreenOff && state.screenLocked)
-          Transition(State.Suspended(state.netName, state.run), listOf(Action.StopDaemon(state.netName)))
+          Transition(State.Suspended(state.netName, state.run), listOf(Action.StopDaemon(state.netName, state.run.session)))
         else if (state.mediaPlaying)
           Transition(state.copy(mediaPlaying = false))
         else Transition(state)

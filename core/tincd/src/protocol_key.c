@@ -21,9 +21,13 @@
 #include "system.h"
 
 #include "cipher.h"
+#include "conf.h"
 #include "connection.h"
 #include "crypto.h"
+#include "edge.h"
+#include "ed25519/sha512.h"
 #include "logger.h"
+#include "names.h"
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
@@ -35,6 +39,7 @@
 #include "compression.h"
 #include "random.h"
 #include "xalloc.h"
+#include "yamlconf.h"
 
 #define TINC_TRANSPORT_DAEMON
 #include "transport.h"
@@ -144,14 +149,426 @@ static bool send_initial_sptps_data(void *handle, uint8_t type, const void *data
    record, we query reachable mesh peers (KEY_QUORUM_REQ) before replacing the
    key. Each peer replies (KEY_QUORUM_ANS) with the key it holds for the target
    and whether it has an active authenticated direct edge or SPTPS session. */
-#define KEY_QUORUM_REQ      100
-#define KEY_QUORUM_ANS      101
-#define KEY_QUORUM_INTERVAL 10
-#define KEY_QUORUM_WINDOW   30
+#define KEY_QUORUM_REQ          100
+#define KEY_QUORUM_ANS          101
+#define KEY_QUORUM_INTERVAL     10
+#define KEY_QUORUM_COLLECT_SEC  5
+#define KEY_QUORUM_WINDOW       30
 
 #define KEY_QUORUM_FLAG_HAS_KEY     0x01
 #define KEY_QUORUM_FLAG_DIRECT_EDGE 0x02
 #define KEY_QUORUM_FLAG_VALID_SPTPS 0x04
+
+#define MAX_TRANSITIVE_FWD_ENTRIES  4096U
+#define TRANSITIVE_FWD_BURST        12U
+#define TRANSITIVE_FWD_REFILL_PER_S 4U
+#define MAX_SHADOW_SPTPS_ENTRIES    128U
+
+typedef struct transitive_fwd_entry_t {
+	char *from_name;
+	char *to_name;
+	int kind;
+	uint32_t tokens;
+	time_t last_refill;
+	time_t last_dup_sec;
+	uint8_t last_hash[16];
+	list_node_t *fifo_node;
+} transitive_fwd_entry_t;
+
+static list_t transitive_fwd_fifo = {
+	.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+};
+
+static int transitive_fwd_compare(const transitive_fwd_entry_t *a, const transitive_fwd_entry_t *b) {
+	int c = strcmp(a->from_name, b->from_name);
+
+	if(c) {
+		return c;
+	}
+
+	c = strcmp(a->to_name, b->to_name);
+
+	if(c) {
+		return c;
+	}
+
+	return (a->kind > b->kind) - (a->kind < b->kind);
+}
+
+static void free_transitive_fwd_entry(transitive_fwd_entry_t *e) {
+	if(!e) {
+		return;
+	}
+
+	if(e->fifo_node) {
+		list_node_t *fn = e->fifo_node;
+		e->fifo_node = NULL;
+		list_unlink_node(&transitive_fwd_fifo, fn);
+		free(fn);
+	}
+
+	free(e->from_name);
+	free(e->to_name);
+	free(e);
+}
+
+static splay_tree_t transitive_fwd_tree = {
+	.compare = (splay_compare_t)transitive_fwd_compare,
+	.delete = (splay_action_t)free_transitive_fwd_entry,
+};
+
+bool allow_transitive_forward(const char *from_name, const char *to_name, int kind, const char *payload) {
+	if(!from_name || !to_name || !*from_name || !*to_name) {
+		return false;
+	}
+
+	uint8_t digest[64];
+	memset(digest, 0, sizeof(digest));
+
+	if(payload) {
+		sha512(payload, strlen(payload), digest);
+	}
+
+	transitive_fwd_entry_t probe = {
+		.from_name = (char *)from_name,
+		.to_name = (char *)to_name,
+		.kind = kind,
+	};
+
+	transitive_fwd_entry_t *e = splay_search(&transitive_fwd_tree, &probe);
+
+	if(!e) {
+		while(transitive_fwd_tree.count >= MAX_TRANSITIVE_FWD_ENTRIES && transitive_fwd_fifo.head) {
+			transitive_fwd_entry_t *oldest = transitive_fwd_fifo.head->data;
+			splay_delete(&transitive_fwd_tree, oldest);
+		}
+
+		e = xzalloc(sizeof(*e));
+		e->from_name = xstrdup(from_name);
+		e->to_name = xstrdup(to_name);
+		e->kind = kind;
+		e->tokens = TRANSITIVE_FWD_BURST;
+		e->last_refill = now.tv_sec;
+		e->fifo_node = list_insert_tail(&transitive_fwd_fifo, e);
+		splay_insert(&transitive_fwd_tree, e);
+	} else {
+		if(now.tv_sec > e->last_refill) {
+			time_t dt = now.tv_sec - e->last_refill;
+			uint64_t add = (uint64_t)dt * TRANSITIVE_FWD_REFILL_PER_S;
+
+			if(e->tokens + add > TRANSITIVE_FWD_BURST) {
+				e->tokens = TRANSITIVE_FWD_BURST;
+			} else {
+				e->tokens += (uint32_t)add;
+			}
+
+			e->last_refill = now.tv_sec;
+		} else if(now.tv_sec < e->last_refill) {
+			e->last_refill = now.tv_sec;
+		}
+
+		if(payload && e->last_dup_sec == now.tv_sec && !memcmp(e->last_hash, digest, sizeof(e->last_hash))) {
+			return false;
+		}
+	}
+
+	if(e->tokens == 0) {
+		return false;
+	}
+
+	e->tokens--;
+
+	if(payload) {
+		e->last_dup_sec = now.tv_sec;
+		memcpy(e->last_hash, digest, sizeof(e->last_hash));
+	}
+
+	return true;
+}
+
+typedef struct shadow_sptps_t {
+	char *peer_name;
+	sptps_t sptps;
+	time_t created_at;
+	time_t last_force_kex;
+	bool authenticated;
+	list_node_t *fifo_node;
+} shadow_sptps_t;
+
+static list_t shadow_sptps_fifo = {
+	.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+};
+
+static int shadow_sptps_compare(const shadow_sptps_t *a, const shadow_sptps_t *b) {
+	return strcmp(a->peer_name, b->peer_name);
+}
+
+static void free_shadow_sptps(shadow_sptps_t *sh) {
+	if(!sh) {
+		return;
+	}
+
+	if(sh->fifo_node) {
+		list_node_t *fn = sh->fifo_node;
+		sh->fifo_node = NULL;
+		list_unlink_node(&shadow_sptps_fifo, fn);
+		free(fn);
+	}
+
+	sptps_stop(&sh->sptps);
+	free(sh->peer_name);
+	free(sh);
+}
+
+static splay_tree_t shadow_sptps_tree = {
+	.compare = (splay_compare_t)shadow_sptps_compare,
+	.delete = (splay_action_t)free_shadow_sptps,
+};
+
+static bool send_shadow_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
+	shadow_sptps_t *sh = handle;
+
+	if(!sh || !sh->peer_name || !myself) {
+		return false;
+	}
+
+	node_t *peer = lookup_node(sh->peer_name);
+
+	if(!peer) {
+		return false;
+	}
+
+	return send_sptps_data(peer, myself, type, data, len);
+}
+
+static bool shadow_receive_record(void *handle, uint8_t type, const void *data, uint16_t len) {
+	shadow_sptps_t *sh = handle;
+
+	if(!sh) {
+		return false;
+	}
+
+	if(type == SPTPS_HANDSHAKE) {
+		sh->authenticated = true;
+		return true;
+	}
+
+	node_t *peer = lookup_node(sh->peer_name);
+
+	if(peer && sh->authenticated) {
+		return receive_sptps_record(peer, type, data, len);
+	}
+
+	return true;
+}
+
+static bool shadow_sptps_try_receive(node_t *from, const void *buf, size_t len) {
+	if(!from || !from->name || !buf || !len) {
+		return false;
+	}
+
+	shadow_sptps_t probe = { .peer_name = from->name };
+	shadow_sptps_t *sh = splay_search(&shadow_sptps_tree, &probe);
+
+	if(!sh) {
+		return false;
+	}
+
+	if(now.tv_sec - sh->created_at > 30) {
+		splay_delete(&shadow_sptps_tree, sh);
+		return false;
+	}
+
+	size_t consumed = sptps_receive_data(&sh->sptps, buf, len);
+
+	if(!consumed) {
+		splay_delete(&shadow_sptps_tree, sh);
+		return false;
+	}
+
+	if(sh->authenticated) {
+		sptps_stop(&from->sptps);
+		from->sptps = sh->sptps;
+		from->sptps.handle = from;
+		from->sptps.send_data = send_sptps_data_myself;
+		from->sptps.receive_record = receive_sptps_record;
+		memset(&sh->sptps, 0, sizeof(sh->sptps));
+		splay_delete(&shadow_sptps_tree, sh);
+		receive_sptps_record(from, SPTPS_HANDSHAKE, NULL, 0);
+	}
+
+	return true;
+}
+
+static int str_compare_key(const char *a, const char *b) {
+	return strcmp(a, b);
+}
+
+static void free_str_key(char *s) {
+	free(s);
+}
+
+static splay_tree_t tofu_unpinned_tree = {
+	.compare = (splay_compare_t)str_compare_key,
+	.delete = (splay_action_t)free_str_key,
+};
+
+static void mark_node_tofu_unpinned(const char *name) {
+	if(!name || !*name) {
+		return;
+	}
+
+	if(!splay_search(&tofu_unpinned_tree, name)) {
+		splay_insert(&tofu_unpinned_tree, xstrdup(name));
+	}
+}
+
+static bool node_has_pinned_ecdsa_key(node_t *peer) {
+	if(!peer || peer == myself || !peer->name || !*peer->name) {
+		return false;
+	}
+
+	if(splay_search(&tofu_unpinned_tree, peer->name)) {
+		return false;
+	}
+
+	if(!node_read_ecdsa_public_key(peer) || !ecdsa_active(peer->ecdsa)) {
+		return false;
+	}
+
+	splay_tree_t cfg;
+	init_configuration(&cfg);
+
+	if(!read_host_config(&cfg, peer->name, false)) {
+		splay_empty_tree(&cfg);
+		return false;
+	}
+
+	ecdsa_t *pinned = NULL;
+	char *cfg_pk = NULL;
+	char *pubfile = NULL;
+
+	if(get_config_string(lookup_config(&cfg, "Ed25519PublicKey"), &cfg_pk)) {
+		pinned = ecdsa_set_base64_public_key(cfg_pk);
+		free(cfg_pk);
+	} else if(!yamlconf_path) {
+		if(!get_config_string(lookup_config(&cfg, "Ed25519PublicKeyFile"), &pubfile) && confbase) {
+			xasprintf(&pubfile, "%s" SLASH "hosts" SLASH "%s", confbase, peer->name);
+		}
+
+		if(pubfile) {
+			FILE *fp = fopen(pubfile, "r");
+
+			if(fp) {
+				pinned = ecdsa_read_pem_public_key(fp);
+				fclose(fp);
+			}
+
+			free(pubfile);
+		}
+	}
+
+	splay_empty_tree(&cfg);
+
+	if(!ecdsa_active(pinned)) {
+		ecdsa_free(pinned);
+		return false;
+	}
+
+	char *b64_pinned = ecdsa_get_base64_public_key(pinned);
+	char *b64_mem = ecdsa_get_base64_public_key(peer->ecdsa);
+	bool match = (b64_pinned && b64_mem && !strcmp(b64_pinned, b64_mem));
+
+	free(b64_pinned);
+	free(b64_mem);
+	ecdsa_free(pinned);
+
+	return match;
+}
+
+typedef struct quorum_round_t {
+	char *target_name;
+	char nonce[33];
+	uint32_t responses_received;
+	uint32_t verified_new;
+	bool window_elapsed;
+	timeout_t collect_timer;
+	list_t asked_names;
+} quorum_round_t;
+
+static void evaluate_key_quorum(node_t *target);
+static void free_quorum_voter(const void *p);
+
+static int quorum_round_compare(const quorum_round_t *a, const quorum_round_t *b) {
+	return strcmp(a->target_name, b->target_name);
+}
+
+static void free_quorum_round(quorum_round_t *r) {
+	if(!r) {
+		return;
+	}
+
+	timeout_del(&r->collect_timer);
+	r->asked_names.delete = free_quorum_voter;
+	list_empty_list(&r->asked_names);
+	free(r->target_name);
+	free(r);
+}
+
+static splay_tree_t quorum_round_tree = {
+	.compare = (splay_compare_t)quorum_round_compare,
+	.delete = (splay_action_t)free_quorum_round,
+};
+
+static quorum_round_t *lookup_quorum_round(const char *target_name) {
+	if(!target_name) {
+		return NULL;
+	}
+
+	quorum_round_t probe = { .target_name = (char *)target_name };
+	return splay_search(&quorum_round_tree, &probe);
+}
+
+static bool quorum_was_asked(const quorum_round_t *r, const char *voter_name) {
+	if(!r || !voter_name) {
+		return false;
+	}
+
+	for list_each(const char, asked, &r->asked_names) {
+		if(!strcmp(asked, voter_name)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void quorum_collect_timeout_cb(void *data) {
+	quorum_round_t *r = data;
+
+	if(!r || !r->target_name) {
+		return;
+	}
+
+	r->window_elapsed = true;
+	node_t *target = lookup_node(r->target_name);
+
+	if(!target || !target->pending_pubkey) {
+		splay_delete(&quorum_round_tree, r);
+		return;
+	}
+
+	evaluate_key_quorum(target);
+}
+
+void exit_key_quorum(void) {
+	splay_empty_tree(&quorum_round_tree);
+	splay_empty_tree(&shadow_sptps_tree);
+	splay_empty_tree(&transitive_fwd_tree);
+	list_empty_list(&shadow_sptps_fifo);
+	list_empty_list(&transitive_fwd_fifo);
+	splay_empty_tree(&tofu_unpinned_tree);
+}
 
 static bool is_valid_quorum_nonce(const char *nonce) {
 	if(!nonce) {
@@ -257,9 +674,22 @@ static void clear_key_quorum(node_t *target) {
 		return;
 	}
 
+	if(target->name) {
+		quorum_round_t *r = lookup_quorum_round(target->name);
+
+		if(r) {
+			splay_delete(&quorum_round_tree, r);
+		}
+	}
+
 	free(target->pending_pubkey);
 	target->pending_pubkey = NULL;
 	target->quorum_nonce[0] = '\0';
+	target->quorum_asked_peers = 0;
+	target->quorum_votes_new = 0;
+	target->quorum_votes_old = 0;
+	target->quorum_direct_new = 0;
+	target->quorum_verified_old = 0;
 	target->quorum_voters.delete = free_quorum_voter;
 	list_empty_list(&target->quorum_voters);
 }
@@ -296,24 +726,53 @@ static void start_key_quorum(node_t *target, const char *candidate_pubkey) {
 		return;
 	}
 
+	/* Count eligible locally-pinned reachable mesh peers first. Transient nodes
+	   learned solely via ADD_EDGE / TOFU are excluded to prevent Sybil votes,
+	   and auto-repin is refused whenever fewer than 2 pinned voters exist. */
+	uint32_t eligible = 0;
+
+	for splay_each(node_t, v, &node_tree) {
+		if(v == myself || v == target || !v->status.reachable || !v->nexthop || !v->nexthop->connection) {
+			continue;
+		}
+
+		if(!node_has_pinned_ecdsa_key(v)) {
+			continue;
+		}
+
+		eligible++;
+	}
+
+	if(eligible < 2) {
+		logger(DEBUG_ALWAYS, LOG_WARNING,
+		       "Refusing automatic Ed25519 key update for %s: only %u locally-pinned reachable peer(s) available (< 2 required for quorum); manual administrator key update is required",
+		       target->name, eligible);
+		clear_key_quorum(target);
+		return;
+	}
+
+	clear_key_quorum(target);
+
 	uint8_t nonce_raw[16];
 	randomize(nonce_raw, sizeof(nonce_raw));
 	bin2hex(nonce_raw, target->quorum_nonce, sizeof(nonce_raw));
 	target->quorum_nonce[32] = '\0';
 
-	free(target->pending_pubkey);
 	target->pending_pubkey = xstrdup(candidate_pubkey);
 	target->pending_pubkey_time = now.tv_sec;
-	target->quorum_asked_peers = 0;
-	target->quorum_votes_new = 0;
-	target->quorum_votes_old = 0;
-	target->quorum_direct_new = 0;
-	target->quorum_verified_old = 0;
-	target->quorum_voters.delete = free_quorum_voter;
-	list_empty_list(&target->quorum_voters);
+
+	quorum_round_t *round = xzalloc(sizeof(*round));
+	round->target_name = xstrdup(target->name);
+	memcpy(round->nonce, target->quorum_nonce, sizeof(round->nonce));
+	round->asked_names.delete = free_quorum_voter;
+	splay_insert(&quorum_round_tree, round);
 
 	for splay_each(node_t, v, &node_tree) {
 		if(v == myself || v == target || !v->status.reachable || !v->nexthop || !v->nexthop->connection) {
+			continue;
+		}
+
+		if(!node_has_pinned_ecdsa_key(v)) {
 			continue;
 		}
 
@@ -322,13 +781,18 @@ static void start_key_quorum(node_t *target, const char *candidate_pubkey) {
 			v->quorum_voted_at = 0;
 		}
 
+		list_insert_tail(&round->asked_names, xstrdup(v->name));
 		send_request(v->nexthop->connection, "%d %s %s %d %s %s",
 		             REQ_KEY, myself->name, v->name, KEY_QUORUM_REQ, target->name, target->quorum_nonce);
 		target->quorum_asked_peers++;
 	}
 
+	timeout_add(&round->collect_timer, quorum_collect_timeout_cb, round, &(struct timeval) {
+		KEY_QUORUM_COLLECT_SEC, 0
+	});
+
 	logger(DEBUG_ALWAYS, LOG_INFO,
-	       "Node %s (%s) advertised a new Ed25519 public key; querying %u reachable mesh peer(s) for quorum verification",
+	       "Node %s (%s) advertised a new Ed25519 public key; querying %u locally-pinned reachable peer(s) for quorum verification",
 	       target->name, target->hostname, target->quorum_asked_peers);
 }
 
@@ -350,7 +814,7 @@ static void evaluate_key_quorum(node_t *target) {
 
 	/* Safety veto: if any peer in the mesh holds an active, cryptographically
 	   verified session (direct meta edge or verified SPTPS session) with
-	   `target' under a DIFFERENT key, do not replace our cached key. */
+	   `target' under a DIFFERENT key, immediately veto and do not replace. */
 	if(target->quorum_verified_old > 0) {
 		logger(DEBUG_ALWAYS, LOG_WARNING,
 		       "Quorum rejected Ed25519 key update for %s: %u peer(s) still hold an active verified session under the existing key",
@@ -359,34 +823,45 @@ static void evaluate_key_quorum(node_t *target) {
 		return;
 	}
 
-	uint32_t total_votes = target->quorum_votes_new + target->quorum_votes_old;
-	bool approved = false;
+	quorum_round_t *round = lookup_quorum_round(target->name);
 
-	if(target->quorum_votes_new >= 1 && target->quorum_direct_new >= 1 &&
-	                (total_votes >= target->quorum_asked_peers || target->quorum_votes_new >= 2 || target->quorum_asked_peers <= 1)) {
-		/* At least one direct graph neighbor of `target' (which authenticated
-		   `target' on its meta edge) confirmed the new key, and no peer in the
-		   mesh holds a verified session under the old key. */
-		approved = true;
-	} else if(target->quorum_asked_peers > 0 &&
-	                (target->quorum_votes_new >= 2 || target->quorum_direct_new >= 1) &&
-	                target->quorum_votes_new * 2 > target->quorum_asked_peers &&
-	                target->quorum_votes_new > target->quorum_votes_old) {
-		/* Strict majority of all queried reachable peers confirmed the new key. */
-		approved = true;
-	} else if(target->quorum_asked_peers > 0 &&
-	                (target->quorum_votes_new >= 2 || target->quorum_direct_new >= 1) &&
-	                total_votes >= target->quorum_asked_peers &&
-	                target->quorum_votes_new > target->quorum_votes_old) {
-		/* All queried peers with a key responded and the majority confirmed it. */
-		approved = true;
-	} else if(target->quorum_votes_new >= 2 && target->quorum_votes_old == 0 &&
-	                total_votes >= target->quorum_asked_peers) {
-		/* At least two independent mesh peers unanimously confirmed the new key. */
-		approved = true;
+	if(!round || strcmp(round->nonce, target->quorum_nonce) != 0) {
+		clear_key_quorum(target);
+		return;
 	}
 
-	if(!approved || target->quorum_votes_new < 1) {
+	bool all_responded = (target->quorum_asked_peers >= 2 &&
+	                      round->responses_received >= target->quorum_asked_peers);
+
+	/* Prevent early-approval race before a slow honest peer can deliver a hard
+	   veto (quorum_verified_old > 0): wait until either 100% of asked pinned
+	   peers have responded or the collection timeout window has elapsed. */
+	if(!all_responded && !round->window_elapsed) {
+		return;
+	}
+
+	bool approved = false;
+
+	if(target->quorum_asked_peers >= 2 &&
+	                target->quorum_votes_new >= 2 &&
+	                target->quorum_votes_new > target->quorum_votes_old &&
+	                target->quorum_verified_old == 0) {
+		if(all_responded) {
+			approved = true;
+		} else if(round->window_elapsed &&
+		                (target->quorum_votes_new * 2 > target->quorum_asked_peers ||
+		                 target->quorum_direct_new >= 1 ||
+		                 round->verified_new >= 2)) {
+			approved = true;
+		}
+	}
+
+	if(!approved) {
+		logger(DEBUG_ALWAYS, LOG_WARNING,
+		       "Quorum rejected Ed25519 key update for %s (new_votes=%u, old_votes=%u, asked=%u, responses=%u); manual administrator key update is required if the key legitimately rotated",
+		       target->name, target->quorum_votes_new, target->quorum_votes_old,
+		       target->quorum_asked_peers, round->responses_received);
+		clear_key_quorum(target);
 		return;
 	}
 
@@ -483,6 +958,7 @@ bool send_req_key(node_t *to) {
 	if(to->status.sptps) {
 		if(!node_read_ecdsa_public_key(to)) {
 			logger(DEBUG_PROTOCOL, LOG_DEBUG, "No Ed25519 key known for %s (%s)", to->name, to->hostname);
+			to->last_req_pubkey = now.tv_sec;
 			send_request(to->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, to->name, REQ_PUBKEY);
 			return true;
 		}
@@ -556,7 +1032,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			}
 		} else {
 			/* The packet is for us */
-			if(!sptps_receive_data(&from->sptps, buf, len)) {
+			if(!sptps_receive_data(&from->sptps, buf, len) && !shadow_sptps_try_receive(from, buf, len)) {
 				/* Uh-oh. It might be that the tunnel is stuck in some corrupted state,
 				   so let's restart SPTPS in case that helps. But don't do that too often
 				   to prevent storms. See matching reasoning in net_packet.c
@@ -583,9 +1059,19 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		return punch_h(from, to, request);
 	}
 
-	/* Requests that are not SPTPS data packets are forwarded as-is. */
+	/* Requests that are not SPTPS data packets are forwarded as-is, subject to
+	   loop prevention and per-(from, to) transitive rate-limiting. */
 
 	if(to != myself) {
+		if(!to->nexthop || to->nexthop == myself || to->nexthop == from || to->nexthop->connection == c) {
+			logger(DEBUG_PROTOCOL, LOG_WARNING, "Dropping looping extended REQ_KEY (%d) from %s to %s", reqno, from->name, to->name);
+			return true;
+		}
+
+		if(!allow_transitive_forward(from->name, to->name, reqno, request)) {
+			return true;
+		}
+
 		return send_request(to->nexthop->connection, "%s", request);
 	}
 
@@ -596,6 +1082,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		if(!node_read_ecdsa_public_key(from)) {
 			/* Request their key *before* we send our key back. Otherwise the first SPTPS packet from them will get dropped. */
 			logger(DEBUG_PROTOCOL, LOG_DEBUG, "Preemptively requesting Ed25519 key for %s (%s)", from->name, from->hostname);
+			from->last_req_pubkey = now.tv_sec;
 			send_request(from->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, from->name, REQ_PUBKEY);
 		}
 
@@ -686,12 +1173,19 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			return true;
 		}
 
+		if(!from->last_req_pubkey && !from->last_req_transports && !from->last_req_key && !from->status.waitingforkey) {
+			logger(DEBUG_PROTOCOL, LOG_WARNING, "Ignoring unsolicited ANS_PUBKEY for unpinned peer %s (%s)", from->name, from->hostname);
+			return true;
+		}
+
 		from->ecdsa = ecdsa_set_base64_public_key(pubkey);
 
 		if(!from->ecdsa) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "ANS_PUBKEY", from->name, from->hostname, "invalid pubkey");
 			return true;
 		}
+
+		mark_node_tofu_unpinned(from->name);
 
 		if(fields >= 2 && *histransports) {
 			uint32_t mask;
@@ -727,7 +1221,20 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 	case REQ_KEY: {
 		if(!node_read_ecdsa_public_key(from)) {
 			logger(DEBUG_PROTOCOL, LOG_DEBUG, "No Ed25519 key known for %s (%s)", from->name, from->hostname);
+			from->last_req_pubkey = now.tv_sec;
 			send_request(from->nexthop->connection, "%d %s %s %d", REQ_KEY, myself->name, from->name, REQ_PUBKEY);
+			return true;
+		}
+
+		char buf[MAX_STRING_SIZE];
+		size_t len = 0;
+
+		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING, buf) == 1) {
+			len = b64decode_tinc(buf, buf, strlen(buf));
+		}
+
+		if(!len) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "REQ_SPTPS_START", from->name, from->hostname, "invalid SPTPS data");
 			return true;
 		}
 
@@ -738,46 +1245,71 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			send_no_direct_signal(from, true);
 		}
 
-		if(from->status.waitingforkey && from->sptps.label && from->sptps.initiator) {
-			/* REQ_KEY glare (patch 5): both peers started an SPTPS session as
-			   initiator in the same instant, so each is about to tear its own
-			   session down here and restart as responder. If both do that,
-			   neither side is an initiator, the handshake cannot complete, and
-			   recovery has to wait for the "No key from X after N seconds"
-			   timer — which, because both timers were armed together, fires on
-			   both sides at once and collides again (the seqno-livelock the
-			   M9 NAT lab measured). Break the tie deterministically: both
-			   sides evaluate the same rule on the same two names, so exactly
-			   one of them keeps its initiator session while the other yields.
-			   The node with the lexicographically smaller name wins and
-			   ignores the incoming request (its own KEX is already on the wire
-			   and the peer will answer it as responder). Wire-compatible: an
-			   unpatched peer always tears its own session down here, so at
-			   worst (patched node loses the tie against an unpatched peer)
-			   the behaviour is unchanged from stock and the old timer still
-			   recovers it — never worse.
+		/* H-DP-08: NEVER call sptps_stop(&from->sptps) on an already-established
+		   live SPTPS session upon receiving an unauthenticated REQ_KEY over the
+		   mesh! Keep the live session intact while answering via a rate-limited
+		   shadow responder (plus non-destructive sptps_force_kex) that only swaps
+		   into from->sptps if the peer's Ed25519 signature authenticates. */
+		if(from->status.validkey && from->sptps.state) {
+			logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while live SPTPS session is active; preserving live session until new KEX authenticates", from->name);
 
-			   But only for GENUINE glare. The tie-break assumes both sessions
-			   were started in the same instant and are equally viable. When
-			   ours is older than one relayed round trip and nothing has come
-			   back, that assumption is false and "we win" keeps a session that
-			   cannot complete. Measured in singleflow-test.sh PART 2: a node
-			   whose direct path was severed had started its KEX over that path
-			   two seconds earlier, then discarded the peer's fresh REQ_KEY —
-			   which had arrived over the relay, which worked — and sat out the
-			   full "No key from X after N seconds" cooldown. Past the window a
-			   peer's REQ_KEY is newer information than our own silence, so we
-			   yield and let it be the initiator. It just sent that request, so
-			   exactly one initiator remains; genuine glare is decided within
-			   milliseconds and is unaffected. */
-			/* Two ways our own session can have lost its claim to the
-			   tie-break: the route it went out over is gone (graph.c set the
-			   flag), or it has simply been pending too long to be glare. The
-			   first is the one that bites: both sides start a key exchange in
-			   the same second, ours goes out over a direct meta connection
-			   that is severed a moment later, and defending it costs a full
-			   cooldown while the peer's request -- which came over the relay
-			   that works -- is discarded. */
+			if(send_req_pubkey_refresh(from) && myself->connection && myself->connection->ecdsa) {
+				char *pubkey = ecdsa_get_base64_public_key(myself->connection->ecdsa);
+				char acceptlist[TRANSPORT_LIST_MAX];
+				char dseal[32];
+				send_request(from->nexthop->connection, "%d %s %s %d %s %s %s",
+				             REQ_KEY, myself->name, from->name, ANS_PUBKEY,
+				             pubkey, transport_accept_string(acceptlist), dseal_token(dseal, sizeof(dseal)));
+				free(pubkey);
+			}
+
+			shadow_sptps_t probe = { .peer_name = from->name };
+			shadow_sptps_t *existing = splay_search(&shadow_sptps_tree, &probe);
+			time_t prev_force_kex = existing ? existing->last_force_kex : 0;
+
+			if(existing && now.tv_sec - existing->created_at < 2) {
+				return true;
+			}
+
+			if(existing) {
+				splay_delete(&shadow_sptps_tree, existing);
+			}
+
+			while(shadow_sptps_tree.count >= MAX_SHADOW_SPTPS_ENTRIES && shadow_sptps_fifo.head) {
+				shadow_sptps_t *oldest = shadow_sptps_fifo.head->data;
+				splay_delete(&shadow_sptps_tree, oldest);
+			}
+
+			if(from->sptps.state == SPTPS_SECONDARY_KEX && now.tv_sec - prev_force_kex >= 10) {
+				sptps_force_kex(&from->sptps);
+				prev_force_kex = now.tv_sec;
+			}
+
+			const size_t sh_labellen = 25 + strlen(from->name) + strlen(myself->name);
+			char *sh_label = alloca(sh_labellen);
+			snprintf(sh_label, sh_labellen, "tinc UDP key expansion %s %s", from->name, myself->name);
+
+			shadow_sptps_t *sh = xzalloc(sizeof(*sh));
+			sh->peer_name = xstrdup(from->name);
+			sh->created_at = now.tv_sec;
+			sh->last_force_kex = prev_force_kex;
+			sh->fifo_node = list_insert_tail(&shadow_sptps_fifo, sh);
+			splay_insert(&shadow_sptps_tree, sh);
+
+			send_req_dseal(from);
+
+			if(!sptps_start(&sh->sptps, sh, false, true, myself->connection->ecdsa, from->ecdsa,
+			                sh_label, sh_labellen, send_shadow_sptps_data, shadow_receive_record) ||
+			                !sptps_receive_data(&sh->sptps, buf, len)) {
+				splay_delete(&shadow_sptps_tree, sh);
+				return true;
+			}
+
+			send_mtu_info(myself, from, MTU);
+			return true;
+		}
+
+		if(from->status.waitingforkey && from->sptps.label && from->sptps.initiator) {
 			time_t pending = now.tv_sec - from->last_req_key;
 			bool stale = from->status.sptps_route_stale ||
 			             (from->sptps.state == SPTPS_KEX && pending >= SPTPS_GLARE_WINDOW) ||
@@ -796,10 +1328,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			}
 		} else if(from->sptps.label) {
 			logger(DEBUG_ALWAYS, LOG_DEBUG, "Got REQ_KEY from %s while we already started a SPTPS session!", from->name);
-			/* If the peer keeps restarting SPTPS after we already completed
-			   our side, either its key or ours may have rotated: refresh its
-			   key and proactively send our ANS_PUBKEY so it can run a quorum
-			   check if its cached key for us is stale. */
+
 			if(send_req_pubkey_refresh(from) && myself->connection && myself->connection->ecdsa) {
 				char *pubkey = ecdsa_get_base64_public_key(myself->connection->ecdsa);
 				char acceptlist[TRANSPORT_LIST_MAX];
@@ -809,18 +1338,6 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 				             pubkey, transport_accept_string(acceptlist), dseal_token(dseal, sizeof(dseal)));
 				free(pubkey);
 			}
-		}
-
-		char buf[MAX_STRING_SIZE];
-		size_t len = 0;
-
-		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING, buf) == 1) {
-			len = b64decode_tinc(buf, buf, strlen(buf));
-		}
-
-		if(!len) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s): %s", "REQ_SPTPS_START", from->name, from->hostname, "invalid SPTPS data");
-			return true;
 		}
 
 		const size_t labellen = 25 + strlen(from->name) + strlen(myself->name);
@@ -948,8 +1465,15 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			return true;
 		}
 
-		if(!target->quorum_nonce[0] || strcmp(nonce, target->quorum_nonce) != 0) {
+		quorum_round_t *round = lookup_quorum_round(target->name);
+
+		if(!round || !target->quorum_nonce[0] || strcmp(nonce, target->quorum_nonce) != 0 || strcmp(round->nonce, target->quorum_nonce) != 0) {
 			logger(DEBUG_PROTOCOL, LOG_WARNING, "Rejecting KEY_QUORUM_ANS from %s for %s: nonce mismatch", from->name, target->name);
+			return true;
+		}
+
+		if(!quorum_was_asked(round, from->name) || !node_has_pinned_ecdsa_key(from)) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Rejecting KEY_QUORUM_ANS from unpinned or unasked peer %s for %s", from->name, target->name);
 			return true;
 		}
 
@@ -957,7 +1481,7 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			return true;
 		}
 
-		if(!node_read_ecdsa_public_key(from) || !ecdsa_active(from->ecdsa)) {
+		if(!ecdsa_active(from->ecdsa)) {
 			logger(DEBUG_ALWAYS, LOG_WARNING, "Rejecting KEY_QUORUM_ANS from %s for %s: voter Ed25519 public key unknown", from->name, target->name);
 			return true;
 		}
@@ -976,12 +1500,9 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 		list_insert_tail(&target->quorum_voters, xstrdup(from->name));
 		from->quorum_voted_for = target;
 		from->quorum_voted_at = target->pending_pubkey_time;
+		round->responses_received++;
 
-		if(!(flags & KEY_QUORUM_FLAG_HAS_KEY) || !strcmp(voted_pubkey, "-")) {
-			if(target->quorum_asked_peers > 0) {
-				target->quorum_asked_peers--;
-			}
-		} else {
+		if((flags & KEY_QUORUM_FLAG_HAS_KEY) && strcmp(voted_pubkey, "-") != 0) {
 			bool has_graph_edge = lookup_edge(from, target) != NULL || lookup_edge(target, from) != NULL;
 			bool is_direct = has_graph_edge && ((flags & KEY_QUORUM_FLAG_DIRECT_EDGE) != 0);
 			bool is_verified = (has_graph_edge && (flags & KEY_QUORUM_FLAG_DIRECT_EDGE)) ||
@@ -993,6 +1514,10 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 				if(is_direct) {
 					target->quorum_direct_new++;
 				}
+
+				if(is_verified) {
+					round->verified_new++;
+				}
 			} else {
 				target->quorum_votes_old++;
 
@@ -1002,7 +1527,15 @@ static bool req_key_ext_h(connection_t *c, const char *request, node_t *from, no
 			}
 		}
 
-		evaluate_key_quorum(target);
+		/* Immediate hard veto on verified old session or local active session;
+		   otherwise evaluate early ONLY when all asked pinned peers have replied. */
+		if((target->connection && target->connection->status.active) ||
+		                target->status.validkey ||
+		                target->quorum_verified_old > 0 ||
+		                round->responses_received >= target->quorum_asked_peers) {
+			evaluate_key_quorum(target);
+		}
+
 		return true;
 	}
 
@@ -1079,6 +1612,14 @@ bool req_key_h(connection_t *c, const char *request) {
 		/* Is this an extended REQ_KEY message? */
 		if(experimental && reqno) {
 			return req_key_ext_h(c, request, from, to, reqno);
+		}
+
+		if(!to->nexthop || to->nexthop == myself || to->nexthop == from || to->nexthop->connection == c) {
+			return true;
+		}
+
+		if(!allow_transitive_forward(from->name, to->name, REQ_KEY, request)) {
+			return true;
 		}
 
 		send_request(to->nexthop->connection, "%s", request);
@@ -1217,6 +1758,15 @@ bool ans_key_h(connection_t *c, const char *request) {
 			return true;
 		}
 
+		if(!to->nexthop || to->nexthop == myself || to->nexthop == from || to->nexthop->connection == c) {
+			logger(DEBUG_PROTOCOL, LOG_WARNING, "Dropping looping ANS_KEY from %s to %s", from->name, to->name);
+			return true;
+		}
+
+		if(!allow_transitive_forward(from->name, to->name, ANS_KEY, request)) {
+			return true;
+		}
+
 		if(!*address && (from->status.udp_confirmed || from->status.udp_addr_confirmed) && from->address.sa.sa_family != AF_UNSPEC &&
 		                !from->status.no_direct && !from->remote_no_direct &&
 		                !to->status.no_direct && !to->remote_no_direct && to->minmtu) {
@@ -1300,7 +1850,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 		uint8_t *buf = alloca(buflen);
 		size_t len = b64decode_tinc(key, buf, buflen);
 
-		if(!len || !sptps_receive_data(&from->sptps, buf, len)) {
+		if(!len || (!sptps_receive_data(&from->sptps, buf, len) && !shadow_sptps_try_receive(from, buf, len))) {
 			/* If the handshake record failed verification (e.g. a rotated
 			   Ed25519 key on `from'), ask `from' for its current ANS_PUBKEY
 			   over the graph so quorum key verification can run. */
@@ -1312,7 +1862,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 			   Note that simply relying on handshake timeout is not enough, because
 			   that doesn't apply to key regeneration. Cooldown raised to 30s to
 			   match the other recovery paths and let in-progress handshakes finish. */
-			if(from->last_req_key < now.tv_sec - 30) {
+			if(!from->status.validkey && from->last_req_key < now.tv_sec - 30) {
 				logger(DEBUG_PROTOCOL, LOG_ERR, "Failed to decode handshake TCP packet from %s (%s), restarting SPTPS", from->name, from->hostname);
 				send_req_key(from);
 			}
@@ -1334,6 +1884,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 				logger(DEBUG_PROTOCOL, LOG_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 				sockaddr_t sa = str2sockaddr(address, port);
 				update_node_udp(from, &sa);
+				sockaddrfree(&sa);
 			}
 		}
 
@@ -1406,6 +1957,7 @@ bool ans_key_h(connection_t *c, const char *request) {
 		logger(DEBUG_PROTOCOL, LOG_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 		sockaddr_t sa = str2sockaddr(address, port);
 		update_node_udp(from, &sa);
+		sockaddrfree(&sa);
 	}
 
 	return true;

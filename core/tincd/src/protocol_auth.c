@@ -201,23 +201,94 @@ void invitation_release(connection_t *c, bool completed) {
 	c->invitation_file = NULL;
 }
 
+#define INVITATION_FILE_MAX_SIZE (1024 * 1024)
+
+static bool is_safe_host_token(const char *s, bool allow_space) {
+	if(!s || !*s) {
+		return false;
+	}
+
+	for(const unsigned char *p = (const unsigned char *)s; *p; p++) {
+		if(*p < 0x20 || *p >= 0x7f) {
+			return false;
+		}
+
+		if(!allow_space && (*p == ' ' || *p == '\t')) {
+			return false;
+		}
+
+		if(*p == '"' || *p == '\'' || *p == '#' || *p == ';') {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static bool is_safe_subnet_value(const char *val) {
+	if(!is_safe_host_token(val, false) || strchr(val, '=')) {
+		return false;
+	}
+
+	subnet_t sub = {0};
+
+	if(!str2net(&sub, val) || !subnetcheck(sub)) {
+		return false;
+	}
+
+	return true;
+}
+
 static bool store_invitee(connection_t *c, const char *data);
 
 static bool finalize_invitation(connection_t *c, const char *data, uint16_t len) {
-	(void)len;
+	bool ok = false;
+
+	if(c && data && len > 0 && len < 512 && !memchr(data, 0, len)) {
+		char keybuf[512];
+		memcpy(keybuf, data, len);
+		keybuf[len] = '\0';
+		ok = store_invitee(c, keybuf);
+	} else if(c) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Received malformed key payload from invited node %s (%s)!",
+		       c->name ? c->name : "(null)", c->hostname ? c->hostname : "(null)");
+	}
 
 	/* Only a stored key consumes the invitation; any failure below hands the
 	   invitation back so the invitee can retry instead of needing a new one. */
-	bool ok = store_invitee(c, data);
 	invitation_release(c, ok);
 	return ok;
 }
 
 static bool store_invitee(connection_t *c, const char *data) {
+	if(!c || !c->name || !check_id(c->name) || (myself && myself->name && !strcmp(c->name, myself->name))) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Invalid invited node name!\n");
+		return false;
+	}
 
-	if(strchr(data, '\n')) {
+	if(!is_safe_host_token(data, false) || strchr(data, '=')) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Received invalid key from invited node %s (%s)!\n", c->name, c->hostname);
 		return false;
+	}
+
+	ecdsa_t *test_key = ecdsa_set_base64_public_key(data);
+
+	if(!ecdsa_active(test_key)) {
+		ecdsa_free(test_key);
+		logger(DEBUG_ALWAYS, LOG_ERR, "Received invalid Ed25519 public key from invited node %s (%s)!\n", c->name, c->hostname);
+		return false;
+	}
+
+	ecdsa_free(test_key);
+
+	if(c->config_tree) {
+		for splay_each(config_t, cfg, c->config_tree) {
+			if(!cfg->variable || strcasecmp(cfg->variable, "Subnet") || !is_safe_subnet_value(cfg->value)) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Rejecting disallowed or invalid directive '%s' in invitation for %s (%s)!\n",
+				       cfg->variable ? cfg->variable : "(null)", c->name, c->hostname);
+				return false;
+			}
+		}
 	}
 
 	if(yamlconf_path) {
@@ -241,19 +312,34 @@ static bool store_invitee(connection_t *c, const char *data) {
 			}
 		}
 	} else {
-		// Create a new host config file
-		char filename[PATH_MAX];
-		snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", confbase, c->name);
-
-		if(!access(filename, F_OK)) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Host config file for %s (%s) already exists!\n", c->name, c->hostname);
+		if(!confbase) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Cannot store invited host %s: confbase is NULL", c->name);
 			return false;
 		}
 
-		FILE *f = fopen(filename, "w");
+		// Create a new host config file atomically without TOCTOU
+		char filename[PATH_MAX];
+		snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", confbase, c->name);
+
+		int fd = open(filename, O_WRONLY | O_CREAT | O_EXCL, 0644);
+
+		if(fd < 0) {
+			if(errno == EEXIST) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Host config file for %s (%s) already exists!\n", c->name, c->hostname);
+			} else {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Error trying to create %s: %s\n", filename, strerror(errno));
+			}
+
+			return false;
+		}
+
+		FILE *f = fdopen(fd, "w");
 
 		if(!f) {
-			logger(DEBUG_ALWAYS, LOG_ERR, "Error trying to create %s: %s\n", filename, strerror(errno));
+			int saved_errno = errno;
+			close(fd);
+			unlink(filename);
+			logger(DEBUG_ALWAYS, LOG_ERR, "Error trying to open %s: %s\n", filename, strerror(saved_errno));
 			return false;
 		}
 
@@ -265,6 +351,13 @@ static bool store_invitee(connection_t *c, const char *data) {
 					fprintf(f, "Subnet = %s\n", cfg->value);
 				}
 			}
+		}
+
+		if(fflush(f) != 0 || ferror(f)) {
+			fclose(f);
+			unlink(filename);
+			logger(DEBUG_ALWAYS, LOG_ERR, "Error writing host config file %s\n", filename);
+			return false;
 		}
 
 		fclose(f);
@@ -353,9 +446,17 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 	b64encode_tinc_urlsafe(cookie, cookie, 18);
 	free(fingerprint);
 
+	if(!confbase) {
+		return false;
+	}
+
 	char filename[PATH_MAX], usedname[PATH_MAX];
 	snprintf(filename, sizeof(filename), "%s" SLASH "invitations" SLASH "%s", confbase, cookie);
 	snprintf(usedname, sizeof(usedname), "%s" SLASH "invitations" SLASH "%s.used", confbase, cookie);
+
+	bool ok = false;
+	bool renamed = false;
+	FILE *f = NULL;
 
 	// Atomically rename the invitation file
 	if(rename(filename, usedname)) {
@@ -368,12 +469,14 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 		return false;
 	}
 
-	// Check the timestamp of the invitation
+	renamed = true;
+
+	// Check the timestamp and size of the invitation
 	struct stat st;
 
 	if(stat(usedname, &st)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not stat %s", usedname);
-		return false;
+		goto cleanup;
 	}
 
 	if(st.st_mtime + invitation_lifetime < now.tv_sec) {
@@ -385,15 +488,21 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 			logger(DEBUG_ALWAYS, LOG_ERR, "Could not remove expired invitation %s: %s", usedname, strerror(errno));
 		}
 
-		return false;
+		renamed = false;
+		goto cleanup;
+	}
+
+	if(st.st_size < 0 || st.st_size > INVITATION_FILE_MAX_SIZE) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Invitation file %s exceeds maximum allowed size", cookie);
+		goto cleanup;
 	}
 
 	// Open the renamed file
-	FILE *f = fopen(usedname, "r");
+	f = fopen(usedname, "r");
 
 	if(!f) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Error trying to open invitation %s\n", cookie);
-		return false;
+		goto cleanup;
 	}
 
 	// Read the new node's Name from the file
@@ -401,8 +510,7 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 
 	if(!fgets(buf, sizeof(buf), f)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not read invitation file %s\n", cookie);
-		fclose(f);
-		return false;
+		goto cleanup;
 	}
 
 	size_t buflen = strlen(buf);
@@ -428,12 +536,16 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 	// Check that it is a valid Name
 	if(!*buf || !*name || strcasecmp(buf, "Name") || !check_id(name) || !strcmp(name, myself->name)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Invalid invitation file %s\n", cookie);
-		fclose(f);
-		return false;
+		goto cleanup;
 	}
 
 	free(c->name);
 	c->name = xstrdup(name);
+
+	if(c->config_tree) {
+		exit_configuration(c->config_tree);
+		c->config_tree = NULL;
+	}
 
 	// Remember the Subnet(s) the invitation assigns to the invitee (first
 	// chunk only, up to the inviter's own "Name" line), so that
@@ -464,6 +576,11 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 			}
 
 			if(*value) {
+				if(!is_safe_subnet_value(value)) {
+					logger(DEBUG_ALWAYS, LOG_ERR, "Invalid Subnet '%s' in invitation %s", value, cookie);
+					goto cleanup;
+				}
+
 				if(!c->config_tree) {
 					c->config_tree = create_configuration();
 				}
@@ -478,26 +595,42 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 		}
 	}
 
+	// Verify output buffer has enough room for the entire invitation stream + EOF record
+	size_t est_records = (size_t)st.st_size / sizeof(buf) + 4U;
+
+	if(!connection_can_buffer(c, (size_t)st.st_size + est_records * 64U)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Output buffer full while sending invitation %s to %s", cookie, c->hostname);
+		c->status.remove_unused = true;
+		goto cleanup;
+	}
+
 	// Send the node the contents of the invitation file
 	if(fseek(f, 0, SEEK_SET) != 0) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "Could not read invitation file %s\n", cookie);
-		fclose(f);
+		logger(DEBUG_ALWAYS, LOG_ERR, "Could not seek invitation file %s\n", cookie);
+		goto cleanup;
 	}
 
 	size_t result;
 
 	while((result = fread(buf, 1, sizeof(buf), f))) {
-		sptps_send_record(&c->sptps, 0, buf, result);
+		if(!sptps_send_record(&c->sptps, 0, buf, (uint16_t)result)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Failed sending invitation record %s to %s", cookie, c->hostname);
+			goto cleanup;
+		}
 	}
 
-	if(!feof(f)) {
+	if(!feof(f) || ferror(f)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not read invitation file %s\n", cookie);
-		fclose(f);
-		return false;
+		goto cleanup;
 	}
 
-	sptps_send_record(&c->sptps, 1, buf, 0);
 	fclose(f);
+	f = NULL;
+
+	if(!sptps_send_record(&c->sptps, 1, buf, 0)) {
+		logger(DEBUG_ALWAYS, LOG_ERR, "Failed sending invitation EOF %s to %s", cookie, c->hostname);
+		goto cleanup;
+	}
 
 	/* Keep the claimed (".used") file until the invitee's key is stored; see
 	   invitation_release(). */
@@ -505,9 +638,30 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 	c->invitation_file = xstrdup(usedname);
 
 	c->status.invitation_used = true;
+	ok = true;
 
 	logger(DEBUG_CONNECTIONS, LOG_INFO, "Invitation %s successfully sent to %s (%s)", cookie, c->name, c->hostname);
-	return true;
+
+cleanup:
+	if(f) {
+		fclose(f);
+		f = NULL;
+	}
+
+	if(!ok) {
+		if(c->config_tree) {
+			exit_configuration(c->config_tree);
+			c->config_tree = NULL;
+		}
+
+		if(renamed && !c->invitation_file) {
+			if(rename(usedname, filename)) {
+				logger(DEBUG_ALWAYS, LOG_ERR, "Could not restore invitation %s: %s", filename, strerror(errno));
+			}
+		}
+	}
+
+	return ok;
 }
 
 bool id_h(connection_t *c, const char *request) {
@@ -1228,9 +1382,11 @@ static void send_everything(connection_t *c) {
 			char pad[MAXBUFSIZE - MAXSIZE];
 		} zeropkt;
 
-		memset(&zeropkt, 0, sizeof(zeropkt));
-		zeropkt.pkt.len = MAXBUFSIZE;
-		send_tcppacket(c, &zeropkt.pkt);
+		if(connection_can_buffer(c, sizeof(zeropkt) + 128U)) {
+			memset(&zeropkt, 0, sizeof(zeropkt));
+			zeropkt.pkt.len = MAXBUFSIZE;
+			send_tcppacket(c, &zeropkt.pkt);
+		}
 	}
 
 	if(tunnelserver) {
@@ -1315,6 +1471,12 @@ bool ack_h(connection_t *c, const char *request) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "ACK", c->name,
 		       c->hostname);
 		return false;
+	}
+
+	if(weight < -100000000) {
+		weight = -100000000;
+	} else if(weight > 100000000) {
+		weight = 100000000;
 	}
 
 	if(!strcasecmp(hismp, "mp")) {
@@ -1573,7 +1735,15 @@ bool ack_h(connection_t *c, const char *request) {
 		myself->last_lan_change = now.tv_sec;
 	}
 
-	c->edge->weight = (weight + c->estimated_weight) / 2;
+	int64_t avg_weight = ((int64_t)weight + (int64_t)c->estimated_weight) / 2;
+
+	if(avg_weight < -100000000) {
+		avg_weight = -100000000;
+	} else if(avg_weight > 100000000) {
+		avg_weight = 100000000;
+	}
+
+	c->edge->weight = (int)avg_weight;
 	c->edge->connection = c;
 	c->edge->options = c->options;
 

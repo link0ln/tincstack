@@ -509,14 +509,19 @@ static size_t wire_eth_overhead(const node_t *n) {
 	return ether_size;
 }
 
+static inline uint16_t rfc1624_update16(uint16_t old_csum, uint16_t old_w, uint16_t new_w) {
+	uint32_t sum = ((uint32_t)(~old_csum) & 0xffffU) + ((uint32_t)(~old_w) & 0xffffU) + (uint32_t)new_w;
+	sum = (sum & 0xffffU) + (sum >> 16);
+	sum = (sum & 0xffffU) + (sum >> 16);
+	return (uint16_t)(~sum & 0xffffU);
+}
+
 static void clamp_mss(const node_t *source, const node_t *dest, const node_t *via, vpn_packet_t *packet) {
-	if(!source || !dest || !(((via ? via->options : 0) | source->options | dest->options) & OPTION_CLAMP_MSS)) {
+	if(!source || !dest || packet->len < ether_size + 20) {
 		return;
 	}
 
-	if(packet->len < ether_size + 20) {
-		return;
-	}
+	bool has_clamp_opt = (((via ? via->options : 0) | source->options | dest->options) & OPTION_CLAMP_MSS) != 0;
 
 	size_t src_pad = ether_size - wire_eth_overhead(source);
 	size_t dst_pad = ether_size - wire_eth_overhead(dest);
@@ -532,29 +537,40 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 	   leaves 1500B TCP segments unclamped. Cap provisional/TCP-only MSS
 	   calculation at 1400 (MSS 1346) so inner TCP segments always fit any
 	   tunnel carrier without forcing multi-hop relays onto the meta stream. */
-	uint16_t prov_src = (uint16_t)(1400 + src_pad);
-	uint16_t prov_dst = (uint16_t)(1400 + dst_pad);
-	uint16_t prov_cap = prov_src < prov_dst ? prov_src : prov_dst;
+	if(has_clamp_opt) {
+		uint16_t prov_src = (uint16_t)(1400 + src_pad);
+		uint16_t prov_dst = (uint16_t)(1400 + dst_pad);
+		uint16_t prov_cap = prov_src < prov_dst ? prov_src : prov_dst;
 
-	if(mtu > prov_cap && (!node_leg_mtu_converged(source) || !node_leg_mtu_converged(dest))) {
-		mtu = prov_cap;
+		if(mtu > prov_cap && (!node_leg_mtu_converged(source) || !node_leg_mtu_converged(dest))) {
+			mtu = prov_cap;
+		}
 	}
 
-	/* Find TCP header */
+	/* Find L3/TCP header */
 	size_t start = ether_size;
-	uint16_t type = DATA(packet)[12] << 8 | DATA(packet)[13];
+	size_t avail_len = packet->len;
+	uint16_t type = (uint16_t)DATA(packet)[12] << 8 | DATA(packet)[13];
 
 	if(type == ETH_P_8021Q) {
-		if(packet->len < 18 + 20) {
+		if(avail_len < 18 + 20) {
 			return;
 		}
 
 		start += 4;
-		type = DATA(packet)[16] << 8 | DATA(packet)[17];
+		type = (uint16_t)DATA(packet)[16] << 8 | DATA(packet)[17];
+	}
+
+	/* Even when ClampMSS is not explicitly configured, IPv6 links with an
+	   effective inner MTU < 1280 (e.g. QUIC/Obfs ~1119) cannot signal < 1280
+	   via ICMPv6 Packet Too Big (RFC 8200 minimum IPv6 MTU is 1280), so we must
+	   clamp IPv6 TCP SYN MSS to prevent 1280B segments from blackholing. */
+	if(!has_clamp_opt && !(type == ETH_P_IPV6 && (size_t)mtu < start + 1280)) {
+		return;
 	}
 
 	if(type == ETH_P_IP) {
-		if(packet->len < start + 20) {
+		if(avail_len < start + 20) {
 			return;
 		}
 
@@ -562,45 +578,92 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 		if(DATA(packet)[start + 9] == 4) {
 			size_t outer_ihl = (size_t)(DATA(packet)[start] & 0x0f) * 4;
 
-			if((DATA(packet)[start] >> 4) != 4 || outer_ihl < 20 || packet->len < start + outer_ihl + 20) {
+			if((DATA(packet)[start] >> 4) != 4 || outer_ihl < 20 || avail_len < start + outer_ihl + 20) {
 				return;
 			}
 
+			uint16_t outer_off = ((uint16_t)DATA(packet)[start + 6] << 8) | DATA(packet)[start + 7];
+
+			if((outer_off & 0x1fff) != 0) {
+				return;
+			}
+
+			uint16_t outer_tot = ((uint16_t)DATA(packet)[start + 2] << 8) | DATA(packet)[start + 3];
+
+			if(outer_tot < outer_ihl + 20 || start + outer_tot > avail_len) {
+				return;
+			}
+
+			avail_len = start + outer_tot;
 			start += outer_ihl;
 		}
 
-		if(DATA(packet)[start + 9] != 6) {
+		if(avail_len < start + 20 || DATA(packet)[start + 9] != 6) {
 			return;
 		}
 
 		size_t ihl = (size_t)(DATA(packet)[start] & 0x0f) * 4;
 
-		if((DATA(packet)[start] >> 4) != 4 || ihl < 20 || packet->len < start + ihl + 20) {
+		if((DATA(packet)[start] >> 4) != 4 || ihl < 20 || avail_len < start + ihl + 20) {
 			return;
 		}
 
+		uint16_t ip_off = ((uint16_t)DATA(packet)[start + 6] << 8) | DATA(packet)[start + 7];
+
+		if((ip_off & 0x1fff) != 0) {
+			return;
+		}
+
+		uint16_t ip_tot_len = ((uint16_t)DATA(packet)[start + 2] << 8) | DATA(packet)[start + 3];
+
+		if(ip_tot_len < ihl + 20 || start + ip_tot_len > avail_len) {
+			return;
+		}
+
+		avail_len = start + ip_tot_len;
 		start += ihl;
 	} else if(type == ETH_P_IPV6) {
-		if(packet->len < start + 40 + 20) {
+		if(avail_len < start + 40 + 20 || (DATA(packet)[start] >> 4) != 6) {
 			return;
+		}
+
+		uint16_t v6_plen = ((uint16_t)DATA(packet)[start + 4] << 8) | DATA(packet)[start + 5];
+
+		if(v6_plen != 0) {
+			if(v6_plen < 20 || start + 40 + (size_t)v6_plen > avail_len) {
+				return;
+			}
+
+			avail_len = start + 40 + (size_t)v6_plen;
 		}
 
 		uint8_t nh = DATA(packet)[start + 6];
 		start += 40;
 
-		for(int ext = 0; ext < 8 && (nh == 0 || nh == 43 || nh == 60); ext++) {
-			if(packet->len < start + 8) {
+		for(int ext = 0; ext < 8 && (nh == 0 || nh == 43 || nh == 44 || nh == 60); ext++) {
+			if(avail_len < start + 8) {
 				return;
 			}
 
-			size_t extlen = ((size_t)DATA(packet)[start + 1] + 1) * 8;
+			if(nh == 44) {
+				uint16_t frag_off_flags = ((uint16_t)DATA(packet)[start + 2] << 8) | DATA(packet)[start + 3];
 
-			if(packet->len < start + extlen + 20) {
-				return;
+				if((frag_off_flags & 0xfff8) != 0) {
+					return;
+				}
+
+				nh = DATA(packet)[start];
+				start += 8;
+			} else {
+				size_t extlen = ((size_t)DATA(packet)[start + 1] + 1) * 8;
+
+				if(avail_len < start + extlen + 20) {
+					return;
+				}
+
+				nh = DATA(packet)[start];
+				start += extlen;
 			}
-
-			nh = DATA(packet)[start];
-			start += extlen;
 		}
 
 		if(nh != 6) {
@@ -610,12 +673,21 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 		return;
 	}
 
-	if(packet->len < start + 20) {
+	size_t tcp_off = start;
+
+	if(avail_len < tcp_off + 20) {
+		return;
+	}
+
+	/* Only clamp MSS on TCP SYN segments (never touch non-SYN data/ACK/RST). */
+	uint8_t tcp_flags = DATA(packet)[tcp_off + 13];
+
+	if(!(tcp_flags & 0x02) || (tcp_flags & 0x04)) {
 		return;
 	}
 
 	/* Use data offset field to calculate length of options field */
-	int doff = DATA(packet)[start + 12] >> 4;
+	int doff = DATA(packet)[tcp_off + 12] >> 4;
 
 	if(doff <= 5) {
 		return;
@@ -623,46 +695,47 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 
 	int len = (doff - 5) * 4;
 
-	if(packet->len < start + 20 + (size_t)len) {
+	if(avail_len < tcp_off + 20 + (size_t)len) {
 		return;
 	}
 
 	/* Search for MSS option header */
 	for(int i = 0; i < len;) {
-		if(DATA(packet)[start + 20 + i] == 0) {
+		if(DATA(packet)[tcp_off + 20 + i] == 0) {
 			break;
 		}
 
-		if(DATA(packet)[start + 20 + i] == 1) {
+		if(DATA(packet)[tcp_off + 20 + i] == 1) {
 			i++;
 			continue;
 		}
 
-		if(i > len - 2 || i > len - DATA(packet)[start + 21 + i]) {
+		if(i > len - 2 || i > len - DATA(packet)[tcp_off + 21 + i]) {
 			break;
 		}
 
-		if(DATA(packet)[start + 20 + i] != 2) {
-			if(DATA(packet)[start + 21 + i] < 2) {
+		if(DATA(packet)[tcp_off + 20 + i] != 2) {
+			if(DATA(packet)[tcp_off + 21 + i] < 2) {
 				break;
 			}
 
-			i += DATA(packet)[start + 21 + i];
+			i += DATA(packet)[tcp_off + 21 + i];
 			continue;
 		}
 
-		if(DATA(packet)[start + 21 + i] != 4) {
+		if(DATA(packet)[tcp_off + 21 + i] != 4) {
 			break;
 		}
 
-		if((size_t)mtu <= start + 20) {
+		if((size_t)mtu <= tcp_off + 20) {
 			break;
 		}
 
 		/* Found it */
-		uint16_t oldmss = DATA(packet)[start + 22 + i] << 8 | DATA(packet)[start + 23 + i];
-		uint16_t newmss = (uint16_t)((size_t)mtu - start - 20);
-		uint32_t csum = DATA(packet)[start + 16] << 8 | DATA(packet)[start + 17];
+		size_t mss_val_off = tcp_off + 22 + (size_t)i;
+		uint16_t oldmss = ((uint16_t)DATA(packet)[mss_val_off] << 8) | DATA(packet)[mss_val_off + 1];
+		uint16_t newmss = (uint16_t)((size_t)mtu - tcp_off - 20);
+		uint16_t csum = ((uint16_t)DATA(packet)[tcp_off + 16] << 8) | DATA(packet)[tcp_off + 17];
 
 		if(oldmss <= newmss) {
 			break;
@@ -670,17 +743,26 @@ static void clamp_mss(const node_t *source, const node_t *dest, const node_t *vi
 
 		logger(DEBUG_TRAFFIC, LOG_INFO, "Clamping MSS of packet from %s to %s to %d", source->name, dest->name, newmss);
 
-		/* Update the MSS value and the checksum */
-		DATA(packet)[start + 22 + i] = newmss >> 8;
-		DATA(packet)[start + 23 + i] = newmss & 0xff;
-		csum ^= 0xffff;
-		csum += oldmss ^ 0xffff;
-		csum += newmss;
-		csum = (csum & 0xffff) + (csum >> 16);
-		csum += csum >> 16;
-		csum ^= 0xffff;
-		DATA(packet)[start + 16] = csum >> 8;
-		DATA(packet)[start + 17] = csum & 0xff;
+		/* Update checksum per RFC 1624 on the 16-bit even-aligned word grid
+		   relative to tcp_off. When NOPs place the 2-byte MSS value at an odd
+		   offset relative to tcp_off, update both straddling 16-bit words. */
+		if(((mss_val_off - tcp_off) & 1U) == 0) {
+			csum = rfc1624_update16(csum, oldmss, newmss);
+		} else {
+			uint8_t prev_byte = DATA(packet)[mss_val_off - 1];
+			uint8_t next_byte = (mss_val_off + 2 < avail_len) ? DATA(packet)[mss_val_off + 2] : 0;
+			uint16_t old_w1 = ((uint16_t)prev_byte << 8) | (uint8_t)(oldmss >> 8);
+			uint16_t new_w1 = ((uint16_t)prev_byte << 8) | (uint8_t)(newmss >> 8);
+			uint16_t old_w2 = ((uint16_t)(oldmss & 0xffU) << 8) | next_byte;
+			uint16_t new_w2 = ((uint16_t)(newmss & 0xffU) << 8) | next_byte;
+			csum = rfc1624_update16(csum, old_w1, new_w1);
+			csum = rfc1624_update16(csum, old_w2, new_w2);
+		}
+
+		DATA(packet)[mss_val_off] = (uint8_t)(newmss >> 8);
+		DATA(packet)[mss_val_off + 1] = (uint8_t)(newmss & 0xffU);
+		DATA(packet)[tcp_off + 16] = (uint8_t)(csum >> 8);
+		DATA(packet)[tcp_off + 17] = (uint8_t)(csum & 0xffU);
 		break;
 	}
 }
@@ -769,9 +851,11 @@ static void route_broadcast(node_t *source, vpn_packet_t *packet) {
 static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t ether_size, uint16_t path_mtu) {
 	struct ip ip;
 	vpn_packet_t fragment;
-	size_t maxlen, todo, ihl;
+	size_t todo, ihl, sub_ihl;
 	uint8_t *offset;
-	uint16_t ip_off, origf, ip_tot_len;
+	uint8_t sub_opts[40];
+	uint16_t raw_off, origf, ip_tot_len;
+	uint32_t byte_off;
 
 	if(packet->len < ether_size + ip_size) {
 		return;
@@ -783,7 +867,7 @@ static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t et
 
 	ihl = (size_t)ip.ip_hl * 4;
 
-	if(ihl < ip_size || packet->len < ether_size + ihl) {
+	if(ihl < ip_size || ihl > 60 || packet->len < ether_size + ihl) {
 		return;
 	}
 
@@ -796,20 +880,71 @@ static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t et
 
 	todo = ip_tot_len - ihl;
 
-	logger(DEBUG_TRAFFIC, LOG_INFO, "Fragmenting packet of %d bytes to %s (%s)", packet->len, dest->name, dest->hostname);
+	raw_off = ntohs(ip.ip_off);
+	origf = (raw_off & ~IP_OFFMASK) & ~IP_DF;
+	byte_off = (uint32_t)(raw_off & IP_OFFMASK) * 8U;
 
-	offset = DATA(packet) + ether_size + ihl;
-	maxlen = (MAX(path_mtu, 590) - ether_size - ihl) & ~0x7;
-
-	if(!maxlen) {
+	if(byte_off + todo > 65535U || ((origf & IP_MF) && (todo & 7U) != 0)) {
 		return;
 	}
 
-	ip_off = ntohs(ip.ip_off);
-	origf = (ip_off & ~IP_OFFMASK) & ~IP_DF;
-	ip_off &= IP_OFFMASK;
+	/* Per RFC 791, non-first sub-fragments only include IPv4 options that have
+	   the copy flag (0x80) set, padded to a 4-byte boundary with EOL (0). */
+	sub_ihl = ip_size;
+	memset(sub_opts, 0, sizeof(sub_opts));
 
-	if(ip.ip_id == 0) {
+	if(ihl > ip_size) {
+		const uint8_t *opts = DATA(packet) + ether_size + ip_size;
+		size_t opt_total = ihl - ip_size;
+		size_t sub_pos = 0;
+
+		for(size_t i = 0; i < opt_total;) {
+			uint8_t opt_type = opts[i];
+
+			if(opt_type == 0) {
+				break;
+			}
+
+			if(opt_type == 1) {
+				i++;
+				continue;
+			}
+
+			if(i + 1 >= opt_total) {
+				return;
+			}
+
+			uint8_t opt_len = opts[i + 1];
+
+			if(opt_len < 2 || i + opt_len > opt_total) {
+				return;
+			}
+
+			if(opt_type & 0x80) {
+				memcpy(sub_opts + sub_pos, opts + i, opt_len);
+				sub_pos += opt_len;
+			}
+
+			i += opt_len;
+		}
+
+		while(sub_pos & 3U) {
+			sub_opts[sub_pos++] = 0;
+		}
+
+		sub_ihl = ip_size + sub_pos;
+	}
+
+	logger(DEBUG_TRAFFIC, LOG_INFO, "Fragmenting packet of %d bytes to %s (%s)", packet->len, dest->name, dest->hostname);
+
+	offset = DATA(packet) + ether_size + ihl;
+	size_t eff_mtu = MAX((size_t)path_mtu, 590U);
+
+	if(eff_mtu <= ether_size + ihl) {
+		return;
+	}
+
+	if(ip.ip_id == 0 && (raw_off & (IP_MF | IP_OFFMASK)) == 0) {
 		static uint16_t frag_id_seq = 1;
 		uint16_t next_id = ++frag_id_seq;
 
@@ -820,24 +955,50 @@ static void fragment_ipv4_packet(node_t *dest, vpn_packet_t *packet, length_t et
 		ip.ip_id = htons(next_id);
 	}
 
+	bool first_frag = true;
+
 	while(todo) {
+		size_t cur_ihl = first_frag ? ihl : sub_ihl;
+
+		if(eff_mtu <= ether_size + cur_ihl) {
+			return;
+		}
+
+		size_t maxlen = (eff_mtu - ether_size - cur_ihl) & ~(size_t)0x7U;
+
+		if(!maxlen) {
+			return;
+		}
+
 		size_t len = todo > maxlen ? maxlen : todo;
-		memcpy(DATA(&fragment) + ether_size + ihl, offset, len);
+		memcpy(DATA(&fragment) + ether_size + cur_ihl, offset, len);
 		todo -= len;
 		offset += len;
 
-		ip.ip_len = htons(ihl + len);
-		ip.ip_off = htons(ip_off | origf | (todo ? IP_MF : 0));
+		uint16_t frag_units = (uint16_t)(byte_off / 8U);
+		ip.ip_hl = (unsigned int)(cur_ihl / 4U);
+		ip.ip_len = htons((uint16_t)(cur_ihl + len));
+		ip.ip_off = htons((uint16_t)(frag_units | origf | (todo ? IP_MF : 0)));
 		ip.ip_sum = 0;
 		memcpy(DATA(&fragment), DATA(packet), ether_size);
-		memcpy(DATA(&fragment) + ether_size, DATA(packet) + ether_size, ihl);
+
+		if(cur_ihl > ip_size) {
+			if(first_frag) {
+				memcpy(DATA(&fragment) + ether_size + ip_size, DATA(packet) + ether_size + ip_size, cur_ihl - ip_size);
+			} else {
+				memcpy(DATA(&fragment) + ether_size + ip_size, sub_opts, cur_ihl - ip_size);
+			}
+		}
+
 		memcpy(DATA(&fragment) + ether_size, &ip, ip_size);
-		((struct ip *)(DATA(&fragment) + ether_size))->ip_sum = inet_checksum(DATA(&fragment) + ether_size, ihl, 0xFFFF);
-		fragment.len = ether_size + ihl + len;
+		uint16_t csum = inet_checksum(DATA(&fragment) + ether_size, cur_ihl, 0xFFFF);
+		memcpy(DATA(&fragment) + ether_size + offsetof(struct ip, ip_sum), &csum, sizeof(csum));
+		fragment.len = (length_t)(ether_size + cur_ihl + len);
 
 		send_packet(dest, &fragment);
 
-		ip_off += len / 8;
+		byte_off += (uint32_t)len;
+		first_frag = false;
 	}
 }
 
@@ -1043,7 +1204,7 @@ static void route_neighborsol(node_t *source, vpn_packet_t *packet) {
 	struct nd_opt_hdr opt;
 	subnet_t *subnet;
 	uint16_t checksum;
-	bool has_opt;
+	bool has_opt = false;
 
 	struct {
 		struct in6_addr ip6_src;
@@ -1056,8 +1217,6 @@ static void route_neighborsol(node_t *source, vpn_packet_t *packet) {
 		return;
 	}
 
-	has_opt = packet->len >= ether_size + ip6_size + ns_size + opt_size + ETH_ALEN;
-
 	if(source != myself) {
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Got neighbor solicitation request from %s (%s) while in router mode!", source->name, source->hostname);
 		return;
@@ -1066,11 +1225,14 @@ static void route_neighborsol(node_t *source, vpn_packet_t *packet) {
 	/* Copy headers from packet to structs on the stack */
 
 	memcpy(&ip6, DATA(packet) + ether_size, ip6_size);
-	memcpy(&ns, DATA(packet) + ether_size + ip6_size, ns_size);
+	uint16_t plen = ntohs(ip6.ip6_plen);
 
-	if(has_opt) {
-		memcpy(&opt, DATA(packet) + ether_size + ip6_size + ns_size, opt_size);
+	if(ip6.ip6_nxt != IPPROTO_ICMPV6 || plen < ns_size || (size_t)packet->len < ether_size + ip6_size + (size_t)plen) {
+		logger(DEBUG_TRAFFIC, LOG_WARNING, "Cannot route packet: invalid IPv6 payload length (%u) for neighbor solicitation", plen);
+		return;
 	}
+
+	memcpy(&ns, DATA(packet) + ether_size + ip6_size, ns_size);
 
 	/* First, snatch the source address from the neighbor solicitation packet */
 
@@ -1078,36 +1240,56 @@ static void route_neighborsol(node_t *source, vpn_packet_t *packet) {
 		memcpy(mymac.x, DATA(packet) + ETH_ALEN, ETH_ALEN);
 	}
 
-	/* Check if this is a valid neighbor solicitation request */
+	/* Check if this is a valid neighbor solicitation request (RFC 4861 §7.1.1) */
 
-	if(ns.nd_ns_hdr.icmp6_type != ND_NEIGHBOR_SOLICIT ||
-	                (has_opt && opt.nd_opt_type != ND_OPT_SOURCE_LINKADDR)) {
+	if(ns.nd_ns_hdr.icmp6_type != ND_NEIGHBOR_SOLICIT || ns.nd_ns_hdr.icmp6_code != 0 ||
+	                IN6_IS_ADDR_MULTICAST(&ns.nd_ns_target)) {
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Cannot route packet: received unknown type neighbor solicitation request");
 		return;
 	}
 
-	/* Create pseudo header */
+	for(size_t opt_pos = ns_size; opt_pos < plen;) {
+		if(opt_pos + opt_size > plen) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "Cannot route packet: truncated option in neighbor solicitation request");
+			return;
+		}
+
+		struct nd_opt_hdr cur_opt;
+		memcpy(&cur_opt, DATA(packet) + ether_size + ip6_size + opt_pos, opt_size);
+
+		if(cur_opt.nd_opt_len == 0) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "Cannot route packet: zero-length option in neighbor solicitation request");
+			return;
+		}
+
+		size_t cur_len = (size_t)cur_opt.nd_opt_len * 8U;
+
+		if(opt_pos + cur_len > plen) {
+			logger(DEBUG_TRAFFIC, LOG_WARNING, "Cannot route packet: option exceeds payload in neighbor solicitation request");
+			return;
+		}
+
+		if(cur_opt.nd_opt_type == ND_OPT_SOURCE_LINKADDR) {
+			if(IN6_IS_ADDR_UNSPECIFIED(&ip6.ip6_src) || cur_len < opt_size + ETH_ALEN) {
+				logger(DEBUG_TRAFFIC, LOG_WARNING, "Cannot route packet: invalid source link-layer option in neighbor solicitation request");
+				return;
+			}
+
+			has_opt = true;
+		}
+
+		opt_pos += cur_len;
+	}
+
+	/* Create pseudo header and verify checksum over the full ICMPv6 payload */
 
 	pseudo.ip6_src = ip6.ip6_src;
 	pseudo.ip6_dst = ip6.ip6_dst;
-
-	if(has_opt) {
-		pseudo.length = htonl(ns_size + opt_size + ETH_ALEN);
-	} else {
-		pseudo.length = htonl(ns_size);
-	}
-
+	pseudo.length = htonl(plen);
 	pseudo.next = htonl(IPPROTO_ICMPV6);
 
-	/* Generate checksum */
-
 	checksum = inet_checksum(&pseudo, sizeof(pseudo), 0xFFFF);
-	checksum = inet_checksum(&ns, ns_size, checksum);
-
-	if(has_opt) {
-		checksum = inet_checksum(&opt, opt_size, checksum);
-		checksum = inet_checksum(DATA(packet) + ether_size + ip6_size + ns_size + opt_size, ETH_ALEN, checksum);
-	}
+	checksum = inet_checksum(DATA(packet) + ether_size + ip6_size, plen, checksum);
 
 	if(checksum) {
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Cannot route packet: checksum error for neighbor solicitation request");
@@ -1116,18 +1298,20 @@ static void route_neighborsol(node_t *source, vpn_packet_t *packet) {
 
 	/* Check if the IPv6 address exists on the VPN */
 
-	subnet = lookup_subnet_ipv6((ipv6_t *) &ns.nd_ns_target);
+	ipv6_t target_v6;
+	memcpy(&target_v6, &ns.nd_ns_target, sizeof(target_v6));
+	subnet = lookup_subnet_ipv6(&target_v6);
 
 	if(!subnet) {
 		logger(DEBUG_TRAFFIC, LOG_WARNING, "Cannot route packet: neighbor solicitation request for unknown address %hx:%hx:%hx:%hx:%hx:%hx:%hx:%hx",
-		       ntohs(((uint16_t *) &ns.nd_ns_target)[0]),
-		       ntohs(((uint16_t *) &ns.nd_ns_target)[1]),
-		       ntohs(((uint16_t *) &ns.nd_ns_target)[2]),
-		       ntohs(((uint16_t *) &ns.nd_ns_target)[3]),
-		       ntohs(((uint16_t *) &ns.nd_ns_target)[4]),
-		       ntohs(((uint16_t *) &ns.nd_ns_target)[5]),
-		       ntohs(((uint16_t *) &ns.nd_ns_target)[6]),
-		       ntohs(((uint16_t *) &ns.nd_ns_target)[7]));
+		       ntohs(target_v6.x[0]),
+		       ntohs(target_v6.x[1]),
+		       ntohs(target_v6.x[2]),
+		       ntohs(target_v6.x[3]),
+		       ntohs(target_v6.x[4]),
+		       ntohs(target_v6.x[5]),
+		       ntohs(target_v6.x[6]),
+		       ntohs(target_v6.x[7]));
 
 		return;
 	}
@@ -1138,18 +1322,30 @@ static void route_neighborsol(node_t *source, vpn_packet_t *packet) {
 		return;        /* silently ignore */
 	}
 
+	if(IN6_IS_ADDR_UNSPECIFIED(&ip6.ip6_src)) {
+		return;
+	}
+
 	if(decrement_ttl)
 		if(!do_decrement_ttl(source, packet)) {
 			return;
 		}
 
-	/* Create neighbor advertation reply */
+	/* Create neighbor advertisement reply */
+
+	uint16_t na_len = (uint16_t)(has_opt ? (ns_size + opt_size + ETH_ALEN) : ns_size);
+
+	if(DEFAULT_PACKET_OFFSET + ether_size + ip6_size + na_len > MAXSIZE) {
+		return;
+	}
 
 	memcpy(DATA(packet), DATA(packet) + ETH_ALEN, ETH_ALEN); /* copy destination address */
 	DATA(packet)[ETH_ALEN * 2 - 1] ^= 0xFF;                  /* mangle source address so it looks like it's not from us */
 
 	ip6.ip6_dst = ip6.ip6_src;                               /* swap destination and source protocol address */
 	ip6.ip6_src = ns.nd_ns_target;
+	ip6.ip6_plen = htons(na_len);
+	ip6.ip6_hlim = 255;
 
 	if(has_opt) {
 		memcpy(DATA(packet) + ether_size + ip6_size + ns_size + opt_size, DATA(packet) + ETH_ALEN, ETH_ALEN);        /* add fake source hard addr */
@@ -1159,18 +1355,13 @@ static void route_neighborsol(node_t *source, vpn_packet_t *packet) {
 	ns.nd_ns_type = ND_NEIGHBOR_ADVERT;
 	ns.nd_ns_reserved = htonl(0x40000000UL);                 /* Set solicited flag */
 	opt.nd_opt_type = ND_OPT_TARGET_LINKADDR;
+	opt.nd_opt_len = 1;
 
 	/* Create pseudo header */
 
 	pseudo.ip6_src = ip6.ip6_src;
 	pseudo.ip6_dst = ip6.ip6_dst;
-
-	if(has_opt) {
-		pseudo.length = htonl(ns_size + opt_size + ETH_ALEN);
-	} else {
-		pseudo.length = htonl(ns_size);
-	}
-
+	pseudo.length = htonl(na_len);
 	pseudo.next = htonl(IPPROTO_ICMPV6);
 
 	/* Generate checksum */
@@ -1194,6 +1385,7 @@ static void route_neighborsol(node_t *source, vpn_packet_t *packet) {
 		memcpy(DATA(packet) + ether_size + ip6_size + ns_size, &opt, opt_size);
 	}
 
+	packet->len = (length_t)(ether_size + ip6_size + na_len);
 	send_packet(source, packet);
 }
 
@@ -1343,10 +1535,15 @@ static void route_mac(node_t *source, vpn_packet_t *packet) {
 			}
 
 			return;
-		} else if(type == ETH_P_IPV6 && packet->len > 1280 + ethlen) {
-			packet->len = path_mtu;
-			route_ipv6_unreachable(source, packet, ethlen, ICMP6_PACKET_TOO_BIG, 0);
-			return;
+		} else if(type == ETH_P_IPV6) {
+			uint16_t min_ip6_frame = (uint16_t)(1280 + ethlen);
+			uint16_t eff_frame_mtu = path_mtu > min_ip6_frame ? path_mtu : min_ip6_frame;
+
+			if(packet->len > eff_frame_mtu) {
+				packet->len = eff_frame_mtu;
+				route_ipv6_unreachable(source, packet, ethlen, ICMP6_PACKET_TOO_BIG, 0);
+				return;
+			}
 		}
 	}
 
@@ -1368,6 +1565,16 @@ static void send_pcap(vpn_packet_t *packet) {
 
 		if(c->outmaclength && c->outmaclength < len) {
 			len = c->outmaclength;
+		}
+
+		if(len <= 0) {
+			continue;
+		}
+
+		size_t cap = (size_t)(maxoutbufsize > 0 ? maxoutbufsize : 16 * 1024 * 1024);
+
+		if(c->outbuf.len + c->transport_outbuf_len + (size_t)len + 64 > cap) {
+			continue;
 		}
 
 		if(send_request(c, "%d %d %d", CONTROL, REQ_PCAP, len)) {

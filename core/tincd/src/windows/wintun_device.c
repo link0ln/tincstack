@@ -508,9 +508,9 @@ static void read_from_wintun(void) {
 			return;
 		}
 
-		if(size + ETH_HDR <= MTU && size >= 1) {
+		if(size >= 1 && size + ETH_HDR <= MTU && DEFAULT_PACKET_OFFSET + size + ETH_HDR <= MAXSIZE) {
 			vpn_packet_t packet;
-			packet.offset = 0;
+			packet.offset = DEFAULT_PACKET_OFFSET;
 			/* synthesize ethernet header: zero MACs, ethertype from IP version */
 			memset(DATA(&packet), 0, 12);
 			uint8_t version = ippkt[0] >> 4;
@@ -524,7 +524,7 @@ static void read_from_wintun(void) {
 			}
 
 			memcpy(DATA(&packet) + ETH_HDR, ippkt, size);
-			packet.len = size + ETH_HDR;
+			packet.len = (length_t)(size + ETH_HDR);
 			packet.priority = 0;
 			route(myself, &packet);
 		}

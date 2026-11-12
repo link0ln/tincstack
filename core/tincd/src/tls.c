@@ -38,6 +38,7 @@
 #include "logger.h"
 #include "names.h"
 #include "tls.h"
+#include "utils.h"
 #include "xalloc.h"
 #include "yamlconf.h"
 
@@ -45,6 +46,7 @@ bool tls_ready;
 SSL_CTX *tls_server_ctx;
 SSL_CTX *tls_client_ctx;
 uint8_t tls_own_fp[TLS_FP_LEN];
+uint8_t tls_own_chain_fp[TLS_FP_LEN];
 char tls_own_fp_hex[TLS_FP_HEX_LEN];
 char *tls_cert_source;
 
@@ -164,6 +166,198 @@ bool tls_cert_pem_fingerprint(const char *cert_pem, char *hex) {
 	bool ok = tls_x509_fingerprint(cert, NULL, hex);
 	X509_free(cert);
 	return ok;
+}
+
+static bool tls_pem_chain_sha256(const char *cert_pem, uint8_t out[TLS_FP_LEN]) {
+	unsigned int mdlen = 0;
+
+	if(!cert_pem || !EVP_Digest(cert_pem, strlen(cert_pem), out, &mdlen, EVP_sha256(), NULL) || mdlen != TLS_FP_LEN) {
+		return false;
+	}
+
+	return true;
+}
+
+void tls_ssl_own_fp(SSL *ssl, uint8_t out[TLS_FP_LEN]) {
+	X509 *cert = ssl ? SSL_get_certificate(ssl) : NULL;
+
+	if(cert && tls_x509_fingerprint(cert, out, NULL)) {
+		return;
+	}
+
+	memcpy(out, tls_own_fp, TLS_FP_LEN);
+}
+
+static bool valid_port_span(const char *s, const char *end) {
+	if(s >= end) {
+		return false;
+	}
+
+	unsigned long port = 0;
+
+	for(const char *p = s; p < end; p++) {
+		if(!isdigit((uint8_t) *p)) {
+			return false;
+		}
+
+		port = port * 10 + (unsigned long)(*p - '0');
+
+		if(port > 65535) {
+			return false;
+		}
+	}
+
+	return port >= 1;
+}
+
+bool tls_extract_sni_hostname(const char *raw, char *out, size_t outlen) {
+	if(!raw || !out || outlen < 2) {
+		return false;
+	}
+
+	const char *p = raw;
+
+	while(*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+		p++;
+	}
+
+	if(!*p || *p == '[') {
+		/* Bracketed forms are RFC 3986 IP-literals (e.g. [ipv6]:port or [ipv6] port),
+		   which RFC 6066 forbids in TLS SNI. */
+		return false;
+	}
+
+	const char *tok_end = p;
+
+	while(*tok_end && *tok_end != ' ' && *tok_end != '\t' && *tok_end != '\r' && *tok_end != '\n') {
+		tok_end++;
+	}
+
+	size_t colons = 0;
+	const char *colon = NULL;
+
+	for(const char *q = p; q < tok_end; q++) {
+		if(*q == ':') {
+			colons++;
+			colon = q;
+		}
+	}
+
+	/* More than one colon in the first token is an unbracketed IPv6 literal. */
+	if(colons > 1) {
+		return false;
+	}
+
+	const char *host_end = tok_end;
+	const char *rest = tok_end;
+
+	if(colons == 1) {
+		if(!valid_port_span(colon + 1, tok_end)) {
+			return false;
+		}
+
+		host_end = colon;
+	}
+
+	while(*rest == ' ' || *rest == '\t' || *rest == '\r' || *rest == '\n') {
+		rest++;
+	}
+
+	if(*rest) {
+		if(colons == 1) {
+			return false;
+		}
+
+		const char *port_end = rest;
+
+		while(*port_end && *port_end != ' ' && *port_end != '\t' && *port_end != '\r' && *port_end != '\n') {
+			port_end++;
+		}
+
+		if(!valid_port_span(rest, port_end)) {
+			return false;
+		}
+
+		const char *tail = port_end;
+
+		while(*tail == ' ' || *tail == '\t' || *tail == '\r' || *tail == '\n') {
+			tail++;
+		}
+
+		if(*tail) {
+			return false;
+		}
+	}
+
+	size_t hlen = (size_t)(host_end - p);
+
+	while(hlen > 0 && p[hlen - 1] == '.') {
+		hlen--;
+	}
+
+	if(!hlen || hlen > 253 || hlen >= outlen) {
+		return false;
+	}
+
+	char buf[256];
+	int label_len = 0;
+	bool last_label_has_alpha = false;
+
+	for(size_t i = 0; i < hlen; i++) {
+		unsigned char ch = (unsigned char) p[i];
+
+		if(ch == '.') {
+			if(label_len == 0 || buf[i - 1] == '-') {
+				return false;
+			}
+
+			buf[i] = '.';
+			label_len = 0;
+			last_label_has_alpha = false;
+			continue;
+		}
+
+		if(ch >= 'A' && ch <= 'Z') {
+			ch = (unsigned char)(ch - 'A' + 'a');
+		}
+
+		bool is_alpha = (ch >= 'a' && ch <= 'z');
+		bool is_digit = (ch >= '0' && ch <= '9');
+
+		if(!is_alpha && !is_digit && ch != '-') {
+			return false;
+		}
+
+		if(label_len == 0 && ch == '-') {
+			return false;
+		}
+
+		if(++label_len > 63) {
+			return false;
+		}
+
+		if(is_alpha) {
+			last_label_has_alpha = true;
+		}
+
+		buf[i] = (char) ch;
+	}
+
+	if(label_len == 0 || buf[hlen - 1] == '-' || !last_label_has_alpha) {
+		return false;
+	}
+
+	buf[hlen] = 0;
+
+	struct in_addr v4;
+	struct in6_addr v6;
+
+	if(inet_pton(AF_INET, buf, &v4) == 1 || inet_pton(AF_INET6, buf, &v6) == 1) {
+		return false;
+	}
+
+	memcpy(out, buf, hlen + 1);
+	return true;
 }
 
 /* ---- generation ---------------------------------------------------------- */
@@ -475,7 +669,12 @@ static bool load_or_generate(char **cert_pem, char **key_pem, const char **sourc
 		if(!*cert_pem || !*key_pem) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Could not read TlsCert/TlsKey files");
 			free(*cert_pem);
-			free(*key_pem);
+
+			if(*key_pem) {
+				memzero(*key_pem, strlen(*key_pem));
+				free(*key_pem);
+			}
+
 			*cert_pem = *key_pem = NULL;
 			return false;
 		}
@@ -569,7 +768,12 @@ static bool load_or_generate(char **cert_pem, char **key_pem, const char **sourc
 	}
 
 	free(*cert_pem);
-	free(*key_pem);
+
+	if(*key_pem) {
+		memzero(*key_pem, strlen(*key_pem));
+		free(*key_pem);
+	}
+
 	*cert_pem = *key_pem = NULL;
 
 	/* CN/SAN = a generic "localhost": a self-signed localhost certificate is
@@ -703,10 +907,12 @@ bool tls_init(void) {
 	}
 
 	uint8_t fp[TLS_FP_LEN];
+	uint8_t chain_fp[TLS_FP_LEN];
 	char fp_hex[TLS_FP_HEX_LEN];
 
-	if(!tls_cert_pem_fingerprint(cert_pem, fp_hex)) {
+	if(!tls_cert_pem_fingerprint(cert_pem, fp_hex) || !tls_pem_chain_sha256(cert_pem, chain_fp)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Could not compute the TLS certificate fingerprint");
+		memzero(key_pem, strlen(key_pem));
 		free(cert_pem);
 		free(key_pem);
 		return false;
@@ -714,8 +920,9 @@ bool tls_init(void) {
 
 	tls_cert_expires_at = cert_pem_expiry(cert_pem);
 
-	/* On a reload with an unchanged certificate, keep the existing contexts. */
-	if(tls_ready && !strcmp(fp_hex, tls_own_fp_hex)) {
+	/* On a reload with an unchanged certificate and CA chain, keep the existing contexts. */
+	if(tls_ready && !strcmp(fp_hex, tls_own_fp_hex) && !memcmp(chain_fp, tls_own_chain_fp, TLS_FP_LEN)) {
+		memzero(key_pem, strlen(key_pem));
 		free(cert_pem);
 		free(key_pem);
 		return true;
@@ -759,6 +966,7 @@ bool tls_init(void) {
 	}
 
 	memcpy(tls_own_fp, fp, TLS_FP_LEN);
+	memcpy(tls_own_chain_fp, chain_fp, TLS_FP_LEN);
 	free(tls_cert_source);
 	tls_cert_source = xstrdup(source);
 	tls_ready = true;
@@ -778,6 +986,9 @@ void tls_exit(void) {
 		tls_client_ctx = NULL;
 	}
 
+	memset(tls_own_fp, 0, sizeof(tls_own_fp));
+	memset(tls_own_chain_fp, 0, sizeof(tls_own_chain_fp));
+	tls_own_fp_hex[0] = 0;
 	free(tls_cert_source);
 	tls_cert_source = NULL;
 	tls_ready = false;

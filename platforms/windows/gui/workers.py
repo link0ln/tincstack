@@ -10,10 +10,41 @@ through WorkerPool.run().
 
 from __future__ import annotations
 
+import threading
 import traceback
 from typing import Any, Callable
 
 from PySide6 import QtCore
+
+# Global strong-reference registry for active QThread instances (`H-WIN-06`):
+# Qt calls `qFatal("QThread: Destroyed while thread is still running")` if a
+# Python `QThread` wrapper is garbage-collected or its parent is torn down
+# before the underlying OS thread emits `finished`.
+_LIVE_THREADS_LOCK = threading.Lock()
+_LIVE_THREADS: set[QtCore.QThread] = set()
+
+
+def _retain_thread(t: QtCore.QThread) -> None:
+    with _LIVE_THREADS_LOCK:
+        _LIVE_THREADS.add(t)
+
+
+def _release_thread(t: QtCore.QThread) -> None:
+    with _LIVE_THREADS_LOCK:
+        _LIVE_THREADS.discard(t)
+
+
+def wait_all_live(ms: int = 5000) -> bool:
+    """Wait up to `ms` milliseconds per active registered QThread before exit."""
+    with _LIVE_THREADS_LOCK:
+        snap = list(_LIVE_THREADS)
+    ok = True
+    for t in snap:
+        try:
+            ok = t.wait(ms) and ok
+        except RuntimeError:
+            pass
+    return ok
 
 
 class Worker(QtCore.QThread):
@@ -28,6 +59,18 @@ class Worker(QtCore.QThread):
         self._args = args
         self._kwargs = kwargs
         self._callbacks: tuple[Any, ...] = ()
+        self.finished.connect(self._on_finished_cleanup)
+
+    def _on_finished_cleanup(self) -> None:
+        _release_thread(self)
+
+    def start(self, priority: QtCore.QThread.Priority = QtCore.QThread.Priority.InheritPriority) -> None:
+        _retain_thread(self)
+        try:
+            super().start(priority)
+        except BaseException:
+            _release_thread(self)
+            raise
 
     def run(self) -> None:
         try:
@@ -102,8 +145,15 @@ class WorkerPool(QtCore.QObject):
         return w
 
     def _cleanup(self, w: Worker) -> None:
-        tag = self._workers.pop(w, None)
-        w.deleteLater()
+        _release_thread(w)
+        try:
+            tag = self._workers.pop(w, None)
+        except RuntimeError:
+            return
+        try:
+            w.deleteLater()
+        except RuntimeError:
+            pass
         if tag and tag in self._pending and not self.busy(tag):
             fn, args, kwargs, on_done, on_error, on_progress = self._pending.pop(tag)
             self.run(

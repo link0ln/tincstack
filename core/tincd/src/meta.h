@@ -23,6 +23,7 @@
 
 #include "connection.h"
 
+extern bool connection_can_buffer(struct connection_t *c, size_t extra);
 extern bool send_meta(struct connection_t *c, const void *buffer, size_t length);
 extern void send_meta_raw(struct connection_t *c, const void *buffer, size_t length);
 extern bool send_meta_sptps(void *handle, uint8_t type, const void *data, size_t length);

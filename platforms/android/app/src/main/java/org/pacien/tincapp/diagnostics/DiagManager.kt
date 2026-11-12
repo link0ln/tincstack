@@ -25,16 +25,33 @@ import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.commands.Executor
 import org.pacien.tincapp.context.App
 import org.pacien.tincapp.context.AppPaths
+import org.pacien.tincapp.context.CrashRecorder
 import org.pacien.tincapp.data.Networks
 import org.pacien.tincapp.data.TincYaml
 import org.pacien.tincapp.data.Transport
 import org.pacien.tincapp.data.VpnInterfaceConfiguration
 import org.pacien.tincapp.service.TincVpnService
+import org.pacien.tincapp.utils.lastLines
 import org.slf4j.LoggerFactory
+import org.yaml.snakeyaml.DumperOptions
+import org.yaml.snakeyaml.LoaderOptions
+import org.yaml.snakeyaml.Yaml
+import org.yaml.snakeyaml.constructor.SafeConstructor
+import org.yaml.snakeyaml.events.AliasEvent
+import org.yaml.snakeyaml.events.NodeEvent
+import org.yaml.snakeyaml.nodes.MappingNode
+import org.yaml.snakeyaml.nodes.Node
+import org.yaml.snakeyaml.nodes.ScalarNode
+import org.yaml.snakeyaml.nodes.SequenceNode
+import org.yaml.snakeyaml.nodes.Tag
+import org.yaml.snakeyaml.representer.Representer
+import org.yaml.snakeyaml.resolver.Resolver
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
+import java.io.StringReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -52,9 +69,13 @@ import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.Semaphore
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
@@ -77,6 +98,7 @@ object DiagManager {
   const val INCIDENTS_MAX = 500
   private const val EVENTS_FILE_MAX_BYTES = 2L * 1024 * 1024
   private const val MAX_HTTP_BODY_BYTES = 4L * 1024 * 1024
+  private const val MAX_LOGIN_BODY_BYTES = 1024L
   private const val MAX_HTTP_HEADERS = 128
   private const val MAX_HEADER_LINE_LEN = 8192
   private const val PREFS_NAME = "diag_settings"
@@ -86,19 +108,70 @@ object DiagManager {
   private const val PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
   private const val PASSWORD_LEN = 16
   internal const val SESSION_COOKIE_NAME = "tinc_diag_sid"
+  internal const val CSRF_HEADER_NAME = "x-diag-csrf"
   private const val MAX_SESSIONS = 64
   private const val SESSION_TTL_MS = 24L * 60 * 60 * 1000L
   private const val REDACTED_MARKER = "***REDACTED***"
+  private const val ALT_REDACTED_MARKER = "<redacted>"
   private val SECRET_OPTION_KEYS = setOf(
     "ed25519privatekey",
     "privatekey",
     "cloudflaretoken",
     "acmeaccountkey",
+    "acme_account",
     "obfspassword",
   )
+  private val IPV4_LITERAL_RE = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+  private val IPV6_LITERAL_RE = Regex("""^[0-9a-fA-F:]+$""")
   private val SAFE_NET_NAME_RE = Regex("^[A-Za-z0-9_.-]{1,64}$")
   private val SAFE_NODE_NAME_RE = Regex("^[A-Za-z0-9_.-]{1,64}$")
   private val SAFE_PROBE_HOST_RE = Regex("^[A-Za-z0-9_.:\\[\\]-]{1,253}$")
+
+  internal fun isSecretOptionKey(key: String): Boolean {
+    val lower = key.trim().lowercase(Locale.ROOT)
+    if (lower in SECRET_OPTION_KEYS) return true
+    return lower.startsWith("obfs") && lower.endsWith("magicheader")
+  }
+
+  internal fun selectBestVpnIp(
+    subnets: Iterable<String>,
+    interfaceAddresses: Iterable<String> = emptyList(),
+  ): String {
+    fun cleanIpAndPrefix(raw: String): Pair<String, Int?>? {
+      val cidr = raw.substringBefore('#').trim().substringBefore(' ').trim()
+      if (cidr.isEmpty()) return null
+      val ip = cidr.substringBefore('/').trim().removeSurrounding("[", "]")
+      val prefix = if ('/' in cidr) cidr.substringAfter('/').trim().toIntOrNull() else null
+      if (prefix != null && prefix <= 0) return null
+      if (ip.isEmpty() || ip == "0.0.0.0" || ip == "::" || ip == "0:0:0:0:0:0:0:0") return null
+      return ip to prefix
+    }
+
+    var ifaceV6: String? = null
+    for (raw in interfaceAddresses) {
+      val (ip, _) = cleanIpAndPrefix(raw) ?: continue
+      if (IPV4_LITERAL_RE.matches(ip)) return ip
+      if (ifaceV6 == null && ':' in ip && IPV6_LITERAL_RE.matches(ip)) ifaceV6 = ip
+    }
+    if (ifaceV6 != null) return ifaceV6
+
+    var hostV6: String? = null
+    var fallbackV4: String? = null
+    for (raw in subnets) {
+      val (ip, prefix) = cleanIpAndPrefix(raw) ?: continue
+      if (IPV4_LITERAL_RE.matches(ip)) {
+        if (prefix == null || prefix == 32) return ip
+        if (fallbackV4 == null && prefix in 1..31 && !ip.endsWith(".0")) {
+          fallbackV4 = ip
+        }
+      } else if (':' in ip && IPV6_LITERAL_RE.matches(ip)) {
+        if (hostV6 == null && (prefix == null || prefix == 128)) {
+          hostV6 = ip
+        }
+      }
+    }
+    return hostV6 ?: fallbackV4 ?: ""
+  }
 
   val STATUS_BITS = listOf(
     0x0001 to "unused_active",
@@ -147,6 +220,7 @@ object DiagManager {
     var supportedTransports: List<String> = emptyList(),
     var subnets: MutableList<String> = mutableListOf(),
     var transport: String = "",
+    var hasDirectConn: Boolean = false,
   ) {
     val isSelf: Boolean get() = address == "MYSELF"
     val reachable: Boolean get() = isSelf || (status["reachable"] == true)
@@ -157,20 +231,12 @@ object DiagManager {
         val relay = via != "-" && via != name
         return when {
           status["udp_confirmed"] == true && !relay -> "direct-udp"
-          !relay -> "direct-tcp"
+          !relay && nexthop == name && hasDirectConn -> "direct-tcp"
           else -> "relay"
         }
       }
     val vpnAddress: String
-      get() {
-        for (s in subnets) {
-          val ip = s.substringBefore('#').substringBefore('/')
-          if (ip.matches(Regex("""^\d{1,3}(\.\d{1,3}){3}$""")) && ip != "0.0.0.0") {
-            return ip
-          }
-        }
-        return ""
-      }
+      get() = selectBestVpnIp(subnets)
   }
 
   data class DiagEdge(
@@ -375,6 +441,7 @@ object DiagManager {
     for (n in nodes.values) {
       if (n.isSelf) continue
       val c = conns[n.name]
+      n.hasDirectConn = (c != null)
       if (c != null) {
         n.transport = c
       } else if (n.link == "direct-udp") {
@@ -627,7 +694,7 @@ object DiagManager {
         val net = f.name.removeSuffix("-diag-events.jsonl")
         val dq = incidents.getOrPut(net) { ArrayDeque() }
         try {
-          val lines = f.readLines().takeLast(INCIDENTS_MAX)
+          val lines = f.lastLines(INCIDENTS_MAX, maxBytes = 512 * 1024)
           for (line in lines) {
             val trimmed = line.trim()
             if (trimmed.isEmpty()) continue
@@ -669,6 +736,26 @@ object DiagManager {
       }
       try {
         eventsFile(net).delete()
+      } catch (_: Exception) {
+      }
+    }
+
+    fun forgetNetwork(net: String) {
+      synchronized(lock) {
+        series.remove(net)
+        incidents.remove(net)
+        lastTotals.remove(net)
+        latestSnap.remove(net)
+        latestSnapTs.remove(net)
+        val iter = peerState.keys.iterator()
+        while (iter.hasNext()) {
+          if (iter.next().first == net) iter.remove()
+        }
+      }
+      try {
+        val f = eventsFile(net)
+        f.delete()
+        File(baseDir, "${f.name}.1").delete()
       } catch (_: Exception) {
       }
     }
@@ -1007,7 +1094,7 @@ object DiagManager {
       waitMs,
       "diag-ping",
       dstIp.trim(),
-      size.coerceIn(0, 9000).toString(),
+      size.coerceIn(0, 1472).toString(),
       ttl.coerceIn(1, 255).toString(),
       if (df) "1" else "0",
       timeoutMs.coerceIn(100, 15000).toString(),
@@ -1018,7 +1105,7 @@ object DiagManager {
   private fun resolvePeerVpnIp(net: String, target: String): Pair<String, String> {
     val clean = target.trim()
     if (clean.isEmpty()) return "" to ""
-    if (clean.matches(Regex("""^\d{1,3}(\.\d{1,3}){3}$"""))) return clean to clean
+    if (IPV4_LITERAL_RE.matches(clean) && clean != "0.0.0.0") return clean to clean
     val snap = collector.getLatestSnapshot(net) ?: captureLiveSnapshot(net)
     val node = snap.nodes[clean]
     if (node != null && node.vpnAddress.isNotEmpty()) {
@@ -1032,11 +1119,9 @@ object DiagManager {
         val ep = parseHostEndpoints(hostText)
         @Suppress("UNCHECKED_CAST")
         val subs = (ep["subnets"] as? List<String>).orEmpty()
-        for (s in subs) {
-          val ip = s.substringBefore('/').trim()
-          if (ip.matches(Regex("""^\d{1,3}(\.\d{1,3}){3}$""")) && ip != "0.0.0.0") {
-            return ip to clean
-          }
+        val bestIp = selectBestVpnIp(subs)
+        if (bestIp.isNotEmpty()) {
+          return bestIp to clean
         }
       }
     } catch (_: Exception) {
@@ -1604,7 +1689,17 @@ object DiagManager {
   private val secureRandom = SecureRandom()
   private val sessionLock = Any()
   private val sessions = LinkedHashMap<String, Long>()
-  private val httpPool = Executors.newCachedThreadPool { r -> Thread(r, "tinc-diag-http").apply { isDaemon = true } }
+  private val loginLock = Any()
+  private var failedLoginCount: Int = 0
+  private var loginLockoutUntilMs: Long = 0L
+  private val httpPool = ThreadPoolExecutor(
+    2,
+    8,
+    30L,
+    TimeUnit.SECONDS,
+    ArrayBlockingQueue(32),
+    ThreadFactory { r -> Thread(r, "tinc-diag-http").apply { isDaemon = true } },
+  ).apply { allowCoreThreadTimeOut(true) }
   private val samplerExec = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "tinc-diag-sampler").apply { isDaemon = true } }
   private val samplerBusy = AtomicBoolean(false)
   @Volatile private var samplerTask: ScheduledFuture<*>? = null
@@ -1658,9 +1753,53 @@ object DiagManager {
 
   fun getPassword(context: Context? = null): String = ensurePassword(context)
 
+  /**
+   * Rotates the Diagnostic WebUI password, persists it to `SharedPreferences`,
+   * and immediately revokes all active browser session cookies.
+   */
+  fun regeneratePassword(context: Context? = null): String {
+    val ctx = context ?: try { App.getContext() } catch (_: Throwable) { null }
+    val generated = synchronized(serverLock) {
+      val fresh = generateRandomPassword()
+      if (ctx != null) {
+        try {
+          val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+          val editor = prefs?.edit()
+          if (editor != null) {
+            val putEd = editor.putString(PREF_PASSWORD, fresh) ?: editor
+            if (!putEd.commit()) putEd.apply()
+          }
+        } catch (_: Throwable) {
+        }
+      }
+      serverPassword = fresh
+      fresh
+    }
+    synchronized(sessionLock) {
+      sessions.clear()
+    }
+    synchronized(loginLock) {
+      failedLoginCount = 0
+      loginLockoutUntilMs = 0L
+    }
+    return generated
+  }
+
+  fun forgetNetwork(net: String) {
+    if (net.isEmpty()) return
+    try {
+      collector.forgetNetwork(net)
+    } catch (_: Exception) {
+    }
+  }
+
   internal fun resetAuthForTests() {
     synchronized(serverLock) { serverPassword = "" }
     synchronized(sessionLock) { sessions.clear() }
+    synchronized(loginLock) {
+      failedLoginCount = 0
+      loginLockoutUntilMs = 0L
+    }
   }
 
   internal fun constantTimeEquals(a: String, b: String): Boolean {
@@ -1798,7 +1937,7 @@ object DiagManager {
     return AuthKind.NONE to sid
   }
 
-  internal fun parseHostFromHostHeader(hostHeader: String): String? {
+  internal fun parseHostAndPort(hostHeader: String): Pair<String, Int?>? {
     val trimmed = hostHeader.trim()
     if (trimmed.isEmpty()) return null
     if (trimmed.startsWith("[")) {
@@ -1807,17 +1946,19 @@ object DiagManager {
       val ipv6 = trimmed.substring(1, closeIdx)
       if (!ipv6.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' }) return null
       val rem = trimmed.substring(closeIdx + 1)
+      var port: Int? = null
       if (rem.isNotEmpty()) {
         if (!rem.startsWith(":")) return null
         val p = rem.substring(1).toIntOrNull() ?: return null
         if (p !in 1..65535) return null
+        port = p
       }
-      return ipv6.lowercase(Locale.ROOT)
+      return ipv6.lowercase(Locale.ROOT) to port
     }
     val colonCount = trimmed.count { it == ':' }
     if (colonCount == 0) {
       if (!trimmed.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '-' }) return null
-      return trimmed.lowercase(Locale.ROOT)
+      return trimmed.lowercase(Locale.ROOT) to null
     }
     if (colonCount == 1) {
       val host = trimmed.substringBefore(':')
@@ -1825,12 +1966,15 @@ object DiagManager {
       val p = portStr.toIntOrNull() ?: return null
       if (p !in 1..65535 || host.isEmpty()) return null
       if (!host.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '-' }) return null
-      return host.lowercase(Locale.ROOT)
+      return host.lowercase(Locale.ROOT) to p
     }
     // Bare IPv6 literal without brackets/port (e.g. ::1)
     if (!trimmed.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' }) return null
-    return trimmed.lowercase(Locale.ROOT)
+    return trimmed.lowercase(Locale.ROOT) to null
   }
+
+  internal fun parseHostFromHostHeader(hostHeader: String): String? =
+    parseHostAndPort(hostHeader)?.first
 
   private fun collectOwnVpnIps(): Set<String> {
     val ips = HashSet<String>()
@@ -1847,16 +1991,9 @@ object DiagManager {
         collector.getLatestSnapshot(n)?.nodes?.values?.forEach { node ->
           if (node.isSelf) {
             if (node.vpnAddress.isNotEmpty()) ips.add(node.vpnAddress.lowercase(Locale.ROOT))
-            node.subnets.forEach { sub ->
-              val ip = sub.substringBefore('#').substringBefore('/').trim().lowercase(Locale.ROOT)
-              if (ip.isNotEmpty() && ip != "0.0.0.0" && ip != "::") ips.add(ip)
-            }
+            val best = selectBestVpnIp(node.subnets)
+            if (best.isNotEmpty()) ips.add(best.lowercase(Locale.ROOT))
           }
-        }
-        try {
-          val addr = Networks.summary(n).address?.substringBefore('/')?.trim()?.lowercase(Locale.ROOT)
-          if (!addr.isNullOrEmpty() && addr != "0.0.0.0" && addr != "::") ips.add(addr)
-        } catch (_: Throwable) {
         }
         try {
           val yaml = TincYaml(AppPaths.tincYamlFile(n))
@@ -1873,8 +2010,13 @@ object DiagManager {
     return ips
   }
 
-  internal fun isAllowedHost(hostHeader: String, extraAllowedIps: Set<String> = collectOwnVpnIps()): Boolean {
-    val host = parseHostFromHostHeader(hostHeader) ?: return false
+  internal fun isAllowedHost(
+    hostHeader: String,
+    extraAllowedIps: Set<String> = collectOwnVpnIps(),
+    expectedPort: Int? = null,
+  ): Boolean {
+    val (host, port) = parseHostAndPort(hostHeader) ?: return false
+    if (expectedPort != null && port != expectedPort) return false
     if (host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "0:0:0:0:0:0:0:1") {
       return true
     }
@@ -1886,290 +2028,280 @@ object DiagManager {
     hostHeader: String,
     allowMissingOrigin: Boolean,
     extraAllowedIps: Set<String> = collectOwnVpnIps(),
+    expectedPort: Int? = null,
   ): Boolean {
-    val reqHost = parseHostFromHostHeader(hostHeader) ?: return false
-    if (!isAllowedHost(hostHeader, extraAllowedIps)) return false
+    val (reqHost, reqPort) = parseHostAndPort(hostHeader) ?: return false
+    if (!isAllowedHost(hostHeader, extraAllowedIps, expectedPort)) return false
     val cleanOrigin = originHeader.trim()
     if (cleanOrigin.isEmpty()) return allowMissingOrigin
     if (cleanOrigin.equals("null", ignoreCase = true)) return false
+    val isHttps: Boolean
     val hostPort = when {
-      cleanOrigin.startsWith("http://", ignoreCase = true) -> cleanOrigin.substring(7)
-      cleanOrigin.startsWith("https://", ignoreCase = true) -> cleanOrigin.substring(8)
+      cleanOrigin.startsWith("http://", ignoreCase = true) -> {
+        isHttps = false
+        cleanOrigin.substring(7)
+      }
+      cleanOrigin.startsWith("https://", ignoreCase = true) -> {
+        isHttps = true
+        cleanOrigin.substring(8)
+      }
       else -> return false
     }
     if ('/' in hostPort || '?' in hostPort || '#' in hostPort || '@' in hostPort) return false
-    val originHost = parseHostFromHostHeader(hostPort) ?: return false
-    if (!isAllowedHost(hostPort, extraAllowedIps)) return false
+    val (originHost, rawOriginPort) = parseHostAndPort(hostPort) ?: return false
+    val defaultSchemePort = if (isHttps) 443 else 80
+    val effectiveOriginPort = rawOriginPort ?: defaultSchemePort
+    val effectiveReqPort = reqPort ?: expectedPort ?: defaultSchemePort
+    if (expectedPort != null && effectiveOriginPort != expectedPort) return false
+    if (effectiveOriginPort != effectiveReqPort) return false
+    val normalizedOriginHostPort = if (':' in originHost) {
+      "[$originHost]:$effectiveOriginPort"
+    } else {
+      "$originHost:$effectiveOriginPort"
+    }
+    if (!isAllowedHost(normalizedOriginHostPort, extraAllowedIps, expectedPort)) return false
     return originHost.equals(reqHost, ignoreCase = true)
   }
 
-  private data class YamlKeyLine(
-    val indent: Int,
-    val rawKeyToken: String,
-    val key: String,
-    val rest: String,
-  )
+  private val PROXY_URL_CRED_RE = Regex("""^([A-Za-z][A-Za-z0-9+.-]*://)([^/@\s]+)@(.+)$""")
+  private val CRED_PROXY_TYPES = setOf("socks4", "socks4a", "socks5", "http")
 
-  private fun parseYamlKeyLine(line: String): YamlKeyLine? {
-    val trimmedStart = line.trimStart(' ')
-    if (trimmedStart.isEmpty() || trimmedStart.startsWith("#")) return null
-    if (trimmedStart.startsWith("- ") || trimmedStart == "-") return null
-    val indent = line.length - trimmedStart.length
-    if (trimmedStart.startsWith("\"")) {
-      var idx = 1
-      val sb = StringBuilder()
-      var closed = false
-      while (idx < trimmedStart.length) {
-        val c = trimmedStart[idx++]
-        if (c == '"') {
-          closed = true
-          break
+  internal fun redactProxyValue(raw: String): String {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return raw
+    val urlMatch = PROXY_URL_CRED_RE.matchEntire(trimmed)
+    if (urlMatch != null) {
+      return "${urlMatch.groupValues[1]}$REDACTED_MARKER@${urlMatch.groupValues[3]}"
+    }
+    val tokens = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }
+    if (tokens.size >= 4 && tokens[0].lowercase(Locale.ROOT) in CRED_PROXY_TYPES) {
+      return tokens.take(3).joinToString(" ") + " " +
+        List(tokens.size - 3) { REDACTED_MARKER }.joinToString(" ")
+    }
+    return raw
+  }
+
+  private fun isRedactedPlaceholder(raw: String): Boolean {
+    val clean = raw.trim()
+    return clean.equals(REDACTED_MARKER, ignoreCase = true) ||
+      clean.equals(ALT_REDACTED_MARKER, ignoreCase = true)
+  }
+
+  private fun containsRedactedPlaceholder(raw: String): Boolean =
+    raw.contains(REDACTED_MARKER, ignoreCase = true) ||
+      raw.contains(ALT_REDACTED_MARKER, ignoreCase = true)
+
+  private class StrictRawStringResolver : Resolver() {
+    override fun addImplicitResolvers() {
+      addImplicitResolver(Tag.NULL, EMPTY, null)
+    }
+  }
+
+  private fun newStrictYaml(): Yaml {
+    val loaderOpts = LoaderOptions().apply {
+      maxAliasesForCollections = 0
+      isAllowDuplicateKeys = false
+    }
+    val dumperOpts = DumperOptions()
+    return Yaml(
+      SafeConstructor(loaderOpts),
+      Representer(dumperOpts),
+      dumperOpts,
+      loaderOpts,
+      StrictRawStringResolver(),
+    )
+  }
+
+  private fun validateAstNode(node: Node?, depth: Int, sectionContext: String) {
+    if (node == null) return
+    when (node) {
+      is MappingNode -> {
+        if (node.isMerged) {
+          throw IllegalArgumentException("YAML merge keys (<<) are forbidden")
         }
-        if (c == '\\' && idx < trimmedStart.length) {
-          when (val esc = trimmedStart[idx++]) {
-            'n' -> sb.append('\n')
-            'r' -> sb.append('\r')
-            't' -> sb.append('\t')
-            '"', '\\', '/' -> sb.append(esc)
-            else -> sb.append(esc)
+        val checkCaseDupes = depth == 0 || depth == 2 ||
+          (depth == 3 && sectionContext in setOf("options", "keys", "scripts"))
+        val seenLower = if (checkCaseDupes) HashSet<String>() else null
+        for (tuple in node.value) {
+          val kNode = tuple.keyNode
+          if (kNode.tag == Tag.MERGE) {
+            throw IllegalArgumentException("YAML merge keys (<<) are forbidden")
           }
-        } else {
-          sb.append(c)
-        }
-      }
-      if (!closed || idx >= trimmedStart.length || trimmedStart[idx] != ':') return null
-      val afterColon = trimmedStart.substring(idx + 1)
-      if (afterColon.isNotEmpty() && afterColon[0] != ' ' && afterColon[0] != '\t') return null
-      return YamlKeyLine(indent, trimmedStart.substring(0, idx), sb.toString(), afterColon.trim())
-    }
-    if (trimmedStart.startsWith("'")) {
-      var idx = 1
-      val sb = StringBuilder()
-      var closed = false
-      while (idx < trimmedStart.length) {
-        val c = trimmedStart[idx++]
-        if (c == '\'') {
-          if (idx < trimmedStart.length && trimmedStart[idx] == '\'') {
-            sb.append('\'')
-            idx++
-          } else {
-            closed = true
-            break
+          if (kNode !is ScalarNode) {
+            throw IllegalArgumentException("Complex YAML mapping keys are forbidden")
           }
-        } else {
-          sb.append(c)
+          val kStr = kNode.value
+          if (kStr == "<<") {
+            throw IllegalArgumentException("YAML merge keys (<<) are forbidden")
+          }
+          if (seenLower != null && !seenLower.add(kStr.lowercase(Locale.ROOT))) {
+            throw IllegalArgumentException("Duplicate key '$kStr' in YAML")
+          }
+          val nextCtx = if (depth == 2) kStr.lowercase(Locale.ROOT) else sectionContext
+          validateAstNode(tuple.valueNode, depth + 1, nextCtx)
         }
       }
-      if (!closed || idx >= trimmedStart.length || trimmedStart[idx] != ':') return null
-      val afterColon = trimmedStart.substring(idx + 1)
-      if (afterColon.isNotEmpty() && afterColon[0] != ' ' && afterColon[0] != '\t') return null
-      return YamlKeyLine(indent, trimmedStart.substring(0, idx), sb.toString(), afterColon.trim())
-    }
-    var colonIdx = -1
-    for (k in trimmedStart.indices) {
-      if (trimmedStart[k] == ':' && (k + 1 == trimmedStart.length || trimmedStart[k + 1] == ' ' || trimmedStart[k + 1] == '\t')) {
-        colonIdx = k
-        break
+      is SequenceNode -> {
+        for (item in node.value) {
+          validateAstNode(item, depth + 1, sectionContext)
+        }
       }
     }
-    if (colonIdx <= 0) return null
-    val rawKey = trimmedStart.substring(0, colonIdx).trim()
-    if (rawKey.isEmpty() || '=' in rawKey) return null
-    return YamlKeyLine(indent, rawKey, rawKey, trimmedStart.substring(colonIdx + 1).trim())
   }
 
-  private fun isBlockScalarRest(rest: String): Boolean {
-    val clean = if (" #" in rest) rest.substringBefore(" #").trim() else rest
-    return clean.startsWith("|") || clean.startsWith(">")
-  }
-
-  private fun findYamlEntryEndLine(lines: List<String>, startIdx: Int, keyIndent: Int): Int {
-    var endIdx = startIdx
-    var j = startIdx + 1
-    while (j < lines.size) {
-      val l = lines[j]
-      val trimmed = l.trimStart(' ')
-      if (trimmed.isEmpty()) {
-        j++
-        continue
+  private fun parseStrictYamlAst(raw: String): Map<*, *> {
+    try {
+      for (ev in newStrictYaml().parse(StringReader(raw))) {
+        if (ev is AliasEvent) {
+          throw IllegalArgumentException("YAML aliases (*) are forbidden")
+        }
+        if (ev is NodeEvent && !ev.anchor.isNullOrEmpty()) {
+          throw IllegalArgumentException("YAML anchors (&) are forbidden")
+        }
       }
-      val ind = l.length - trimmed.length
-      val isSameIndentSeq = ind == keyIndent && (trimmed.startsWith("- ") || trimmed == "-")
-      if (ind > keyIndent || isSameIndentSeq) {
-        endIdx = j
-        j++
-      } else {
-        break
+      val rootNode = newStrictYaml().compose(StringReader(raw))
+        ?: return emptyMap<String, Any?>()
+      validateAstNode(rootNode, depth = 0, sectionContext = "")
+      val loaded = newStrictYaml().load<Any?>(raw) ?: return emptyMap<String, Any?>()
+      if (loaded !is Map<*, *>) {
+        throw IllegalArgumentException("Top level of tinc.yaml must be a mapping")
       }
+      return loaded
+    } catch (e: IllegalArgumentException) {
+      throw e
+    } catch (e: Exception) {
+      throw IllegalArgumentException("Invalid YAML: ${e.message}")
     }
-    return endIdx
   }
 
-  /**
-   * Redacts ALL private keys under `keys:` (`ed25519_priv`, `rsa_priv`, `tls_key`,
-   * `acme_account`, etc. — everything except public `tls_cert`) and secret options
-   * (`Ed25519PrivateKey`, `PrivateKey`, `CloudflareToken`, `AcmeAccountKey`, `ObfsPassword`),
-   * handling block scalars (`|`, `|-`, `>`), multi-line values, sequences, and flow maps.
-   */
-  @Suppress("UNCHECKED_CAST")
-  internal fun redactYamlSecrets(rawYaml: String): String {
-    if (rawYaml.isBlank()) return rawYaml
-    val hasTrailingNewline = rawYaml.endsWith("\n")
-    val srcLines = rawYaml.replace("\r\n", "\n").let {
+  internal fun redactHostBlockSecrets(hostText: String): String {
+    if (hostText.isEmpty()) return hostText
+    val hasTrailingNl = hostText.endsWith("\n")
+    val lines = hostText.replace("\r\n", "\n").let {
       if (it.endsWith("\n")) it.dropLast(1).split('\n') else it.split('\n')
     }
-    val outLines = ArrayList<String>(srcLines.size)
-
-    var networksIndent = -1
-    var netIndent = -1
-    var sectionIndent = -1
-    var currentSection = ""
-
-    var i = 0
-    while (i < srcLines.size) {
-      val line = srcLines[i]
-      val kl = parseYamlKeyLine(line)
-      if (kl == null) {
-        // Also redact legacy `PrivateKey = ...` lines if any exist outside YAML mappings
-        outLines.add(
-          line.replace(
-            Regex("""(?i)^(\s*(?:Ed25519PrivateKey|PrivateKey|CloudflareToken|AcmeAccountKey|ObfsPassword)\s*=\s*).*$"""),
-            "$1$REDACTED_MARKER",
-          )
-        )
-        i++
-        continue
-      }
-
-      if (sectionIndent >= 0 && kl.indent <= sectionIndent) {
-        sectionIndent = -1
-        currentSection = ""
-      }
-      if (netIndent >= 0 && kl.indent <= netIndent) {
-        netIndent = -1
-        sectionIndent = -1
-        currentSection = ""
-      }
-      if (networksIndent >= 0 && kl.indent <= networksIndent && !kl.key.equals("networks", ignoreCase = true)) {
-        networksIndent = -1
-        netIndent = -1
-        sectionIndent = -1
-        currentSection = ""
-      }
-
-      if (networksIndent < 0 && kl.key == "networks") {
-        networksIndent = kl.indent
-        outLines.add(line)
-        i++
-        continue
-      }
-      if (networksIndent >= 0 && netIndent < 0 && kl.indent > networksIndent) {
-        netIndent = kl.indent
-        outLines.add(line)
-        i++
-        continue
-      }
-      if (netIndent >= 0 && sectionIndent < 0 && kl.indent > netIndent) {
-        sectionIndent = kl.indent
-        currentSection = kl.key.lowercase(Locale.ROOT)
-        // Guard against flow-style `keys: { ed25519_priv: ... }` on the section line itself
-        if (currentSection == "keys" && kl.rest.startsWith("{")) {
-          val endIdx = findYamlEntryEndLine(srcLines, i, kl.indent)
-          outLines.add("${" ".repeat(kl.indent)}${kl.rawKeyToken}:")
-          try {
-            val parsedRoot = TincYaml.newYaml().load<Any?>(rawYaml) as? Map<*, *>
-            val nets = parsedRoot?.get("networks") as? Map<*, *>
-            nets?.values?.firstOrNull()?.let { nObj ->
-              val kMap = (nObj as? Map<*, *>)?.get("keys") as? Map<*, *>
-              kMap?.forEach { (kName, kVal) ->
-                val ks = kName?.toString() ?: return@forEach
-                if (ks.equals("tls_cert", ignoreCase = true)) {
-                  val vs = kVal?.toString().orEmpty()
-                  emitRestoredScalarLines(outLines, kl.indent + 2, TincYaml.formatYamlKey(ks), vs)
-                } else {
-                  outLines.add("${" ".repeat(kl.indent + 2)}${TincYaml.formatYamlKey(ks)}: \"$REDACTED_MARKER\"")
-                }
-              }
-            }
-          } catch (_: Exception) {
-          }
-          i = endIdx + 1
-          continue
+    val out = ArrayList<String>(lines.size)
+    var inPem = false
+    for (line in lines) {
+      val trimmed = line.trim()
+      if (trimmed.startsWith("-----BEGIN ")) inPem = true
+      if (!inPem && TincYaml.isHostKeyValueLine(trimmed)) {
+        val eq = line.indexOf('=')
+        val prefix = line.substring(0, eq + 1)
+        val key = trimmed.substringBefore('=').trim()
+        val value = line.substring(eq + 1).trim()
+        when {
+          isSecretOptionKey(key) -> out.add("$prefix $REDACTED_MARKER")
+          key.equals("Proxy", ignoreCase = true) -> out.add("$prefix ${redactProxyValue(value)}")
+          else -> out.add(line)
         }
-        outLines.add(line)
-        i++
-        continue
+      } else {
+        out.add(line)
       }
-
-      if (sectionIndent >= 0 && kl.indent > sectionIndent) {
-        if (currentSection == "keys") {
-          val endIdx = findYamlEntryEndLine(srcLines, i, kl.indent)
-          if (kl.key.equals("tls_cert", ignoreCase = true)) {
-            for (k in i..endIdx) outLines.add(srcLines[k])
-          } else {
-            outLines.add("${" ".repeat(kl.indent)}${kl.rawKeyToken}: \"$REDACTED_MARKER\"")
-          }
-          i = endIdx + 1
-          continue
-        }
-        if (currentSection == "options" && kl.key.lowercase(Locale.ROOT) in SECRET_OPTION_KEYS) {
-          val endIdx = findYamlEntryEndLine(srcLines, i, kl.indent)
-          outLines.add("${" ".repeat(kl.indent)}${kl.rawKeyToken}: \"$REDACTED_MARKER\"")
-          i = endIdx + 1
-          continue
-        }
-        if (isBlockScalarRest(kl.rest)) {
-          val endIdx = findYamlEntryEndLine(srcLines, i, kl.indent)
-          for (k in i..endIdx) outLines.add(srcLines[k])
-          i = endIdx + 1
-          continue
-        }
-      } else if (kl.key.lowercase(Locale.ROOT) in SECRET_OPTION_KEYS) {
-        val endIdx = findYamlEntryEndLine(srcLines, i, kl.indent)
-        outLines.add("${" ".repeat(kl.indent)}${kl.rawKeyToken}: \"$REDACTED_MARKER\"")
-        i = endIdx + 1
-        continue
-      }
-
-      outLines.add(line)
-      i++
+      if (trimmed.startsWith("-----END ")) inPem = false
     }
-
-    val joined = outLines.joinToString("\n") + if (hasTrailingNewline) "\n" else ""
-    // Defense-in-depth verification: ensure parsed YAML contains no unredacted secret keys.
-    try {
-      val root = TincYaml.newYaml().load<Any?>(joined) as? Map<*, *>
-      val nets = root?.get("networks") as? Map<*, *>
-      if (nets != null) {
-        for ((_, netVal) in nets) {
-          val nMap = netVal as? Map<*, *> ?: continue
-          val kMap = nMap["keys"] as? Map<*, *>
-          if (kMap != null) {
-            for ((k, v) in kMap) {
-              val ks = k?.toString() ?: continue
-              if (!ks.equals("tls_cert", ignoreCase = true) && v?.toString() != REDACTED_MARKER) {
-                return "# YAML contains unsupported flow/anchor secrets; raw view suppressed\n"
-              }
-            }
-          }
-          val oMap = nMap["options"] as? Map<*, *>
-          if (oMap != null) {
-            for ((k, v) in oMap) {
-              val ks = k?.toString() ?: continue
-              if (ks.lowercase(Locale.ROOT) in SECRET_OPTION_KEYS) {
-                val vals = TincYaml.valuesOf(v)
-                if (vals.any { it != REDACTED_MARKER }) {
-                  return "# YAML contains unsupported flow/anchor secrets; raw view suppressed\n"
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch (_: Exception) {
-    }
-    return joined
+    return out.joinToString("\n") + if (hasTrailingNl) "\n" else ""
   }
+
+  private fun parseHostVarsMapCaseInsensitive(hostText: String?): Map<String, List<String>> {
+    if (hostText.isNullOrEmpty()) return emptyMap()
+    val out = LinkedHashMap<String, MutableList<String>>()
+    var inPem = false
+    for (line in hostText.replace("\r\n", "\n").split('\n')) {
+      val trimmed = line.trim()
+      if (trimmed.startsWith("-----BEGIN ")) inPem = true
+      if (!inPem && TincYaml.isHostKeyValueLine(trimmed)) {
+        val key = trimmed.substringBefore('=').trim().lowercase(Locale.ROOT)
+        val value = trimmed.substringAfter('=').trim()
+        out.getOrPut(key) { ArrayList() }.add(value)
+      }
+      if (trimmed.startsWith("-----END ")) inPem = false
+    }
+    return out
+  }
+
+  internal fun restoreHostBlockSecrets(
+    netName: String,
+    peerName: String,
+    subHostText: String,
+    diskHostText: String?,
+  ): String {
+    val subVars = parseHostVarsMapCaseInsensitive(subHostText)
+    val diskVars = parseHostVarsMapCaseInsensitive(diskHostText)
+    if (subVars["scriptsinterpreter"].orEmpty() != diskVars["scriptsinterpreter"].orEmpty()) {
+      throw IllegalArgumentException("Modifying 'ScriptsInterpreter' via Diagnostic WebUI is forbidden")
+    }
+    if (subHostText.isEmpty()) return subHostText
+    val hasTrailingNl = subHostText.endsWith("\n")
+    val lines = subHostText.replace("\r\n", "\n").let {
+      if (it.endsWith("\n")) it.dropLast(1).split('\n') else it.split('\n')
+    }
+    val out = ArrayList<String>(lines.size)
+    val seenSecretIdx = HashMap<String, Int>()
+    var inPem = false
+    for (line in lines) {
+      val trimmed = line.trim()
+      if (trimmed.startsWith("-----BEGIN ")) inPem = true
+      if (!inPem && TincYaml.isHostKeyValueLine(trimmed)) {
+        val eq = line.indexOf('=')
+        val prefix = line.substring(0, eq + 1)
+        val key = trimmed.substringBefore('=').trim()
+        val keyLower = key.lowercase(Locale.ROOT)
+        val value = line.substring(eq + 1).trim()
+        if (containsRedactedPlaceholder(value) || containsRedactedPlaceholder(key)) {
+          if (containsRedactedPlaceholder(key)) {
+            throw IllegalArgumentException("Redacted placeholder is forbidden in host '$peerName' key")
+          }
+          val idx = seenSecretIdx[keyLower] ?: 0
+          seenSecretIdx[keyLower] = idx + 1
+          val origVals = diskVars[keyLower].orEmpty()
+          when {
+            isSecretOptionKey(key) -> {
+              if (!isRedactedPlaceholder(value) || origVals.isEmpty()) {
+                throw IllegalArgumentException(
+                  "Cannot restore redacted secret '$key' in host '$peerName' of '$netName'"
+                )
+              }
+              val restoredVal = origVals.getOrElse(idx) { origVals.first() }
+              out.add("$prefix $restoredVal")
+            }
+            key.equals("Proxy", ignoreCase = true) -> {
+              val origProxy = origVals.getOrNull(idx)
+                ?: throw IllegalArgumentException(
+                  "Cannot restore redacted Proxy in host '$peerName' of '$netName'"
+                )
+              if (!isRedactedPlaceholder(value) && value != redactProxyValue(origProxy).trim()) {
+                throw IllegalArgumentException(
+                  "Cannot modify Proxy endpoint while keeping redacted credentials in host '$peerName'"
+                )
+              }
+              out.add("$prefix $origProxy")
+            }
+            else -> throw IllegalArgumentException(
+              "Redacted placeholder is forbidden in non-secret key '$key' of host '$peerName'"
+            )
+          }
+        } else {
+          out.add(line)
+        }
+      } else {
+        if (containsRedactedPlaceholder(line)) {
+          throw IllegalArgumentException("Redacted placeholder is forbidden in host '$peerName'")
+        }
+        out.add(line)
+      }
+      if (trimmed.startsWith("-----END ")) inPem = false
+    }
+    return out.joinToString("\n") + if (hasTrailingNl) "\n" else ""
+  }
+
+  private fun findSectionCaseInsensitive(map: Map<*, *>, section: String): Any? =
+    map.entries.firstOrNull { it.key?.toString()?.equals(section, ignoreCase = true) == true }?.value
+
+  private fun optionValuesCaseInsensitive(optsMap: Map<*, *>, key: String): List<String> =
+    optsMap.entries
+      .filter { it.key?.toString()?.equals(key, ignoreCase = true) == true }
+      .flatMap { TincYaml.valuesOf(it.value) }
 
   private fun emitRestoredScalarLines(outLines: MutableList<String>, indent: Int, rawKeyToken: String, value: String) {
     val pad = " ".repeat(indent)
@@ -2187,9 +2319,181 @@ object DiagManager {
     }
   }
 
-  private fun isRedactedValueToken(rest: String): Boolean {
-    val clean = rest.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-    return clean == REDACTED_MARKER
+  @Suppress("UNCHECKED_CAST")
+  private fun emitCanonicalTincYaml(root: Map<String, Any?>): String {
+    val outLines = ArrayList<String>()
+    for ((topKey, topVal) in root) {
+      if (topKey.equals("networks", ignoreCase = true)) continue
+      emitRestoredScalarLines(outLines, 0, TincYaml.formatYamlKey(topKey), topVal?.toString().orEmpty())
+    }
+    val nets = root["networks"] as? Map<String, Any?>
+    if (nets != null) {
+      if (nets.isEmpty()) {
+        outLines.add("networks: {}")
+      } else {
+        outLines.add("networks:")
+        for ((netName, netObj) in nets) {
+          val netMap = netObj as? Map<String, Any?> ?: continue
+          if (netMap.isEmpty()) {
+            outLines.add("  ${TincYaml.formatYamlKey(netName)}: {}")
+            continue
+          }
+          outLines.add("  ${TincYaml.formatYamlKey(netName)}:")
+          for ((secKey, secVal) in netMap) {
+            when (secKey.lowercase(Locale.ROOT)) {
+              "options" -> {
+                val opts = secVal as? Map<String, Any?> ?: emptyMap()
+                if (opts.isEmpty()) {
+                  outLines.add("    options: {}")
+                } else {
+                  outLines.add("    options:")
+                  for ((ok, ov) in opts) {
+                    val fmtKey = TincYaml.formatYamlKey(ok)
+                    if (ov is List<*>) {
+                      if (ov.isNotEmpty()) {
+                        outLines.add("      $fmtKey:")
+                        for (item in ov) {
+                          outLines.add("        - ${TincYaml.formatYamlScalar(item?.toString().orEmpty())}")
+                        }
+                      }
+                    } else {
+                      emitRestoredScalarLines(outLines, 6, fmtKey, ov?.toString().orEmpty())
+                    }
+                  }
+                }
+              }
+              "hosts", "keys", "scripts" -> {
+                val canonicalSec = secKey.lowercase(Locale.ROOT)
+                val entries = secVal as? Map<String, Any?> ?: emptyMap()
+                if (entries.isEmpty()) {
+                  if (canonicalSec != "scripts") {
+                    outLines.add("    $canonicalSec: {}")
+                  }
+                } else {
+                  outLines.add("    $canonicalSec:")
+                  for ((ek, ev) in entries) {
+                    emitRestoredScalarLines(outLines, 6, TincYaml.formatYamlKey(ek), ev?.toString().orEmpty())
+                  }
+                }
+              }
+              else -> {
+                emitRestoredScalarLines(outLines, 4, TincYaml.formatYamlKey(secKey), secVal?.toString().orEmpty())
+              }
+            }
+          }
+        }
+      }
+    }
+    return outLines.joinToString("\n") + "\n"
+  }
+
+  /**
+   * Redacts ALL private keys under `keys:` (`ed25519_priv`, `rsa_priv`, `tls_key`,
+   * `acme_account`, etc. — everything except public `tls_cert`), secret options
+   * (`Ed25519PrivateKey`, `PrivateKey`, `CloudflareToken`, `AcmeAccountKey`, `acme_account`,
+   * `ObfsPassword`, `Obfs*MagicHeader`), `Proxy` credentials, and host-level secrets
+   * using a single canonical YAML AST without any line-scanner differential.
+   */
+  @Suppress("UNCHECKED_CAST")
+  internal fun redactYamlSecrets(rawYaml: String): String {
+    if (rawYaml.isBlank()) return rawYaml
+    val suppressedMsg = "# YAML contains unsupported flow/anchor secrets; raw view suppressed\n"
+    val root = try {
+      parseStrictYamlAst(rawYaml)
+    } catch (_: Exception) {
+      return suppressedMsg
+    }
+    if (root.isEmpty()) return rawYaml
+
+    val redactedRoot = LinkedHashMap<String, Any?>()
+    for ((topKObj, topVObj) in root) {
+      val topKey = topKObj?.toString() ?: return suppressedMsg
+      if (topKey.equals("networks", ignoreCase = true)) {
+        val netsMap = topVObj as? Map<*, *> ?: return suppressedMsg
+        val redactedNets = LinkedHashMap<String, Any?>()
+        for ((nKeyObj, nValObj) in netsMap) {
+          val netName = nKeyObj?.toString() ?: return suppressedMsg
+          val nMap = nValObj as? Map<*, *> ?: return suppressedMsg
+          val redactedNet = LinkedHashMap<String, Any?>()
+          for ((secKObj, secVObj) in nMap) {
+            val secKey = secKObj?.toString() ?: return suppressedMsg
+            when (secKey.lowercase(Locale.ROOT)) {
+              "keys" -> {
+                val kMap = if (secVObj == null) emptyMap<Any?, Any?>() else (secVObj as? Map<*, *> ?: return suppressedMsg)
+                val outKeys = LinkedHashMap<String, String>()
+                for ((kObj, vObj) in kMap) {
+                  val ks = kObj?.toString() ?: return suppressedMsg
+                  outKeys[ks] = if (ks.equals("tls_cert", ignoreCase = true)) {
+                    vObj?.toString().orEmpty()
+                  } else {
+                    REDACTED_MARKER
+                  }
+                }
+                redactedNet["keys"] = outKeys
+              }
+              "options" -> {
+                val oMap = if (secVObj == null) emptyMap<Any?, Any?>() else (secVObj as? Map<*, *> ?: return suppressedMsg)
+                val outOpts = LinkedHashMap<String, Any?>()
+                for ((kObj, vObj) in oMap) {
+                  val ks = kObj?.toString() ?: return suppressedMsg
+                  outOpts[ks] = redactOptionValue(ks, vObj)
+                }
+                redactedNet["options"] = outOpts
+              }
+              "hosts" -> {
+                val hMap = if (secVObj == null) emptyMap<Any?, Any?>() else (secVObj as? Map<*, *> ?: return suppressedMsg)
+                val outHosts = LinkedHashMap<String, String>()
+                for ((hObj, hVal) in hMap) {
+                  val hs = hObj?.toString() ?: return suppressedMsg
+                  outHosts[hs] = redactHostBlockSecrets(hVal?.toString().orEmpty())
+                }
+                redactedNet["hosts"] = outHosts
+              }
+              "scripts" -> {
+                val sMap = if (secVObj == null) emptyMap<Any?, Any?>() else (secVObj as? Map<*, *> ?: return suppressedMsg)
+                val outScripts = LinkedHashMap<String, String>()
+                for ((sObj, sVal) in sMap) {
+                  val ss = sObj?.toString() ?: return suppressedMsg
+                  outScripts[ss] = sVal?.toString().orEmpty()
+                }
+                if (outScripts.isNotEmpty()) redactedNet["scripts"] = outScripts
+              }
+              "autostart", "full_tunnel" -> {
+                if (secVObj != null && secVObj !is String && secVObj !is Number && secVObj !is Boolean) {
+                  return suppressedMsg
+                }
+                redactedNet[secKey] = secVObj?.toString().orEmpty()
+              }
+              else -> return suppressedMsg
+            }
+          }
+          redactedNets[netName] = redactedNet
+        }
+        redactedRoot["networks"] = redactedNets
+      } else if (topVObj == null || topVObj is String || topVObj is Number || topVObj is Boolean) {
+        redactedRoot[topKey] = topVObj?.toString().orEmpty()
+      } else {
+        return suppressedMsg
+      }
+    }
+    return emitCanonicalTincYaml(redactedRoot)
+  }
+
+  internal fun redactOptionValue(key: String, rawVal: Any?): Any {
+    return when {
+      isSecretOptionKey(key) -> {
+        if (rawVal is List<*>) List(rawVal.size.coerceAtLeast(1)) { REDACTED_MARKER } else REDACTED_MARKER
+      }
+      key.equals("Proxy", ignoreCase = true) -> {
+        if (rawVal is List<*>) {
+          rawVal.map { redactProxyValue(it?.toString().orEmpty()) }
+        } else {
+          redactProxyValue(rawVal?.toString().orEmpty())
+        }
+      }
+      rawVal is List<*> -> TincYaml.valuesOf(rawVal)
+      else -> rawVal?.toString().orEmpty()
+    }
   }
 
   private fun normalizeScriptsSection(scriptsObj: Any?): Map<String, String> {
@@ -2204,28 +2508,40 @@ object DiagManager {
   }
 
   /**
-   * Restores `***REDACTED***` entries under `keys:` and `options:` from [diskYaml]
-   * without clobbering, and forbids injecting or modifying `scripts:` via the Diagnostic WebUI.
+   * Validates [submittedYaml] using a strict anchor/merge-free AST, blocks creating or
+   * modifying `scripts:` and `ScriptsInterpreter` (as well as `Proxy = exec`), and
+   * restores redacted secrets strictly from matching `(netName, section, peerIfHost, exactKey)`
+   * entries in [diskYaml] on the canonical AST — eliminating parser-differential exfiltration.
    */
   @Suppress("UNCHECKED_CAST")
   internal fun restoreYamlSecretsAndValidate(submittedYaml: String, diskYaml: String): String {
-    val subRootObj = try {
-      TincYaml.newYaml().load<Any?>(submittedYaml)
-    } catch (e: Exception) {
-      throw IllegalArgumentException("Invalid YAML: ${e.message}")
+    val subRootObj = parseStrictYamlAst(submittedYaml)
+    for ((topKObj, topVObj) in subRootObj) {
+      val topKey = topKObj?.toString()?.trim().orEmpty()
+      if (topKey.equals("scripts", ignoreCase = true)) {
+        throw IllegalArgumentException("Modifying 'scripts' via Diagnostic WebUI is forbidden")
+      }
+      if (!topKey.equals("networks", ignoreCase = true) && !topKey.equals("workdir", ignoreCase = true)) {
+        throw IllegalArgumentException("Unsupported top-level key '$topKey' in tinc.yaml")
+      }
+      if (!topKey.equals("networks", ignoreCase = true)) {
+        if (topVObj != null && topVObj !is String && topVObj !is Number && topVObj !is Boolean) {
+          throw IllegalArgumentException("Top-level '$topKey' must be a scalar")
+        }
+        if (containsRedactedPlaceholder(topVObj?.toString().orEmpty())) {
+          throw IllegalArgumentException("Redacted placeholder is forbidden in '$topKey'")
+        }
+      }
     }
-    if (subRootObj !is Map<*, *>) throw IllegalArgumentException("Top level of tinc.yaml must be a mapping")
-    if (subRootObj.keys.any { it?.toString()?.equals("scripts", ignoreCase = true) == true }) {
-      throw IllegalArgumentException("Modifying 'scripts' via Diagnostic WebUI is forbidden")
-    }
-    val subNetsObj = subRootObj["networks"]
+
+    val subNetsObj = findSectionCaseInsensitive(subRootObj, "networks")
       ?: throw IllegalArgumentException("Missing 'networks' mapping in tinc.yaml")
     if (subNetsObj !is Map<*, *>) throw IllegalArgumentException("'networks' must be a mapping")
 
     val diskNets: Map<String, Map<String, Any?>> = if (diskYaml.isNotBlank()) {
       try {
         val dRoot = TincYaml.newYaml().load<Any?>(diskYaml) as? Map<*, *>
-        val dNets = dRoot?.get("networks") as? Map<*, *>
+        val dNets = dRoot?.let { findSectionCaseInsensitive(it, "networks") } as? Map<*, *>
         dNets?.entries?.mapNotNull { (k, v) ->
           val m = v as? Map<*, *> ?: return@mapNotNull null
           k.toString() to m.entries.associate { it.key.toString() to it.value }
@@ -2237,126 +2553,212 @@ object DiagManager {
       emptyMap()
     }
 
+    val restoredRoot = LinkedHashMap<String, Any?>()
+    findSectionCaseInsensitive(subRootObj, "workdir")?.let { wd ->
+      restoredRoot["workdir"] = wd.toString()
+    }
+    val restoredNets = LinkedHashMap<String, Any?>()
+
     for ((nKey, nVal) in subNetsObj) {
-      val netName = nKey?.toString() ?: continue
+      val netName = nKey?.toString()?.trim().orEmpty()
+      if (!isSafeNetSyntax(netName)) {
+        throw IllegalArgumentException("Invalid network name '$netName' in tinc.yaml")
+      }
       val nMap = nVal as? Map<*, *>
         ?: throw IllegalArgumentException("Network '$netName' must be a mapping")
-      val subScriptsEntry = nMap.entries.firstOrNull { it.key?.toString()?.equals("scripts", ignoreCase = true) == true }
       val diskMap = diskNets[netName]
-      val diskScriptsEntry = diskMap?.entries?.firstOrNull { it.key.equals("scripts", ignoreCase = true) }
-      val subScripts = normalizeScriptsSection(subScriptsEntry?.value)
-      val diskScripts = normalizeScriptsSection(diskScriptsEntry?.value)
+
+      val subScripts = normalizeScriptsSection(findSectionCaseInsensitive(nMap, "scripts"))
+      val diskScripts = normalizeScriptsSection(diskMap?.let { findSectionCaseInsensitive(it, "scripts") })
       if (subScripts != diskScripts) {
         throw IllegalArgumentException("Modifying 'scripts' via Diagnostic WebUI is forbidden")
       }
-    }
 
-    if (!submittedYaml.contains(REDACTED_MARKER) || diskNets.isEmpty()) {
-      return submittedYaml
-    }
-
-    val hasTrailingNewline = submittedYaml.endsWith("\n")
-    val srcLines = submittedYaml.replace("\r\n", "\n").let {
-      if (it.endsWith("\n")) it.dropLast(1).split('\n') else it.split('\n')
-    }
-    val outLines = ArrayList<String>(srcLines.size + 16)
-
-    var networksIndent = -1
-    var netIndent = -1
-    var currentNet = ""
-    var sectionIndent = -1
-    var currentSection = ""
-
-    var i = 0
-    while (i < srcLines.size) {
-      val line = srcLines[i]
-      val kl = parseYamlKeyLine(line)
-      if (kl == null) {
-        outLines.add(line)
-        i++
-        continue
+      val diskOpts = (diskMap?.let { findSectionCaseInsensitive(it, "options") } as? Map<*, *>).orEmpty()
+      val subOptsRaw = findSectionCaseInsensitive(nMap, "options")
+      if (subOptsRaw != null && subOptsRaw !is Map<*, *>) {
+        throw IllegalArgumentException("'options' in network '$netName' must be a mapping")
+      }
+      val subOptsMap = (subOptsRaw as? Map<*, *>).orEmpty()
+      val subInterp = optionValuesCaseInsensitive(subOptsMap, "ScriptsInterpreter")
+      val diskInterp = optionValuesCaseInsensitive(diskOpts, "ScriptsInterpreter")
+      if (subInterp != diskInterp) {
+        throw IllegalArgumentException("Modifying 'ScriptsInterpreter' via Diagnostic WebUI is forbidden")
+      }
+      val subExecProxies = optionValuesCaseInsensitive(subOptsMap, "Proxy").filter {
+        val t = it.trim()
+        t.equals("exec", ignoreCase = true) || t.startsWith("exec ", ignoreCase = true)
+      }
+      val diskExecProxies = optionValuesCaseInsensitive(diskOpts, "Proxy").filter {
+        val t = it.trim()
+        t.equals("exec", ignoreCase = true) || t.startsWith("exec ", ignoreCase = true)
+      }
+      if (subExecProxies != diskExecProxies) {
+        throw IllegalArgumentException("Modifying 'Proxy = exec' via Diagnostic WebUI is forbidden")
       }
 
-      if (sectionIndent >= 0 && kl.indent <= sectionIndent) {
-        sectionIndent = -1
-        currentSection = ""
-      }
-      if (netIndent >= 0 && kl.indent <= netIndent) {
-        netIndent = -1
-        currentNet = ""
-        sectionIndent = -1
-        currentSection = ""
-      }
-      if (networksIndent >= 0 && kl.indent <= networksIndent && !kl.key.equals("networks", ignoreCase = true)) {
-        networksIndent = -1
-        netIndent = -1
-        currentNet = ""
-        sectionIndent = -1
-        currentSection = ""
-      }
-
-      if (networksIndent < 0 && kl.key == "networks") {
-        networksIndent = kl.indent
-        outLines.add(line)
-        i++
-        continue
-      }
-      if (networksIndent >= 0 && netIndent < 0 && kl.indent > networksIndent) {
-        netIndent = kl.indent
-        currentNet = kl.key
-        outLines.add(line)
-        i++
-        continue
-      }
-      if (netIndent >= 0 && sectionIndent < 0 && kl.indent > netIndent) {
-        sectionIndent = kl.indent
-        currentSection = kl.key.lowercase(Locale.ROOT)
-        outLines.add(line)
-        i++
-        continue
-      }
-
-      if (sectionIndent >= 0 && kl.indent > sectionIndent) {
-        val diskNetMap = diskNets[currentNet] ?: diskNets.values.firstOrNull()
-        if (currentSection == "keys" && !kl.key.equals("tls_cert", ignoreCase = true) && isRedactedValueToken(kl.rest)) {
-          val diskKeys = diskNetMap?.get("keys") as? Map<*, *>
-          val origVal = diskKeys?.entries?.firstOrNull { it.key.toString().equals(kl.key, ignoreCase = true) }?.value?.toString()
-          if (origVal != null) {
-            emitRestoredScalarLines(outLines, kl.indent, kl.rawKeyToken, origVal)
-            i++
-            continue
-          }
+      val restoredNet = LinkedHashMap<String, Any?>()
+      for ((secKeyObj, secValObj) in nMap) {
+        val secKey = secKeyObj?.toString()?.trim().orEmpty()
+        if (containsRedactedPlaceholder(secKey)) {
+          throw IllegalArgumentException("Redacted placeholder is forbidden in section name")
         }
-        if (currentSection == "options" && kl.key.lowercase(Locale.ROOT) in SECRET_OPTION_KEYS && isRedactedValueToken(kl.rest)) {
-          val diskOpts = diskNetMap?.get("options") as? Map<*, *>
-          val origOpt = diskOpts?.entries?.firstOrNull { it.key.toString().equals(kl.key, ignoreCase = true) }?.value
-          if (origOpt != null) {
-            val vals = TincYaml.valuesOf(origOpt)
-            if (vals.size == 1) {
-              emitRestoredScalarLines(outLines, kl.indent, kl.rawKeyToken, vals[0])
-            } else if (vals.size > 1) {
-              val pad = " ".repeat(kl.indent)
-              val itemPad = " ".repeat(kl.indent + 2)
-              outLines.add("$pad${kl.rawKeyToken}:")
-              for (v in vals) outLines.add("$itemPad- ${TincYaml.formatYamlScalar(v)}")
+        when (secKey.lowercase(Locale.ROOT)) {
+          "options" -> {
+            val outOpts = LinkedHashMap<String, Any?>()
+            for ((optKObj, optVObj) in subOptsMap) {
+              val optKey = optKObj?.toString()?.trim().orEmpty()
+              if (optKey.isEmpty() || containsRedactedPlaceholder(optKey)) {
+                throw IllegalArgumentException("Invalid option key '$optKey'")
+              }
+              val isScalar = optVObj == null || optVObj is String || optVObj is Number || optVObj is Boolean
+              val isScalarList = optVObj is List<*> && optVObj.all {
+                it is String || it is Number || it is Boolean
+              }
+              if (!isScalar && !isScalarList) {
+                throw IllegalArgumentException("Option '$optKey' must be a scalar or list of scalars")
+              }
+              val vals = TincYaml.valuesOf(optVObj)
+              if (vals.any(::containsRedactedPlaceholder)) {
+                when {
+                  isSecretOptionKey(optKey) -> {
+                    val diskEntry = diskOpts.entries.firstOrNull {
+                      it.key?.toString()?.equals(optKey, ignoreCase = true) == true
+                    } ?: throw IllegalArgumentException(
+                      "Cannot restore redacted option '$optKey': no matching secret on disk for '$netName'"
+                    )
+                    val diskVals = TincYaml.valuesOf(diskEntry.value)
+                    if (diskVals.isEmpty()) {
+                      throw IllegalArgumentException("Cannot restore empty secret option '$optKey'")
+                    }
+                    outOpts[optKey] = when {
+                      vals.size == 1 && isRedactedPlaceholder(vals[0]) -> {
+                        if (diskEntry.value is List<*>) diskVals else diskVals.first()
+                      }
+                      vals.size == diskVals.size && vals.all { isRedactedPlaceholder(it) || !containsRedactedPlaceholder(it) } -> {
+                        vals.mapIndexed { idx, v -> if (isRedactedPlaceholder(v)) diskVals[idx] else v }
+                      }
+                      else -> throw IllegalArgumentException("Invalid redacted placeholder in option '$optKey'")
+                    }
+                  }
+                  optKey.equals("Proxy", ignoreCase = true) -> {
+                    val diskProxyVals = optionValuesCaseInsensitive(diskOpts, "Proxy")
+                    if (diskProxyVals.isEmpty() || vals.size > diskProxyVals.size) {
+                      throw IllegalArgumentException(
+                        "Cannot restore redacted Proxy credentials: no matching Proxy on disk for '$netName'"
+                      )
+                    }
+                    val restoredProxies = vals.mapIndexed { idx, v ->
+                      val orig = diskProxyVals[idx]
+                      if (!isRedactedPlaceholder(v) && v.trim() != redactProxyValue(orig).trim()) {
+                        throw IllegalArgumentException(
+                          "Cannot change Proxy endpoint while keeping redacted credentials"
+                        )
+                      }
+                      orig
+                    }
+                    outOpts[optKey] = if (optVObj is List<*>) restoredProxies else restoredProxies.first()
+                  }
+                  else -> throw IllegalArgumentException(
+                    "Redacted placeholder is forbidden in non-secret option '$optKey'"
+                  )
+                }
+              } else {
+                outOpts[optKey] = if (optVObj is List<*>) vals else (optVObj?.toString().orEmpty())
+              }
             }
-            i++
-            continue
+            restoredNet["options"] = outOpts
           }
-        }
-        if (isBlockScalarRest(kl.rest)) {
-          val endIdx = findYamlEntryEndLine(srcLines, i, kl.indent)
-          for (k in i..endIdx) outLines.add(srcLines[k])
-          i = endIdx + 1
-          continue
+          "keys" -> {
+            if (secValObj != null && secValObj !is Map<*, *>) {
+              throw IllegalArgumentException("'keys' in network '$netName' must be a mapping")
+            }
+            val subKeys = (secValObj as? Map<*, *>).orEmpty()
+            val diskKeys = (diskMap?.let { findSectionCaseInsensitive(it, "keys") } as? Map<*, *>).orEmpty()
+            val outKeys = LinkedHashMap<String, String>()
+            for ((kObj, vObj) in subKeys) {
+              val kName = kObj?.toString()?.trim().orEmpty()
+              if (kName.isEmpty() || containsRedactedPlaceholder(kName)) {
+                throw IllegalArgumentException("Invalid key name '$kName' in keys:")
+              }
+              if (vObj != null && vObj !is String && vObj !is Number && vObj !is Boolean) {
+                throw IllegalArgumentException("Key '$kName' in keys: must be a scalar")
+              }
+              val vStr = vObj?.toString().orEmpty()
+              if (containsRedactedPlaceholder(vStr)) {
+                if (kName.equals("tls_cert", ignoreCase = true) || !isRedactedPlaceholder(vStr)) {
+                  throw IllegalArgumentException("Redacted placeholder is forbidden in keys.$kName")
+                }
+                val origVal = diskKeys.entries.firstOrNull {
+                  it.key?.toString()?.equals(kName, ignoreCase = true) == true
+                }?.value?.toString()
+                if (origVal.isNullOrEmpty()) {
+                  throw IllegalArgumentException(
+                    "Cannot restore redacted key '$kName': no original key on disk for '$netName'"
+                  )
+                }
+                outKeys[kName] = origVal
+              } else {
+                outKeys[kName] = vStr
+              }
+            }
+            restoredNet["keys"] = outKeys
+          }
+          "hosts" -> {
+            if (secValObj != null && secValObj !is Map<*, *>) {
+              throw IllegalArgumentException("'hosts' in network '$netName' must be a mapping")
+            }
+            val subHosts = (secValObj as? Map<*, *>).orEmpty()
+            val diskHosts = (diskMap?.let { findSectionCaseInsensitive(it, "hosts") } as? Map<*, *>).orEmpty()
+            val outHosts = LinkedHashMap<String, String>()
+            for ((hObj, hValObj) in subHosts) {
+              val peerName = hObj?.toString()?.trim().orEmpty()
+              if (!isSafeNodeName(peerName) || containsRedactedPlaceholder(peerName)) {
+                throw IllegalArgumentException("Invalid host name '$peerName' in hosts:")
+              }
+              if (hValObj != null && hValObj !is String) {
+                throw IllegalArgumentException("Host block '$peerName' must be a string scalar")
+              }
+              val diskPeerBody = diskHosts.entries.firstOrNull {
+                it.key?.toString() == peerName
+              }?.value?.toString()
+              outHosts[peerName] = restoreHostBlockSecrets(
+                netName,
+                peerName,
+                hValObj?.toString().orEmpty(),
+                diskPeerBody,
+              )
+            }
+            restoredNet["hosts"] = outHosts
+          }
+          "scripts" -> {
+            if (subScripts.isNotEmpty()) {
+              for ((sk, sv) in subScripts) {
+                if (containsRedactedPlaceholder(sk) || containsRedactedPlaceholder(sv)) {
+                  throw IllegalArgumentException("Redacted placeholder is forbidden in scripts")
+                }
+              }
+              restoredNet["scripts"] = subScripts
+            }
+          }
+          "autostart", "full_tunnel" -> {
+            if (secValObj != null && secValObj !is String && secValObj !is Number && secValObj !is Boolean) {
+              throw IllegalArgumentException("'$secKey' in '$netName' must be a scalar")
+            }
+            val vStr = secValObj?.toString().orEmpty()
+            if (containsRedactedPlaceholder(vStr)) {
+              throw IllegalArgumentException("Redacted placeholder is forbidden in '$secKey'")
+            }
+            restoredNet[secKey] = vStr
+          }
+          else -> throw IllegalArgumentException("Unsupported section '$secKey' in network '$netName'")
         }
       }
-
-      outLines.add(line)
-      i++
+      restoredNets[netName] = restoredNet
     }
+    restoredRoot["networks"] = restoredNets
 
-    val restored = outLines.joinToString("\n") + if (hasTrailingNewline) "\n" else ""
+    val restored = emitCanonicalTincYaml(restoredRoot)
     try {
       TincYaml.newYaml().load<Any?>(restored)
     } catch (e: Exception) {
@@ -2464,7 +2866,7 @@ object DiagManager {
       try {
         const r = await fetch("/api/login", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-Diag-CSRF": "1" },
           body: JSON.stringify({ password: document.getElementById("pwd").value })
         });
         const j = await r.json().catch(function() { return {}; });
@@ -2556,13 +2958,16 @@ object DiagManager {
   fun syncTincdBridge(specificNet: String? = null) {
     val activePort = if (isEnabled()) getPort() else 0
     val net = specificNet ?: try { TincVpnService.getCurrentNetName() } catch (_: Exception) { null } ?: return
-    httpPool.execute {
-      try {
-        if (TincVpnService.isDaemonRunning()) {
-          runTincCli(net, 2500L, "diag-port", activePort.toString())
+    try {
+      samplerExec.execute {
+        try {
+          if (TincVpnService.isDaemonRunning()) {
+            runTincCli(net, 2500L, "diag-port", activePort.toString())
+          }
+        } catch (_: Exception) {
         }
-      } catch (_: Exception) {
       }
+    } catch (_: RejectedExecutionException) {
     }
   }
 
@@ -2601,15 +3006,22 @@ object DiagManager {
         } catch (_: Exception) {
           break
         }
-        httpPool.execute {
-          try {
-            handleHttpClient(client)
-          } catch (_: Throwable) {
-          } finally {
+        try {
+          httpPool.execute {
             try {
-              client.close()
+              handleHttpClient(client)
             } catch (_: Throwable) {
+            } finally {
+              try {
+                client.close()
+              } catch (_: Throwable) {
+              }
             }
+          }
+        } catch (_: RejectedExecutionException) {
+          try {
+            client.close()
+          } catch (_: Throwable) {
           }
         }
       }
@@ -2636,28 +3048,89 @@ object DiagManager {
     return true to "Diagnostic Web Server stopped"
   }
 
+  private fun formatHttpHostForUrl(ip: String): String =
+    if (':' in ip && !ip.startsWith("[")) "[$ip]" else ip
+
+  private fun resolveConfigVpnIp(yaml: TincYaml, stanza: String): String {
+    val ifaceAddrs = yaml.optionValues(stanza, VpnInterfaceConfiguration.KEY_ADDRESSES) +
+      yaml.optionValues(stanza, "Ifconfig")
+    val ownSubnets = yaml.ownHostValues(stanza, "Subnet")
+    return selectBestVpnIp(ownSubnets, ifaceAddrs)
+  }
+
+  private val DEFAULT_ROUTE_PREFIXES = setOf(
+    "0.0.0.0/0",
+    "::/0",
+    "0.0.0.0/1",
+    "128.0.0.0/1",
+    "::/1",
+    "8000::/1",
+  )
+
+  private fun resolveFullTunnelPeer(yaml: TincYaml, stanza: String): String {
+    val redirectGw = yaml.optionValue(stanza, "RedirectGateway")?.trim().orEmpty()
+    if (redirectGw.isNotEmpty()) return redirectGw
+    val ftField = (yaml.networkMapPublic(stanza)["full_tunnel"] as? String)?.trim().orEmpty()
+    if (ftField.isNotEmpty()) return ftField
+    return ""
+  }
+
+  private fun maybeReloadOrRebuildActiveVpn(
+    targetNet: String,
+    beforeCfg: VpnInterfaceConfiguration?,
+    afterCfg: VpnInterfaceConfiguration?,
+  ) {
+    val isActiveTarget = try {
+      TincVpnService.isConnected() && TincVpnService.getCurrentNetName() == targetNet
+    } catch (_: Throwable) {
+      false
+    }
+    if (isActiveTarget && beforeCfg != afterCfg) {
+      val rebuilt = try {
+        TincVpnService.rebuildActiveSession(targetNet).get(15L, TimeUnit.SECONDS)
+      } catch (_: Exception) {
+        false
+      }
+      if (!rebuilt) {
+        runTincCli(targetNet, 3500L, "reload")
+      }
+    } else {
+      runTincCli(targetNet, 3500L, "reload")
+    }
+  }
+
   fun getVpnUrls(selectedNet: String? = null): List<String> {
     val p = getPort()
     val urls = mutableListOf<String>()
     val net = selectedNet ?: try { TincVpnService.getCurrentNetName() } catch (_: Exception) { null }
     if (!net.isNullOrEmpty() && isSafeNetSyntax(net)) {
-      val snap = collector.getLatestSnapshot(net)
-      if (snap != null && snap.error.isEmpty()) {
-        for (n in snap.nodes.values) {
-          if (n.isSelf && n.vpnAddress.isNotEmpty()) {
-            val u = "http://${n.vpnAddress}:$p/"
+      var cfgIfaceAddrs: List<String> = emptyList()
+      try {
+        val f = AppPaths.tincYamlFile(net)
+        if (f.isFile) {
+          val yaml = TincYaml(f)
+          val stanza = yaml.resolveNetwork(net)
+          cfgIfaceAddrs = yaml.optionValues(stanza, VpnInterfaceConfiguration.KEY_ADDRESSES) +
+            yaml.optionValues(stanza, "Ifconfig")
+          val ip = resolveConfigVpnIp(yaml, stanza)
+          if (ip.isNotEmpty()) {
+            val u = "http://${formatHttpHostForUrl(ip)}:$p/"
             if (u !in urls) urls.add(u)
           }
         }
-      }
-      try {
-        val s = Networks.summary(net)
-        val ip = s.address?.substringBefore('/')?.trim().orEmpty()
-        if (ip.matches(Regex("""^\d{1,3}(\.\d{1,3}){3}$"""))) {
-          val u = "http://$ip:$p/"
-          if (u !in urls) urls.add(u)
-        }
       } catch (_: Exception) {
+      }
+      val snap = collector.getLatestSnapshot(net)
+      if (snap != null && snap.error.isEmpty()) {
+        for (n in snap.nodes.values) {
+          if (n.isSelf) {
+            val best = selectBestVpnIp(n.subnets, cfgIfaceAddrs).ifEmpty { n.vpnAddress }
+            if (best.isNotEmpty() && best != "0.0.0.0" && best != "::") {
+              val u = "http://${formatHttpHostForUrl(best)}:$p/"
+              if (u !in urls) urls.add(u)
+            }
+          }
+        }
       }
     }
     urls.add("http://127.0.0.1:$p/")
@@ -2726,6 +3199,9 @@ object DiagManager {
     val configNoDirectPeers = HashSet<String>()
     var selfNode = ""
     var myVpnIp = ""
+    var fullTunnelPeer = ""
+    var activeRoutes: List<String> = emptyList()
+    var cfgIfaceAddrs: List<String> = emptyList()
     if (targetNet.isNotEmpty()) {
       try {
         val f = AppPaths.tincYamlFile(targetNet)
@@ -2733,6 +3209,9 @@ object DiagManager {
           val yaml = TincYaml(f)
           val stanza = yaml.resolveNetwork(targetNet)
           selfNode = yaml.optionValue(stanza, "Name").orEmpty()
+          cfgIfaceAddrs = yaml.optionValues(stanza, VpnInterfaceConfiguration.KEY_ADDRESSES) +
+            yaml.optionValues(stanza, "Ifconfig")
+          fullTunnelPeer = resolveFullTunnelPeer(yaml, stanza)
           val hostsMap = (yaml.networkMapPublic(stanza)["hosts"] as? Map<*, *>).orEmpty()
           for ((k, v) in hostsMap) {
             val hName = k.toString()
@@ -2745,8 +3224,12 @@ object DiagManager {
             val clean = nd.trim().lowercase(Locale.ROOT)
             if (clean.isNotEmpty()) configNoDirectPeers.add(clean)
           }
-          val summary = Networks.summary(targetNet)
-          myVpnIp = summary.address?.substringBefore('/').orEmpty()
+          myVpnIp = resolveConfigVpnIp(yaml, stanza)
+          activeRoutes = try {
+            VpnInterfaceConfiguration.fromTincYaml(yaml, stanza).routes.map { "${it.address}/${it.prefix}" }
+          } catch (_: Exception) {
+            emptyList()
+          }
         }
       } catch (_: Exception) {
       }
@@ -2758,15 +3241,27 @@ object DiagManager {
     if (snap != null && snap.error.isEmpty()) {
       val sorted = snap.nodes.values.sortedWith(compareBy({ !it.isSelf }, { it.name }))
       for (n in sorted) {
+        val resolvedNodeIp = if (n.isSelf) {
+          selectBestVpnIp(n.subnets, cfgIfaceAddrs).ifEmpty { n.vpnAddress }
+        } else {
+          n.vpnAddress
+        }
         if (n.isSelf) {
           selfNode = n.name
-          if (n.vpnAddress.isNotEmpty()) myVpnIp = n.vpnAddress
+          if (resolvedNodeIp.isNotEmpty()) myVpnIp = resolvedNodeIp
         } else {
           totalRx += n.rxBytes
           totalTx += n.txBytes
         }
         val pcfg = peerConfigs[n.name].orEmpty()
         val isNoDirect = !n.isSelf && (n.status["no_direct"] == true || n.name.lowercase(Locale.ROOT) in configNoDirectPeers)
+        val routableSubs = n.subnets.filter { sub ->
+          val clean = sub.substringBefore('#').trim()
+          clean.isNotEmpty() && clean !in DEFAULT_ROUTE_PREFIXES && !clean.endsWith("/32") && !clean.endsWith("/128")
+        }
+        val defaultSubs = n.subnets.filter { sub ->
+          sub.substringBefore('#').trim() in DEFAULT_ROUTE_PREFIXES
+        }
         nodesList.add(
           mapOf(
             "name" to n.name,
@@ -2791,15 +3286,15 @@ object DiagManager {
             "address" to n.address,
             "configured_address" to (pcfg["configured_address"] ?: ""),
             "port" to n.port,
-            "vpn_address" to n.vpnAddress,
+            "vpn_address" to resolvedNodeIp,
             "subnets" to n.subnets,
-            "routable_subnets" to emptyList<String>(),
-            "default_subnets" to emptyList<String>(),
+            "routable_subnets" to routableSubs,
+            "default_subnets" to defaultSubs,
             "status_hex" to "0x${n.statusHex}",
             "status" to n.status,
             "options_hex" to "0x${n.options}",
             "has_host_block" to (n.name in peerConfigs),
-            "web_diag_url" to if (n.vpnAddress.isNotEmpty()) "http://${n.vpnAddress}:${getPort()}/" else "",
+            "web_diag_url" to if (resolvedNodeIp.isNotEmpty()) "http://${formatHttpHostForUrl(resolvedNodeIp)}:${getPort()}/" else "",
           )
         )
       }
@@ -2808,6 +3303,12 @@ object DiagManager {
     val series = if (targetNet.isNotEmpty()) collector.getSeries(targetNet, maxPoints = 600) else emptyList()
     val lastPt = series.lastOrNull() ?: mapOf("rx_bps" to 0.0, "tx_bps" to 0.0)
     val running = snap != null && snap.error.isEmpty()
+    val hasDefaultRoute = activeRoutes.any { it in DEFAULT_ROUTE_PREFIXES }
+    val ftState = when {
+      fullTunnelPeer.isNotEmpty() && running && hasDefaultRoute -> "active"
+      fullTunnelPeer.isNotEmpty() -> "configured"
+      else -> ""
+    }
 
     return mapOf(
       "ok" to true,
@@ -2829,8 +3330,8 @@ object DiagManager {
         "total_rx" to totalRx,
         "total_tx" to totalTx,
       ),
-      "full_tunnel" to "",
-      "full_tunnel_info" to mapOf("exit_node" to "", "state" to ""),
+      "full_tunnel" to fullTunnelPeer,
+      "full_tunnel_info" to mapOf("exit_node" to fullTunnelPeer, "state" to ftState),
       "os_summary" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}",
       "system_info" to mapOf(
         "OS" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
@@ -2839,7 +3340,7 @@ object DiagManager {
         "Network" to targetNet,
         "Diag Bridge Port" to getPort().toString(),
       ),
-      "active_routes" to emptyList<String>(),
+      "active_routes" to activeRoutes,
       "nodes" to nodesList,
       "edges" to (snap?.edges?.map { it.toMap() } ?: emptyList<Any>()),
       "connections" to (snap?.connections ?: emptyMap<String, String>()),
@@ -2850,9 +3351,10 @@ object DiagManager {
   }
 
   private fun tailFile(f: File?, maxLines: Int = 250): String {
-    if (f == null || !f.isFile) return ""
+    if (f == null || !f.isFile || maxLines <= 0) return ""
     return try {
-      f.readLines().takeLast(maxLines).joinToString("\n")
+      val maxBytes = max(256 * 1024, maxLines * 256).coerceAtMost(1024 * 1024)
+      f.lastLines(maxLines, maxBytes = maxBytes).joinToString("\n")
     } catch (_: Exception) {
       ""
     }
@@ -2866,13 +3368,22 @@ object DiagManager {
     val targetNet = net.ifEmpty { defaultNet() }
     val tincdLog = try { if (targetNet.isNotEmpty()) AppPaths.logFile(targetNet) else null } catch (_: Exception) { null }
     val appLog = try { AppPaths.appLogFile() } catch (_: Exception) { null }
+    val crashLog = try { AppPaths.crashLogFile() } catch (_: Exception) { null }
     val evLog = if (targetNet.isNotEmpty()) collector.eventsFile(targetNet) else null
     val tText = tailFile(tincdLog, safeLines)
     val aText = tailFile(appLog, safeLines)
     val eText = tailFile(evLog, safeLines)
-    val cText = aText.lines().filter {
-      it.contains("ERROR") || it.contains("Exception") || it.contains("Fatal") || it.trimStart().startsWith("at ") || it.trimStart().startsWith("Caused by:")
-    }.takeLast(safeLines).joinToString("\n")
+    val dedicatedCrash = tailFile(crashLog, safeLines)
+    val hasCrashFlag = try { CrashRecorder.hasPreviouslyCrashed() } catch (_: Exception) { false }
+    val cText = when {
+      dedicatedCrash.isNotEmpty() -> dedicatedCrash
+      hasCrashFlag -> aText.lines().filter {
+        it.contains("ERROR") || it.contains("Exception") || it.contains("Fatal") ||
+          it.trimStart().startsWith("at ") || it.trimStart().startsWith("Caused by:")
+      }.takeLast(safeLines).joinToString("\n")
+      else -> ""
+    }
+    val hasCrashes = cText.isNotEmpty() || hasCrashFlag
     val selected = when (source) {
       "tincd" -> tText
       "crash" -> cText.ifEmpty { "(Сбоев и стектрейсов не зафиксировано)" }
@@ -2887,7 +3398,7 @@ object DiagManager {
       "tincd_log" to tText,
       "tincmgr_log" to aText,
       "crash_log" to cText,
-      "has_crashes" to cText.isNotEmpty(),
+      "has_crashes" to hasCrashes,
     )
   }
 
@@ -2902,6 +3413,7 @@ object DiagManager {
     var hostsMap = emptyMap<String, String>()
     var prefVal = ""
     var trVal = ""
+    var fullTunnelPeer = ""
     var reconnectOnNet = true
     var disconnectScreenOff = false
     var lowPower = false
@@ -2914,17 +3426,17 @@ object DiagManager {
           val stanza = yaml.resolveNetwork(targetNet)
           val rawOpts = LinkedHashMap<String, Any?>()
           for ((k, v) in yaml.options(stanza)) {
-            if (k.lowercase(Locale.ROOT) in SECRET_OPTION_KEYS) {
-              rawOpts[k] = listOf(REDACTED_MARKER)
-            } else {
-              rawOpts[k] = v
-            }
+            val redacted = redactOptionValue(k, v)
+            rawOpts[k] = if (redacted is List<*>) redacted else listOf(redacted.toString())
           }
           optionsMap = rawOpts
           val rawHosts = (yaml.networkMapPublic(stanza)["hosts"] as? Map<*, *>).orEmpty()
-          hostsMap = rawHosts.entries.associate { it.key.toString() to it.value?.toString().orEmpty() }
+          hostsMap = rawHosts.entries.associate {
+            it.key.toString() to redactHostBlockSecrets(it.value?.toString().orEmpty())
+          }
           prefVal = yaml.optionValues(stanza, "PreferredTransports").joinToString(", ")
           trVal = yaml.optionValues(stanza, "Transports").joinToString(", ")
+          fullTunnelPeer = resolveFullTunnelPeer(yaml, stanza)
           reconnectOnNet = TincYaml.asTincBoolean(yaml.optionValue(stanza, "ReconnectOnNetworkChange"), true)
           disconnectScreenOff = TincYaml.asTincBoolean(yaml.optionValue(stanza, "DisconnectOnScreenOff"), false)
           lowPower = TincYaml.asTincBoolean(yaml.optionValue(stanza, "LowPowerMode"), false)
@@ -2937,6 +3449,7 @@ object DiagManager {
       "net" to targetNet,
       "transports" to trVal,
       "preferred_transports" to prefVal,
+      "full_tunnel" to fullTunnelPeer,
       "reconnect_on_net_change" to reconnectOnNet,
       "disconnect_on_screen_off" to disconnectScreenOff,
       "low_power_mode" to lowPower,
@@ -2979,7 +3492,10 @@ object DiagManager {
           if (targetNet.isEmpty() || !isKnownValidNet(targetNet)) {
             return false to mapOf("ok" to false, "message" to "No valid network selected")
           }
-          TincVpnService.connect(targetNet)
+          val (started, errMsg) = TincVpnService.tryConnect(targetNet)
+          if (!started) {
+            return false to mapOf("ok" to false, "message" to (errMsg ?: "Could not start VPN from background"))
+          }
           true to mapOf("ok" to true, "message" to "Connecting $targetNet")
         }
         "stop" -> {
@@ -2990,7 +3506,10 @@ object DiagManager {
           if (targetNet.isEmpty() || !isKnownValidNet(targetNet)) {
             return false to mapOf("ok" to false, "message" to "No valid network selected")
           }
-          TincVpnService.connect(targetNet)
+          val (started, errMsg) = TincVpnService.tryConnect(targetNet)
+          if (!started) {
+            return false to mapOf("ok" to false, "message" to (errMsg ?: "Could not restart VPN from background"))
+          }
           true to mapOf("ok" to true, "message" to "Restarting $targetNet")
         }
         "reload" -> {
@@ -3019,8 +3538,8 @@ object DiagManager {
           true to mapOf("ok" to true, "message" to "Журнал инцидентов очищен")
         }
         "clear_crash_log" -> {
-          try { AppPaths.crashFlagFile().delete() } catch (_: Exception) {}
-          true to mapOf("ok" to true, "message" to "Флаг сбоя очищен")
+          CrashRecorder.clearCrashLog()
+          true to mapOf("ok" to true, "message" to "Журнал сбоев очищен")
         }
         "peer_info" -> {
           val peer = (payload["peer"]?.toString() ?: "").trim()
@@ -3103,14 +3622,18 @@ object DiagManager {
           if (targetNet.isEmpty() || !isKnownValidNet(targetNet) || !isSafeNodeName(host)) {
             return false to mapOf("ok" to false, "message" to "Invalid network or host name")
           }
-          val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
+          val yamlFile = AppPaths.tincYamlFile(targetNet)
+          val yaml = TincYaml(yamlFile)
           val stanza = yaml.resolveNetwork(targetNet)
+          val beforeIfaceCfg = try { VpnInterfaceConfiguration.fromTincYaml(yamlFile, targetNet) } catch (_: Exception) { null }
           yaml.editBatch {
-            setHostText(stanza, host, content)
+            val restoredHostContent = restoreHostBlockSecrets(stanza, host, content, hostText(stanza, host))
+            setHostText(stanza, host, restoredHostContent)
             val blocked = optionValues(stanza, "BlockedNodes").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() && it != host }
             setOptions(stanza, mapOf("BlockedNodes" to blocked.ifEmpty { null }))
           }
-          runTincCli(targetNet, 3500L, "reload")
+          val afterIfaceCfg = try { VpnInterfaceConfiguration.fromTincYaml(yamlFile, targetNet) } catch (_: Exception) { null }
+          maybeReloadOrRebuildActiveVpn(targetNet, beforeIfaceCfg, afterIfaceCfg)
           true to mapOf("ok" to true, "message" to "Saved host '$host'")
         }
         "delete_host" -> {
@@ -3134,8 +3657,10 @@ object DiagManager {
           if (targetNet.isEmpty() || !isKnownValidNet(targetNet)) {
             return false to mapOf("ok" to false, "message" to "Invalid network")
           }
-          val yaml = TincYaml(AppPaths.tincYamlFile(targetNet))
+          val yamlFile = AppPaths.tincYamlFile(targetNet)
+          val yaml = TincYaml(yamlFile)
           val stanza = yaml.resolveNetwork(targetNet)
+          val beforeIfaceCfg = try { VpnInterfaceConfiguration.fromTincYaml(yamlFile, targetNet) } catch (_: Exception) { null }
           val trStr = (payload["transports"]?.toString() ?: "").trim()
           val prefStr = (payload["preferred_transports"]?.toString() ?: "").trim()
           val trList = trStr.split(Regex("[\\s,;]+")).map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
@@ -3156,8 +3681,39 @@ object DiagManager {
             val lowPwr = payload["low_power_mode"]?.toString()?.toBooleanStrictOrNull() ?: false
             updates["LowPowerMode"] = if (lowPwr) listOf("yes") else null
           }
+          if (payload.containsKey("full_tunnel")) {
+            val exitPeer = (payload["full_tunnel"]?.toString() ?: "").trim()
+            if (exitPeer.isNotEmpty() && !isSafeNodeName(exitPeer)) {
+              return false to mapOf("ok" to false, "message" to "Invalid full-tunnel exit node '$exitPeer'")
+            }
+            val currentRoutes = yaml.optionValues(stanza, VpnInterfaceConfiguration.KEY_ROUTES)
+              .map { it.trim() }
+              .filter { it.isNotEmpty() }
+              .toMutableList()
+            if (exitPeer.isNotEmpty()) {
+              if (currentRoutes.isEmpty()) {
+                val pool = yaml.optionValue(stanza, "AddressPool")?.trim().orEmpty()
+                if (pool.isNotEmpty()) currentRoutes.add(pool)
+              }
+              if (currentRoutes.none { it.substringBefore(' ').trim() == "0.0.0.0/0" }) {
+                currentRoutes.add("0.0.0.0/0")
+              }
+              if (currentRoutes.none { it.substringBefore(' ').trim() == "::/0" }) {
+                currentRoutes.add("::/0")
+              }
+              updates["RedirectGateway"] = listOf(exitPeer)
+              updates[VpnInterfaceConfiguration.KEY_ROUTES] = currentRoutes
+            } else {
+              val remaining = currentRoutes.filterNot {
+                it.substringBefore(' ').trim() in DEFAULT_ROUTE_PREFIXES
+              }
+              updates["RedirectGateway"] = null
+              updates[VpnInterfaceConfiguration.KEY_ROUTES] = remaining.ifEmpty { null }
+            }
+          }
           yaml.setOptions(stanza, updates)
-          runTincCli(targetNet, 3500L, "reload")
+          val afterIfaceCfg = try { VpnInterfaceConfiguration.fromTincYaml(yamlFile, targetNet) } catch (_: Exception) { null }
+          maybeReloadOrRebuildActiveVpn(targetNet, beforeIfaceCfg, afterIfaceCfg)
           true to mapOf("ok" to true, "message" to "Saved network settings")
         }
         "save_raw_yaml" -> {
@@ -3167,10 +3723,22 @@ object DiagManager {
           val rawText = payload["raw_yaml"]?.toString().orEmpty()
           if (rawText.isBlank()) return false to mapOf("ok" to false, "message" to "Empty YAML")
           val f = AppPaths.tincYamlFile(targetNet)
+          val beforeIfaceCfg = try { if (f.isFile) VpnInterfaceConfiguration.fromTincYaml(f, targetNet) else null } catch (_: Exception) { null }
           val origYaml = if (f.isFile) f.readText() else ""
           val validatedYaml = restoreYamlSecretsAndValidate(rawText, origYaml)
-          TincYaml(f).writeRawText(validatedYaml)
-          runTincCli(targetNet, 3500L, "reload")
+          val baseYamlRaw = payload["base_yaml"]?.toString()?.takeIf { it.isNotBlank() }
+          val restoredBase = if (baseYamlRaw != null) {
+            try {
+              restoreYamlSecretsAndValidate(baseYamlRaw, origYaml)
+            } catch (_: Exception) {
+              null
+            }
+          } else {
+            null
+          }
+          TincYaml(f).writeRawText(validatedYaml, baseRawText = restoredBase)
+          val afterIfaceCfg = try { VpnInterfaceConfiguration.fromTincYaml(f, targetNet) } catch (_: Exception) { null }
+          maybeReloadOrRebuildActiveVpn(targetNet, beforeIfaceCfg, afterIfaceCfg)
           true to mapOf("ok" to true, "message" to "Saved tinc.yaml")
         }
         "invite" -> {
@@ -3188,18 +3756,34 @@ object DiagManager {
     }
   }
 
-  private fun readAsciiLine(ins: InputStream): String? {
-    val sb = StringBuilder()
-    while (true) {
-      val b = ins.read()
-      if (b < 0) return if (sb.isEmpty()) null else sb.toString()
-      if (b == '\n'.code) break
-      if (b != '\r'.code) sb.append((b and 0xFF).toChar())
-      if (sb.length > MAX_HEADER_LINE_LEN) {
-        throw IllegalArgumentException("HTTP header line exceeds $MAX_HEADER_LINE_LEN bytes")
+  private fun sanitizeHeaderToken(s: String): String {
+    val sb = StringBuilder(s.length)
+    for (ch in s) {
+      if (ch.code in 0x20..0x7E || ch.code >= 0x80) {
+        sb.append(ch)
       }
     }
     return sb.toString()
+  }
+
+  private fun readHttpHeaderLine(ins: InputStream): String? {
+    val baos = ByteArrayOutputStream(128)
+    var sawByte = false
+    while (true) {
+      val b = ins.read()
+      if (b < 0) {
+        return if (!sawByte && baos.size() == 0) null else String(baos.toByteArray(), StandardCharsets.UTF_8)
+      }
+      sawByte = true
+      if (b == '\n'.code) break
+      if (b != '\r'.code) {
+        baos.write(b)
+        if (baos.size() > MAX_HEADER_LINE_LEN) {
+          throw IllegalArgumentException("HTTP header line exceeds $MAX_HEADER_LINE_LEN bytes")
+        }
+      }
+    }
+    return String(baos.toByteArray(), StandardCharsets.UTF_8)
   }
 
   internal fun safeUrlDecode(raw: String): String {
@@ -3230,7 +3814,7 @@ object DiagManager {
   @Suppress("UNCHECKED_CAST")
   private fun handleHttpClient(socket: Socket) {
     socket.use { s ->
-      s.soTimeout = 30_000
+      s.soTimeout = 10_000
       val ins = BufferedInputStream(s.getInputStream())
       val out = BufferedOutputStream(s.getOutputStream())
 
@@ -3248,14 +3832,16 @@ object DiagManager {
         }
         val hdr = StringBuilder()
         hdr.append("HTTP/1.1 $status $statusText\r\n")
-        hdr.append("Content-Type: $contentType\r\n")
+        hdr.append("Content-Type: ${sanitizeHeaderToken(contentType)}\r\n")
         hdr.append("Cache-Control: no-store\r\n")
         hdr.append("Connection: close\r\n")
         hdr.append("Content-Length: ${body.size}\r\n")
         for ((k, v) in extraHeaders) {
-          val safeKey = k.replace("\r", "").replace("\n", "")
-          val safeVal = v.replace("\r", "").replace("\n", "")
-          hdr.append("$safeKey: $safeVal\r\n")
+          val safeKey = sanitizeHeaderToken(k).replace(":", "")
+          val safeVal = sanitizeHeaderToken(v)
+          if (safeKey.isNotEmpty()) {
+            hdr.append("$safeKey: $safeVal\r\n")
+          }
         }
         hdr.append("\r\n")
         out.write(hdr.toString().toByteArray(StandardCharsets.UTF_8))
@@ -3269,7 +3855,7 @@ object DiagManager {
       }
 
       val reqLine = try {
-        readAsciiLine(ins)
+        readHttpHeaderLine(ins)
       } catch (_: IllegalArgumentException) {
         sendJson(mapOf("ok" to false, "error" to "Request line too long"), status = 400)
         return
@@ -3283,19 +3869,19 @@ object DiagManager {
       val query = if ('?' in fullPath) fullPath.substringAfter('?') else ""
       val qs = parseQuery(query)
 
-      var contentLength = 0
+      var rawContentLength = 0L
       var invalidContentLength = false
-      var bodyTooLarge = false
       var originHeader = ""
       var hostHeader = ""
       var authHeader = ""
       var diagPwdHeader = ""
+      var csrfHeader = ""
       var cookieHeader = ""
       var headerCount = 0
 
       while (true) {
         val h = try {
-          readAsciiLine(ins)
+          readHttpHeaderLine(ins)
         } catch (_: IllegalArgumentException) {
           sendJson(mapOf("ok" to false, "error" to "Header line too long"), status = 400)
           return
@@ -3313,23 +3899,25 @@ object DiagManager {
         when (hName) {
           "content-length" -> {
             val parsed = hVal.toLongOrNull()
-            when {
-              parsed == null || parsed < 0L -> invalidContentLength = true
-              parsed > MAX_HTTP_BODY_BYTES -> bodyTooLarge = true
-              else -> contentLength = parsed.toInt()
+            if (parsed == null || parsed < 0L) {
+              invalidContentLength = true
+            } else {
+              rawContentLength = parsed
             }
           }
           "origin" -> originHeader = hVal
           "host" -> hostHeader = hVal
           "authorization" -> authHeader = hVal
           "x-diag-password" -> diagPwdHeader = hVal
+          CSRF_HEADER_NAME -> csrfHeader = hVal
           "cookie" -> cookieHeader = if (cookieHeader.isEmpty()) hVal else "$cookieHeader; $hVal"
         }
       }
 
-      // 1. Strict Host whitelist check on ALL methods (mitigates DNS rebinding)
+      // 1. Strict Host + exact listening port whitelist check on ALL methods (mitigates DNS rebinding & cross-port confusion)
+      val listeningPort = s.localPort.takeIf { it > 0 } ?: getPort()
       val allowedIps = collectOwnVpnIps()
-      if (!isAllowedHost(hostHeader, allowedIps)) {
+      if (!isAllowedHost(hostHeader, allowedIps, expectedPort = listeningPort)) {
         sendJson(mapOf("ok" to false, "error" to "Forbidden Host header"), status = 403)
         return
       }
@@ -3338,28 +3926,8 @@ object DiagManager {
         sendJson(mapOf("ok" to false, "error" to "Invalid Content-Length"), status = 400)
         return
       }
-      if (bodyTooLarge) {
-        sendJson(mapOf("ok" to false, "error" to "Payload too large"), status = 413)
-        return
-      }
 
-      val bodyBytes = if (contentLength > 0) {
-        val buf = ByteArray(contentLength)
-        var off = 0
-        while (off < contentLength) {
-          val n = ins.read(buf, off, contentLength - off)
-          if (n < 0) break
-          off += n
-        }
-        if (off < contentLength) {
-          sendJson(mapOf("ok" to false, "error" to "Truncated request body"), status = 400)
-          return
-        }
-        buf
-      } else {
-        ByteArray(0)
-      }
-
+      // 2. Authenticate BEFORE allocating or reading any request body bytes (H-AND-01)
       val (authKind, sessionSid) = authenticateRequest(authHeader, diagPwdHeader, cookieHeader)
       val net = qs["net"]?.trim().orEmpty()
 
@@ -3389,7 +3957,7 @@ object DiagManager {
         }
 
         when (path) {
-          "/api/overview" -> sendJson(buildOverview(net))
+          "/api/overview", "/api/state" -> sendJson(buildOverview(net))
           "/api/logs" -> {
             val lines = qs["lines"]?.toIntOrNull() ?: 250
             val source = qs["source"]?.trim()?.ifEmpty { "tincd" } ?: "tincd"
@@ -3408,11 +3976,69 @@ object DiagManager {
       }
 
       if (method == "POST") {
-        // 2. Strict Origin check on POST (mitigates CSRF & login CSRF)
+        // 3. Reject unauthenticated POSTs BEFORE reading any body (except /api/login and /api/logout)
+        if (path != "/api/login" && path != "/api/logout" && authKind == AuthKind.NONE) {
+          sendJson(
+            mapOf("ok" to false, "auth_required" to true, "error" to "Authentication required"),
+            status = 401,
+          )
+          return
+        }
+
+        // 4. Require X-Diag-CSRF: 1 and strict port-matched Origin on ALL POST endpoints BEFORE reading body
+        if (csrfHeader != "1") {
+          sendJson(mapOf("ok" to false, "error" to "Missing or invalid X-Diag-CSRF header"), status = 403)
+          return
+        }
         val allowMissingOrigin = (authKind == AuthKind.HEADER)
-        if (!isAllowedOrigin(originHeader, hostHeader, allowMissingOrigin, allowedIps)) {
+        if (!isAllowedOrigin(originHeader, hostHeader, allowMissingOrigin, allowedIps, expectedPort = listeningPort)) {
           sendJson(mapOf("ok" to false, "error" to "Cross-origin POST rejected"), status = 403)
           return
+        }
+
+        // 5. Enforce endpoint-specific Content-Length limits BEFORE reading body
+        val maxBodyBytes = if (path == "/api/login" || path == "/api/logout") {
+          MAX_LOGIN_BODY_BYTES
+        } else {
+          MAX_HTTP_BODY_BYTES
+        }
+        if (rawContentLength > maxBodyBytes) {
+          sendJson(mapOf("ok" to false, "error" to "Payload too large"), status = 413)
+          return
+        }
+
+        // 6. Fast-fail active /api/login brute-force lockout BEFORE reading body
+        if (path == "/api/login") {
+          val retryAfterSec = synchronized(loginLock) {
+            val remMs = loginLockoutUntilMs - System.currentTimeMillis()
+            if (remMs > 0L) ((remMs + 999L) / 1000L) else 0L
+          }
+          if (retryAfterSec > 0L) {
+            sendJson(
+              mapOf("ok" to false, "auth_required" to true, "error" to "Too many failed login attempts; try again later"),
+              status = 429,
+              extraHeaders = mapOf("Retry-After" to retryAfterSec.toString()),
+            )
+            return
+          }
+        }
+
+        val contentLength = rawContentLength.toInt()
+        val bodyBytes = if (contentLength > 0) {
+          val buf = ByteArray(contentLength)
+          var off = 0
+          while (off < contentLength) {
+            val n = ins.read(buf, off, contentLength - off)
+            if (n < 0) break
+            off += n
+          }
+          if (off < contentLength) {
+            sendJson(mapOf("ok" to false, "error" to "Truncated request body"), status = 400)
+            return
+          }
+          buf
+        } else {
+          ByteArray(0)
         }
 
         val payload: Map<String, Any?> = if (bodyBytes.isNotEmpty()) {
@@ -3434,25 +4060,58 @@ object DiagManager {
 
         if (path == "/api/login") {
           val submittedPwd = payload["password"]?.toString().orEmpty()
-          val expectedPwd = ensurePassword()
-          if (submittedPwd.isNotEmpty() && constantTimeEquals(submittedPwd, expectedPwd)) {
-            val sid = issueSession()
-            sendJson(
-              mapOf("ok" to true),
-              status = 200,
-              extraHeaders = mapOf(
-                "Set-Cookie" to "$SESSION_COOKIE_NAME=$sid; HttpOnly; SameSite=Strict; Path=/",
-              ),
-            )
-          } else {
-            try {
-              Thread.sleep(50)
-            } catch (_: InterruptedException) {
+          var loginOk = false
+          var rateLimitedRetrySec = 0L
+          synchronized(loginLock) {
+            val now = System.currentTimeMillis()
+            if (now < loginLockoutUntilMs) {
+              rateLimitedRetrySec = ((loginLockoutUntilMs - now + 999L) / 1000L).coerceAtLeast(1L)
+            } else {
+              val expectedPwd = ensurePassword()
+              if (submittedPwd.isNotEmpty() && constantTimeEquals(submittedPwd, expectedPwd)) {
+                failedLoginCount = 0
+                loginLockoutUntilMs = 0L
+                loginOk = true
+              } else {
+                failedLoginCount++
+                if (failedLoginCount >= 4) {
+                  val shift = (failedLoginCount - 4).coerceAtMost(6)
+                  val backoffMs = (500L shl shift).coerceAtMost(30_000L)
+                  loginLockoutUntilMs = now + backoffMs
+                  rateLimitedRetrySec = ((backoffMs + 999L) / 1000L).coerceAtLeast(1L)
+                }
+              }
             }
-            sendJson(
-              mapOf("ok" to false, "auth_required" to true, "error" to "Invalid password"),
-              status = 401,
-            )
+          }
+          when {
+            loginOk -> {
+              val sid = issueSession()
+              sendJson(
+                mapOf("ok" to true),
+                status = 200,
+                extraHeaders = mapOf(
+                  "Set-Cookie" to "$SESSION_COOKIE_NAME=$sid; HttpOnly; SameSite=Strict; Path=/",
+                ),
+              )
+            }
+            rateLimitedRetrySec > 0L -> {
+              sendJson(
+                mapOf("ok" to false, "auth_required" to true, "error" to "Too many failed login attempts; try again later"),
+                status = 429,
+                extraHeaders = mapOf("Retry-After" to rateLimitedRetrySec.toString()),
+              )
+            }
+            else -> {
+              try {
+                Thread.sleep(50)
+              } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+              }
+              sendJson(
+                mapOf("ok" to false, "auth_required" to true, "error" to "Invalid password"),
+                status = 401,
+              )
+            }
           }
           return
         }
@@ -3465,14 +4124,6 @@ object DiagManager {
             extraHeaders = mapOf(
               "Set-Cookie" to "$SESSION_COOKIE_NAME=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/",
             ),
-          )
-          return
-        }
-
-        if (authKind == AuthKind.NONE) {
-          sendJson(
-            mapOf("ok" to false, "auth_required" to true, "error" to "Authentication required"),
-            status = 401,
           )
           return
         }
@@ -3726,7 +4377,12 @@ object DiagManager {
           while (i < s.length && s[i] in '0'..'9') i++
         }
         val raw = s.substring(start, i)
-        return if (isFloat) raw.toDouble() else raw.toLong()
+        return if (isFloat) {
+          raw.toDoubleOrNull() ?: throw IllegalArgumentException("Invalid JSON number: $raw")
+        } else {
+          raw.toLongOrNull() ?: raw.toDoubleOrNull()
+            ?: throw IllegalArgumentException("Invalid JSON number: $raw")
+        }
       }
     }
   }

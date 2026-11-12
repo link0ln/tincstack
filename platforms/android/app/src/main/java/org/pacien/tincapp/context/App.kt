@@ -26,6 +26,7 @@ import android.os.Build
 import com.google.android.material.color.DynamicColors
 import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.R
+import org.pacien.tincapp.commands.Executor
 import org.pacien.tincapp.commands.Join
 import org.pacien.tincapp.data.Networks
 import org.pacien.tincapp.diagnostics.DiagManager
@@ -58,8 +59,19 @@ class App : Application() {
 
     // A join the process did not live to finish, and network directories left
     // behind by earlier versions without a tinc.yaml, are not networks.
-    Join.sweepStaging()
-    Networks.sweepBroken()
+    // Sweep asynchronously off the main thread to avoid startup disk I/O jank.
+    Executor.runAsyncTask {
+      try {
+        Join.sweepStaging()
+      } catch (e: Exception) {
+        logger.warn("Could not sweep join staging directory", e)
+      }
+      try {
+        Networks.sweepBroken()
+      } catch (e: Exception) {
+        logger.warn("Could not sweep broken network directories", e)
+      }
+    }
 
     // A session is recorded until it ends; one still recorded in a fresh
     // process ended with the process (a crash, or Android killing the app).
@@ -72,7 +84,7 @@ class App : Application() {
   }
 
   private fun setupCrashHandler(logger: Logger) {
-    val systemCrashHandler = Thread.getDefaultUncaughtExceptionHandler()!!
+    val systemCrashHandler = Thread.getDefaultUncaughtExceptionHandler()
     val crashRecorder = CrashRecorder(logger, systemCrashHandler)
     Thread.setDefaultUncaughtExceptionHandler(crashRecorder)
   }

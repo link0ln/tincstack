@@ -51,7 +51,7 @@ import management  # noqa: E402
 from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 import pyqtgraph as pg  # noqa: E402
 
-from gui.workers import WorkerPool  # noqa: E402
+from gui.workers import WorkerPool, wait_all_live  # noqa: E402
 from gui.dialogs import InviteDialog, JoinDialog, RawYamlDialog  # noqa: E402
 from gui.cert_dialog import CertDialog  # noqa: E402
 from gui.diag_dialog import DiagnosticsDialog  # noqa: E402
@@ -69,13 +69,16 @@ LINK_LABEL = {
     "down": "○ down", "self": "★ this node",
 }
 TRANSPORT_COLORS = {
-    "quic": "#1e8e3e", "https": "#1a73e8", "obfs": "#9334e6",
-    "sf": "#e8710a", "sftcp": "#0284c7", "plain": "#5f6368", "udp": "#1e8e3e",
+    "quic": "#1e8e3e", "h3": "#15803d", "https": "#1a73e8", "ws": "#2563eb",
+    "obfs": "#9334e6", "sf": "#e8710a", "sftcp": "#0284c7", "dco": "#0d9488",
+    "plain": "#5f6368", "udp": "#1e8e3e",
 }
 TRANSPORT_CHOICES = [
     ("auto", "Auto (network default)"),
-    ("quic", "quic — QUIC (UDP / HTTP/3)"),
+    ("quic", "quic — QUIC (UDP)"),
+    ("h3", "h3 — HTTP/3 (QUIC)"),
     ("https", "https — HTTPS / TLS 1.3 (TCP)"),
+    ("ws", "ws — WebSocket over TLS"),
     ("obfs", "obfs — Obfuscated UDP"),
     ("sf", "sf — Single-flow UDP"),
     ("sftcp", "sftcp — Single-flow TCP"),
@@ -747,7 +750,11 @@ class PeersTab(QtWidgets.QWidget):
                          f"({n.vpn_address or 'the tunnel'}).\n"
                          f"Saved as InterfaceRoute, so the daemon restores it every start "
                          f"and Windows drops it when the network stops.")
-            b.clicked.connect(lambda checked, s=sub, node=n: self._toggle_route(node, s, checked))
+            b.clicked.connect(
+                lambda checked, s=sub, node=n: QtCore.QTimer.singleShot(
+                    0, lambda: self._toggle_route(node, s, checked)
+                )
+            )
             lay.addWidget(b)
         for sub in defaults:
             b = QtWidgets.QToolButton()
@@ -760,27 +767,48 @@ class PeersTab(QtWidgets.QWidget):
             else:
                 b.setChecked(exit_on)
                 b.setToolTip(
-                    f"Send ALL of this machine's IPv4 traffic out through {n.name}.\n"
+                    f"Send ALL of this machine's IPv4 and IPv6 traffic out through {n.name}.\n"
                     f"The addresses of the peers tincd talks to are pinned to the "
-                    f"physical gateway first, then 0.0.0.0/1 and 128.0.0.0/1 go on the "
+                    f"physical gateway first, then split default routes go on the "
                     f"tunnel adapter; kept up to date while the network runs.\n"
                     f"While {n.name} is unreachable the routes are taken off, so the "
-                    f"machine keeps its own connection. DNS and IPv6 are not changed."
+                    f"machine keeps its own connection."
                     + (f"\n\nNow: {ft_state}" if ft_state else ""))
-                b.clicked.connect(lambda checked, node=n: self._toggle_full_tunnel(node, checked))
+                b.clicked.connect(
+                    lambda checked, node=n: QtCore.QTimer.singleShot(
+                        0, lambda: self._toggle_full_tunnel(node, checked)
+                    )
+                )
             lay.addWidget(b)
         lay.addStretch()
         self._route_cells[n.name] = (sig, w)
         self.table.setCellWidget(row, col, w)
 
     def _toggle_full_tunnel(self, node, on: bool) -> None:
-        """Make `node` this network's exit for all IPv4 traffic, or stop. One
-        exit per network: choosing another node moves it there. The setting is
-        `full_tunnel` in tinc.yaml; Runtime applies and maintains the routes."""
+        """Make `node` this network's exit for all traffic, or stop. At most one
+        network may own the host's full-tunnel routes at a time."""
         ctx, net = self.ctx, self.net
         nc = ctx.app.net(net) if (ctx and net) else None
         if nc is None:
             return
+        if on:
+            other_active = ctx.rt.active_full_tunnel_net(exclude=net)
+            other_cfg = next(
+                (oname for oname, onc in ctx.app.networks.items()
+                 if oname != net and (onc.full_tunnel or "").strip()),
+                None,
+            )
+            conflict_net = other_active or other_cfg
+            if conflict_net:
+                self._pop_route_cell(node.name)
+                self._table(self._snaps.get(net))
+                ctx.status(f"full tunnel already enabled on '{conflict_net}' — disable it there first")
+                QtWidgets.QMessageBox.warning(
+                    self, "Full tunnel conflict",
+                    f"Full tunnel is already enabled on network '{conflict_net}'.\n\n"
+                    f"Disable full tunnel on '{conflict_net}' before enabling it on '{net}'."
+                )
+                return
         for k in list(self._route_cells):
             self._pop_route_cell(k)        # the previous exit's toggle changes too
         with yaml_config._MEM_LOCK:
@@ -819,10 +847,16 @@ class PeersTab(QtWidgets.QWidget):
                 self._pop_route_cell(node.name)
                 self._table(self._snaps.get(net))
                 return
-            routes.add(options, subnet, node.vpn_address)
-        else:
-            routes.remove(options, subnet)
-        if not ctx.save_config():
+        with yaml_config._MEM_LOCK:
+            options = self._options()
+            if options is None:
+                return
+            if on:
+                routes.add(options, subnet, node.vpn_address)
+            else:
+                routes.remove(options, subnet)
+            saved = ctx.save_config()
+        if not saved:
             self._pop_route_cell(node.name)
             self._table(self._snaps.get(net))
             return
@@ -834,10 +868,23 @@ class PeersTab(QtWidgets.QWidget):
             ctx.status(f"route to {subnet} {verb} — it is installed when '{net}' starts")
             return
         alias = routes.adapter_aliases(options, net)
-        ok, msg = ((routes.apply_now(alias[0], subnet, node.vpn_address) if on
-                    else routes.remove_now(alias[0], subnet)) if alias else (False, "no adapter name"))
-        ctx.status(f"route to {subnet} {verb}" if ok
-                   else f"route to {subnet} {verb} in the config, but not applied live: {msg}")
+        if not alias:
+            ctx.status(f"route to {subnet} {verb} in the config, but not applied live: no adapter name")
+            return
+        ctx.status(f"route to {subnet} {verb} — applying live…")
+        fn = (lambda a=alias[0], s=subnet, gw=node.vpn_address: routes.apply_now(a, s, gw)) if on \
+            else (lambda a=alias[0], s=subnet: routes.remove_now(a, s))
+        ctx.pool.run(
+            fn,
+            tag=f"route-{net}-{subnet}",
+            on_done=lambda res, s=subnet, v=verb: ctx.status(
+                f"route to {s} {v}" if res[0]
+                else f"route to {s} {v} in the config, but not applied live: {res[1]}"
+            ),
+            on_error=lambda m, s=subnet, v=verb: ctx.status(
+                f"route to {s} {v} in the config, but not applied live: {m}"
+            ),
+        )
 
     def _redraw(self) -> None:
         samples = list(self.hist.get(self.net, ()))
@@ -1094,8 +1141,11 @@ class NetworkTab(QtWidgets.QWidget):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Import host file")
         if path:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
-                nc.hosts[os.path.basename(path)] = f.read().rstrip("\n")
-            self.ctx.save_config(f"imported {os.path.basename(path)}"); self.reload()
+                host_txt = f.read().rstrip("\n")
+            with yaml_config._MEM_LOCK:
+                nc.hosts[os.path.basename(path)] = host_txt
+                self.ctx.save_config(f"imported {os.path.basename(path)}")
+            self.reload()
 
     def _export_host(self) -> None:
         nc = self.ctx.cur_netcfg(); name = self.host_name.text().strip()
@@ -1159,8 +1209,9 @@ class NetworkTab(QtWidgets.QWidget):
                     f"'{self.ctx.cur_net()}' already has {' and '.join(clash)}. Overwrite?"
                     ) != QtWidgets.QMessageBox.Yes:
                 return
-            nc.keys.update(found)
-            self.ctx.save_config("imported keys: " + ", ".join(sorted(found)))
+            with yaml_config._MEM_LOCK:
+                nc.keys.update(found)
+                self.ctx.save_config("imported keys: " + ", ".join(sorted(found)))
             node = nc.node_name
             host = nc.hosts.get(node, "")
             if "Ed25519PublicKey" in host and "RSA PUBLIC KEY" in host:
@@ -1285,15 +1336,29 @@ class TransportsTab(QtWidgets.QWidget):
         if not delta:
             self.ctx.status("transports: no changes")
             return True
-        transports.apply_changes(nc.options, delta)
-        self.ctx.save_config("transports saved: " + ", ".join(delta) + " (restart network to apply)")
+        net = self.ctx.cur_net()
+        running = bool(net and self.ctx._running.get(net))
+        with yaml_config._MEM_LOCK:
+            transports.apply_changes(nc.options, delta)
+            saved_ok = self.ctx.save_config(
+                "transports saved: " + ", ".join(delta)
+                + (" (reloading daemon…)" if running else " (applies when network starts)")
+            )
+        if not saved_ok:
+            return False
         if hasattr(self.ctx, "network"):
             self.ctx.network.reload()
-        net = self.ctx.cur_net()
         diagnostics.log_app_event(f"Transports saved for '{net or ''}': {delta}")
-        if net and "MultipathMode" in delta and self.ctx._running.get(net):
-            mp_mode = str(delta["MultipathMode"] or "off")
-            self.ctx.pool.run(self.ctx.tc.multipath_mode, net, mp_mode, tag=f"mp-mode-{net}")
+        if net and running:
+            if "MultipathMode" in delta:
+                mp_mode = str(delta["MultipathMode"] or "off")
+                self.ctx.pool.run(self.ctx.tc.multipath_mode, net, mp_mode, tag=f"mp-mode-{net}")
+            self.ctx.pool.run(
+                self.ctx.tc.reload, net,
+                tag=f"reload-tr-{net}",
+                on_done=lambda _r, n=net: self.ctx.status(f"transports saved & reloaded on '{n}'"),
+                on_error=lambda m, n=net: self.ctx.status(f"transports saved for '{n}', reload failed: {m}"),
+            )
         self.reload()
         return True
 
@@ -1335,6 +1400,12 @@ class MainWindow(QtWidgets.QMainWindow):
         diagnostics.install_crash_handlers(
             self.rt.base, self.diag_collector, lambda: self.cur_net() or ""
         )
+        diag_cfg = diagnostics.load_diag_settings(self.rt.base)
+        if diag_cfg.get("enabled"):
+            try:
+                self.diag_server.start(int(diag_cfg.get("port") or diagnostics.DEFAULT_DIAG_PORT))
+            except OSError as e:
+                diagnostics.log_app_event(f"DiagWebServer autostart failed: {e}")
 
         ver = management.current_version()
         ver_str = f" {ver}" if ver else ""
@@ -1537,9 +1608,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def reload_config(self) -> None:
         cur = self.cur_net()
-        self.app = self._load(self.app.path)
-        self.rt.app = self.app
-        self.rt.load_error = self.load_error
+        with yaml_config._MEM_LOCK:
+            self.app = self._load(self.app.path)
+            self.rt.app = self.app
+            self.rt.load_error = self.load_error
         self._show_load_error()
         self.reload_networks()
         if cur:
@@ -1573,10 +1645,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self._wanted_running[net] = bool(ok)
         elif action == "stop":
             self._wanted_running[net] = False
+            self._last_autorestart.pop(net, None)
         self.peers.sample_async()
 
     def open_raw_yaml(self) -> None:
-        dlg = RawYamlDialog(self, self.app.path, yaml_config.save_text, self.load_error)
+        baseline = self.app.baseline
+        dlg = RawYamlDialog(
+            self,
+            self.app.path,
+            lambda p, txt: yaml_config.save_text(p, txt, baseline=baseline),
+            self.load_error,
+        )
         dlg.saved.connect(self.reload_config)
         dlg.exec()
 
@@ -1671,7 +1750,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status(f"⚡ Marked lag event for '{net}' at {ev.to_dict()['time_str']}")
 
     def open_diagnostics(self) -> DiagnosticsDialog:
-        dlg = DiagnosticsDialog(self, self.diag_server, self.diag_collector, self.cur_net())
+        dlg = DiagnosticsDialog(self, self.diag_server, self.diag_collector, self.cur_net(), pool=self.pool)
         dlg.state_changed.connect(self._sync_diag_action)
         dlg.exec()
         self._sync_diag_action()
@@ -1713,12 +1792,13 @@ class MainWindow(QtWidgets.QMainWindow):
         nc = self.cur_netcfg()
         if not nc:
             return False
-        for key, value in values.items():
-            if value:
-                nc.options[key] = value
-            else:
-                nc.options.pop(key, None)
-        ok = self.save_config(f"certificate settings saved for '{self.cur_net()}'")
+        with yaml_config._MEM_LOCK:
+            for key, value in values.items():
+                if value:
+                    nc.options[key] = value
+                else:
+                    nc.options.pop(key, None)
+            ok = self.save_config(f"certificate settings saved for '{self.cur_net()}'")
         if ok:
             self.network.reload()
             self.transports.reload()
@@ -2159,7 +2239,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 raise paths.IntegrityError("staged installer failed SHA-256 verification before launch")
             if hasattr(self, "diag_server"):
                 try:
-                    self.diag_server.stop()
+                    self.diag_server.stop(persist=False)
                 except Exception:
                     pass
             if self.admin:
@@ -2332,6 +2412,7 @@ class MainWindow(QtWidgets.QMainWindow):
         net = self.cur_net()
         if net and not self._need_admin():
             self._wanted_running[net] = False
+            self._last_autorestart.pop(net, None)
             self._lifecycle(self.rt.stop, net, "stop")
 
     def _restart(self) -> None:
@@ -2394,8 +2475,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if ok and name and name not in self.app.networks:
             # empty stanza on purpose: the daemon materialises Name/Mode/Port/
             # AddressPool/keys on first start (zero-config, M1)
-            self.app.networks[name] = NetworkCfg(name=name)
-            if self.save_config(f"added network {name} — Start it to let the daemon generate its identity"):
+            with yaml_config._MEM_LOCK:
+                if name in self.app.networks:
+                    return
+                self.app.networks[name] = NetworkCfg(name=name)
+                saved = self.save_config(
+                    f"added network {name} — Start it to let the daemon generate its identity"
+                )
+            if saved:
                 self.reload_networks(); self._select_net(name)
 
     def _del_net(self) -> None:
@@ -2403,14 +2490,19 @@ class MainWindow(QtWidgets.QMainWindow):
         if not net:
             return
         if QtWidgets.QMessageBox.question(self, "Remove network", f"Remove '{net}' from the config?") == QtWidgets.QMessageBox.Yes:
-            if self._running.get(net) and self.admin:
-                self.pool.run(self.rt.stop, net, tag=f"life-{net}")
-            with yaml_config._MEM_LOCK:
-                self.app.networks.pop(net, None)
-            self._running.pop(net, None)
+            was_running = self._running.pop(net, False)
             self._wanted_running.pop(net, None)
             self._last_autorestart.pop(net, None)
-            self.save_config(f"removed network {net}"); self.reload_networks()
+            self.peers._snaps.pop(net, None)
+            self.peers.hist.pop(net, None)
+            if self.peers.net == net:
+                self.peers.set_network(None)
+            with yaml_config._MEM_LOCK:
+                self.app.networks.pop(net, None)
+                self.save_config(f"removed network {net}")
+            if was_running and self.admin:
+                self.pool.run(self.rt.stop, net, tag=f"life-{net}")
+            self.reload_networks()
 
     def _tick(self) -> None:
         self.peers.sample_async()
@@ -2437,7 +2529,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pool.cancel_pending()
         if hasattr(self, "diag_server"):
             try:
-                self.diag_server.stop()
+                self.diag_server.stop(wait=True, persist=False)
             except Exception:
                 pass
         if self.admin:
@@ -2446,6 +2538,7 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self.pool.wait_all(5000)
+        wait_all_live(5000)
         if getattr(self, "tray", None):
             self.tray.hide()
         super().closeEvent(ev)
@@ -2473,10 +2566,69 @@ def _ensure_config() -> tuple[str | None, str]:
         return None, str(e)
 
 
-def _selftest_report(w: "MainWindow", cfg: str, note: str, extra: list[str]) -> None:
-    """TINCMGR_SELFTEST_MS: the headless probe (build-exe.sh, and on Windows)."""
+def _parse_selftest_args(
+    argv: list[str] | None = None,
+    allow_env: bool | None = None,
+) -> tuple[int, bool, str, list[str]]:
+    """Parse selftest mode from CLI flags and (ONLY when `not paths.untrusted_env()`)
+    fallback dev environment variables.
+
+    When frozen or elevated on Windows, `TINCMGR_SELFTEST_*` environment
+    variables inherited across UAC `runas` are completely ignored (`C-WIN-01`).
+    """
+    raw = list(sys.argv if argv is None else argv)
+    use_env = (not paths.untrusted_env()) if allow_env is None else bool(allow_env)
+    ms = 0
+    do_install = False
+    clean_argv: list[str] = [raw[0]] if raw else []
+    i = 1
+    while i < len(raw):
+        arg = raw[i]
+        if arg == "--selftest-ms" and i + 1 < len(raw):
+            try:
+                ms = max(0, int(raw[i + 1]))
+            except ValueError:
+                ms = 0
+            i += 2
+            continue
+        if arg.startswith("--selftest-ms="):
+            try:
+                ms = max(0, int(arg.split("=", 1)[1]))
+            except ValueError:
+                ms = 0
+            i += 1
+            continue
+        if arg == "--selftest-install":
+            do_install = True
+            i += 1
+            continue
+        clean_argv.append(arg)
+        i += 1
+
+    logp = ""
+    if use_env:
+        if ms <= 0:
+            env_ms = os.environ.get("TINCMGR_SELFTEST_MS", "").strip()
+            if env_ms:
+                try:
+                    ms = max(0, int(env_ms))
+                except ValueError:
+                    ms = 0
+        if not do_install and os.environ.get("TINCMGR_SELFTEST_INSTALL") == "1":
+            do_install = True
+        logp = os.environ.get("TINCMGR_SELFTEST_LOG", "").strip()
+    return ms, do_install, logp, clean_argv
+
+
+def _selftest_report(
+    w: "MainWindow",
+    cfg: str,
+    note: str,
+    extra: list[str],
+    dev_log_path: str = "",
+) -> None:
+    """Headless selftest probe (used by build-exe.sh Wine smoke and dev tests)."""
     import glob
-    import tempfile
     b = paths.bundle()
     temp = tempfile.gettempdir()
     lines = ["SELFTEST OK", f"frozen={paths.is_frozen()}", f"admin={w.admin}",
@@ -2487,13 +2639,40 @@ def _selftest_report(w: "MainWindow", cfg: str, note: str, extra: list[str]) -> 
              f"load_error={w.load_error!r}", f"tincd={paths.tincd_exe()}",
              f"tincd_exists={os.path.isfile(paths.tincd_exe())}",
              f"staged_tincd={w.rt.tincd}", f"note={note!r}"] + extra
-    logp = os.environ.get("TINCMGR_SELFTEST_LOG") or os.path.join(temp, "tincmgr_selftest.log")
+    payload = "\n".join(lines) + "\n"
+    if paths.untrusted_env():
+        prot = paths.protected_dir()
+        if prot:
+            try:
+                paths.write_private(os.path.join(prot, "selftest.log"), payload.encode("utf-8"))
+            except OSError:
+                pass
+    else:
+        logp = dev_log_path or os.path.join(temp, "tincmgr_selftest.log")
+        try:
+            paths.reject_reparse_point(logp)
+            with open(logp, "w", encoding="utf-8") as f:
+                f.write(payload)
+        except OSError:
+            pass
+    print(payload.rstrip("\n"), flush=True)
+
+
+def _log_self_install_error(err_msg: str) -> None:
+    """Record `--self-install` failure in the protected admin directory when
+    available (never blindly opening an unverified path in `%TEMP%`)."""
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {err_msg}\n"
+    prot = paths.protected_dir()
+    err_log = (
+        os.path.join(prot, "logs", "update-error.log")
+        if prot
+        else os.path.join(tempfile.gettempdir(), "tincmgr-update-error.log")
+    )
     try:
-        with open(logp, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+        with paths.open_private_append(err_log) as ef:
+            ef.write(line)
     except OSError:
         pass
-    print("\n".join(lines), flush=True)
 
 
 def main() -> None:
@@ -2530,28 +2709,27 @@ def main() -> None:
         except (OSError, management.DowngradeRefused) as e:
             err_msg = f"error: {e}"
             print(err_msg, file=sys.stderr)
-            try:
-                err_log = os.path.join(tempfile.gettempdir(), "tincmgr-update-error.log")
-                with open(err_log, "a", encoding="utf-8") as ef:
-                    ef.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {err_msg}\n")
-            except OSError:
-                pass
+            _log_self_install_error(err_msg)
             if relaunch:
-                fallback = replace_exe if (replace_exe and os.path.isfile(replace_exe)) else (management.installed_exe() or "")
-                if fallback and os.path.isfile(fallback):
+                # C-WIN-03: NEVER launch untrusted user-supplied `replace_exe`
+                # from an elevated process; only launch verified Program Files exe.
+                fallback = management.safe_rollback_exe()
+                if fallback:
                     try:
                         management.launch_detached(fallback)
                     except OSError:
                         pass
             sys.exit(1)
 
+    selftest_ms, selftest_install, selftest_log, qt_argv = _parse_selftest_args(sys.argv)
+
     # always run elevated on Windows: relaunch via UAC if we're not (the built
     # exe is uac_admin so this only fires for a dev/python run)
-    if sys.platform == "win32" and not management.is_admin() and not os.environ.get("TINCMGR_SELFTEST_MS"):
+    if sys.platform == "win32" and not management.is_admin() and selftest_ms <= 0:
         if management.relaunch_self_elevated():
             sys.exit(0)
 
-    app = QtWidgets.QApplication(sys.argv)
+    app = QtWidgets.QApplication(qt_argv)
     app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)   # closing the window minimizes to tray
     cfg, note = _ensure_config()
@@ -2570,10 +2748,9 @@ def main() -> None:
         w.status(note)
     if sys.platform == "win32" and w.admin and paths.is_frozen():
         w.refresh_startup_async(sys.executable)
-    selftest = os.environ.get("TINCMGR_SELFTEST_MS")
-    if selftest:
+    if selftest_ms > 0:
         extra: list[str] = []
-        if os.environ.get("TINCMGR_SELFTEST_INSTALL") == "1":
+        if selftest_install:
             # build-exe.sh: install this build the way run-at-startup does,
             # then the smoke test runs the installed onedir copy
             try:
@@ -2581,8 +2758,8 @@ def main() -> None:
                 extra.append(f"installed_version={management.installed_version()}")
             except OSError as e:
                 extra.append(f"install_error={e}")
-        _selftest_report(w, cfg, note, extra)
-        QtCore.QTimer.singleShot(int(selftest), w._quit_app)
+        _selftest_report(w, cfg, note, extra, dev_log_path=selftest_log)
+        QtCore.QTimer.singleShot(selftest_ms, w._quit_app)
     sys.exit(app.exec())
 
 

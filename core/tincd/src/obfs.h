@@ -204,6 +204,14 @@ void obfs_session_start(connection_t *c);
    header junk) over steady-state shaping. Uses the session key once it is
    ready, else the bootstrap key. */
 size_t obfs_encode(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init);
+size_t obfs_encode_boot(obfs_link_t *l, const void *in, size_t inlen, uint8_t *out, size_t outcap, bool init);
+
+/* Single-flow <-> obfs lifecycle & boot-handshake helpers (transport_sf.c). */
+void sf_detach_obfs_link(obfs_link_t *l);
+bool sf_has_boot_session(const uint8_t *cid, const obfs_link_t *l);
+void sf_udp_receive_obfs_boot(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr, obfs_link_t *obfs);
+bool sf_promote_boot_obfs(connection_t *c, int *rx_fd_out);
+void sf_mark_boot_only(connection_t *c, bool boot_only);
 
 /* Largest inner payload this link can seal without the sealed datagram
    exceeding the path MTU, with the configured tail junk still on it. The

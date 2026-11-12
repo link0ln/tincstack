@@ -513,6 +513,52 @@ static void test_maskcheck_invalid_ipv6(void **state) {
 	}
 }
 
+static void test_subnet_weight_overflow_and_clamp(void **state) {
+	(void)state;
+
+	node_t owner = {.name = strdup("node1")};
+
+	/* 1. Anti-symmetry across INT_MIN / INT_MAX (C-DP-02) */
+	const subnet_t v4_min = {.type = SUBNET_IPV4, .net.ipv4 = ipv4_1, .weight = INT_MIN, .owner = &owner};
+	const subnet_t v4_max = {.type = SUBNET_IPV4, .net.ipv4 = ipv4_1, .weight = INT_MAX, .owner = &owner};
+	assert_true(subnet_compare(&v4_min, &v4_max) < 0);
+	assert_true(subnet_compare(&v4_max, &v4_min) > 0);
+	assert_int_equal(0, subnet_compare(&v4_min, &v4_min));
+	assert_int_equal(0, subnet_compare(&v4_max, &v4_max));
+
+	const subnet_t v6_min = {.type = SUBNET_IPV6, .net.ipv6 = ipv6_1, .weight = INT_MIN, .owner = &owner};
+	const subnet_t v6_max = {.type = SUBNET_IPV6, .net.ipv6 = ipv6_1, .weight = INT_MAX, .owner = &owner};
+	assert_true(subnet_compare(&v6_min, &v6_max) < 0);
+	assert_true(subnet_compare(&v6_max, &v6_min) > 0);
+
+	const subnet_t mac_min = {.type = SUBNET_MAC, .net.mac.address = mac1, .weight = INT_MIN, .owner = &owner};
+	const subnet_t mac_max = {.type = SUBNET_MAC, .net.mac.address = mac1, .weight = INT_MAX, .owner = &owner};
+	assert_true(subnet_compare(&mac_min, &mac_max) < 0);
+	assert_true(subnet_compare(&mac_max, &mac_min) > 0);
+
+	/* 2. str2net weight clamping to [-100000000, 100000000] (C-DP-02) */
+	subnet_t sub = {0};
+	assert_true(str2net(&sub, "10.0.0.0/8#999999999"));
+	assert_int_equal(100000000, sub.weight);
+
+	assert_true(str2net(&sub, "10.0.0.0/8#-999999999"));
+	assert_int_equal(-100000000, sub.weight);
+
+	assert_true(str2net(&sub, "10.0.0.0/8#99999999999999999999999"));
+	assert_int_equal(100000000, sub.weight);
+
+	assert_true(str2net(&sub, "fe80::/64#-99999999999999999999999"));
+	assert_int_equal(-100000000, sub.weight);
+
+	/* 3. net2str truncated buffer rejection (L-DP-04) */
+	char tiny[8];
+	assert_false(net2str(tiny, 0, &sub));
+	assert_false(net2str(tiny, 1, &sub));
+	assert_false(net2str(tiny, sizeof(tiny), &sub));
+
+	free(owner.name);
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_maskcmp),
@@ -546,6 +592,7 @@ int main(void) {
 		cmocka_unit_test(test_maskcheck_valid_ipv6),
 		cmocka_unit_test(test_maskcheck_invalid_ipv4),
 		cmocka_unit_test(test_maskcheck_invalid_ipv6),
+		cmocka_unit_test(test_subnet_weight_overflow_and_clamp),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

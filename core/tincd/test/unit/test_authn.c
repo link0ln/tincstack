@@ -221,6 +221,28 @@ static void test_rejects(void **state) {
 
 	len = build_as(ME, me_key, now.tv_sec, exporter, p);
 	assert_false(verify(p, len, exporter));         /* ourselves */
+
+	/* L-TR-01: extreme 64-bit wire timestamps (>= 2^63, UINT64_MAX, 0) must be
+	   rejected cleanly in uint64_t without signed int64_t overflow UB. */
+	static const uint64_t extreme_ts[] = {
+		0ULL,
+		0x7fffffffffffffffULL,
+		0x8000000000000000ULL,
+		0x8000000000000001ULL,
+		0xffffffffffffffffULL,
+	};
+	len = build_as(PEER, peer_key, now.tv_sec, exporter, p);
+
+	for(size_t i = 0; i < sizeof(extreme_ts) / sizeof(*extreme_ts); i++) {
+		memcpy(q, p, len);
+		size_t tsoff = AUTHN_HDR_LEN + strlen(PEER) + AUTHN_NONCE_LEN;
+
+		for(int b = 0; b < 8; b++) {
+			q[tsoff + (size_t)b] = (uint8_t)(extreme_ts[i] >> (8 * (7 - b)));
+		}
+
+		assert_false(verify(q, len, exporter));
+	}
 }
 
 /* A prober can name any node it likes; what that makes the daemon write at

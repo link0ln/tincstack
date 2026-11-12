@@ -243,4 +243,68 @@ def test_create_staging_dir_and_verify_staged_exe_rejects_tampering(tmp_path):
     assert updates.verify_staged_exe(exe, digest) is False
 
 
+def test_fetch_verifies_both_sums_url_and_zip_digest(tmp_path, monkeypatch):
+    """M-WIN-01: when BOTH sums_url and rel.zip_digest are present, fetch() must
+    verify BOTH and refuse a mismatch in either one."""
+    import hashlib
+    import io
+    import zipfile
+    import pytest
+
+    exe_payload = b"MZ-real-exe"
+    exe_sha = hashlib.sha256(exe_payload).hexdigest()
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("tincmgr.exe", exe_payload)
+        zf.writestr("SHA256SUMS", f"{exe_sha}  tincmgr.exe\n".encode("utf-8"))
+    zip_bytes = zbuf.getvalue()
+    zip_sha = hashlib.sha256(zip_bytes).hexdigest()
+    zip_name = "tincstack-v0.6.0-windows-x86_64.zip"
+    sums_bytes = f"{zip_sha}  {zip_name}\n".encode("utf-8")
+
+    class FakeResp:
+        def __init__(self, data: bytes):
+            self._bio = io.BytesIO(data)
+            self.status = 200
+            self.headers = {"Content-Length": str(len(data))}
+
+        def getcode(self):
+            return 200
+
+        def read(self, n: int = -1) -> bytes:
+            return self._bio.read(n)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(
+        updates.urllib.request,
+        "urlopen",
+        lambda req, timeout=25: FakeResp(sums_bytes if req.full_url.endswith("SHA256SUMS") else zip_bytes),
+    )
+
+    # Matching sums_url, but tampered/mismatched zip_digest -> must fail!
+    bad_dir = tmp_path / "bad"
+    bad_dir.mkdir()
+    bad_rel = updates.Release(
+        "v0.6.0", "v0.6.0", f"https://x/{zip_name}", "https://x/SHA256SUMS", "",
+        zip_name=zip_name, zip_digest="sha256:" + ("f" * 64),
+    )
+    with pytest.raises((OSError, ValueError), match="digest"):
+        updates.fetch(bad_rel, str(bad_dir))
+
+    # Both sums_url and zip_digest match -> succeeds!
+    good_dir = tmp_path / "good"
+    good_dir.mkdir()
+    good_rel = updates.Release(
+        "v0.6.0", "v0.6.0", f"https://x/{zip_name}", "https://x/SHA256SUMS", "",
+        zip_name=zip_name, zip_digest="sha256:" + zip_sha,
+    )
+    exe_out, _ = updates.fetch(good_rel, str(good_dir))
+    assert os.path.isfile(exe_out)
+
+
 

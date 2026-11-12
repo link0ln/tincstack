@@ -29,6 +29,7 @@
 
 #ifdef HAVE_OPENSSL
 
+#include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
 
@@ -102,10 +103,40 @@ static bool is_self_signed(X509 *cert) {
 	return X509_NAME_cmp(X509_get_subject_name(cert), X509_get_issuer_name(cert)) == 0;
 }
 
+static bool cert_matches_key_pem(const char *cert_pem, const char *key_pem) {
+	if(!cert_pem || !*cert_pem || !key_pem || !*key_pem) {
+		return false;
+	}
+
+	X509 *cert = first_cert(cert_pem);
+
+	if(!cert) {
+		return false;
+	}
+
+	BIO *kbio = BIO_new_mem_buf(key_pem, -1);
+	EVP_PKEY *pkey = kbio ? PEM_read_bio_PrivateKey(kbio, NULL, NULL, NULL) : NULL;
+	BIO_free(kbio);
+
+	bool ok = pkey && X509_check_private_key(cert, pkey) == 1;
+	ERR_clear_error();
+	EVP_PKEY_free(pkey);
+	X509_free(cert);
+	return ok;
+}
+
 static void print_name(const char *label, X509_NAME *name) {
 	char buf[256] = "";
 
 	if(X509_NAME_get_text_by_NID(name, NID_commonName, buf, sizeof(buf)) > 0) {
+		for(char *p = buf; *p; p++) {
+			unsigned char ch = (unsigned char) *p;
+
+			if(ch < 0x20 || ch >= 0x7f) {
+				*p = '?';
+			}
+		}
+
 		printf("%-14s %s\n", label, buf);
 	}
 }
@@ -129,9 +160,30 @@ static void print_san(X509 *cert) {
 			continue;
 		}
 
-		const char *dns = (const char *) ASN1_STRING_get0_data(gn->d.dNSName);
+		const unsigned char *raw = ASN1_STRING_get0_data(gn->d.dNSName);
+		int rawlen = ASN1_STRING_length(gn->d.dNSName);
+		char clean[256];
+
+		if(!raw || rawlen <= 0) {
+			strcpy(clean, "?");
+		} else {
+			int clen = rawlen < (int) sizeof(clean) - 1 ? rawlen : (int) sizeof(clean) - 1;
+
+			for(int j = 0; j < clen; j++) {
+				unsigned char ch = raw[j];
+				clean[j] = (ch > 0x20 && ch < 0x7f) ? (char) ch : '?';
+			}
+
+			clean[clen] = '\0';
+		}
+
 		size_t used = strlen(list);
-		snprintf(list + used, sizeof(list) - used, "%s%s", used ? ", " : "", dns ? dns : "?");
+
+		if(used + 2 >= sizeof(list)) {
+			break;
+		}
+
+		snprintf(list + used, sizeof(list) - used, "%s%s", used ? ", " : "", clean);
 	}
 
 	GENERAL_NAMES_free(names);
@@ -193,6 +245,11 @@ static int cmd_status(void) {
    that no longer exists. host_text_set_var() (conf.c) does the rewrite. */
 
 static bool store_result(const acme_result_t *res, const char *fp, char **why) {
+	if(!cert_matches_key_pem(res->cert_pem, res->key_pem)) {
+		xasprintf(why, "certificate does not match private key");
+		return false;
+	}
+
 	if(!yamlconf_lock(yamlconf_path)) {
 		xasprintf(why, "could not lock %s: %s", yamlconf_path, strerror(errno));
 		return false;
@@ -260,11 +317,12 @@ static int issue(bool staging, bool forced, bool renew_only) {
 
 	if(renew_only && domain) {
 		const char *pem = yamlconf_key_pem(yamlconf_global, netname, "tls_cert");
+		const char *kpem = yamlconf_key_pem(yamlconf_global, netname, "tls_key");
 		X509 *cert = first_cert(pem);
 
 		if(cert) {
 			int d = days_left(cert);
-			bool covers = cert_covers(cert, domain);
+			bool covers = cert_covers(cert, domain) && cert_matches_key_pem(pem, kpem);
 			bool ca_issued = !is_self_signed(cert);
 			X509_free(cert);
 
@@ -321,6 +379,13 @@ static int issue(bool staging, bool forced, bool renew_only) {
 
 	if(!tls_cert_pem_fingerprint(res.cert_pem, fp)) {
 		fprintf(stderr, "The CA returned something that is not a certificate; nothing was stored.\n");
+		acme_result_free(&res);
+		free(domain);
+		return 1;
+	}
+
+	if(!cert_matches_key_pem(res.cert_pem, res.key_pem)) {
+		fprintf(stderr, "The issued certificate does not match the generated private key; nothing was stored.\n");
 		acme_result_free(&res);
 		free(domain);
 		return 1;

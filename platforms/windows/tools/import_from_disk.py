@@ -28,37 +28,16 @@ import yaml_config as yc  # noqa: E402
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _coerce(v: str):
-    low = v.strip().lower()
-    if low in ("yes", "true"):
-        return True
-    if low in ("no", "false"):
-        return False
-    s = v.strip()
-    if s.lstrip("-").isdigit():
-        try:
-            return int(s)
-        except ValueError:
-            pass
-    return v
+def _coerce(v: str, key: str = ""):
+    return yc._coerce(v, key)
 
 
 def parse_conf(path: str) -> dict:
-    multi: dict[str, list] = {}
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, val = line.split("=", 1)
-                multi.setdefault(k.strip(), []).append(val.strip())
+            return yc.conf_to_options(f.read())
     except OSError:
         return {}
-    opts: dict = {}
-    for k, vals in multi.items():
-        opts[k] = _coerce(vals[0]) if len(vals) == 1 else [_coerce(x) for x in vals]
-    return opts
 
 
 def read_text(path: str) -> str | None:
@@ -78,22 +57,65 @@ def service_running(net: str) -> bool:
         return False
 
 
+def _resolve_conf_file(net_dir: str, raw_path: str) -> str:
+    if os.path.isabs(raw_path):
+        return raw_path
+    return os.path.join(net_dir, raw_path)
+
+
 def import_net(conf_base: str, net: str, autostart_running: bool) -> yc.NetworkCfg:
     d = os.path.join(conf_base, net)
     nc = yc.NetworkCfg(name=net)
     nc.options = parse_conf(os.path.join(d, "tinc.conf"))
-    # private keys
-    for ykey, fname in (("ed25519_priv", "ed25519_key.priv"), ("rsa_priv", "rsa_key.priv")):
-        body = read_text(os.path.join(d, fname))
-        if body:
-            nc.keys[ykey] = body
-        elif os.path.isfile(os.path.join(d, fname)):
-            print(f"  WARN: {net}/{fname} exists but is unreadable (run elevated)", file=sys.stderr)
-    # scripts (tinc-up/down etc.) — carried so YAML-native tincd writes them out
-    for sname in ("tinc-up", "tinc-down", "host-up", "host-down", "subnet-up", "subnet-down"):
-        body = read_text(os.path.join(d, sname))
-        if body is not None:
-            nc.scripts[sname] = body
+
+    # Private keys & TLS / ACME material (both default filenames and explicit tinc.conf file options)
+    key_specs: list[tuple[str, list[str], str | None]] = [
+        ("ed25519_priv", ["ed25519_key.priv"], "Ed25519PrivateKeyFile"),
+        ("rsa_priv", ["rsa_key.priv"], "PrivateKeyFile"),
+        ("tls_cert", ["tls_cert.pem", "tls.crt", "cert.pem"], "TlsCert"),
+        ("tls_key", ["tls_key.pem", "tls.key", "privkey.pem"], "TlsKey"),
+        ("acme_account", ["acme_account.key", "acme_account.pem"], None),
+    ]
+    opts_ci = {k.lower(): k for k in nc.options}
+    for ykey, default_names, opt_key in key_specs:
+        candidates: list[tuple[str, bool]] = []
+        if opt_key and opt_key.lower() in opts_ci:
+            actual_opt = opts_ci[opt_key.lower()]
+            opt_val = nc.options.get(actual_opt)
+            if isinstance(opt_val, str) and opt_val.strip():
+                candidates.append((_resolve_conf_file(d, opt_val.strip()), True))
+        for fn in default_names:
+            candidates.append((os.path.join(d, fn), False))
+        for cand_path, from_opt in candidates:
+            body = read_text(cand_path)
+            if body:
+                nc.keys[ykey] = body
+                if from_opt and opt_key and opt_key.lower() in opts_ci:
+                    nc.options.pop(opts_ci[opt_key.lower()], None)
+                break
+            if os.path.isfile(cand_path):
+                print(
+                    f"  WARN: {net}/{os.path.basename(cand_path)} exists but is unreadable (run elevated)",
+                    file=sys.stderr,
+                )
+
+    # Hook scripts (extensionless on POSIX, plus .bat/.cmd/ScriptsExtension on Windows)
+    script_exts = ["", ".bat", ".cmd"]
+    if "scriptsextension" in opts_ci:
+        raw_ext = str(nc.options.get(opts_ci["scriptsextension"]) or "").strip()
+        if raw_ext and raw_ext not in script_exts:
+            script_exts.append(raw_ext if raw_ext.startswith(".") else f".{raw_ext}")
+    hook_bases = (
+        "tinc-up", "tinc-down", "host-up", "host-down",
+        "subnet-up", "subnet-down", "invitation-created", "invitation-accepted",
+    )
+    for sbase in hook_bases:
+        for ext in script_exts:
+            sname = sbase + ext
+            body = read_text(os.path.join(d, sname))
+            if body is not None:
+                nc.scripts[sname] = body
+                break
     # hosts
     hosts_dir = os.path.join(d, "hosts")
     try:

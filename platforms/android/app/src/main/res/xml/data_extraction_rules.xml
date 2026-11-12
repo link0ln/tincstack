@@ -24,6 +24,15 @@
         <include
             domain="file"
             path="./" />
+        <exclude
+            domain="file"
+            path="networks" />
+        <exclude
+            domain="file"
+            path="joining" />
+        <exclude
+            domain="file"
+            path="diag-events" />
         <include
             domain="external"
             path="./" />
@@ -33,6 +42,15 @@
         <include
             domain="file"
             path="./" />
+        <exclude
+            domain="file"
+            path="networks" />
+        <exclude
+            domain="file"
+            path="joining" />
+        <exclude
+            domain="file"
+            path="diag-events" />
         <include
             domain="external"
             path="./" />

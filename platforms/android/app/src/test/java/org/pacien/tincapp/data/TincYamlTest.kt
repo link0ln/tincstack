@@ -311,6 +311,70 @@ class TincYamlTest {
     assertEquals(beforeFailedBatch, f.readText())
   }
 
+  @Test
+  fun threeWayMergePreservesRotatedTlsFingerprintMaterializedKeysAndNewPeers() {
+    val f = yamlFile(DAEMON_DOC)
+    val y = TincYaml(f)
+    y.setHostText(
+      "mynet",
+      "hub",
+      "Address = 198.51.100.10\nPort = 443\nTlsFingerprint = sha256:OLD_FINGERPRINT\n",
+    )
+
+    // User opens raw YAML editor at baseline t0
+    val baseSnapshot = y.readRawText()
+    val userEditedRaw = baseSnapshot.replace("Port: 655", "Port: 7655")
+
+    // Concurrently, daemon rotates hub's TlsFingerprint, learns peerC, and materializes tls_key/tls_cert
+    val daemonUpdated = baseSnapshot
+      .replace("TlsFingerprint = sha256:OLD_FINGERPRINT", "TlsFingerprint = sha256:ROTATED_FINGERPRINT")
+      .replace(
+        "    keys:\n",
+        "      peerC: |\n        Subnet = 10.165.0.99/32\n        Ed25519PublicKey = NEW_PEER_KEY\n\n    keys:\n" +
+          "      tls_key: |\n        -----BEGIN PRIVATE KEY-----\n        DAEMON_TLS_KEY\n        -----END PRIVATE KEY-----\n",
+      )
+    f.writeText(daemonUpdated)
+
+    // User saves raw YAML against baseSnapshot -> rotated TlsFingerprint, new peerC, and tls_key survive!
+    y.writeRawText(userEditedRaw, baseRawText = baseSnapshot)
+    assertEquals("7655", y.optionValue("mynet", "Port"))
+    assertTrue(y.hostText("mynet", "hub")!!.contains("TlsFingerprint = sha256:ROTATED_FINGERPRINT"))
+    assertFalse(y.hostText("mynet", "hub")!!.contains("OLD_FINGERPRINT"))
+    assertTrue(y.hostText("mynet", "peerC")!!.contains("NEW_PEER_KEY"))
+    assertTrue(f.readText().contains("DAEMON_TLS_KEY"))
+
+    // Case-insensitive options lookup & splice replace in-place without duplicating keys
+    f.writeText(f.readText().replace("Port: 7655", "port: 7655"))
+    assertEquals("7655", y.optionValue("mynet", "Port"))
+    y.setOptions("mynet", mapOf("Port" to listOf("8655")))
+    assertEquals("8655", y.optionValue("mynet", "Port"))
+    assertEquals("8655", y.optionValue("mynet", "port"))
+    assertFalse(f.readText().contains("port: 7655"))
+  }
+
+  @Test
+  fun concurrentMultiThreadSetOptionsNeverThrowsOverlappingFileLockException() {
+    val f = yamlFile(DAEMON_DOC)
+    val errors = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+    val threads = (1..8).map { idx ->
+      Thread {
+        try {
+          repeat(10) { iter ->
+            TincYaml(f).setOptions("mynet", mapOf("CustomKey$idx" to listOf("v_${idx}_$iter")))
+          }
+        } catch (t: Throwable) {
+          errors.add(t)
+        }
+      }.apply { start() }
+    }
+    threads.forEach { it.join(15_000L) }
+    assertTrue("Expected 0 lock/write errors, got: $errors", errors.isEmpty())
+    val y = TincYaml(f)
+    for (idx in 1..8) {
+      assertEquals(listOf("v_${idx}_9"), y.optionValues("mynet", "CustomKey$idx"))
+    }
+  }
+
   companion object {
     /** What `tincd -c tinc.yaml -n mynet` materialises from `Name: nodeA` (keys shortened). */
     val DAEMON_DOC = """

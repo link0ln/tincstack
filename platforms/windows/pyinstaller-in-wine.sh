@@ -7,10 +7,10 @@
 #   dist/tincmgr-app/    the onedir tree the onefile installs under Program
 #                        Files for the logon task (listed for the record)
 #
-#   SMOKE=1   after the build, under Wine + Xvfb (TINCMGR_SELFTEST_MS):
+#   SMOKE=1   after the build, under Wine + Xvfb (--selftest-ms):
 #             1. run the onefile, which installs its onedir tree into
-#                C:\Program Files\tincmgr\app (TINCMGR_SELFTEST_INSTALL=1, the
-#                run-at-startup code path) and writes the config there;
+#                C:\Program Files\tincmgr\app (--selftest-install, the
+#                run-at-startup code path) and writes the config + selftest.log there;
 #             2. run the INSTALLED tincmgr.exe and check that it runs from
 #                Program Files, loads its Python from app\_internal and
 #                creates nothing named _MEI* in %TEMP% (nothing unpacked);
@@ -60,11 +60,11 @@ if [ "${SMOKE:-0}" = "1" ]; then
     rm -rf /tmp/smoke "$pf"
     mkdir -p /tmp/smoke
     cp dist/tincmgr.exe /tmp/smoke/
-    ( cd /tmp/smoke && TINCMGR_SELFTEST_MS="${SMOKE_MS:-2000}" TINCMGR_SELFTEST_INSTALL=1 \
-        TINCMGR_SELFTEST_LOG="C:\\selftest.log" xvfb-run -a wine /tmp/smoke/tincmgr.exe )
+    ( cd /tmp/smoke && xvfb-run -a wine /tmp/smoke/tincmgr.exe \
+        --selftest-ms "${SMOKE_MS:-2000}" --selftest-install )
     wineserver -w
     echo "-- selftest log --"
-    tr -d '\r' < "$WINEPREFIX/drive_c/selftest.log" | tee /tmp/smoke/one.log
+    tr -d '\r' < "$pf/selftest.log" | tee /tmp/smoke/one.log
     check "the onefile ran from its unpack dir" grep -q "^meipass=.*_MEI" /tmp/smoke/one.log
     check "the onefile installed C:\\Program Files\\tincmgr\\app\\tincmgr.exe" \
         grep -qx 'installed=C:\\Program Files\\tincmgr\\app\\tincmgr.exe' /tmp/smoke/one.log
@@ -77,13 +77,13 @@ if [ "${SMOKE:-0}" = "1" ]; then
     echo
     echo "== wine smoke 2: the installed onedir copy =="
     temps > /tmp/smoke/mei-before
-    rm -f "$WINEPREFIX/drive_c/selftest.log"
-    ( cd /tmp && TINCMGR_SELFTEST_MS="${SMOKE_MS:-2000}" TINCMGR_SELFTEST_LOG="C:\\selftest.log" \
-        xvfb-run -a wine "C:\\Program Files\\tincmgr\\app\\tincmgr.exe" )
+    rm -f "$pf/selftest.log"
+    ( cd /tmp && xvfb-run -a wine "C:\\Program Files\\tincmgr\\app\\tincmgr.exe" \
+        --selftest-ms "${SMOKE_MS:-2000}" )
     wineserver -w
     temps > /tmp/smoke/mei-after
     echo "-- selftest log --"
-    tr -d '\r' < "$WINEPREFIX/drive_c/selftest.log" | tee /tmp/smoke/dir.log
+    tr -d '\r' < "$pf/selftest.log" | tee /tmp/smoke/dir.log
     check "the installed copy runs from Program Files" \
         grep -qx 'exe=C:\\Program Files\\tincmgr\\app\\tincmgr.exe' /tmp/smoke/dir.log
     check "it loads its Python from app\\_internal, not %TEMP%" \

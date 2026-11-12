@@ -450,6 +450,10 @@ static bool read_packet(vpn_packet_t *packet) {
 			inlen = read(device_fd, DATA(packet) + 14, MTU - 14);
 
 		if(inlen <= 0) {
+			if(inlen < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+				return false;
+			}
+
 			logger(DEBUG_ALWAYS, LOG_ERR, "Error while reading from %s %s: %s", device_info,
 			       device, strerror(errno));
 			return false;
@@ -482,8 +486,20 @@ static bool read_packet(vpn_packet_t *packet) {
 		inlen = read(device_fd, DATA(packet) + 10, MTU - 10);
 
 		if(inlen <= 0) {
+			if(inlen < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+				return false;
+			}
+
 			logger(DEBUG_ALWAYS, LOG_ERR, "Error while reading from %s %s: %s", device_info,
 			       device, strerror(errno));
+			return false;
+		}
+
+		if(inlen < 5) {
+			logger(DEBUG_TRAFFIC, LOG_DEBUG,
+			       "Dropping short %zd-byte packet from %s %s",
+			       inlen, device_info, device);
+			errno = EAGAIN;
 			return false;
 		}
 
@@ -518,6 +534,10 @@ static bool read_packet(vpn_packet_t *packet) {
 		inlen = read(device_fd, DATA(packet), MTU);
 
 		if(inlen <= 0) {
+			if(inlen < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+				return false;
+			}
+
 			logger(DEBUG_ALWAYS, LOG_ERR, "Error while reading from %s %s: %s", device_info,
 			       device, strerror(errno));
 			return false;

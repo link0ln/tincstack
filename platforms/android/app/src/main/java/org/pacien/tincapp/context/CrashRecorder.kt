@@ -19,30 +19,73 @@
 package org.pacien.tincapp.context
 
 import org.slf4j.Logger
+import java.io.FileOutputStream
+import java.nio.charset.StandardCharsets
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * @author euxane
  */
-class CrashRecorder(private val logger: Logger,
-                    private val upstreamCrashHandler: Thread.UncaughtExceptionHandler) : Thread.UncaughtExceptionHandler {
+class CrashRecorder(
+  private val logger: Logger,
+  private val upstreamCrashHandler: Thread.UncaughtExceptionHandler?,
+) : Thread.UncaughtExceptionHandler {
 
   companion object {
-    private val flagFile = AppPaths.crashFlagFile()
+    private const val MAX_CRASH_LOG_BYTES = 512L * 1024L
 
-    fun hasPreviouslyCrashed() = flagFile.exists()
+    private fun flagFile() = AppPaths.crashFlagFile()
+    private fun crashLogFile() = AppPaths.crashLogFile()
+
+    fun hasPreviouslyCrashed() = try {
+      flagFile().exists()
+    } catch (_: Exception) {
+      false
+    }
 
     fun flagCrash() {
-      flagFile.apply { if (!exists()) createNewFile() }
+      try {
+        flagFile().apply { if (!exists()) createNewFile() }
+      } catch (_: Exception) {
+      }
     }
 
     fun dismissPreviousCrash() {
-      flagFile.delete()
+      try {
+        flagFile().delete()
+      } catch (_: Exception) {
+      }
+    }
+
+    fun clearCrashLog() {
+      dismissPreviousCrash()
+      try {
+        crashLogFile().delete()
+      } catch (_: Exception) {
+      }
+    }
+
+    private fun appendCrashDetails(thread: Thread, throwable: Throwable) {
+      try {
+        val file = crashLogFile()
+        file.parentFile?.mkdirs()
+        val append = file.isFile && file.length() < MAX_CRASH_LOG_BYTES
+        val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+        val entry = "$ts [${thread.name}] Fatal application error:\n${throwable.stackTraceToString()}\n"
+        FileOutputStream(file, append).use { out ->
+          out.write(entry.toByteArray(StandardCharsets.UTF_8))
+        }
+      } catch (_: Exception) {
+      }
     }
   }
 
   override fun uncaughtException(thread: Thread, throwable: Throwable) {
     logger.error("Fatal application error.", throwable)
+    appendCrashDetails(thread, throwable)
     flagCrash()
-    upstreamCrashHandler.uncaughtException(thread, throwable)
+    upstreamCrashHandler?.uncaughtException(thread, throwable)
   }
 }

@@ -71,6 +71,7 @@ class Node:
     subnets: list = field(default_factory=list)
     transport: str = ""        # active carrier on this peer's connection (quic/https/obfs/sf/plain)
     supported_transports: list = field(default_factory=list)
+    has_direct_conn: bool | None = None  # populated by NetworkSnapshot.attach_connections()
 
     @property
     def reachable(self) -> bool:
@@ -118,9 +119,20 @@ class Node:
             return "self"
         if not self.reachable:
             return "down"
-        if self.status.get("udp_confirmed"):
+        if (
+            self.status.get("udp_confirmed")
+            and not self.status.get("no_direct")
+            and (not self.via or self.via == self.name)
+        ):
             return "direct-udp"
-        if self.distance == 1 and (self.nexthop == self.name or self.nexthop == ""):
+        if (
+            self.nexthop == self.name
+            and (not self.via or self.via == self.name)
+            and (
+                self.has_direct_conn is True
+                or (self.has_direct_conn is None and self.distance == 1)
+            )
+        ):
             return "direct-tcp"
         return "relay"
 
@@ -161,8 +173,10 @@ class NetworkSnapshot:
     def attach_connections(self) -> None:
         for name, n in self.nodes.items():
             if n.is_self:
+                n.has_direct_conn = False
                 continue
             direct = self.connections.get(name, "")
+            n.has_direct_conn = bool(direct)
             if direct:
                 n.transport = direct
             elif n.status.get("udp_confirmed"):
@@ -465,6 +479,7 @@ class TincControl:
     def diag_ping(self, net: str, dst_ip: str, size: int = 56, ttl: int = 64,
                   df: bool = False, timeout_ms: int = 2000) -> dict:
         """Single in-tunnel ICMP Echo Request via `tinc diag-ping`."""
+        size = max(0, min(1472, int(size)))
         wait_s = max(3.0, (timeout_ms / 1000.0) + 2.0)
         rc, out, err = self._run(
             net, "diag-ping", str(dst_ip).strip(),
@@ -513,6 +528,7 @@ class TincControl:
     def in_tunnel_ping(self, net: str, dst_ip: str, count: int = 4,
                        size: int = 56, df: bool = False, timeout_ms: int = 2000) -> dict:
         count = max(1, min(20, int(count)))
+        size = max(0, min(1472, int(size)))
         samples = []
         rtts = []
         for seq in range(1, count + 1):

@@ -177,6 +177,52 @@ static bool send_record_priv(sptps_t *s, uint8_t type, const void *data, uint16_
 	}
 }
 
+#define SPTPS_KEX_TIMEOUT 30
+
+void sptps_abort_secondary_kex(sptps_t *s) {
+	if(!s || !s->instate || !s->outstate || s->state == SPTPS_SECONDARY_KEX) {
+		return;
+	}
+
+	if(!s->datagram && s->state == SPTPS_ACK) {
+		return;
+	}
+
+	if(s->ecdh) {
+		ecdh_free(s->ecdh);
+		s->ecdh = NULL;
+	}
+
+	if(s->mykex) {
+		free_sptps_kex(s->mykex);
+		s->mykex = NULL;
+	}
+
+	if(s->hiskex) {
+		free_sptps_kex(s->hiskex);
+		s->hiskex = NULL;
+	}
+
+	if(s->key) {
+		free_sptps_key(s->key);
+		s->key = NULL;
+	}
+
+	s->kex_started = 0;
+	s->state = SPTPS_SECONDARY_KEX;
+}
+
+static void sptps_check_kex_timeout(sptps_t *s) {
+	if(s && s->instate && s->outstate && s->state != SPTPS_SECONDARY_KEX && s->kex_started != 0) {
+		time_t cur = time(NULL);
+
+		if(cur < s->kex_started || cur - s->kex_started >= SPTPS_KEX_TIMEOUT) {
+			warning(s, "Secondary KEX timed out in state %d, resetting to SPTPS_SECONDARY_KEX\n", (int)s->state);
+			sptps_abort_secondary_kex(s);
+		}
+	}
+}
+
 // Send an application record.
 bool sptps_send_record(sptps_t *s, uint8_t type, const void *data, uint16_t len) {
 	// Sanity checks: application cannot send data before handshake is finished,
@@ -188,6 +234,8 @@ bool sptps_send_record(sptps_t *s, uint8_t type, const void *data, uint16_t len)
 	if(type >= SPTPS_HANDSHAKE) {
 		return error(s, EINVAL, "Invalid application record type");
 	}
+
+	sptps_check_kex_timeout(s);
 
 	return send_record_priv(s, type, data, len);
 }
@@ -302,12 +350,13 @@ static bool receive_ack(sptps_t *s, const uint8_t *data, uint16_t len) {
 		return error(s, EIO, "Invalid ACK record length");
 	}
 
-	uint8_t *key = s->initiator ? s->key->key0 : s->key->key1;
+	uint8_t *inkey = s->initiator ? s->key->key0 : s->key->key1;
+	uint8_t *outkey = s->initiator ? s->key->key1 : s->key->key0;
 
 	if(s->datagram && s->instate && s->incipher) {
 		chacha_poly1305_ctx_t *next = chacha_poly1305_init();
 
-		if(!next || !chacha_poly1305_set_key(next, key)) {
+		if(!next || !chacha_poly1305_set_key(next, inkey)) {
 			if(next) {
 				chacha_poly1305_exit(next);
 			}
@@ -315,20 +364,44 @@ static bool receive_ack(sptps_t *s, const uint8_t *data, uint16_t len) {
 			return error(s, EINVAL, "Failed to set counter");
 		}
 
+		if(!chacha_poly1305_set_key(s->outcipher, outkey)) {
+			chacha_poly1305_exit(next);
+			return error(s, EINVAL, "Failed to set key");
+		}
+
 		if(s->prev_incipher) {
 			chacha_poly1305_exit(s->prev_incipher);
 		}
 
 		s->prev_incipher = s->incipher;
+		s->prev_inseqno = s->inseqno;
+		s->prev_inseq_abs = s->inseq_abs;
+
+		if(s->replaywin && s->prev_late && s->late) {
+			memcpy(s->prev_late, s->late, s->replaywin);
+		}
+
 		s->incipher = next;
-	} else if(!chacha_poly1305_set_key(s->incipher, key)) {
-		return error(s, EINVAL, "Failed to set counter");
+		s->out_key_packets = 0;
+	} else {
+		if(s->datagram) {
+			if(!chacha_poly1305_set_key(s->outcipher, outkey)) {
+				return error(s, EINVAL, "Failed to set key");
+			}
+
+			s->out_key_packets = 0;
+		}
+
+		if(!chacha_poly1305_set_key(s->incipher, inkey)) {
+			return error(s, EINVAL, "Failed to set counter");
+		}
 	}
 
 	free_sptps_key(s->key);
 	s->key = NULL;
 	s->instate = true;
 	s->in_key_packets = 0;
+	s->kex_started = 0;
 
 	return true;
 }
@@ -409,26 +482,43 @@ static bool receive_sig(sptps_t *s, const uint8_t *data, uint16_t len) {
 		return false;
 	}
 
-	// TODO: only set new keys after ACK has been set/received
-	uint8_t *key = s->initiator ? s->key->key1 : s->key->key0;
+	/* In datagram mode, handshake records ride the relayed TCP meta channel
+	   while data packets travel over direct UDP. Switching outcipher here (before
+	   receiving the peer's SPTPS_ACK) causes responder UDP packets to arrive
+	   before the initiator has received SIG + ACK, blackholing 1-2 RTTs of traffic.
+	   Defer outcipher rotation in datagram mode symmetrically to receive_ack();
+	   in ordered stream mode, ACK acts as an in-band ChangeCipherSpec so records
+	   queued after send_ack() must use the new outcipher immediately. */
+	if(!s->datagram) {
+		uint8_t *key = s->initiator ? s->key->key1 : s->key->key0;
 
-	if(!chacha_poly1305_set_key(s->outcipher, key)) {
-		return error(s, EINVAL, "Failed to set key");
+		if(!chacha_poly1305_set_key(s->outcipher, key)) {
+			return error(s, EINVAL, "Failed to set key");
+		}
+
+		s->out_key_packets = 0;
 	}
-
-	s->out_key_packets = 0;
 
 	return true;
 }
 
 // Force another Key EXchange (for testing purposes).
 bool sptps_force_kex(sptps_t *s) {
+	sptps_check_kex_timeout(s);
+
 	if(!s->outstate || s->state != SPTPS_SECONDARY_KEX) {
 		return error(s, EINVAL, "Cannot force KEX in current state");
 	}
 
 	s->state = SPTPS_KEX;
-	return send_kex(s);
+	s->kex_started = time(NULL);
+
+	if(!send_kex(s)) {
+		sptps_abort_secondary_kex(s);
+		return false;
+	}
+
+	return true;
 }
 
 // Receive a handshake record.
@@ -441,8 +531,15 @@ static bool receive_handshake(sptps_t *s, const uint8_t *data, uint16_t len) {
 			return true;
 		}
 
+		if(len != sizeof(sptps_kex_t) || *data != SPTPS_VERSION) {
+			return error(s, EIO, "Invalid secondary KEX record");
+		}
+
+		s->kex_started = time(NULL);
+
 		// We receive a secondary KEX request, first respond by sending our own.
 		if(!send_kex(s)) {
+			sptps_abort_secondary_kex(s);
 			return false;
 		}
 
@@ -496,33 +593,35 @@ static bool receive_handshake(sptps_t *s, const uint8_t *data, uint16_t len) {
 	}
 }
 
-static bool sptps_check_seqno(sptps_t *s, uint32_t seqno, bool update_state) {
+static bool sptps_check_seqno_win(sptps_t *s, uint32_t seqno, bool update_state,
+                                  uint32_t *inseqno_p, uint64_t *inseq_abs_p,
+                                  uint8_t *late_buf, bool track_stats) {
 	// Replay protection using a sliding window of configurable size
 	// with RFC 1982 modular serial number arithmetic across 32-bit wraparound
 	// and a 64-bit unwrapped sequence index (inseq_abs) so any replaywin size
-	// (power-of-two or arbitrary) indexes s->late[] without wraparound aliasing.
-	int32_t diff = (int32_t)(seqno - s->inseqno);
+	// (power-of-two or arbitrary) indexes late_buf[] without wraparound aliasing.
+	int32_t diff = (int32_t)(seqno - *inseqno_p);
 	uint32_t win_u = (s->replaywin > 0x08000000U) ? (0x08000000U * 8U) : ((uint32_t)s->replaywin * 8U);
 	int32_t win = (int32_t)win_u;
 	uint64_t pkt_abs;
 
 	if(diff >= 0) {
-		pkt_abs = s->inseq_abs + (uint64_t)(uint32_t)diff;
+		pkt_abs = *inseq_abs_p + (uint64_t)(uint32_t)diff;
 	} else {
 		uint64_t behind = (uint64_t)(-(int64_t)diff);
 
-		if(behind > s->inseq_abs) {
-			return update_state ? error(s, EIO, "Received late or replayed packet, seqno %u, last received %u\n", seqno, s->inseqno) : false;
+		if(behind > *inseq_abs_p) {
+			return update_state ? error(s, EIO, "Received late or replayed packet, seqno %u, last received %u\n", seqno, *inseqno_p) : false;
 		}
 
-		pkt_abs = s->inseq_abs - behind;
+		pkt_abs = *inseq_abs_p - behind;
 	}
 
-	if(s->replaywin) {
+	if(s->replaywin && late_buf) {
 		if(diff > 0) {
 			if(diff >= win) {
 				/* In SPTPS, ChaCha20-Poly1305 AEAD authenticates seqno as the
-				   nonce before sptps_check_seqno(..., true) is called, so a
+				   nonce before sptps_check_seqno_win(..., true) is called, so a
 				   jump ahead of the replay window is genuine packet loss on
 				   the wire rather than an unauthenticated bitflip. Accept it
 				   immediately instead of dropping the first replaywin/4 valid
@@ -530,40 +629,45 @@ static bool sptps_check_seqno(sptps_t *s, uint32_t seqno, bool update_state) {
 				if(update_state) {
 					warning(s, "Lost %d packets\n", diff);
 					// Mark all packets in the replay window as being late.
-					memset(s->late, 255, s->replaywin);
+					memset(late_buf, 255, s->replaywin);
 				}
 			} else if(update_state) {
 				// We missed some packets. Mark them in the bitmap as being late.
 				for(int32_t k = 0; k < diff; k++) {
-					uint64_t skipped = s->inseq_abs + (uint64_t)(uint32_t)k;
-					s->late[(skipped / 8ULL) % s->replaywin] |= (uint8_t)(1U << (skipped % 8ULL));
+					uint64_t skipped = *inseq_abs_p + (uint64_t)(uint32_t)k;
+					late_buf[(skipped / 8ULL) % s->replaywin] |= (uint8_t)(1U << (skipped % 8ULL));
 				}
 			}
 		} else if(diff < 0) {
 			// If the sequence number is farther in the past than the bitmap goes,
 			// or packet was already received, drop it.
-			if(diff < -win || !(s->late[(pkt_abs / 8ULL) % s->replaywin] & (1U << (pkt_abs % 8ULL)))) {
-				return update_state ? error(s, EIO, "Received late or replayed packet, seqno %u, last received %u\n", seqno, s->inseqno) : false;
+			if(diff < -win || !(late_buf[(pkt_abs / 8ULL) % s->replaywin] & (1U << (pkt_abs % 8ULL)))) {
+				return update_state ? error(s, EIO, "Received late or replayed packet, seqno %u, last received %u\n", seqno, *inseqno_p) : false;
 			}
 		}
 
 		if(update_state) {
 			// Mark the current packet as not being late.
-			s->late[(pkt_abs / 8ULL) % s->replaywin] &= (uint8_t)~(1U << (pkt_abs % 8ULL));
-			s->farfuture = 0;
+			late_buf[(pkt_abs / 8ULL) % s->replaywin] &= (uint8_t)~(1U << (pkt_abs % 8ULL));
+
+			if(track_stats) {
+				s->farfuture = 0;
+			}
 		}
 	}
 
 	if(update_state) {
 		if(diff >= 0) {
-			s->inseqno = seqno + 1U;
-			s->inseq_abs = pkt_abs + 1ULL;
+			*inseqno_p = seqno + 1U;
+			*inseq_abs_p = pkt_abs + 1ULL;
 		}
 
-		if(!s->inseqno) {
-			s->received = 0;
-		} else {
-			s->received++;
+		if(track_stats) {
+			if(!*inseqno_p) {
+				s->received = 0;
+			} else {
+				s->received++;
+			}
 		}
 	}
 
@@ -576,19 +680,44 @@ bool sptps_verify_datagram(sptps_t *s, const void *vdata, size_t len) {
 		return error(s, EIO, "Received short packet");
 	}
 
+	sptps_check_kex_timeout(s);
+
 	const uint8_t *data = vdata;
 	uint32_t seqno;
 	memcpy(&seqno, data, 4);
 	seqno = ntohl(seqno);
 
-	if(!sptps_check_seqno(s, seqno, false)) {
-		return false;
-	}
-
 	uint8_t *buffer = alloca(len);
 	size_t outlen;
-	return chacha_poly1305_decrypt(s->incipher, seqno, data + 4, len - 4, buffer, &outlen) ||
-	       (s->prev_incipher && chacha_poly1305_decrypt(s->prev_incipher, seqno, data + 4, len - 4, buffer, &outlen));
+
+	if(sptps_check_seqno_win(s, seqno, false, &s->inseqno, &s->inseq_abs, s->late, false)) {
+		if(chacha_poly1305_decrypt(s->incipher, seqno, data + 4, len - 4, buffer, &outlen)) {
+			return true;
+		}
+
+		if(s->state == SPTPS_ACK && s->key) {
+			chacha_poly1305_ctx_t *tmp = chacha_poly1305_init();
+			uint8_t *newkey = s->initiator ? s->key->key0 : s->key->key1;
+			bool ok = tmp && chacha_poly1305_set_key(tmp, newkey) &&
+			          chacha_poly1305_decrypt(tmp, seqno, data + 4, len - 4, buffer, &outlen);
+
+			if(tmp) {
+				chacha_poly1305_exit(tmp);
+			}
+
+			if(ok) {
+				return true;
+			}
+		}
+	}
+
+	if(s->prev_incipher &&
+	                sptps_check_seqno_win(s, seqno, false, &s->prev_inseqno, &s->prev_inseq_abs, s->prev_late, false) &&
+	                chacha_poly1305_decrypt(s->prev_incipher, seqno, data + 4, len - 4, buffer, &outlen)) {
+		return true;
+	}
+
+	return false;
 }
 
 // Receive incoming data, datagram version.
@@ -669,14 +798,18 @@ static bool sptps_receive_data_datagram(sptps_t *s, const uint8_t *data, size_t 
 			}
 		} else if(s->prev_incipher && chacha_poly1305_decrypt(s->prev_incipher, seqno, data, len, buffer, &outlen)) {
 			/* Late meta ANS_KEY (ACK) or in-flight UDP packet encrypted with the
-			   previous session key right after an implicit UDP key transition. */
+			   previous session key right after a secondary key transition. */
 			used_prev = true;
 		} else {
 			return error(s, EIO, "Failed to decrypt and verify packet");
 		}
 	}
 
-	if(!sptps_check_seqno(s, seqno, true)) {
+	bool seq_ok = used_prev
+	              ? sptps_check_seqno_win(s, seqno, true, &s->prev_inseqno, &s->prev_inseq_abs, s->prev_late, false)
+	              : sptps_check_seqno_win(s, seqno, true, &s->inseqno, &s->inseq_abs, s->late, true);
+
+	if(!seq_ok) {
 		/* The packet passed ChaCha20-Poly1305 AEAD verification above, so the
 		   SPTPS session key is valid and in sync; this datagram is merely a
 		   duplicate or arrived older than the replay window. Ignore the
@@ -726,6 +859,8 @@ size_t sptps_receive_data(sptps_t *s, const void *vdata, size_t len) {
 	if(!s->state) {
 		return error(s, EIO, "Invalid session state zero");
 	}
+
+	sptps_check_kex_timeout(s);
 
 	if(s->datagram) {
 		return sptps_receive_data_datagram(s, data, len) ? len : false;
@@ -844,12 +979,18 @@ bool sptps_start(sptps_t *s, void *handle, bool initiator, bool datagram, ecdsa_
 
 	if(s->replaywin) {
 		s->late = malloc(s->replaywin);
+		s->prev_late = malloc(s->replaywin);
 
-		if(!s->late) {
+		if(!s->late || !s->prev_late) {
+			free(s->late);
+			free(s->prev_late);
+			s->late = NULL;
+			s->prev_late = NULL;
 			return error(s, errno, "%s", strerror(errno));
 		}
 
 		memset(s->late, 0, s->replaywin);
+		memset(s->prev_late, 0, s->replaywin);
 	}
 
 	s->label = malloc(labellen);
@@ -892,6 +1033,7 @@ bool sptps_stop(sptps_t *s) {
 	free_sptps_key(s->key);
 	free(s->label);
 	free(s->late);
+	free(s->prev_late);
 	memset(s, 0, sizeof(*s));
 	return true;
 }

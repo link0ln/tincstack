@@ -336,7 +336,13 @@ def fetch(
             except OSError:
                 pass
 
-    expected_zip_sha: str | None = None
+    expected_sums_zip_sha: str | None = None
+    expected_api_zip_sha: str | None = None
+    if getattr(rel, "zip_digest", "").lower().startswith("sha256:"):
+        cand = rel.zip_digest.split(":", 1)[1].strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", cand):
+            expected_api_zip_sha = cand
+
     if rel.sums_url:
         _stream_download(
             rel.sums_url,
@@ -358,14 +364,15 @@ def fetch(
         with open(spath, encoding="utf-8", errors="replace") as sf:
             sums = _parse_sums_lines(sf.read())
 
-        expected_zip_sha = sums.get(zip_filename) or sums.get(f"{rel.tag}-windows.zip")
-        if not expected_zip_sha:
+        expected_sums_zip_sha = sums.get(zip_filename) or sums.get(f"{rel.tag}-windows.zip")
+        if not expected_sums_zip_sha:
             cleanup_files()
             raise ValueError("SHA256SUMS does not list the zip")
-    elif getattr(rel, "zip_digest", "").lower().startswith("sha256:"):
-        cand = rel.zip_digest.split(":", 1)[1].strip().lower()
-        if re.fullmatch(r"[0-9a-f]{64}", cand):
-            expected_zip_sha = cand
+        if expected_api_zip_sha and expected_sums_zip_sha != expected_api_zip_sha:
+            cleanup_files()
+            raise ValueError("SHA256SUMS zip digest does not match release asset SHA-256 digest")
+
+    expected_zip_sha = expected_sums_zip_sha or expected_api_zip_sha
 
     _stream_download(
         rel.zip_url,
@@ -383,14 +390,13 @@ def fetch(
             zsize = 0
         progress_cb(zsize, zsize, f"Verifying {rel.version} SHA-256 checksum…")
 
-    if rel.sums_url:
-        if sha(zpath) != expected_zip_sha:
-            cleanup_files()
-            raise ValueError("the downloaded zip does not match its SHA256SUMS")
-    elif expected_zip_sha:
-        if sha(zpath) != expected_zip_sha:
-            cleanup_files()
-            raise ValueError("the downloaded zip does not match the release asset SHA-256 digest")
+    actual_zip_sha = sha(zpath) if (expected_sums_zip_sha or expected_api_zip_sha) else ""
+    if expected_sums_zip_sha and actual_zip_sha != expected_sums_zip_sha:
+        cleanup_files()
+        raise ValueError("the downloaded zip does not match its SHA256SUMS")
+    if expected_api_zip_sha and actual_zip_sha != expected_api_zip_sha:
+        cleanup_files()
+        raise ValueError("the downloaded zip does not match the release asset SHA-256 digest")
 
     if progress_cb:
         try:

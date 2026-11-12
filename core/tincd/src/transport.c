@@ -47,6 +47,7 @@ static bool transport_initialised;
 
 transport_id_t transport_pref[TRANSPORT_MAX];
 int transport_pref_count;
+static bool transport_pref_explicit;
 bool single_flow;
 bool allow_plain_meta = true;
 bool udp_meta_fallback = true;
@@ -314,6 +315,7 @@ bool transport_read_config(void) {
 	transport_id_t order[TRANSPORT_MAX];
 	int count = 0;
 	list = config_join(&config_tree, "PreferredTransports");
+	transport_pref_explicit = (list != NULL) || single_flow;
 
 	if(list) {
 		uint32_t pmask;
@@ -405,7 +407,12 @@ bool transport_read_config(void) {
 
 	/* quic: re-serve a replaced node certificate on reload. */
 	if(!quic_read_config()) {
-		return false;
+		if(!transport_initialised) {
+			return false;
+		}
+
+		logger(DEBUG_ALWAYS, LOG_ERR,
+		       "Could not reload the QUIC node certificate; keeping the one already in use");
 	}
 
 #endif
@@ -809,6 +816,22 @@ static void build_candidates(outgoing_t *outgoing) {
 
 		for(size_t i = 0; i < sizeof(fallback_order) / sizeof(fallback_order[0]) && outgoing->ncandidates < TRANSPORT_MAX; i++) {
 			transport_id_t id = fallback_order[i];
+
+			if((peer & TRANSPORT_BIT(id)) && transports[id].dial && !(added & TRANSPORT_BIT(id))) {
+				outgoing->candidates[outgoing->ncandidates++] = id;
+				added |= TRANSPORT_BIT(id);
+			}
+		}
+	}
+
+	if(!outgoing->ncandidates && !transport_pref_explicit) {
+		static const transport_id_t auto_order[] = {
+			TRANSPORT_QUIC, TRANSPORT_HTTPS, TRANSPORT_OBFS,
+			TRANSPORT_SFTCP, TRANSPORT_SF, TRANSPORT_PLAIN
+		};
+
+		for(size_t i = 0; i < sizeof(auto_order) / sizeof(auto_order[0]) && outgoing->ncandidates < TRANSPORT_MAX; i++) {
+			transport_id_t id = auto_order[i];
 
 			if((peer & TRANSPORT_BIT(id)) && transports[id].dial && !(added & TRANSPORT_BIT(id))) {
 				outgoing->candidates[outgoing->ncandidates++] = id;

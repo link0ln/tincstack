@@ -24,6 +24,7 @@
 
 #include "address_cache.h"
 #include "autoconnect.h"
+#include "autoif.h"
 #include "conf_net.h"
 #include "conf.h"
 #include "decoy.h"
@@ -38,6 +39,7 @@
 #include "names.h"
 #include "net.h"
 #include "protocol.h"
+#include "script.h"
 #include "subnet.h"
 #include "utils.h"
 #include "watchdog.h"
@@ -340,7 +342,9 @@ static void timeout_handler(void *data) {
 		size_t queued = out_pending + c->transport_outbuf_len;
 
 		if(c->status.control) {
-			if((c->status.pcap || c->status.log) && (c->status.remove_unused || queued > 4U * 1024U * 1024U)) {
+			size_t ctrl_ceiling = (c->status.pcap || c->status.log) ? (4U * 1024U * 1024U) : (16U * 1024U * 1024U);
+
+			if(c->status.remove_unused || queued > ctrl_ceiling) {
 				logger(DEBUG_CONNECTIONS, LOG_WARNING, "Closing stalled control stream (%lu bytes queued)", (unsigned long)queued);
 				terminate_connection(c, false);
 			}
@@ -533,10 +537,33 @@ int reload_configuration(void) {
 		return EINVAL;
 	}
 
-	read_config_options(&config_tree, NULL);
+	read_host_config(&config_tree, myself->name, true);
 
-	snprintf(fname, sizeof(fname), "%s" SLASH "hosts" SLASH "%s", confbase, myself->name);
-	read_config_file(&config_tree, fname, true);
+	if(!yamlconf_path && confbase) {
+		char hdname[PATH_MAX];
+		snprintf(hdname, sizeof(hdname), "%s" SLASH "hosts" SLASH "%s.d", confbase, myself->name);
+		DIR *hdir = opendir(hdname);
+
+		if(hdir) {
+			struct dirent *ep;
+
+			while((ep = readdir(hdir))) {
+				size_t l = strlen(ep->d_name);
+
+				if(l > 5 && !strcmp(".conf", &ep->d_name[l - 5])) {
+					if((size_t)snprintf(fname, sizeof(fname), "%s" SLASH "%s", hdname, ep->d_name) < sizeof(fname)) {
+						read_config_file(&config_tree, fname, true);
+					}
+				}
+			}
+
+			closedir(hdir);
+		}
+	}
+
+	free(address_pool);
+	address_pool = NULL;
+	get_config_string(lookup_config(&config_tree, "AddressPool"), &address_pool);
 
 	/* Parse some options that are allowed to be changed while tinc is running */
 
@@ -633,6 +660,12 @@ int reload_configuration(void) {
 			}
 		}
 	}
+
+#ifdef HAVE_LINUX
+	if(yamlconf_path && !script_exists("tinc-up") && geteuid() == 0) {
+		autoif_up();
+	}
+#endif
 
 	/* Try to make outgoing connections */
 

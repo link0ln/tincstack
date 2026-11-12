@@ -22,12 +22,85 @@
 #include "address_cache.h"
 #include "conf.h"
 #include "dnsrefresh.h"
+#include "multipath.h"
 #include "names.h"
 #include "netutl.h"
 #include "subnet.h"
 #include "xalloc.h"
 
 static const unsigned int NOT_CACHED = UINT_MAX;
+
+static inline bool sockaddr_is_inet(const sockaddr_t *sa) {
+	return sa && (sa->sa.sa_family == AF_INET || sa->sa.sa_family == AF_INET6);
+}
+
+static bool is_bound_physical_local_ip(const sockaddr_t *local) {
+	if(!local) {
+		return false;
+	}
+
+	if(local->sa.sa_family == AF_INET) {
+		if(local->in.sin_addr.s_addr == INADDR_ANY) {
+			return false;
+		}
+
+		for(int i = 0; i < listen_sockets; i++) {
+			if(listen_socket[i].udp.fd < 0 && listen_socket[i].tcp.fd < 0) {
+				continue;
+			}
+
+			sockaddr_t lsa = listen_socket[i].sa;
+			sockaddrunmap(&lsa);
+
+			if(lsa.sa.sa_family == AF_INET && lsa.in.sin_addr.s_addr != INADDR_ANY &&
+			                lsa.in.sin_addr.s_addr == local->in.sin_addr.s_addr) {
+				return true;
+			}
+		}
+
+		for(int i = 0; i < MAX_UPLINKS; i++) {
+			if(!multipath_uplinks[i].in_use || !multipath_uplinks[i].have_v4) {
+				continue;
+			}
+
+			if(multipath_uplinks[i].local_v4.sa.sa_family == AF_INET &&
+			                multipath_uplinks[i].local_v4.in.sin_addr.s_addr != INADDR_ANY &&
+			                multipath_uplinks[i].local_v4.in.sin_addr.s_addr == local->in.sin_addr.s_addr) {
+				return true;
+			}
+		}
+	} else if(local->sa.sa_family == AF_INET6) {
+		if(IN6_IS_ADDR_UNSPECIFIED(&local->in6.sin6_addr)) {
+			return false;
+		}
+
+		for(int i = 0; i < listen_sockets; i++) {
+			if(listen_socket[i].udp.fd < 0 && listen_socket[i].tcp.fd < 0) {
+				continue;
+			}
+
+			if(listen_socket[i].sa.sa.sa_family == AF_INET6 &&
+			                !IN6_IS_ADDR_UNSPECIFIED(&listen_socket[i].sa.in6.sin6_addr) &&
+			                !memcmp(&listen_socket[i].sa.in6.sin6_addr, &local->in6.sin6_addr, sizeof(struct in6_addr))) {
+				return true;
+			}
+		}
+
+		for(int i = 0; i < MAX_UPLINKS; i++) {
+			if(!multipath_uplinks[i].in_use || !multipath_uplinks[i].have_v6) {
+				continue;
+			}
+
+			if(multipath_uplinks[i].local_v6.sa.sa_family == AF_INET6 &&
+			                !IN6_IS_ADDR_UNSPECIFIED(&multipath_uplinks[i].local_v6.in6.sin6_addr) &&
+			                !memcmp(&multipath_uplinks[i].local_v6.in6.sin6_addr, &local->in6.sin6_addr, sizeof(struct in6_addr))) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
 
 /* True when dialling or probing `sa' as an underlay peer endpoint would route
    into our own VPN tunnel (tinc-over-tinc recursion):
@@ -36,7 +109,8 @@ static const unsigned int NOT_CACHED = UINT_MAX;
       (prefixlength > 0, i.e. a subnet we explicitly route into the tunnel
       interface);
    3. a kernel route lookup (UDP connect + getsockname) selects one of
-      `myself''s own /32 or /128 VPN tunnel addresses as the outgoing source IP. */
+      `myself''s own /32 or /128 VPN tunnel addresses as the outgoing source IP
+      (and that IP is not a physical listen/uplink address). */
 static bool address_routes_via_vpn_uncached(const sockaddr_t *sa) {
 	if(!sa || !myself) {
 		return false;
@@ -85,16 +159,20 @@ static bool address_routes_via_vpn_uncached(const sockaddr_t *sa) {
 			sockaddrunmap(&local);
 			got_local = true;
 
-			for splay_each(subnet_t, s, &myself->subnet_tree) {
-				if(local.sa.sa_family == AF_INET && s->type == SUBNET_IPV4) {
-					if(!maskcmp(&local.in.sin_addr, &s->net.ipv4.address, s->net.ipv4.prefixlength)) {
-						via_self = true;
-						break;
-					}
-				} else if(local.sa.sa_family == AF_INET6 && s->type == SUBNET_IPV6) {
-					if(!maskcmp(&local.in6.sin6_addr, &s->net.ipv6.address, s->net.ipv6.prefixlength)) {
-						via_self = true;
-						break;
+			if(!is_bound_physical_local_ip(&local)) {
+				for splay_each(subnet_t, s, &myself->subnet_tree) {
+					if(local.sa.sa_family == AF_INET && s->type == SUBNET_IPV4 &&
+					                s->net.ipv4.prefixlength == 32) {
+						if(!maskcmp(&local.in.sin_addr, &s->net.ipv4.address, 32)) {
+							via_self = true;
+							break;
+						}
+					} else if(local.sa.sa_family == AF_INET6 && s->type == SUBNET_IPV6 &&
+					                s->net.ipv6.prefixlength == 128) {
+						if(!maskcmp(&local.in6.sin6_addr, &s->net.ipv6.address, 128)) {
+							via_self = true;
+							break;
+						}
 					}
 				}
 			}
@@ -165,7 +243,7 @@ static bool address_routes_via_vpn_uncached(const sockaddr_t *sa) {
 }
 
 bool address_routes_via_vpn(const sockaddr_t *sa) {
-	if(!sa || !myself) {
+	if(!sa || !myself || !sockaddr_is_inet(sa)) {
 		return false;
 	}
 
@@ -178,7 +256,8 @@ bool address_routes_via_vpn(const sockaddr_t *sa) {
 
 	if(now.tv_sec > 0) {
 		for(size_t i = 0; i < 16; i++) {
-			if(cache[i].ts == now.tv_sec && !sockaddrcmp_noport(&cache[i].sa, sa)) {
+			if(cache[i].ts == now.tv_sec && sockaddr_is_inet(&cache[i].sa) &&
+			                !sockaddrcmp_noport(&cache[i].sa, sa)) {
 				return cache[i].res;
 			}
 		}
@@ -202,7 +281,7 @@ static struct addrinfo *get_known_addresses(node_t *n) {
 	struct addrinfo *oai = NULL;
 
 	for splay_each(edge_t, e, &n->edge_tree) {
-		if(!e->reverse) {
+		if(!e->reverse || !sockaddr_is_inet(&e->reverse->address)) {
 			continue;
 		}
 
@@ -246,16 +325,59 @@ static void free_known_addresses(struct addrinfo *ai) {
 }
 
 static unsigned int find_cached(address_cache_t *cache, const sockaddr_t *sa) {
-	for(unsigned int i = 0; i < cache->data.used; i++)
+	if(!cache || !sockaddr_is_inet(sa)) {
+		return NOT_CACHED;
+	}
+
+	for(unsigned int i = 0; i < cache->data.used; i++) {
+		if(!sockaddr_is_inet(&cache->data.address[i])) {
+			continue;
+		}
+
 		if(!sockaddrcmp(&cache->data.address[i], sa)) {
 			return i;
 		}
+	}
 
 	return NOT_CACHED;
 }
 
+static void persist_address_cache(address_cache_t *cache) {
+	if(!cache || !cache->node) {
+		return;
+	}
+
+	unsigned int valid = 0;
+
+	for(unsigned int i = 0; i < cache->data.used && i < MAX_CACHED_ADDRESSES; i++) {
+		if(sockaddr_is_inet(&cache->data.address[i])) {
+			if(valid != i) {
+				cache->data.address[valid] = cache->data.address[i];
+			}
+
+			valid++;
+		}
+	}
+
+	if(valid < MAX_CACHED_ADDRESSES) {
+		memset(&cache->data.address[valid], 0,
+		       (MAX_CACHED_ADDRESSES - valid) * sizeof(cache->data.address[0]));
+	}
+
+	cache->data.used = valid;
+
+	char fname[PATH_MAX];
+	snprintf(fname, sizeof(fname), "%s" SLASH "cache" SLASH "%s", confbase, cache->node->name);
+	FILE *fp = fopen(fname, "wb");
+
+	if(fp) {
+		fwrite(&cache->data, sizeof(cache->data), 1, fp);
+		fclose(fp);
+	}
+}
+
 void add_recent_address(address_cache_t *cache, const sockaddr_t *sa) {
-	if(address_routes_via_vpn(sa)) {
+	if(!cache || !sockaddr_is_inet(sa) || address_routes_via_vpn(sa)) {
 		return;
 	}
 
@@ -282,23 +404,19 @@ void add_recent_address(address_cache_t *cache, const sockaddr_t *sa) {
 
 	cache->data.address[0] = *sa;
 
-	// Write the cache
-	char fname[PATH_MAX];
-	snprintf(fname, sizeof(fname), "%s" SLASH "cache" SLASH "%s", confbase, cache->node->name);
-	FILE *fp = fopen(fname, "wb");
-
-	if(fp) {
-		fwrite(&cache->data, sizeof(cache->data), 1, fp);
-		fclose(fp);
-	}
+	persist_address_cache(cache);
 }
 
 const sockaddr_t *get_recent_address(address_cache_t *cache) {
+	if(!cache) {
+		return NULL;
+	}
+
 	// Check if there is an address in our cache of recently seen addresses
 	while(cache->tried < cache->data.used) {
 		const sockaddr_t *sa = &cache->data.address[cache->tried++];
 
-		if(address_routes_via_vpn(sa)) {
+		if(!sockaddr_is_inet(sa) || address_routes_via_vpn(sa)) {
 			continue;
 		}
 
@@ -316,7 +434,7 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 				sockaddr_t *sa = (sockaddr_t *)cache->aip->ai_addr;
 				cache->aip = cache->aip->ai_next;
 
-				if(find_cached(cache, sa) != NOT_CACHED || address_routes_via_vpn(sa)) {
+				if(!sockaddr_is_inet(sa) || find_cached(cache, sa) != NOT_CACHED || address_routes_via_vpn(sa)) {
 					continue;
 				}
 
@@ -358,7 +476,7 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 
 			const sockaddr_t *lg = dnsrefresh_last_good(cache->node->name, address);
 
-			if(lg && find_cached(cache, lg) == NOT_CACHED && !address_routes_via_vpn(lg)) {
+			if(lg && sockaddr_is_inet(lg) && find_cached(cache, lg) == NOT_CACHED && !address_routes_via_vpn(lg)) {
 				free(address);
 				return lg;
 			}
@@ -391,7 +509,7 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 
 		sockaddr_t literal = str2sockaddr(address, port);
 
-		if(literal.sa.sa_family != AF_UNKNOWN) {
+		if(sockaddr_is_inet(&literal)) {
 			if(addressfamily == AF_UNSPEC || literal.sa.sa_family == addressfamily) {
 				struct addrinfo *ai = xzalloc(sizeof(*ai));
 				ai->ai_family = literal.sa.sa_family;
@@ -411,7 +529,12 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 				struct addrinfo *ai = NULL;
 
 				for(size_t i = n_async; i > 0; i--) {
-					const sockaddr_t *src = &async_addrs[i - 1];
+					sockaddr_t *src = &async_addrs[i - 1];
+
+					if(!sockaddr_is_inet(src)) {
+						sockaddrfree(src);
+						continue;
+					}
 
 					if(addressfamily != AF_UNSPEC && src->sa.sa_family != addressfamily) {
 						continue;
@@ -436,6 +559,14 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 					struct addrinfo *ai = NULL;
 
 					for(; cache->aip; cache->aip = cache->aip->ai_next) {
+						if(cache->aip->ai_family != AF_INET && cache->aip->ai_family != AF_INET6) {
+							continue;
+						}
+
+						if(!cache->aip->ai_addr || cache->aip->ai_addrlen > sizeof(sockaddr_t)) {
+							continue;
+						}
+
 						struct addrinfo *oai = ai;
 
 						ai = xzalloc(sizeof(*ai));
@@ -466,7 +597,7 @@ const sockaddr_t *get_recent_address(address_cache_t *cache) {
 
 			cache->aip = cache->aip->ai_next;
 
-			if(address_routes_via_vpn(sa)) {
+			if(!sockaddr_is_inet(sa) || address_routes_via_vpn(sa)) {
 				continue;
 			}
 
@@ -515,6 +646,27 @@ address_cache_t *open_address_cache(node_t *node) {
 		cache->data.used = 0;
 	}
 
+	/* Sanitize on-disk entries: never retain AF_UNKNOWN or non-INET families
+	   whose union payload contains raw heap pointers from a prior process. */
+	unsigned int valid = 0;
+
+	for(unsigned int i = 0; i < cache->data.used; i++) {
+		if(sockaddr_is_inet(&cache->data.address[i])) {
+			if(valid != i) {
+				cache->data.address[valid] = cache->data.address[i];
+			}
+
+			valid++;
+		}
+	}
+
+	if(valid < MAX_CACHED_ADDRESSES) {
+		memset(&cache->data.address[valid], 0,
+		       (MAX_CACHED_ADDRESSES - valid) * sizeof(cache->data.address[0]));
+	}
+
+	cache->data.used = valid;
+
 	return cache;
 }
 
@@ -542,6 +694,10 @@ void reset_address_cache(address_cache_t *cache) {
    peer's address leave its record calls this for the old address before
    re-dialling: reset alone would re-offer the stale entry first. */
 void drop_address(address_cache_t *cache, const sockaddr_t *sa) {
+	if(!cache || !sockaddr_is_inet(sa)) {
+		return;
+	}
+
 	unsigned int pos = find_cached(cache, sa);
 
 	if(pos == NOT_CACHED) {
@@ -556,15 +712,7 @@ void drop_address(address_cache_t *cache, const sockaddr_t *sa) {
 		cache->tried--;
 	}
 
-	// Persist the shrunk list.
-	char fname[PATH_MAX];
-	snprintf(fname, sizeof(fname), "%s" SLASH "cache" SLASH "%s", confbase, cache->node->name);
-	FILE *fp = fopen(fname, "wb");
-
-	if(fp) {
-		fwrite(&cache->data, sizeof(cache->data), 1, fp);
-		fclose(fp);
-	}
+	persist_address_cache(cache);
 }
 
 static bool same_ip(const sockaddr_t *a, const sockaddr_t *b) {
@@ -587,10 +735,14 @@ static bool same_ip(const sockaddr_t *a, const sockaddr_t *b) {
    source ports of accepted connections, and a DNS watcher that saw the IP
    leave must purge every one of them, not just the service-port spelling. */
 void drop_address_ip(address_cache_t *cache, const sockaddr_t *sa) {
+	if(!cache || !sockaddr_is_inet(sa)) {
+		return;
+	}
+
 	bool changed = false;
 
 	for(unsigned int i = 0; i < cache->data.used;) {
-		if(same_ip(&cache->data.address[i], sa)) {
+		if(!sockaddr_is_inet(&cache->data.address[i]) || same_ip(&cache->data.address[i], sa)) {
 			memmove(&cache->data.address[i], &cache->data.address[i + 1],
 			        (cache->data.used - i - 1) * sizeof(cache->data.address[0]));
 			cache->data.used--;
@@ -609,14 +761,7 @@ void drop_address_ip(address_cache_t *cache, const sockaddr_t *sa) {
 		return;
 	}
 
-	char fname[PATH_MAX];
-	snprintf(fname, sizeof(fname), "%s" SLASH "cache" SLASH "%s", confbase, cache->node->name);
-	FILE *fp = fopen(fname, "wb");
-
-	if(fp) {
-		fwrite(&cache->data, sizeof(cache->data), 1, fp);
-		fclose(fp);
-	}
+	persist_address_cache(cache);
 }
 
 void close_address_cache(address_cache_t *cache) {

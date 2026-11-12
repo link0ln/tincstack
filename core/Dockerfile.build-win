@@ -47,6 +47,8 @@ RUN curl -fsSL -o zlib.tar.gz \
     && tar xzf zlib.tar.gz && cd "zlib-${ZLIB_VERSION}" \
     && make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32- libz.a \
     && install -m644 libz.a "${MINGW}/lib/" && install -m644 zlib.h zconf.h "${MINGW}/include/" \
+    && mkdir -p "${MINGW}/lib/pkgconfig" \
+    && printf 'prefix=%s\nexec_prefix=${prefix}\nlibdir=${exec_prefix}/lib\nincludedir=${prefix}/include\n\nName: zlib\nDescription: zlib compression library\nVersion: %s\nLibs: -L${libdir} -lz\nCflags: -I${includedir}\n' "${MINGW}" "${ZLIB_VERSION}" > "${MINGW}/lib/pkgconfig/zlib.pc" \
     && cd /deps && rm -rf zlib*
 RUN curl -fsSL -o zstd.tar.gz \
         "https://github.com/facebook/zstd/releases/download/v${ZSTD_VERSION}/zstd-${ZSTD_VERSION}.tar.gz" \
@@ -78,18 +80,18 @@ RUN curl -fsSL -o ngtcp2.tar.xz \
     && export PKG_CONFIG_LIBDIR="${MINGW}/lib/pkgconfig" \
     && ./configure --host=x86_64-w64-mingw32 --prefix="${MINGW}" \
         --enable-lib-only --disable-shared --enable-static --with-openssl --without-gnutls \
+        CPPFLAGS="-DNDEBUG" CFLAGS="-O2 -DNDEBUG" \
         OPENSSL_LIBS="$(pkg-config --static --libs openssl)" \
     && make -j"$(nproc)" && make install \
     && cd /deps && rm -rf ngtcp2*
-RUN x86_64-w64-mingw32-pkg-config --static --modversion openssl libngtcp2 libngtcp2_crypto_ossl
+RUN x86_64-w64-mingw32-pkg-config --static --modversion zlib openssl libngtcp2 libngtcp2_crypto_ossl
 WORKDIR /src
 COPY tincd/ /src/
-# Compression libraries have no mingw packages in Debian; the meson wraps would
-# download them at build time. Keep the build offline/deterministic: no
-# compression (tinc's Compression option is 0 = off by default anyway).
+# LZO/LZ4 have no mingw packages in Debian; zlib is built statically above so
+# decoy HTTP gzip compression matches Linux/Android (-Dzlib=enabled).
 RUN meson setup build-win --cross-file .ci/cross/windows/amd64 \
         -Dbuildtype=release -Dcrypto=openssl -Dquic=enabled -Dminiupnpc=disabled \
-        -Dzlib=disabled -Dlzo=disabled -Dlz4=disabled \
+        -Dzlib=enabled -Dlzo=disabled -Dlz4=disabled \
         -Dcurses=disabled -Dreadline=disabled \
         -Dtests=disabled -Ddocs=disabled --wrap-mode=nodownload \
     && ninja -C build-win \

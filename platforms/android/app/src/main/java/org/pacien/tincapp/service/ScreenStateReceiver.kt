@@ -29,6 +29,7 @@ import android.media.AudioPlaybackConfiguration
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import java8.util.concurrent.CompletableFuture
 import org.pacien.tincapp.service.SessionStateMachine.Event
@@ -145,6 +146,10 @@ class ScreenStateReceiver(
     if (isAudioActive(context)) {
       lastAudioActive = true
       dispatch(Event.MediaStarted)
+    }
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager?
+    if (powerManager != null && !powerManager.isInteractive) {
+      dispatch(Event.ScreenOff)
     }
   }
 

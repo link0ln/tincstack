@@ -127,8 +127,14 @@ class TincVpnService : VpnService() {
 
     when {
       intent == null -> Unit
-      intent.action == Actions.ACTION_CONNECT && intent.scheme == Actions.TINC_SCHEME ->
-        intent.data!!.schemeSpecificPart.let { netName -> worker.submit { startVpn(netName) } }
+      intent.action == Actions.ACTION_CONNECT && intent.scheme == Actions.TINC_SCHEME -> {
+        val netName = intent.data?.schemeSpecificPart
+        if (!netName.isNullOrBlank()) {
+          worker.submit { startVpn(netName) }
+        } else {
+          log.warn("Ignoring CONNECT intent with missing network URI: {}", intent)
+        }
+      }
 
       intent.action == Actions.ACTION_DISCONNECT ->
         dispatch(Event.UserDisconnect)
@@ -137,7 +143,7 @@ class TincVpnService : VpnService() {
         worker.submit { restorePreviousConnection() }
 
       else ->
-        throw IllegalArgumentException("Invalid intent action received.")
+        log.warn("Ignoring unknown intent action: {}", intent.action)
     }
 
     return Service.START_NOT_STICKY
@@ -198,6 +204,8 @@ class TincVpnService : VpnService() {
         remember(netName, announced)
         buildInterface(netName, interfaceCfg)
       }
+    } catch (e: TincYaml.InvalidConfigurationException) {
+      return fail(netName, getString(R.string.error_config_invalid_format, netName, e.defaultMessage()), e)
     } catch (e: IllegalArgumentException) {
       return fail(netName, getString(R.string.error_config_invalid_format, netName, e.defaultMessage()), e)
     } catch (e: Exception) {
@@ -212,7 +220,9 @@ class TincVpnService : VpnService() {
     TincVpnService.interfaceCfg = AnnouncedRoutes.apply(interfaceCfg, announced)
     TincVpnService.stanza = stanza
     tunFd = deviceFd
-    session = run.session
+    synchronized(watcherLock) {
+      session = run.session
+    }
     if (announced.isNotEmpty()) log.info("Remembered announced routes: {}", announced)
     dispatch(Event.SessionStarted(netName, run, interfaceCfg.disconnectOnScreenOff))
     startRouteWatcher(netName, run.session)
@@ -230,9 +240,15 @@ class TincVpnService : VpnService() {
           daemonLogTail(netName)))
       } else {
         log.info("tinc daemon started.")
-        if (session == run.session) VpnStatus.set(ConnectionState.Connected(netName))
-        if (interfaceCfg.reconnectOnNetworkChange)
-          connectivityChangeReceiver.registerWatcher(this)
+        synchronized(watcherLock) {
+          val curState = synchronized(TincVpnService) { state }
+          if (session == run.session && curState is State.Connected && curState.run == run) {
+            VpnStatus.set(ConnectionState.Connected(netName))
+            if (interfaceCfg.reconnectOnNetworkChange) {
+              connectivityChangeReceiver.registerWatcher(this@TincVpnService)
+            }
+          }
+        }
       }
     }
     try {
@@ -282,7 +298,7 @@ class TincVpnService : VpnService() {
   private fun perform(action: Action) {
     log.info("Session action: {}", action)
     when (action) {
-      is Action.StopDaemon -> suspendSession(action.netName)
+      is Action.StopDaemon -> suspendSession(action.netName, action.session)
       is Action.StartDaemon -> resumeSession(action.netName, action.run)
       is Action.ReplaceInterface -> replaceInterface(action.netName, action.run, action.routes)
       is Action.TearDown -> endSession(action.session, action.reason, stopService = true)
@@ -290,10 +306,17 @@ class TincVpnService : VpnService() {
   }
 
   /** Screen off: stop tincd, keep the tun (worker thread). */
-  private fun suspendSession(netName: String) {
+  private fun suspendSession(netName: String, forSession: Long) {
+    synchronized(watcherLock) {
+      if (session != forSession) {
+        log.info("Stale suspend for session {} ignored (current {}).", forSession, session)
+        return
+      }
+      connectivityChangeReceiver.unregisterWatcher(this)
+    }
     stopRouteWatcher()
-    connectivityChangeReceiver.unregisterWatcher(this)
     stopDaemon(netName)
+    if (session != forSession) return
     updateNotification(netName, suspended = true)
     VpnStatus.set(ConnectionState.Paused(netName))
     log.info("Session suspended: tinc daemon stopped, VPN interface kept.")
@@ -315,9 +338,14 @@ class TincVpnService : VpnService() {
       return
     }
     startRouteWatcher(netName, run.session)
-    if (cfg?.reconnectOnNetworkChange == true) connectivityChangeReceiver.registerWatcher(this)
-    updateNotification(netName, suspended = false)
-    VpnStatus.set(ConnectionState.Connected(netName))
+    synchronized(watcherLock) {
+      val curState = synchronized(TincVpnService) { state }
+      if (session == run.session && curState is State.Connected && curState.run == run) {
+        if (cfg?.reconnectOnNetworkChange == true) connectivityChangeReceiver.registerWatcher(this)
+        updateNotification(netName, suspended = false)
+        VpnStatus.set(ConnectionState.Connected(netName))
+      }
+    }
     log.info("Session resumed: tinc daemon relaunched ({}).", run)
   }
 
@@ -340,12 +368,16 @@ class TincVpnService : VpnService() {
     val base = baseCfg
     if (session != run.session || tunFd == null || base == null) return
     val cfg = AnnouncedRoutes.apply(base, routes)
-    connectivityChangeReceiver.unregisterWatcher(this)
+    synchronized(watcherLock) {
+      connectivityChangeReceiver.unregisterWatcher(this)
+    }
     stopDaemon(netName)
+    var builderRejectedRoutes = false
     val fd = try {
       buildInterface(netName, cfg)
     } catch (e: Exception) {
       log.error("Could not rebuild the interface for routes {}: {}", routes, e.defaultMessage())
+      builderRejectedRoutes = true
       null
     }
     if (fd != null) {
@@ -360,6 +392,11 @@ class TincVpnService : VpnService() {
         log.warn("Closing the replaced tun fd: {}", e.defaultMessage())
       }
       log.info("Interface rebuilt; routes now {}, DNS {}", cfg.routes, cfg.dnsServers)
+    } else if (!builderRejectedRoutes) {
+      log.warn("establish() returned null during interface rebuild; ending revoked session.")
+      setState(State.Idle)
+      endSession(run.session, TearDownReason.REVOKED, stopService = true)
+      return
     } else {
       refusedRoutes = routes
     }
@@ -371,8 +408,13 @@ class TincVpnService : VpnService() {
       dispatch(Event.ResumeFailed(run))
       return
     }
-    if (base.reconnectOnNetworkChange) connectivityChangeReceiver.registerWatcher(this)
-    VpnStatus.set(ConnectionState.Connected(netName))
+    synchronized(watcherLock) {
+      val curState = synchronized(TincVpnService) { state }
+      if (session == run.session && curState is State.Connected && curState.run == run) {
+        if (base.reconnectOnNetworkChange) connectivityChangeReceiver.registerWatcher(this)
+        VpnStatus.set(ConnectionState.Connected(netName))
+      }
+    }
   }
 
   private fun stopDaemon(netName: String) {
@@ -409,9 +451,12 @@ class TincVpnService : VpnService() {
     log.info("Ending session {} ({}).", session, reason)
     stopRouteWatcher()
     screenStateReceiver.unregister(applicationContext)
-    connectivityChangeReceiver.unregisterWatcher(this)
-
     val netName = getCurrentNetName()
+    synchronized(watcherLock) {
+      session = null
+      connectivityChangeReceiver.unregisterWatcher(this)
+    }
+
     netName?.let { stopDaemon(it) }
     try {
       fdServerSocket?.close()
@@ -620,6 +665,7 @@ class TincVpnService : VpnService() {
 
     /** Session work, one at a time, in order. Process-wide: the state below is. */
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "tinc-session") }
+    private val watcherLock = Any()
 
     @Volatile private var instance: TincVpnService? = null
     @Volatile private var state: State = State.Idle
@@ -777,6 +823,118 @@ class TincVpnService : VpnService() {
 
     fun isSuspended() = state is State.Suspended
 
+    fun forgetNetwork(netName: String) {
+      try {
+        val ed = store.edit().remove(STORE_KEY_ROUTES_PREFIX + netName)
+        if (store.getString(STORE_KEY_NETNAME, null) == netName) {
+          ed.remove(STORE_KEY_NETNAME)
+        }
+        ed.apply()
+      } catch (_: Exception) {
+      }
+    }
+
+    /**
+     * Rebuild the live TUN interface and relaunch tincd on an already-active VPN session
+     * (e.g. after routes, DNS, or Full-Tunnel settings changed in WebUI) without calling
+     * `startService` from the background.
+     */
+    fun rebuildActiveSession(netName: String): CompletableFuture<Boolean> {
+      if (!isConnected() || getCurrentNetName() != netName) {
+        return CompletableFuture.completedFuture(false)
+      }
+      val done = CompletableFuture<Boolean>()
+      worker.submit {
+        try {
+          val service = instance
+          val curSession = session
+          if (service == null || curSession == null || getCurrentNetName() != netName) {
+            done.complete(false)
+            return@submit
+          }
+          val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+          val newStanza = yaml.resolveNetwork(netName)
+          val newBase = VpnInterfaceConfiguration.fromTincYaml(yaml, newStanza)
+          baseCfg = newBase
+          stanza = newStanza
+          refusedRoutes = null
+          val keptAnnounced = announcedRoutes.filter { r ->
+            newBase.routes.none { AnnouncedRoutes.covers(it, r) }
+          }
+          val curState = synchronized(TincVpnService) { state }
+          when (curState) {
+            is State.Connected -> {
+              if (curState.run.session == curSession) {
+                val nextRun = curState.run.next()
+                setState(curState.copy(run = nextRun, suspendOnScreenOff = newBase.disconnectOnScreenOff))
+                if (newBase.disconnectOnScreenOff) {
+                  screenStateReceiver.register(service.applicationContext)
+                } else {
+                  screenStateReceiver.unregister(service.applicationContext)
+                }
+                service.replaceInterface(netName, nextRun, keptAnnounced)
+                done.complete(isConnected())
+              } else {
+                done.complete(false)
+              }
+            }
+            is State.Suspended -> {
+              val cfg = AnnouncedRoutes.apply(newBase, keptAnnounced)
+              val fd = service.buildInterface(netName, cfg)
+              if (fd != null) {
+                val old = tunFd
+                tunFd = fd
+                interfaceCfg = cfg
+                announcedRoutes = keptAnnounced
+                remember(netName, keptAnnounced)
+                try {
+                  old?.close()
+                } catch (_: Exception) {
+                }
+                done.complete(true)
+              } else {
+                setState(State.Idle)
+                service.endSession(curSession, TearDownReason.REVOKED, stopService = true)
+                done.complete(false)
+              }
+            }
+            State.Idle -> done.complete(false)
+          }
+        } catch (e: Throwable) {
+          log.error("Failed to rebuild active VPN session for {}", netName, e)
+          done.completeExceptionally(e)
+        }
+      }
+      return done
+    }
+
+    private fun isBackgroundStartRestriction(e: Throwable): Boolean =
+      e is IllegalStateException ||
+        e.javaClass.name == "android.app.ForegroundServiceStartNotAllowedException"
+
+    /**
+     * Attempt to start the VPN session, catching Android 12+ background foreground-service
+     * restrictions cleanly instead of crashing the app process.
+     */
+    fun tryConnect(netName: String): Pair<Boolean, String?> {
+      val wasActive = isConnected()
+      return try {
+        connect(netName)
+        true to null
+      } catch (e: Exception) {
+        if (!wasActive) {
+          VpnStatus.set(ConnectionState.Disconnected)
+        }
+        if (isBackgroundStartRestriction(e)) {
+          log.warn("Background VPN start blocked by Android OS for {}: {}", netName, e.defaultMessage())
+          false to "Cannot start VPN from background on Android 12+: open tincstack on the device first (${e.defaultMessage()})"
+        } else {
+          log.error("Could not start VPN service for {}", netName, e)
+          false to "Could not start VPN service: ${e.defaultMessage()}"
+        }
+      }
+    }
+
     fun connect(netName: String) {
       VpnStatus.set(ConnectionState.Connecting(netName))
       App.getContext().startService(
@@ -786,9 +944,17 @@ class TincVpnService : VpnService() {
     }
 
     fun disconnect() {
-      App.getContext().startService(
-        Intent(App.getContext(), TincVpnService::class.java)
-          .setAction(Actions.ACTION_DISCONNECT))
+      try {
+        App.getContext().startService(
+          Intent(App.getContext(), TincVpnService::class.java)
+            .setAction(Actions.ACTION_DISCONNECT))
+      } catch (e: Exception) {
+        if (isConnected()) {
+          dispatch(Event.UserDisconnect)
+        } else {
+          log.warn("Disconnect ignored while service inactive: {}", e.defaultMessage())
+        }
+      }
     }
   }
 }

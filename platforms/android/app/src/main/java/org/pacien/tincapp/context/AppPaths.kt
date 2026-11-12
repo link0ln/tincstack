@@ -47,6 +47,7 @@ object AppPaths {
   private const val TINC_BIN = "libtinc.so"
 
   private const val APPLOG_FILE = "tincapp.log"
+  private const val CRASHLOG_FILE = "crash.log"
   private const val CRASHFLAG_FILE = "crash.flag"
   private const val LOGFILE_FORMAT = "tinc.%s.log"
   private const val PIDFILE_FORMAT = "tinc.%s.pid"
@@ -69,6 +70,7 @@ object AppPaths {
   fun logFile(netName: String) = File(logsDir(), String.format(LOGFILE_FORMAT, netName))
   fun pidFile(netName: String) = File(runtimeDir(), String.format(PIDFILE_FORMAT, netName))
   fun appLogFile() = File(logsDir(), APPLOG_FILE)
+  fun crashLogFile() = File(logsDir(), CRASHLOG_FILE)
   fun crashFlagFile() = File(privateCacheDir(), CRASHFLAG_FILE)
 
   fun existing(f: File) = f.apply { if (!exists()) throw FileNotFoundException(f.absolutePath) }

@@ -1,0 +1,20 @@
+# Override for a listening node with HTTPS/QUIC fronts disabled (FRONT_PORT=0).
+#
+# Replaces the base `ports:` list so only tinc's own TCP+UDP listen port (PORT,
+# default 655) is published on the host and Docker never sees containerPort 0:
+#
+#   COMPOSE_FILE=docker-compose.yml:compose.nofront.yml FRONT_PORT=0 docker compose up -d
+#   COMPOSE_FILE=compose.release.yml:compose.nofront.yml FRONT_PORT=0 docker compose up -d
+#
+# When also publishing a dedicated OBFS_PORT, place compose.nofront.yml BEFORE
+# compose.obfs.yml:
+#   COMPOSE_FILE=docker-compose.yml:compose.nofront.yml:compose.obfs.yml
+services:
+  node:
+    ports: !override
+      - target: ${PORT:-655}
+        published: "${PORT:-655}"
+        protocol: tcp
+      - target: ${PORT:-655}
+        published: "${PORT:-655}"
+        protocol: udp

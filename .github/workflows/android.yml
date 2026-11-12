@@ -23,10 +23,14 @@ on:
   push:
     paths:
       - 'platforms/android/**'
+      - 'core/tincd/**'
+      - 'core/ngtcp2/**'
       - '.github/workflows/android.yml'
   pull_request:
     paths:
       - 'platforms/android/**'
+      - 'core/tincd/**'
+      - 'core/ngtcp2/**'
       - '.github/workflows/android.yml'
 
 permissions:

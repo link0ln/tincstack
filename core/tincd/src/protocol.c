@@ -76,14 +76,37 @@ const request_entry_t *get_request_entry(request_t req) {
 	return &request_entries[req];
 }
 
+#define MAX_PAST_REQUESTS 65536U
+
+typedef struct past_request_entry_t {
+	past_request_t base;
+	list_node_t *fifo_node;
+} past_request_entry_t;
+
+static list_t past_request_fifo = {
+	.head = NULL,
+	.tail = NULL,
+	.count = 0,
+	.delete = NULL,
+};
+
 static int past_request_compare(const past_request_t *a, const past_request_t *b) {
 	return strcmp(a->request, b->request);
 }
 
 static void free_past_request(past_request_t *r) {
 	if(r) {
+		past_request_entry_t *entry = (past_request_entry_t *)r;
+
+		if(entry->fifo_node) {
+			list_node_t *fn = entry->fifo_node;
+			entry->fifo_node = NULL;
+			list_unlink_node(&past_request_fifo, fn);
+			free(fn);
+		}
+
 		free((char *)r->request);
-		free(r);
+		free(entry);
 	}
 }
 
@@ -224,7 +247,11 @@ static void age_past_requests(void *data) {
 }
 
 bool seen_request(const char *request) {
-	past_request_t *new, p = {0};
+	past_request_t p = {0};
+
+	if(!request) {
+		return false;
+	}
 
 	p.request = request;
 
@@ -232,21 +259,31 @@ bool seen_request(const char *request) {
 		logger(DEBUG_SCARY_THINGS, LOG_DEBUG, "Already seen request");
 		return true;
 	} else {
-		new = xmalloc(sizeof(*new));
-		new->request = xstrdup(request);
-		new->firstseen = now.tv_sec;
-		splay_insert(&past_request_tree, new);
+		while(past_request_tree.count >= MAX_PAST_REQUESTS && past_request_fifo.head) {
+			past_request_entry_t *oldest = past_request_fifo.head->data;
+			splay_delete(&past_request_tree, &oldest->base);
+		}
+
+		past_request_entry_t *entry = xzalloc(sizeof(*entry));
+		entry->base.request = xstrdup(request);
+		entry->base.firstseen = now.tv_sec;
+		entry->fifo_node = list_insert_tail(&past_request_fifo, entry);
+		splay_insert(&past_request_tree, &entry->base);
+
 		if(!past_request_timeout.cb) {
 			timeout_add(&past_request_timeout, age_past_requests, NULL, &(struct timeval) {
 				10, jitter()
 			});
 		}
+
 		return false;
 	}
 }
 
 void exit_requests(void) {
 	splay_empty_tree(&past_request_tree);
+	list_empty_list(&past_request_fifo);
 
 	timeout_del(&past_request_timeout);
+	exit_key_quorum();
 }

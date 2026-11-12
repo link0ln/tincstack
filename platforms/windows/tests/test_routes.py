@@ -86,6 +86,10 @@ def test_conflicts_finds_an_overlapping_local_network():
 
 def test_adapter_aliases_prefers_the_configured_name():
     assert routes.adapter_aliases({"WintunInterface": "gnet-tun"}, "gnet") == ["gnet-tun", "gnet"]
+    assert routes.adapter_aliases({"WintunInterface": "gnet-tun", "Interface": "legacy-if"}, "gnet") == [
+        "gnet-tun", "gnet", "legacy-if"
+    ]
+    assert routes.adapter_aliases({"Interface": "legacy-if"}, "gnet") == ["gnet", "legacy-if"]
     assert routes.adapter_aliases({}, "gnet") == ["gnet"]
     assert routes.adapter_aliases({"Interface": "gnet"}, "gnet") == ["gnet"]
 

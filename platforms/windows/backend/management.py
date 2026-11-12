@@ -190,6 +190,21 @@ def installed_exe() -> str | None:
     return os.path.join(d, "tincmgr.exe") if d else None
 
 
+def safe_rollback_exe() -> str | None:
+    """Return `installed_exe()` ONLY if it exists inside `paths.protected_dir()`
+    and is not a symlink or reparse point (safe to launch from an elevated
+    `--self-install` rollback handler)."""
+    prot = paths.protected_dir()
+    target = installed_exe()
+    if not prot or not target or not _inside_dir(target, prot):
+        return None
+    try:
+        paths.reject_reparse_point(target)
+    except OSError:
+        return None
+    return target if os.path.isfile(target) else None
+
+
 def _legacy_installed_exe() -> str | None:
     """Where tincmgr <= this change put the autostart copy: the onefile itself."""
     prot = paths.protected_dir()
@@ -316,6 +331,9 @@ def install_self(exe_path: str, allow_downgrade: bool = False, retry_secs: float
         check_downgrade(b.version, installed_version())
 
     staging, old = d + ".new", d + ".old"
+    paths.reject_reparse_point(d)
+    paths.reject_reparse_point(staging)
+    paths.reject_reparse_point(old)
     shutil.rmtree(staging, ignore_errors=True)
     try:
         for rel, (sha, src_rel) in b.files.items():
@@ -360,6 +378,10 @@ def replace_standalone_exe(src_exe: str, dst_exe: str, retry_secs: float = 10.0)
     if not dst_exe or _same_path(src_exe, dst_exe) or _inside_dir(dst_exe, install_dir()):
         return
     if not dst_exe.lower().endswith(".exe") or not os.path.isfile(src_exe):
+        return
+    try:
+        paths.reject_reparse_point(dst_exe)
+    except OSError:
         return
     import time
     deadline = time.time() + max(0.0, retry_secs)

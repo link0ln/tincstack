@@ -41,6 +41,7 @@
 #define DIAG_TH_ACK  0x10
 
 #define MAX_DIAG_TCP_CONNS 16
+#define MAX_DIAG_HALF_OPEN 8
 #define MAX_DIAG_PING_REQS 32
 /* Keep full TCP segments (14 eth + 20 IP + 20 TCP + MSS = 1078 bytes) safely
    below the 1119-byte QUIC carrier DATAGRAM PMTU ceiling so send_packet()
@@ -74,6 +75,7 @@ typedef struct diag_tcp_conn_t {
 	io_t io;
 	bool local_connected;
 	bool local_eof;
+	bool local_write_closed;
 
 	uint32_t irs;
 	uint32_t rcv_nxt;
@@ -339,7 +341,7 @@ static void diag_tcp_update_io(diag_tcp_conn_t *c) {
 	if(!c->local_connected) {
 		flags = IO_READ | IO_WRITE;
 	} else {
-		if(c->rx_off < c->rx_len) {
+		if(!c->local_write_closed && c->rx_off < c->rx_len) {
 			flags |= IO_WRITE;
 		}
 
@@ -353,6 +355,12 @@ static void diag_tcp_update_io(diag_tcp_conn_t *c) {
 
 static void diag_tcp_flush_rx(diag_tcp_conn_t *c) {
 	if(!c || !c->local_connected || c->fd < 0) {
+		return;
+	}
+
+	if(c->local_write_closed) {
+		c->rx_off = 0;
+		c->rx_len = 0;
 		return;
 	}
 
@@ -370,8 +378,12 @@ static void diag_tcp_flush_rx(diag_tcp_conn_t *c) {
 			break;
 		}
 
-		/* Local socket write error */
+		/* Local socket write error or closed peer: drop buffered rx data and
+		   disarm IO_WRITE so the event loop never spins at 100% CPU. */
+		c->local_write_closed = true;
 		c->local_eof = true;
+		c->rx_off = 0;
+		c->rx_len = 0;
 		break;
 	}
 
@@ -379,7 +391,8 @@ static void diag_tcp_flush_rx(diag_tcp_conn_t *c) {
 		c->rx_off = 0;
 		c->rx_len = 0;
 
-		if(c->peer_fin && c->fd >= 0) {
+		if(c->peer_fin && c->fd >= 0 && !c->local_write_closed) {
+			c->local_write_closed = true;
 #ifdef HAVE_WINDOWS
 			shutdown(c->fd, SD_SEND);
 #else
@@ -629,7 +642,16 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 
 	if((flags & DIAG_TH_SYN) && !(flags & DIAG_TH_ACK)) {
 		if(c) {
-			if(!c->syn_acked && seq == c->irs) {
+			if(c->syn_acked) {
+				/* Never tear down an established diag session on an unverified
+				   duplicate/forged SYN; emit RFC 5961 challenge ACK instead. */
+				diag_tcp_send_segment(c->my_ip, c->peer_ip, c->my_port, c->peer_port,
+				                      c->tx_una_seq + (uint32_t)c->tx_sent_offset, c->rcv_nxt,
+				                      DIAG_TH_ACK, diag_tcp_rx_wnd(c), NULL, 0, false);
+				return;
+			}
+
+			if(seq == c->irs) {
 				diag_tcp_send_segment(c->my_ip, c->peer_ip, c->my_port, c->peer_port,
 				                      c->iss, c->rcv_nxt, DIAG_TH_SYN | DIAG_TH_ACK, 65535,
 				                      NULL, 0, true);
@@ -640,31 +662,63 @@ static void diag_handle_tcp_packet(const uint8_t *ip, const uint8_t *tcp, size_t
 			c = NULL;
 		}
 
-		/* Find a free slot or evict the oldest connection */
+		/* Rate-limit incoming SYNs (burst 16, refill 4/sec) and cap half-open
+		   (!syn_acked) slots so a SYN flood can NEVER evict established diag
+		   sessions. */
+		static time_t syn_bucket_sec = 0;
+		static int syn_tokens = 16;
+
+		if(now.tv_sec != syn_bucket_sec) {
+			time_t elapsed = (syn_bucket_sec > 0 && now.tv_sec > syn_bucket_sec) ? (now.tv_sec - syn_bucket_sec) : 4;
+			syn_bucket_sec = now.tv_sec;
+			syn_tokens = (elapsed >= 4) ? 16 : MIN(16, syn_tokens + (int)elapsed * 4);
+		}
+
+		if(syn_tokens <= 0) {
+			return;
+		}
+
 		int slot = -1;
-		time_t oldest_time = now.tv_sec + 1;
-		int oldest_slot = 0;
+		int half_open_count = 0;
+		time_t oldest_half_open_time = now.tv_sec + 1;
+		int oldest_half_open_slot = -1;
 
 		for(int i = 0; i < MAX_DIAG_TCP_CONNS; i++) {
 			if(!tcp_conns[i]) {
-				slot = i;
-				break;
+				if(slot < 0) {
+					slot = i;
+				}
+
+				continue;
 			}
 
-			if(tcp_conns[i]->last_activity < oldest_time) {
-				oldest_time = tcp_conns[i]->last_activity;
-				oldest_slot = i;
+			if(!tcp_conns[i]->syn_acked) {
+				half_open_count++;
+
+				if(oldest_half_open_slot < 0 || tcp_conns[i]->last_activity < oldest_half_open_time) {
+					oldest_half_open_time = tcp_conns[i]->last_activity;
+					oldest_half_open_slot = i;
+				}
 			}
+		}
+
+		if((slot < 0 || half_open_count >= MAX_DIAG_HALF_OPEN) && oldest_half_open_slot >= 0) {
+			diag_tcp_conn_t *evict = tcp_conns[oldest_half_open_slot];
+			diag_tcp_send_segment(evict->my_ip, evict->peer_ip, evict->my_port, evict->peer_port,
+			                      evict->iss + 1, evict->rcv_nxt,
+			                      DIAG_TH_RST | DIAG_TH_ACK, 0, NULL, 0, false);
+			diag_tcp_conn_close(evict);
+			slot = oldest_half_open_slot;
 		}
 
 		if(slot < 0) {
-			diag_tcp_conn_t *evict = tcp_conns[oldest_slot];
-			diag_tcp_send_segment(evict->my_ip, evict->peer_ip, evict->my_port, evict->peer_port,
-			                      evict->tx_una_seq + (uint32_t)evict->tx_sent_offset, evict->rcv_nxt,
+			/* All slots are occupied by established sessions; refuse without evicting. */
+			diag_tcp_send_segment(my_ip, peer_ip, dport, sport, 0, seq + 1,
 			                      DIAG_TH_RST | DIAG_TH_ACK, 0, NULL, 0, false);
-			diag_tcp_conn_close(evict);
-			slot = oldest_slot;
+			return;
 		}
+
+		syn_tokens--;
 
 		int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 

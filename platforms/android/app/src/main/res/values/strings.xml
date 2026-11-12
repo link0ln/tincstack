@@ -82,8 +82,10 @@
 	<string name="diag_action_open_webui">Open WebUI</string>
 	<string name="diag_action_copy_url">Copy VPN URL</string>
 	<string name="diag_action_copy_password">Copy Password</string>
+	<string name="diag_action_reset_password">Reset Password</string>
 	<string name="diag_password_label_format">Web panel password: %1$s</string>
 	<string name="diag_password_copied">Diagnostic password copied</string>
+	<string name="diag_password_reset">Diagnostic password regenerated; active web sessions signed out</string>
 	<string name="diag_action_mark_lag">⚡ Mark Lag</string>
 	<string name="diag_mark_saved">Lag / anomaly marker recorded in telemetry</string>
 	<string name="setting_update_title">App updates</string>
@@ -94,6 +96,10 @@
 	<string name="menu_add_network">Add network</string>
 	<string name="menu_remove_network">Remove network</string>
 	<string name="menu_log">Log</string>
+	<string name="menu_allow_automation">Allow external automation intents</string>
+	<string name="automation_enabled">External automation intents enabled</string>
+	<string name="automation_disabled">External automation intents disabled</string>
+	<string name="automation_blocked">External automation intent blocked (enable in menu if trusted)</string>
 	<string name="menu_check_updates">Check for updates</string>
 	<string name="menu_about">About</string>
 

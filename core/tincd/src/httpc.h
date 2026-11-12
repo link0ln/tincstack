@@ -36,12 +36,20 @@ typedef struct {
    status is a success here -- the caller decides what 4xx means. */
 bool httpc_request(const httpc_request_t *req, http_response_t *res, char *err, size_t errlen);
 
+/* Split an https:// URL into host (unbracketed for IPv6), port, and path,
+   rejecting any control characters, whitespace, or malformed authority. */
+bool httpc_split_url(const char *url, char *host, size_t hostlen, char *port, size_t portlen,
+                     char *path, size_t pathlen);
+
 /* The response half of httpc_request(), split out so it can be tested
    without a socket: `len' bytes of a raw HTTP/1.1 response (need not be
    NUL-terminated) into `res'. `head' says the request was a HEAD, whose
-   answer has no body whatever its Content-Length says. False, with `res'
-   freed and the reason in `err', on a malformed response, a chunked body
-   without its last chunk, or a body shorter than its Content-Length. */
+   answer has no body whatever its Content-Length says. `clean_eof' says the
+   TLS session closed with close_notify (required when neither Content-Length
+   nor Transfer-Encoding: chunked frames the body). */
+bool httpc_parse_response_ex(const char *buf, size_t len, bool head, bool clean_eof,
+                             const char *host, http_response_t *res, char *err, size_t errlen);
+
 bool httpc_parse_response(const char *buf, size_t len, bool head, const char *host,
                           http_response_t *res, char *err, size_t errlen);
 

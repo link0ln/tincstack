@@ -48,9 +48,23 @@ class TransportTest {
   }
 
   @Test
-  fun offeredCarriersComeFromTheDialledNodesHostRecord() {
-    // node_a's record says "Transports = plain, sf"; any plain listener also accepts sftcp
-    assertEquals(setOf(Transport.PLAIN, Transport.SF, Transport.SFTCP), Transport.acceptedByPeers(joined(), "phonenet"))
+  fun offeredCarriersComeStrictlyFromTheDialledNodesHostRecord() {
+    // node_a's record says "Transports = plain, sf": must NOT synthesize sftcp when explicit list is present (M-AND-08)
+    assertEquals(setOf(Transport.PLAIN, Transport.SF), Transport.acceptedByPeers(joined(), "phonenet"))
+
+    // TLS-only peer ("Transports = https, quic") must NOT advertise plain or sftcp
+    val tlsOnly = TincYaml(tmp.newFile("tls-only.yaml").apply {
+      writeText("""
+        |networks:
+        |  n:
+        |    options:
+        |      ConnectTo: hub
+        |    hosts:
+        |      hub: |
+        |        Transports = https, quic
+        |""".trimMargin())
+    })
+    assertEquals(setOf(Transport.HTTPS, Transport.QUIC), Transport.acceptedByPeers(tlsOnly, "n"))
   }
 
   @Test

@@ -9,6 +9,9 @@ import time
 
 import pytest
 
+pytest.importorskip("PySide6")
+pytest.importorskip("pyqtgraph")
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtWidgets  # noqa: E402
@@ -282,8 +285,8 @@ def test_transports_tab_validation_blocks_save(window):
     w = window
     panel = w.transports.panel
     panel.paths["TlsCert"].setText("C:/certs/fullchain.pem")   # key missing
-    panel.accept["plain"].setChecked(False); panel.accept["obfs"].setChecked(False)
-    panel.accept["https"].setChecked(False); panel.accept["quic"].setChecked(False)
+    for cb in panel.accept.values():
+        cb.setChecked(False)
     assert not w.transports.save()
     err = w.transports.error_lbl.text()
     assert "TlsCert and TlsKey" in err and "at least one carrier" in err
@@ -320,6 +323,7 @@ def test_transports_tab_multipath_widgets_save_and_live_mode(window):
     assert opts["MultipathConnections"] == 2
     assert opts["MultipathInterface"] == "Ethernet:192.168.1.2:100:0"
     assert wait_until(lambda: any(c[-3:] == ["multipath", "mode", "failover"] for c in w.fake.calls))
+    assert wait_until(lambda: any(c[-1:] == ["reload"] for c in w.fake.calls))
     w.reload_config()
     assert w.transports.panel.multipath_mode.currentText() == "failover"
     assert w.transports.panel.multipath_conns.value() == 2
@@ -484,6 +488,7 @@ def test_full_tunnel_toggle_writes_the_setting_and_applies_it(window_with_peer, 
     monkeypatch.setattr(w.rt, "full_tunnel_state", lambda net: "active via gw" if synced else "")
 
     _route_buttons(w, "gw")[FULL].click()
+    QtWidgets.QApplication.processEvents()
     # stored as tincmgr's own network key, not as an option the daemon reads
     net = yc.load(w.app.path).net("demo")
     assert net.full_tunnel == "gw"
@@ -497,6 +502,7 @@ def test_full_tunnel_toggle_writes_the_setting_and_applies_it(window_with_peer, 
 
     before = len(synced)
     btn.click()
+    QtWidgets.QApplication.processEvents()
     assert yc.load(w.app.path).net("demo").full_tunnel == ""
     assert "full_tunnel" not in open(w.app.path, encoding="utf-8").read()
     assert wait_until(lambda: len(synced) > before)
@@ -535,18 +541,20 @@ def test_route_toggle_writes_and_removes_interfaceroute(window_with_peer, monkey
 
     btns = _route_buttons(w, "gw")
     btns["192.168.1.0/24"].click()
+    QtWidgets.QApplication.processEvents()
 
     opts = yc.load(w.app.path).net("demo").options
     # the nexthop records which node the route is for
     assert opts["InterfaceRoute"] == "192.168.1.0/24 10.79.0.7"
-    assert applied == [("add", "demo", "192.168.1.0/24", "10.79.0.7")]
+    assert wait_until(lambda: applied == [("add", "demo", "192.168.1.0/24", "10.79.0.7")])
     # the rebuilt cell shows the route as on
     w.peers._table(w.peers._snaps.get("demo"))
     assert _route_buttons(w, "gw")["192.168.1.0/24"].isChecked()
 
     _route_buttons(w, "gw")["192.168.1.0/24"].click()
+    QtWidgets.QApplication.processEvents()
     assert "InterfaceRoute" not in yc.load(w.app.path).net("demo").options
-    assert applied[-1] == ("del", "demo", "192.168.1.0/24")
+    assert wait_until(lambda: applied[-1] == ("del", "demo", "192.168.1.0/24"))
 
 
 def test_route_toggle_warns_before_stealing_a_local_network(window_with_peer, monkeypatch):
@@ -561,6 +569,7 @@ def test_route_toggle_warns_before_stealing_a_local_network(window_with_peer, mo
 
     monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(refuse))
     _route_buttons(w, "gw")["192.168.1.0/24"].click()
+    QtWidgets.QApplication.processEvents()
     assert asked and "192.168.1.0/24" in asked[0]
     # refused: nothing was written, and the toggle went back to off
     assert "InterfaceRoute" not in yc.load(w.app.path).net("demo").options
@@ -574,6 +583,7 @@ def test_route_toggle_without_a_running_network_only_writes_the_config(window_wi
                         lambda *a, **k: pytest.fail("must not touch the live routing table"))
     w._running["demo"] = False
     _route_buttons(w, "gw")["192.168.1.0/24"].click()
+    QtWidgets.QApplication.processEvents()
     assert yc.load(w.app.path).net("demo").options["InterfaceRoute"] == "192.168.1.0/24 10.79.0.7"
     assert "when 'demo' starts" in w.statusBar().currentMessage()
 
@@ -836,11 +846,13 @@ def test_full_tunnel_rapid_off_toggle_not_dropped_while_worker_busy(window_with_
 
     # Turn ON -> starts first worker, held at `gate`
     _route_buttons(w, "gw")[FULL].click()
+    QtWidgets.QApplication.processEvents()
     assert wait_until(lambda: len(observed) == 1)
     assert w.pool.busy("fulltunnel-demo")
 
     # Immediately turn OFF while first worker is still busy
     _route_buttons(w, "gw")[FULL].click()
+    QtWidgets.QApplication.processEvents()
     assert yc.load(w.app.path).net("demo").full_tunnel == ""
     gate.set()
 

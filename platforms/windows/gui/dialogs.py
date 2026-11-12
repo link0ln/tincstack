@@ -39,6 +39,7 @@ class InviteDialog(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget | None, net: str, invite_fn: InviteFn,
                  pool: WorkerPool) -> None:
         super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.net = net
         self.invite_fn = invite_fn
         self.pool = pool
@@ -134,6 +135,7 @@ class JoinDialog(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget | None, existing: list[str], join_fn: JoinFn,
                  pool: WorkerPool) -> None:
         super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.existing = list(existing)
         self.join_fn = join_fn
         self.pool = pool
@@ -221,6 +223,7 @@ class RawYamlDialog(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget | None, path: str,
                  save_fn: Callable[[str, str], None], load_error: str = "") -> None:
         super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.path = path
         self.save_fn = save_fn
         self.setWindowTitle(f"Raw {os.path.basename(path)}")

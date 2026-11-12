@@ -302,6 +302,94 @@ static void test_alt_svc(void **state) {
 	decoy_set_h3_port(0);
 }
 
+static void test_header_smuggling_and_content_length(void **state) {
+	(void)state;
+	decoy_set_h3_port(0);
+
+	/* M-TR-04: whitespace before ':' in any header name must be 400 Bad Request (RFC 9112 §5.1). */
+	ASSERT_ANSWER("GET / HTTP/1.1\r\nHost: a\r\nUpgrade : websocket\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+	ASSERT_ANSWER("GET / HTTP/1.1\r\nHost: a\r\nCookie : session=1\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+	ASSERT_ANSWER("GET / HTTP/1.1\r\nHost: a\r\nX-Forwarded-For\t: 127.0.0.1\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+	ASSERT_ANSWER("GET / HTTP/1.1\r\nHost : a\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+
+	/* M-TR-04: malformed, negative, duplicate, or TE-conflicting Content-Length -> 400 Bad Request. */
+	ASSERT_ANSWER("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: -1\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+	ASSERT_ANSWER("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 12abc\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+	ASSERT_ANSWER("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: \r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+	ASSERT_ANSWER("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: 5\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+	ASSERT_ANSWER("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+	ASSERT_ANSWER("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n",
+	              "HTTP/1.1 400 Bad Request", "Server,Date,Content-Type,Content-Length,Connection");
+}
+
+static void test_upstream_ipv6_and_keepalive_body(void **state) {
+	(void)state;
+	char host[128], port[16], hosthdr[160];
+
+	/* L-TR-02: bracketed IPv6 upstream parsing. */
+	assert_true(decoy_parse_upstream_hostport("[2001:db8::1]:8443", host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr)));
+	assert_string_equal(host, "2001:db8::1");
+	assert_string_equal(port, "8443");
+	assert_string_equal(hosthdr, "[2001:db8::1]:8443");
+
+	assert_true(decoy_parse_upstream_hostport("[::1]", host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr)));
+	assert_string_equal(host, "::1");
+	assert_string_equal(port, "80");
+	assert_string_equal(hosthdr, "[::1]");
+
+	assert_true(decoy_parse_upstream_hostport("[::1]:80", host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr)));
+	assert_string_equal(host, "::1");
+	assert_string_equal(port, "80");
+	assert_string_equal(hosthdr, "[::1]");
+
+	assert_true(decoy_parse_upstream_hostport("upstream.example.com:8080", host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr)));
+	assert_string_equal(host, "upstream.example.com");
+	assert_string_equal(port, "8080");
+	assert_string_equal(hosthdr, "upstream.example.com:8080");
+
+	assert_false(decoy_parse_upstream_hostport("[2001:db8::1", host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr)));
+	assert_false(decoy_parse_upstream_hostport("[not-an-ipv6]:8080", host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr)));
+	assert_false(decoy_parse_upstream_hostport("upstream.example.com:0", host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr)));
+	assert_false(decoy_parse_upstream_hostport("upstream.example.com:70000", host, sizeof(host), port, sizeof(port), hosthdr, sizeof(hosthdr)));
+
+	/* L-TR-02: Content-Length body consumption across keep-alive / pipelining. */
+	const char *partial = "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nab";
+	assert_false(decoy_request_ready(partial, strlen(partial), DECOY_HEAD_MAX));
+
+	char pipebuf[256];
+	strcpy(pipebuf, "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhelloGET /nope HTTP/1.1\r\nHost: a\r\n\r\n");
+	size_t pipelen = strlen(pipebuf);
+	assert_true(decoy_request_ready(pipebuf, pipelen, DECOY_HEAD_MAX));
+	size_t rem = decoy_next_request(pipebuf, pipelen);
+	assert_int_equal(rem, strlen("GET /nope HTTP/1.1\r\nHost: a\r\n\r\n"));
+	assert_int_equal(0, memcmp(pipebuf, "GET /nope HTTP/1.1\r\nHost: a\r\n\r\n", rem));
+
+	/* Unbuffered large Content-Length body forces Connection: close so body bytes cannot smuggle a request. */
+	size_t rlen = 0;
+	char *r = answer("GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 100000\r\n\r\n", &rlen);
+	assert_false(decoy_keeps_alive(r, rlen));
+	free(r);
+
+	/* M-TR-05: 4 MiB file cap and global 32 MiB decoy response budget -> 503 when saturated. */
+	assert_int_equal(DECOY_MAX_FILE_SIZE, 4 * 1024 * 1024);
+	assert_true(decoy_budget_acquire(DECOY_MAX_RESP_BUDGET));
+	assert_false(decoy_budget_acquire(1));
+	r = answer("GET / HTTP/1.1\r\nHost: a\r\n\r\n", &rlen);
+	assert_true(!strncmp(r, "HTTP/1.1 503 Service Temporarily Unavailable\r\n", 46));
+	free(r);
+	decoy_budget_release(DECOY_MAX_RESP_BUDGET);
+	assert_int_equal(decoy_budget_used(), 0);
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_page),
@@ -311,6 +399,8 @@ int main(void) {
 		cmocka_unit_test(test_ranges),
 		cmocka_unit_test(test_gzip),
 		cmocka_unit_test(test_alt_svc),
+		cmocka_unit_test(test_header_smuggling_and_content_length),
+		cmocka_unit_test(test_upstream_ipv6_and_keepalive_body),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

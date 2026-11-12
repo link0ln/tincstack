@@ -54,7 +54,7 @@ import java.util.Locale
 class PeersActivity : BaseActivity() {
   private lateinit var binding: ActivityPeersBinding
   override val snackbarRoot: View get() = binding.peersRoot
-  private val netName by lazy { intent.getStringExtra(EXTRA_NET_NAME)!! }
+  private var netName: String = ""
   // Row tap goes straight to that node's editor tab; the trailing ⋮ opens the
   // anchored dropdown (edit / transport / live info) -- not a centered dialog,
   // which read as "another tiny window", the owner's words, 2026-10-20.
@@ -68,6 +68,12 @@ class PeersActivity : BaseActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    val extraNet = intent?.getStringExtra(EXTRA_NET_NAME)?.takeIf { it.isNotBlank() }
+    if (extraNet == null) {
+      finish()
+      return
+    }
+    netName = extraNet
     binding = ActivityPeersBinding.inflate(layoutInflater)
     setContentView(binding.root)
     setupToolbar(binding.toolbar, up = true)
@@ -80,35 +86,66 @@ class PeersActivity : BaseActivity() {
     renderStatic()
   }
 
+  private data class YamlPeerSnapshot(
+    val stanza: String,
+    val own: String?,
+    val orderedNames: List<String>,
+    val hostConfigs: Map<String, PeerConfig>,
+    val noDirectLower: Set<String>,
+  ) {
+    fun isNoDirect(peerName: String): Boolean {
+      val trimmed = peerName.trim()
+      if (trimmed.isEmpty()) return false
+      if (trimmed.lowercase(Locale.ROOT) in noDirectLower) return true
+      return hostConfigs[trimmed]?.noDirect == true
+    }
+  }
+
+  private fun loadYamlPeerSnapshot(): YamlPeerSnapshot {
+    val yaml = TincYaml(AppPaths.tincYamlFile(netName))
+    val allNets = yaml.networks()
+    val stanza = if (netName in allNets) netName else allNets.keys.firstOrNull() ?: netName
+    val netMap = (allNets[stanza] as? Map<*, *>).orEmpty()
+    val opts = (netMap.entries.firstOrNull { it.key?.toString()?.equals("options", ignoreCase = true) == true }?.value as? Map<*, *>)
+      ?.entries?.associate { it.key.toString() to it.value }.orEmpty()
+    val hosts = (netMap.entries.firstOrNull { it.key?.toString()?.equals("hosts", ignoreCase = true) == true }?.value as? Map<*, *>)
+      ?.entries?.associate { it.key.toString() to (it.value?.toString() ?: "") }.orEmpty()
+    val own = TincYaml.optionValuesFromMap(opts, "Name").firstOrNull()
+    val noDirectLower = TincYaml.optionValuesFromMap(opts, "NoDirectNodes")
+      .flatMap { it.split(Regex("[\\s,;]+")) }
+      .map { it.trim().lowercase(Locale.ROOT) }
+      .filter(String::isNotEmpty)
+      .toSet()
+    val rawHostNames = hosts.keys.toList()
+    val orderedNames = listOfNotNull(own?.takeIf { it in rawHostNames }) + rawHostNames.filter { it != own }
+    val hostConfigs = hosts.mapValues { (name, text) -> PeerConfig(name, text) }
+    return YamlPeerSnapshot(stanza, own, orderedNames, hostConfigs, noDirectLower)
+  }
+
   /** The config-side list: every node the tinc.yaml holds, own node first.
       Rendered whenever the live list is empty (offline, or the daemon has
       not answered yet) and after a return from the editor. */
   private fun renderStatic() {
     val live = adapter.current.associateBy { it.name }
     Executor.supplyAsyncTask {
-      val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-      val stanza = yaml.resolveNetwork(netName)
-      val own = yaml.optionValue(stanza, "Name")
-      val names = hostNames(yaml, stanza)
-      val rows = names.map { n ->
+      val snap = loadYamlPeerSnapshot()
+      val rows = snap.orderedNames.map { n ->
         val livePeer = live[n]
+        val cfg = snap.hostConfigs[n]
         PeerStatus(
           name = n,
-          self = n == own,
-          address = livePeer?.address ?: run {
-            val cfg = yaml.hostText(stanza, n)?.let { PeerConfig(n, it) }
-            cfg?.address
-          },
-          port = staticPort(yaml, stanza, n, livePeer),
+          self = n == snap.own,
+          address = livePeer?.address ?: cfg?.address,
+          port = staticPort(cfg, livePeer),
           reachable = livePeer?.reachable == true,
           directUdp = livePeer?.directUdp == true,
           via = livePeer?.via,
           rttMs = livePeer?.rttMs,
           transport = livePeer?.transport,
-          noDirect = n != own && (livePeer?.noDirect == true || yaml.isPeerNoDirect(stanza, n)),
+          noDirect = n != snap.own && (livePeer?.noDirect == true || snap.isNoDirect(n)),
         )
       }
-      val summaries = rows.associate { p -> p.name to staticAddressSummary(yaml, stanza, p.name, p) }
+      val summaries = rows.associate { p -> p.name to staticAddressSummary(snap.hostConfigs[p.name], p) }
       rows to summaries
     }.thenAccept { (rows, summaries) ->
       runOnUiThread {
@@ -119,18 +156,16 @@ class PeersActivity : BaseActivity() {
     }
   }
 
-  private fun staticPort(yaml: TincYaml, stanza: String, node: String, live: PeerStatus?): String? {
+  private fun staticPort(cfg: PeerConfig?, live: PeerStatus?): String? {
     live?.port?.let { return it }
-    val cfg = PeerConfig(node, yaml.hostText(stanza, node) ?: return null)
+    cfg ?: return null
     return cfg.port ?: cfg.addressPort
       ?: cfg.quicPort?.takeIf { it != "0" }
       ?: cfg.httpsPort?.takeIf { it != "0" }
       ?: cfg.obfsPort?.takeIf { it != "0" }
   }
 
-  private fun staticAddressSummary(yaml: TincYaml, stanza: String, node: String, live: PeerStatus?): String? {
-    val hostText = yaml.hostText(stanza, node)
-    val cfg = hostText?.let { PeerConfig(node, it) }
+  private fun staticAddressSummary(cfg: PeerConfig?, live: PeerStatus?): String? {
     val addr = live?.address ?: cfg?.address
     val port = live?.port
       ?: cfg?.port
@@ -159,9 +194,6 @@ class PeersActivity : BaseActivity() {
       ?.joinToString("  ·  ")
   }
 
-  private fun hostNames(yaml: TincYaml, stanza: String): List<String> =
-    yaml.hostNames(stanza)
-
   private fun render(peers: List<PeerStatus>?) {
     if (peers.isNullOrEmpty()) {
       renderStatic()
@@ -169,12 +201,11 @@ class PeersActivity : BaseActivity() {
       if (peers == null && adapter.itemCount == 0) binding.peersPlaceholder.setText(R.string.peers_not_connected)
     } else {
       Executor.supplyAsyncTask {
-        val yaml = TincYaml(AppPaths.tincYamlFile(netName))
-        val stanza = yaml.resolveNetwork(netName)
+        val snap = loadYamlPeerSnapshot()
         val merged = peers.map { p ->
-          if (p.self || p.noDirect) p else p.copy(noDirect = yaml.isPeerNoDirect(stanza, p.name))
+          if (p.self || p.noDirect) p else p.copy(noDirect = snap.isNoDirect(p.name))
         }
-        val summaries = merged.associate { p -> p.name to staticAddressSummary(yaml, stanza, p.name, p) }
+        val summaries = merged.associate { p -> p.name to staticAddressSummary(snap.hostConfigs[p.name], p) }
         merged to summaries
       }.thenAccept { (merged, summaries) ->
         runOnUiThread {

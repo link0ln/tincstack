@@ -50,9 +50,10 @@ static void device_issue_read(void) {
 
 	for(;;) {
 		ResetEvent(device_read_overlapped.hEvent);
+		device_read_packet.offset = DEFAULT_PACKET_OFFSET;
 
-		DWORD len;
-		status = ReadFile(device_handle, (void *)device_read_packet.data, MTU, &len, &device_read_overlapped);
+		DWORD len = 0;
+		status = ReadFile(device_handle, (void *)DATA(&device_read_packet), MTU, &len, &device_read_overlapped);
 
 		if(!status) {
 			if(GetLastError() != ERROR_IO_PENDING)
@@ -62,9 +63,12 @@ static void device_issue_read(void) {
 			break;
 		}
 
-		device_read_packet.len = len;
-		device_read_packet.priority = 0;
-		route(myself, &device_read_packet);
+		if(len >= 14 && len <= MTU && DEFAULT_PACKET_OFFSET + len <= MAXSIZE) {
+			device_read_packet.offset = DEFAULT_PACKET_OFFSET;
+			device_read_packet.len = (length_t)len;
+			device_read_packet.priority = 0;
+			route(myself, &device_read_packet);
+		}
 	}
 }
 
@@ -72,7 +76,7 @@ static void device_handle_read(void *data, int flags) {
 	(void)data;
 	(void)flags;
 
-	DWORD len;
+	DWORD len = 0;
 
 	if(!GetOverlappedResult(device_handle, &device_read_overlapped, &len, FALSE)) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Error getting read result from %s %s: %s", device_info,
@@ -86,9 +90,13 @@ static void device_handle_read(void *data, int flags) {
 		return;
 	}
 
-	device_read_packet.len = len;
-	device_read_packet.priority = 0;
-	route(myself, &device_read_packet);
+	if(len >= 14 && len <= MTU && DEFAULT_PACKET_OFFSET + len <= MAXSIZE) {
+		device_read_packet.offset = DEFAULT_PACKET_OFFSET;
+		device_read_packet.len = (length_t)len;
+		device_read_packet.priority = 0;
+		route(myself, &device_read_packet);
+	}
+
 	device_issue_read();
 }
 

@@ -20,18 +20,20 @@ package org.pacien.tincapp.activities.common
 
 import androidx.lifecycle.LiveData
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * @author euxane
  */
 abstract class SelfRefreshingLiveData<T>(private val refreshInterval: Long, private val timeUnit: TimeUnit) : LiveData<T>() {
-  private val scheduledExecutor = Executors.newSingleThreadScheduledExecutor()
-  private lateinit var scheduledFuture: ScheduledFuture<*>
+  private var scheduledFuture: ScheduledFuture<*>? = null
 
   override fun onActive() {
-    scheduledFuture = scheduledExecutor.scheduleWithFixedDelay({
+    scheduledFuture?.cancel(false)
+    scheduledFuture = sharedScheduler.scheduleWithFixedDelay({
       try {
         onRefresh()
       } catch (e: Exception) {
@@ -41,8 +43,17 @@ abstract class SelfRefreshingLiveData<T>(private val refreshInterval: Long, priv
   }
 
   override fun onInactive() {
-    scheduledFuture.cancel(false)
+    scheduledFuture?.cancel(false)
+    scheduledFuture = null
   }
 
   abstract fun onRefresh()
+
+  companion object {
+    private val threadSeq = AtomicInteger(0)
+    private val sharedScheduler: ScheduledExecutorService =
+      Executors.newScheduledThreadPool(2) { r ->
+        Thread(r, "tinc-livedata-${threadSeq.incrementAndGet()}").apply { isDaemon = true }
+      }
+  }
 }

@@ -132,6 +132,7 @@ static void test_state_roundtrip(void **state) {
 		dnsrefresh_job_t *next = j->next;
 		free(j->node_name);
 		free(j->hostname);
+		free(j->port);
 		free(j);
 		j = next;
 	}
@@ -163,6 +164,7 @@ static void test_corrupt_state_is_ignored(void **state) {
 		dnsrefresh_job_t *next = j->next;
 		free(j->node_name);
 		free(j->hostname);
+		free(j->port);
 		free(j);
 		j = next;
 	}
@@ -173,11 +175,151 @@ static void test_corrupt_state_is_ignored(void **state) {
 	assert_null(reloaded);
 }
 
+static void test_job_match_port_and_ai_family_and_pending_done(void **state) {
+	(void)state;
+
+	/* M-DP-03: dnsrefresh_job_match must distinguish same node+host on different ports */
+	dnsrefresh_job_t j655 = {
+		.node_name = (char *)"hub",
+		.hostname = (char *)"vpn.example.net",
+		.port = (char *)"655",
+	};
+	assert_true(dnsrefresh_job_match(&j655, "hub", "vpn.example.net", "655"));
+	assert_false(dnsrefresh_job_match(&j655, "hub", "vpn.example.net", "443"));
+	assert_false(dnsrefresh_job_match(&j655, "other", "vpn.example.net", "655"));
+	assert_false(dnsrefresh_job_match(&j655, "hub", "other.example.net", "655"));
+
+	/* M-DP-03: DnsRefreshInterval = 0 disables background periodic refresh */
+	pthread_mutex_init(&dnsrefresh.mutex, NULL);
+	pthread_cond_init(&dnsrefresh.work, NULL);
+
+	dnsrefresh_job_t *live_job = xzalloc(sizeof(*live_job));
+	live_job->node_name = xstrdup("hub");
+	live_job->hostname = xstrdup("vpn.example.net");
+	live_job->port = xstrdup("655");
+	dnsrefresh_jobs = live_job;
+
+	dnsrefresh.started = true;
+	dnsrefresh.pending = NULL;
+	dnsrefresh_interval = 0;
+	dnsrefresh_queue_batch();
+	assert_null(dnsrefresh.pending);
+
+	/* When interval > 0, dnsrefresh_queue_batch snapshots addressfamily by value */
+	dnsrefresh_interval = 60;
+	addressfamily = AF_INET6;
+	dnsrefresh_queue_batch();
+	assert_non_null(dnsrefresh.pending);
+	assert_int_equal(AF_INET6, dnsrefresh.pending->ai_family);
+	dnsrefresh_free_job_list(dnsrefresh.pending);
+	dnsrefresh.pending = NULL;
+
+	/* When interval == 0, dnsrefresh_handle_results drops pending_done without applying */
+	dnsrefresh_result_t *done_res = xzalloc(sizeof(*done_res));
+	done_res->node_name = xstrdup("hub");
+	done_res->hostname = xstrdup("vpn.example.net");
+	done_res->port = xstrdup("655");
+	done_res->ok = true;
+	done_res->addr = str2sockaddr("198.51.100.77", "655");
+	dnsrefresh.pending_done = done_res;
+	dnsrefresh_interval = 0;
+	dnsrefresh_handle_results();
+	assert_null(dnsrefresh.pending_done);
+	assert_false(live_job->has_last_good);
+
+	dnsrefresh.started = false;
+	dnsrefresh_interval = 600;
+	dnsrefresh_free_jobs();
+	addressfamily = AF_UNSPEC;
+	pthread_cond_destroy(&dnsrefresh.work);
+	pthread_mutex_destroy(&dnsrefresh.mutex);
+}
+
+static void test_apply_terminates_multipath_siblings_before_primary(void **state) {
+	(void)state;
+
+	/* H-DP-04: when DNS IP changes, dnsrefresh_apply() must terminate secondary
+	   multipath_sub connections BEFORE terminating primary so multipath_promote_survivor()
+	   cannot promote a stale-IP connection to own `outgoing_t`! */
+	init_connections();
+
+	myself = new_node("client");
+	myself->hostname = xstrdup("MYSELF");
+	myself->connection = new_connection();
+	myself->connection->socket = -1;
+	node_add(myself);
+
+	node_t *hub = new_node("hub");
+	hub->hostname = xstrdup("198.51.100.10 port 655");
+	node_add(hub);
+
+	outgoing_t *out = xzalloc(sizeof(*out));
+	out->node = hub;
+	list_insert_tail(&outgoing_list, out);
+
+	connection_t *primary = new_connection();
+	primary->socket = -1;
+	primary->name = xstrdup("hub");
+	primary->hostname = xstrdup("198.51.100.10 port 655");
+	primary->address = str2sockaddr("198.51.100.10", "655");
+	primary->node = hub;
+	primary->outgoing = out;
+	hub->connection = primary;
+	connection_add(primary);
+
+	connection_t *mp_sib = new_connection();
+	mp_sib->socket = -1;
+	mp_sib->name = xstrdup("hub");
+	mp_sib->hostname = xstrdup("198.51.100.10 port 655");
+	mp_sib->address = str2sockaddr("198.51.100.10", "655");
+	mp_sib->node = hub;
+	mp_sib->status.multipath_sub = true;
+	connection_add(mp_sib);
+
+	dnsrefresh_job_t *job = xzalloc(sizeof(*job));
+	job->node_name = xstrdup("hub");
+	job->hostname = xstrdup("vpn.example.net");
+	job->port = xstrdup("655");
+	job->has_last_good = true;
+	job->last_good = str2sockaddr("198.51.100.10", "655");
+	dnsrefresh_jobs = job;
+
+	dnsrefresh_result_t *res = xzalloc(sizeof(*res));
+	res->node_name = xstrdup("hub");
+	res->hostname = xstrdup("vpn.example.net");
+	res->port = xstrdup("655");
+	res->ok = true;
+	res->addr = str2sockaddr("203.0.113.99", "655");
+
+	dnsrefresh_interval = 60;
+	dnsrefresh_apply(res);
+	dnsrefresh_free_result_list(res);
+
+	/* Neither primary nor multipath_sub sibling may remain alive on old IP! */
+	assert_int_equal(0, connection_list.count);
+	assert_null(hub->connection);
+	assert_int_equal(htonl(0xCB007163), job->last_good.in.sin_addr.s_addr);
+
+	/* Cancel any scheduled reconnect timeout from out (list_delete_head calls free_outgoing) */
+	timeout_del(&out->ev);
+	list_delete_head(&outgoing_list);
+
+	dnsrefresh_free_jobs();
+
+	free_connection(myself->connection);
+	myself->connection = NULL;
+	exit_connections();
+	exit_nodes();
+	myself = NULL;
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_numeric_addresses_are_not_names),
 		cmocka_unit_test(test_state_roundtrip),
 		cmocka_unit_test(test_corrupt_state_is_ignored),
+		cmocka_unit_test(test_job_match_port_and_ai_family_and_pending_done),
+		cmocka_unit_test(test_apply_terminates_multipath_siblings_before_primary),
 	};
 	return cmocka_run_group_tests(tests, setup, teardown);
 }

@@ -113,7 +113,9 @@ void multipath_maintain(void);
 void multipath_record_udp_rx(struct node_t *n, int uplink_idx, int sock_idx,
                              const sockaddr_t *addr, size_t len);
 void multipath_update_udp_rtt(struct node_t *n, const sockaddr_t *addr, uint32_t rtt_us);
-void multipath_probe_node_paths(struct node_t *n, const void *probe_pkt, size_t len);
+void multipath_probe_node_paths(struct node_t *n, const void *probe_payload, size_t payload_len);
+bool send_sptps_probe_on_path(struct node_t *n, int uplink_idx, size_t sock_idx,
+                              const sockaddr_t *dst, const void *probe_payload, size_t payload_len);
 
 /* Packet schedulers (returns number of selected connections/paths: 0, 1, or 2) */
 uint32_t multipath_flow_hash(const struct vpn_packet_t *pkt);

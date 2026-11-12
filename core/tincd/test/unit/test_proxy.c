@@ -391,6 +391,42 @@ static void test_create_socks_req_socks5_ipv6_password(void **state) {
 	assert_memory_equal(ref, anon_buf, sizeof(ref));
 }
 
+static void test_socks5_oversized_credentials_rejected(void **state) {
+	(void)state;
+	const sockaddr_t sa = str2sockaddr("2.2.2.2", "16962");
+	uint8_t buf[1024];
+
+	/* Exactly 255 bytes is the RFC 1929 maximum and must succeed. */
+	proxyuser = xmalloc(256);
+	proxypass = xmalloc(256);
+	memset(proxyuser, 'u', 255);
+	proxyuser[255] = '\0';
+	memset(proxypass, 'p', 255);
+	proxypass[255] = '\0';
+
+	assert_int_equal(13 + 3 + 255 + 255, socks_req_len(PROXY_SOCKS5, &sa));
+	assert_int_equal(14, create_socks_req(PROXY_SOCKS5, buf, &sa));
+	assert_int_equal(255, buf[4]);
+	assert_int_equal(255, buf[5 + 255]);
+
+	/* L-TR-04: 256+ byte username or password must be rejected, not truncated mod 256. */
+	free(proxyuser);
+	proxyuser = xmalloc(257);
+	memset(proxyuser, 'u', 256);
+	proxyuser[256] = '\0';
+	assert_int_equal(0, socks_req_len(PROXY_SOCKS5, &sa));
+	assert_int_equal(0, create_socks_req(PROXY_SOCKS5, buf, &sa));
+
+	free(proxyuser);
+	proxyuser = xstrdup(user);
+	free(proxypass);
+	proxypass = xmalloc(257);
+	memset(proxypass, 'p', 256);
+	proxypass[256] = '\0';
+	assert_int_equal(0, socks_req_len(PROXY_SOCKS5, &sa));
+	assert_int_equal(0, create_socks_req(PROXY_SOCKS5, buf, &sa));
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_teardown(test_socks_req_len_socks4_ipv4, teardown),
@@ -428,6 +464,7 @@ int main(void) {
 		cmocka_unit_test_teardown(test_create_socks_req_socks5_ipv4_password, teardown),
 		cmocka_unit_test_teardown(test_create_socks_req_socks5_ipv6_anon, teardown),
 		cmocka_unit_test_teardown(test_create_socks_req_socks5_ipv6_password, teardown),
+		cmocka_unit_test_teardown(test_socks5_oversized_credentials_rejected, teardown),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

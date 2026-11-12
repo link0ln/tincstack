@@ -100,6 +100,7 @@ typedef struct sf_session_t {
 	size_t sock;            /* index into listen_socket[] whose UDP socket carries this flow */
 	int rx_fd;              /* inbound/uplink UDP fd when outside listen_socket[] */
 	obfs_link_t *obfs;      /* non-NULL: every frame of this flow is sealed by the obfs carrier */
+	bool boot_only;         /* seal pre-auth handshake with boot key without disturbing live sess */
 	bool initiator;
 	bool established;       /* the peer has acknowledged something (or, as acceptor, sent the SYN) */
 	bool dead;              /* failed; waiting for the reaper to terminate the connection */
@@ -171,7 +172,7 @@ static size_t sf_resolve_sock(const listen_socket_t *ls, const sockaddr_t *addr)
    does not fit the path (EMSGSIZE). Every other outcome -- sent, would block,
    any other socket error -- is true, so the caller only reacts to the one case
    retransmission can never fix. */
-static sf_send_t sf_send_raw(int uplink_idx, int rx_fd, size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init) {
+static sf_send_t sf_send_raw(int uplink_idx, int rx_fd, size_t sock, const sockaddr_t *peer, const uint8_t *cid, uint8_t type, uint8_t flags, uint32_t seq, uint32_t ack, const void *payload, size_t len, obfs_link_t *obfs, bool init, bool boot_only) {
 	uint8_t frame[SF_HDR_LEN + SF_MAX_PAYLOAD];
 
 	memcpy(frame, sf_magic, SF_MAGIC_LEN);
@@ -193,7 +194,8 @@ static sf_send_t sf_send_raw(int uplink_idx, int rx_fd, size_t sock, const socka
 	uint8_t sealed[OBFS_MAX_OVERHEAD + SF_HDR_LEN + SF_MAX_PAYLOAD + OBFS_MAX_JUNK];
 
 	if(obfs) {
-		size_t slen = obfs_encode(obfs, frame, outlen, sealed, sizeof(sealed), init);
+		size_t slen = boot_only ? obfs_encode_boot(obfs, frame, outlen, sealed, sizeof(sealed), init)
+		                        : obfs_encode(obfs, frame, outlen, sealed, sizeof(sealed), init);
 
 		if(!slen) {
 			logger(DEBUG_TRAFFIC, LOG_WARNING, "Could not obfs-seal a single-flow frame");
@@ -214,11 +216,15 @@ static sf_send_t sf_send_raw(int uplink_idx, int rx_fd, size_t sock, const socka
 		}
 	}
 
-	if(send_fd < 0 && obfs) {
+	if(send_fd < 0 && boot_only && rx_fd >= 0) {
+		send_fd = rx_fd;
+	}
+
+	if(send_fd < 0 && obfs && !boot_only) {
 		send_fd = obfs_pick_socket(peer);
 	}
 
-	if(send_fd < 0 && rx_fd >= 0 && multipath_owns_udp_fd(rx_fd)) {
+	if(send_fd < 0 && rx_fd >= 0 && (boot_only || multipath_owns_udp_fd(rx_fd))) {
 		send_fd = rx_fd;
 	}
 
@@ -257,7 +263,8 @@ static void sf_schedule_reap(void);
 
 static void sf_send_frame(sf_session_t *s, uint8_t type, uint8_t flags, uint32_t seq, const void *payload, size_t len) {
 	int up_idx = s->c ? s->c->uplink_idx : -1;
-	sf_send_t r = sf_send_raw(up_idx, s->rx_fd, s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established);
+	bool use_boot = s->boot_only && (!s->c || s->c->allow_request != ALL);
+	sf_send_t r = sf_send_raw(up_idx, s->rx_fd, s->sock, &s->peer, s->cid, type, flags, seq, s->rcv_nxt, payload, len, s->obfs, !s->established, use_boot);
 
 	/* A refusal is evidence about the path and is remembered; anything the
 	   kernel accepted clears it, so only an unbroken run of refusals counts
@@ -672,7 +679,78 @@ obfs_link_t *sf_connection_obfs(connection_t *c) {
 	return s ? s->obfs : NULL;
 }
 
-static sf_session_t *sf_accept(listen_socket_t *ls, const uint8_t *cid, const sockaddr_t *addr, obfs_link_t *obfs) {
+void sf_mark_boot_only(connection_t *c, bool boot_only) {
+	sf_session_t *s = c ? c->transport_data : NULL;
+
+	if(s) {
+		s->boot_only = boot_only;
+	}
+}
+
+bool sf_promote_boot_obfs(connection_t *c, int *rx_fd_out) {
+	sf_session_t *s = c ? c->transport_data : NULL;
+
+	if(rx_fd_out) {
+		*rx_fd_out = s ? s->rx_fd : -1;
+	}
+
+	if(!s || !s->boot_only) {
+		return false;
+	}
+
+	s->boot_only = false;
+	return true;
+}
+
+bool sf_has_boot_session(const uint8_t *cid, const obfs_link_t *l) {
+	if(!cid || !l) {
+		return false;
+	}
+
+	sf_session_t *s = sf_lookup(cid);
+	return s && !s->dead && s->obfs == l && s->boot_only && (!s->c || s->c->allow_request != ALL);
+}
+
+void sf_detach_obfs_link(obfs_link_t *l) {
+	if(!l) {
+		return;
+	}
+
+	list_t victims = {
+		.head = NULL, .tail = NULL, .count = 0, .delete = NULL,
+	};
+
+	for list_each(connection_t, c, &connection_list) {
+		if(!c->transport || c->transport->id != TRANSPORT_OBFS || !c->transport_data) {
+			continue;
+		}
+
+		sf_session_t *s = c->transport_data;
+
+		if(s->obfs == l) {
+			s->obfs = NULL;
+			s->close_sent = true;
+			s->dead = true;
+			list_insert_tail(&victims, c);
+		}
+	}
+
+	for list_each(sf_session_t, s, &sf_sessions) {
+		if(s->obfs == l) {
+			s->obfs = NULL;
+			s->close_sent = true;
+			s->dead = true;
+		}
+	}
+
+	for list_each(connection_t, c, &victims) {
+		terminate_connection(c, false);
+	}
+
+	list_empty_list(&victims);
+}
+
+static sf_session_t *sf_accept(listen_socket_t *ls, const uint8_t *cid, const sockaddr_t *addr, obfs_link_t *obfs, bool boot_only) {
 	/* Cheap admission control, in the spirit of check_tarpit(): at most
 	   MaxConnectionBurst new sessions per second. */
 	static time_t burst_time;
@@ -702,11 +780,12 @@ static sf_session_t *sf_accept(listen_socket_t *ls, const uint8_t *cid, const so
 	s->rx_fd = ls ? ls->udp.fd : -1;
 	memcpy(s->cid, cid, SF_CID_LEN);
 	s->obfs = obfs;
+	s->boot_only = boot_only;
 	s->established = true;
 
 	connection_add(c);
 
-	if(obfs) {
+	if(obfs && !boot_only) {
 		/* Answer with junk of our own around the handshake, then continue
 		   over the obfs-sealed flow. */
 		obfs_send_junk(sock_idx, addr);
@@ -884,7 +963,7 @@ static void sf_deliver(sf_session_t *s, const uint8_t *payload, size_t len) {
 	free(combined);
 }
 
-static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr, obfs_link_t *obfs) {
+static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr, obfs_link_t *obfs, bool boot_only) {
 	if(len < SF_HDR_LEN) {
 		return;
 	}
@@ -908,7 +987,7 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 
 	if(!s) {
 		if(type == SF_TYPE_DATA && (flags & SF_FLAG_SYN) && seq == 0) {
-			s = sf_accept(ls, cid, &addr, obfs);
+			s = sf_accept(ls, cid, &addr, obfs, boot_only);
 
 			if(!s) {
 				return;
@@ -922,11 +1001,14 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 
 			if(type != SF_TYPE_RESET && now.tv_sec != last_reset) {
 				last_reset = now.tv_sec;
-				sf_send_raw(-1, ls ? ls->udp.fd : -1, sf_resolve_sock(ls, &addr), &addr, cid, SF_TYPE_RESET, 0, 0, 0, NULL, 0, obfs, true);
+				sf_send_raw(-1, ls ? ls->udp.fd : -1, sf_resolve_sock(ls, &addr), &addr, cid, SF_TYPE_RESET, 0, 0, 0, NULL, 0, obfs, true, boot_only);
 			}
 
 			return;
 		}
+	} else if(boot_only && (!s->boot_only || (s->c && s->c->allow_request == ALL))) {
+		/* Never allow a static boot-key packet to touch an established session. */
+		return;
 	} else if(sockaddrcmp(&addr, &s->peer)) {
 		if(obfs && s->obfs == obfs) {
 			/* Frame was already AEAD-authenticated and replay-checked by
@@ -1025,13 +1107,20 @@ static void sf_udp_receive_generic(listen_socket_t *ls, const uint8_t *buf, size
 
 /* Classifier path: a plain single-flow frame (SF magic on the wire). */
 void sf_udp_receive(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr) {
-	sf_udp_receive_generic(ls, buf, len, vaddr, NULL);
+	sf_udp_receive_generic(ls, buf, len, vaddr, NULL, false);
 }
 
 /* obfs path: the frame was unsealed by the obfs carrier; `obfs' is the link it
    came in on, so a new inbound session and any reset are sealed with it too. */
 void sf_udp_receive_obfs(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr, obfs_link_t *obfs) {
-	sf_udp_receive_generic(ls, buf, len, vaddr, obfs);
+	sf_udp_receive_generic(ls, buf, len, vaddr, obfs, false);
+}
+
+/* obfs path for a boot-key SYN / pre-auth handshake arriving while a prior
+   session is still protected: isolated from the active session's state until
+   crypto authentication completes. */
+void sf_udp_receive_obfs_boot(listen_socket_t *ls, const uint8_t *buf, size_t len, const sockaddr_t *vaddr, obfs_link_t *obfs) {
+	sf_udp_receive_generic(ls, buf, len, vaddr, obfs, true);
 }
 
 void sf_exit(void) {

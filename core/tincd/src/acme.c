@@ -26,6 +26,7 @@
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/sha.h>
@@ -154,6 +155,14 @@ void acme_result_free(acme_result_t *out) {
 		return;
 	}
 
+	if(out->key_pem) {
+		memzero(out->key_pem, strlen(out->key_pem));
+	}
+
+	if(out->account_key_pem) {
+		memzero(out->account_key_pem, strlen(out->account_key_pem));
+	}
+
 	free(out->cert_pem);
 	free(out->key_pem);
 	free(out->account_key_pem);
@@ -208,9 +217,13 @@ static char *pem_of_key(EVP_PKEY *key) {
 	if(PEM_write_bio_PrivateKey(bio, key, NULL, NULL, 0, NULL, NULL)) {
 		char *data = NULL;
 		long len = BIO_get_mem_data(bio, &data);
-		out = xmalloc((size_t) len + 1);
-		memcpy(out, data, (size_t) len);
-		out[len] = 0;
+
+		if(len > 0 && data) {
+			out = xmalloc((size_t) len + 1);
+			memcpy(out, data, (size_t) len);
+			out[len] = 0;
+			memzero(data, (size_t) len);
+		}
 	}
 
 	BIO_free(bio);
@@ -390,23 +403,39 @@ static bool acme_post(acme_ctx_t *c, const char *url, const char *payload, http_
 		return false;
 	}
 
+	/* Consume c->nonce immediately so a stale/burned nonce can never be reused
+	   if the HTTP call fails or returns no Replay-Nonce header (M-TR-06). */
+	char *raw_nonce = c->nonce;
+	c->nonce = NULL;
+
+	char *esc_nonce = json_escape(raw_nonce);
+	char *esc_url = json_escape(url);
+	free(raw_nonce);
+
 	char *protected_json = NULL;
 
 	if(c->kid) {
+		char *esc_kid = json_escape(c->kid);
 		xasprintf(&protected_json, "{\"alg\":\"ES256\",\"kid\":\"%s\",\"nonce\":\"%s\",\"url\":\"%s\"}",
-		          c->kid, c->nonce, url);
+		          esc_kid, esc_nonce, esc_url);
+		free(esc_kid);
 	} else {
 		char *jwk = jwk_json(c->account_key);
 
 		if(!jwk) {
+			free(esc_nonce);
+			free(esc_url);
 			snprintf(c->out->detail, sizeof(c->out->detail), "cannot express the account key as a JWK");
 			return false;
 		}
 
 		xasprintf(&protected_json, "{\"alg\":\"ES256\",\"jwk\":%s,\"nonce\":\"%s\",\"url\":\"%s\"}",
-		          jwk, c->nonce, url);
+		          jwk, esc_nonce, esc_url);
 		free(jwk);
 	}
+
+	free(esc_nonce);
+	free(esc_url);
 
 	char *protected64 = b64url(protected_json, strlen(protected_json));
 	char *payload64 = payload ? b64url(payload, strlen(payload)) : xstrdup("");
@@ -1155,6 +1184,58 @@ static acme_rc_t finalize_order(acme_ctx_t *c, const char *finalize_url, const c
 	            "Retry: the order may still complete, and a repeat run will pick it up.");
 }
 
+/* Validate every PEM certificate block in a downloaded chain so a truncated
+   intermediate or injected non-certificate block is rejected before storage. */
+static bool validate_cert_chain_pem(const char *pem) {
+	if(!pem || !*pem) {
+		return false;
+	}
+
+	size_t begin_count = 0;
+
+	for(const char *p = pem; (p = strstr(p, "-----BEGIN ")) != NULL; p += 11) {
+		if(strncmp(p, "-----BEGIN CERTIFICATE-----", 27) != 0) {
+			return false;
+		}
+
+		begin_count++;
+	}
+
+	if(begin_count == 0) {
+		return false;
+	}
+
+	BIO *bio = BIO_new_mem_buf(pem, -1);
+
+	if(!bio) {
+		return false;
+	}
+
+	ERR_clear_error();
+	size_t parsed = 0;
+
+	for(;;) {
+		X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+
+		if(!cert) {
+			break;
+		}
+
+		X509_free(cert);
+		parsed++;
+	}
+
+	unsigned long err = ERR_peek_last_error();
+	ERR_clear_error();
+	BIO_free(bio);
+
+	if(parsed != begin_count) {
+		return false;
+	}
+
+	return ERR_GET_LIB(err) == ERR_LIB_PEM && ERR_GET_REASON(err) == PEM_R_NO_START_LINE;
+}
+
 static acme_rc_t download_cert(acme_ctx_t *c, const char *cert_url) {
 	say(c, "downloading the certificate");
 	http_response_t res;
@@ -1166,9 +1247,9 @@ static acme_rc_t download_cert(acme_ctx_t *c, const char *cert_url) {
 
 	json_free(doc);
 
-	if(res.status != 200 || !strstr(res.body, "BEGIN CERTIFICATE")) {
+	if(res.status != 200 || !validate_cert_chain_pem(res.body)) {
 		acme_rc_t rc = failf(c, ACME_ERR_FINALIZE, "Retry; the certificate is issued and can be fetched again.",
-		                     "The CA did not return a certificate (HTTP %d).", res.status);
+		                     "The CA did not return a valid PEM certificate chain (HTTP %d).", res.status);
 		httpc_free(&res);
 		return rc;
 	}
@@ -1232,7 +1313,7 @@ static acme_rc_t check_config(acme_ctx_t *c) {
 		            "and put it in CloudflareToken.");
 	}
 
-	if(strlen(c->p->cf_token) < 20 || strchr(c->p->cf_token, ' ')) {
+	if(strlen(c->p->cf_token) < 20 || strpbrk(c->p->cf_token, " \t\r\n")) {
 		return fail(c, ACME_ERR_CONFIG, "CloudflareToken does not look like an API token.",
 		            "Copy the token itself, not the token's name or an email address; a Global API Key "
 		            "is not a token and will not work.");
@@ -1382,6 +1463,21 @@ csr:
 		goto end;
 	}
 
+	{
+		BIO *cbio = BIO_new_mem_buf(out->cert_pem, -1);
+		X509 *leaf = cbio ? PEM_read_bio_X509(cbio, NULL, NULL, NULL) : NULL;
+		BIO_free(cbio);
+		bool match = leaf && X509_check_private_key(leaf, cert_key) == 1;
+		ERR_clear_error();
+		X509_free(leaf);
+
+		if(!match) {
+			rc = fail(&c, ACME_ERR_FINALIZE, "The issued certificate does not match the private key we generated.",
+			          "Retry `tinc cert issue'.");
+			goto end;
+		}
+	}
+
 	out->key_pem = pem_of_key(cert_key);
 
 	if(!out->key_pem) {
@@ -1418,6 +1514,12 @@ end:
 	if(rc != ACME_OK) {
 		free(out->cert_pem);
 		out->cert_pem = NULL;
+
+		if(out->key_pem) {
+			memzero(out->key_pem, strlen(out->key_pem));
+			free(out->key_pem);
+			out->key_pem = NULL;
+		}
 	}
 
 	return rc;

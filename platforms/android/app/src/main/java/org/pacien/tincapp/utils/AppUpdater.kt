@@ -18,13 +18,20 @@
 
 package org.pacien.tincapp.utils
 
+import java8.util.concurrent.CompletableFuture
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * Checks GitHub Releases (`releases/latest`) for a newer signed Android APK,
@@ -36,6 +43,74 @@ object AppUpdater {
   const val API = "https://api.github.com/repos/link0ln/tincstack/releases/latest"
   const val CHECK_MIN_MS = 3L * 60 * 60 * 1000
   const val USER_AGENT = "tincstack-android-update-check"
+  const val MAX_METADATA_BYTES = 2 * 1024 * 1024
+
+  private val downloadLocks = ConcurrentHashMap<String, ReentrantLock>()
+  private val inFlightLock = Any()
+  private var inFlightFuture: CompletableFuture<File>? = null
+  @Volatile var activeDownloadRelease: Release? = null
+    private set
+  @Volatile var lastDownloadProgress: Pair<Long, Long>? = null
+    private set
+  private val progressListeners = CopyOnWriteArrayList<(Long, Long) -> Unit>()
+
+  fun isDownloading(): Boolean = synchronized(inFlightLock) {
+    inFlightFuture?.isDone == false
+  }
+
+  fun attachProgressListener(listener: (Long, Long) -> Unit): () -> Unit {
+    progressListeners.add(listener)
+    lastDownloadProgress?.let { (read, total) -> listener(read, total) }
+    return { progressListeners.remove(listener) }
+  }
+
+  fun currentInFlightDownload(): CompletableFuture<File>? = synchronized(inFlightLock) {
+    inFlightFuture?.takeIf { !it.isDone }
+  }
+
+  fun startOrJoinDownload(
+    rel: Release,
+    destDir: File,
+    asyncRunner: (Runnable) -> Unit,
+  ): CompletableFuture<File> = synchronized(inFlightLock) {
+    val existing = inFlightFuture
+    if (existing != null && !existing.isDone) {
+      return existing
+    }
+    val future = CompletableFuture<File>()
+    inFlightFuture = future
+    activeDownloadRelease = rel
+    lastDownloadProgress = null
+    asyncRunner(Runnable {
+      try {
+        val apk = fetchApk(rel, destDir) { read, total ->
+          lastDownloadProgress = read to total
+          for (l in progressListeners) {
+            runCatching { l(read, total) }
+          }
+        }
+        future.complete(apk)
+      } catch (t: Throwable) {
+        future.completeExceptionally(t)
+      } finally {
+        synchronized(inFlightLock) {
+          if (inFlightFuture === future) {
+            inFlightFuture = null
+            activeDownloadRelease = null
+            lastDownloadProgress = null
+          }
+        }
+      }
+    })
+    future
+  }
+
+  private fun lockForTarget(targetFile: File): ReentrantLock {
+    val key = try { targetFile.canonicalPath } catch (_: IOException) { targetFile.absolutePath }
+    downloadLocks[key]?.let { return it }
+    val created = ReentrantLock()
+    return downloadLocks.putIfAbsent(key, created) ?: created
+  }
 
   private val VERSION_RE = Regex("""^v?(\d+)\.(\d+)\.(\d+)$""")
   private val APK_NAME_RE = Regex("""^tincstack-v[\d.]+(?:-[a-zA-Z0-9_]+)?\.apk$""")
@@ -229,7 +304,7 @@ object AppUpdater {
     destDir: File,
     onProgress: ((Long, Long) -> Unit)? = null,
   ): File {
-    if (!destDir.exists() && !destDir.mkdirs()) {
+    if (!destDir.exists() && !destDir.mkdirs() && !destDir.isDirectory) {
       throw IOException("Could not create update directory ${destDir.absolutePath}")
     }
     val safeName = File(rel.apkName).name
@@ -237,57 +312,59 @@ object AppUpdater {
       throw IOException("Refusing invalid APK asset name: ${rel.apkName}")
     }
     val targetFile = File(destDir, safeName)
-    val expectedSha = expectedApkSha256(rel)
+    return lockForTarget(targetFile).withLock {
+      val expectedSha = expectedApkSha256(rel)
 
-    if (targetFile.isFile && sha256File(targetFile) == expectedSha) {
-      return targetFile
-    }
+      if (targetFile.isFile && sha256File(targetFile) == expectedSha) {
+        return@withLock targetFile
+      }
 
-    val partFile = File(destDir, "$safeName.part")
-    val conn = openConnection(requireHttpsUrl(rel.apkUrl, "APK"), 600_000)
-    try {
-      val total = conn.contentLengthLong
-      val md = MessageDigest.getInstance("SHA-256")
-      var readSoFar = 0L
-      conn.inputStream.use { input ->
-        FileOutputStream(partFile).use { output ->
-          val buf = ByteArray(64 * 1024)
-          while (true) {
-            val n = input.read(buf)
-            if (n < 0) break
-            if (n == 0) continue
-            output.write(buf, 0, n)
-            md.update(buf, 0, n)
-            readSoFar += n
-            onProgress?.invoke(readSoFar, total)
+      val partFile = File(destDir, "$safeName.part")
+      val conn = openConnection(requireHttpsUrl(rel.apkUrl, "APK"), 600_000)
+      try {
+        val total = conn.contentLengthLong
+        val md = MessageDigest.getInstance("SHA-256")
+        var readSoFar = 0L
+        conn.inputStream.use { input ->
+          FileOutputStream(partFile).use { output ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+              val n = input.read(buf)
+              if (n < 0) break
+              if (n == 0) continue
+              output.write(buf, 0, n)
+              md.update(buf, 0, n)
+              readSoFar += n
+              onProgress?.invoke(readSoFar, total)
+            }
+            output.fd.sync()
           }
-          output.fd.sync()
         }
-      }
-      if (total > 0L && readSoFar != total) {
+        if (total > 0L && readSoFar != total) {
+          partFile.delete()
+          throw IOException("Truncated APK download ($readSoFar of $total bytes)")
+        }
+        val gotSha = md.digest().joinToString("") { "%02x".format(it) }
+        if (!MessageDigest.isEqual(gotSha.toByteArray(Charsets.US_ASCII), expectedSha.toByteArray(Charsets.US_ASCII))) {
+          partFile.delete()
+          throw IOException("Downloaded APK SHA-256 mismatch (expected ${expectedSha.take(12)}…, got ${gotSha.take(12)}…)")
+        }
+      } catch (e: Exception) {
         partFile.delete()
-        throw IOException("Truncated APK download ($readSoFar of $total bytes)")
+        throw e
+      } finally {
+        conn.disconnect()
       }
-      val gotSha = md.digest().joinToString("") { "%02x".format(it) }
-      if (!MessageDigest.isEqual(gotSha.toByteArray(Charsets.US_ASCII), expectedSha.toByteArray(Charsets.US_ASCII))) {
-        partFile.delete()
-        throw IOException("Downloaded APK SHA-256 mismatch (expected ${expectedSha.take(12)}…, got ${gotSha.take(12)}…)")
-      }
-    } catch (e: Exception) {
-      partFile.delete()
-      throw e
-    } finally {
-      conn.disconnect()
-    }
 
-    destDir.listFiles()?.forEach { f ->
-      if (f != partFile && f.name.endsWith(".apk")) f.delete()
+      destDir.listFiles()?.forEach { f ->
+        if (f != partFile && f.name.endsWith(".apk")) f.delete()
+      }
+      if (targetFile.exists()) targetFile.delete()
+      if (!partFile.renameTo(targetFile)) {
+        throw IOException("Could not move verified APK into place")
+      }
+      targetFile
     }
-    if (targetFile.exists()) targetFile.delete()
-    if (!partFile.renameTo(targetFile)) {
-      throw IOException("Could not move verified APK into place")
-    }
-    return targetFile
   }
 
   fun sha256Bytes(bytes: ByteArray): String {
@@ -338,14 +415,41 @@ object AppUpdater {
     throw IOException("Too many redirects fetching $url")
   }
 
-  private fun httpGetBytes(url: String, timeoutMs: Int): ByteArray {
+  internal fun readBoundedBytes(
+    input: InputStream,
+    maxBytes: Int = MAX_METADATA_BYTES,
+    label: String = "response",
+  ): ByteArray {
+    val out = ByteArrayOutputStream()
+    val buf = ByteArray(16 * 1024)
+    var total = 0
+    while (true) {
+      val n = input.read(buf)
+      if (n < 0) break
+      if (n == 0) continue
+      total += n
+      if (total > maxBytes) {
+        throw IOException("Response from $label exceeds $maxBytes bytes")
+      }
+      out.write(buf, 0, n)
+    }
+    return out.toByteArray()
+  }
+
+  private fun httpGetBytes(url: String, timeoutMs: Int, maxBytes: Int = MAX_METADATA_BYTES): ByteArray {
     val conn = openConnection(url, timeoutMs)
     return try {
-      conn.inputStream.use { it.readBytes() }
+      val declared = conn.contentLengthLong
+      if (declared > maxBytes) {
+        throw IOException("Response from $url exceeds $maxBytes bytes ($declared)")
+      }
+      conn.inputStream.use { readBoundedBytes(it, maxBytes, url) }
     } finally {
       conn.disconnect()
     }
   }
+
+  internal fun parseJson(json: String): Any? = JsonParser(json).parseValue()
 
   /**
    * Minimal RFC 8259 JSON parser so `findAssets` works identically on Android
@@ -478,7 +582,11 @@ object AppUpdater {
         while (i < s.length && s[i] in '0'..'9') i++
       }
       val raw = s.substring(start, i)
-      return if (isFloat) raw.toDouble() else raw.toLong()
+      return if (isFloat) {
+        raw.toDoubleOrNull() ?: throw IllegalArgumentException("Invalid JSON number: $raw")
+      } else {
+        raw.toLongOrNull() ?: raw.toDoubleOrNull() ?: throw IllegalArgumentException("Invalid JSON number: $raw")
+      }
     }
   }
 }

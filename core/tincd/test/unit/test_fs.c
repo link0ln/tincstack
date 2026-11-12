@@ -209,6 +209,21 @@ static void test_fopenmask_new(void **state) {
 
 	assert_int_equal(0, stat(tmp, &st));
 	assert_int_equal(0750, st.st_mode & 0777);
+	unlink(tmp);
+}
+
+static void test_fopenmask_restores_umask_on_failure(void **state) {
+	(void)state;
+
+	umask(0022);
+	errno = 0;
+	FILE *f = fopenmask("/nonexistent_dir_l_dp_01_check/sub/secret.key", "r", 0600);
+	assert_null(f);
+	assert_int_equal(ENOENT, errno);
+
+	/* L-DP-01: umask MUST be restored to 0022 even when fopen() fails */
+	mode_t leaked = umask(0022);
+	assert_int_equal(0022, leaked);
 }
 
 #endif // HAVE_WINDOWS
@@ -241,6 +256,7 @@ int main(void) {
 		cmocka_unit_test_setup_teardown(test_makedirs_invitations, setup_temp_dir, teardown_temp_dir),
 		cmocka_unit_test_setup(test_fopenmask_existing, setup_umask),
 		cmocka_unit_test_setup(test_fopenmask_new, setup_umask),
+		cmocka_unit_test_setup(test_fopenmask_restores_umask_on_failure, setup_umask),
 #endif
 		cmocka_unit_test(test_makedirs_bad),
 	};

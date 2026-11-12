@@ -55,7 +55,7 @@ trap cleanup EXIT
 cleanup
 T=$(mktemp -d)
 
-cp "$HERE/docker-compose.yml" "$HERE/compose.leaf.yml" "$HERE/join.sh" "$HERE/invite.sh" "$T/"
+cp "$HERE/docker-compose.yml" "$HERE/compose.leaf.yml" "$HERE/compose.nofront.yml" "$HERE/join.sh" "$HERE/invite.sh" "$T/"
 # The same lab bridge for every project, ports untouched (compose.lab.yml
 # would reset them, which is what is being tested).
 cat > "$T/compose.net.yml" <<EOF

@@ -98,17 +98,27 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 	ecdsa_t *relay_priv = ecdsa_generate();
 	ecdsa_t *v1_priv = ecdsa_generate();
 	ecdsa_t *v2_priv = ecdsa_generate();
+	ecdsa_t *sybil_priv = ecdsa_generate();
 	ecdsa_t *target_old_priv = ecdsa_generate();
 	ecdsa_t *target_new_priv = ecdsa_generate();
 	ecdsa_t *target2_old_priv = ecdsa_generate();
 	ecdsa_t *target2_new_priv = ecdsa_generate();
 
+	char *relay_pub = ecdsa_get_base64_public_key(relay_priv);
+	char *v1_pub = ecdsa_get_base64_public_key(v1_priv);
+	char *v2_pub = ecdsa_get_base64_public_key(v2_priv);
 	char *old_pub = ecdsa_get_base64_public_key(target_old_priv);
 	char *new_pub = ecdsa_get_base64_public_key(target_new_priv);
 	char *t2_old_pub = ecdsa_get_base64_public_key(target2_old_priv);
 	char *t2_new_pub = ecdsa_get_base64_public_key(target2_new_priv);
 
 	char host_buf[512];
+	snprintf(host_buf, sizeof(host_buf), "Ed25519PublicKey = %s\n", relay_pub);
+	yamlconf_host_set_text(yamlconf_global, netname, "relay", host_buf);
+	snprintf(host_buf, sizeof(host_buf), "Ed25519PublicKey = %s\n", v1_pub);
+	yamlconf_host_set_text(yamlconf_global, netname, "voter1", host_buf);
+	snprintf(host_buf, sizeof(host_buf), "Ed25519PublicKey = %s\n", v2_pub);
+	yamlconf_host_set_text(yamlconf_global, netname, "voter2", host_buf);
 	snprintf(host_buf, sizeof(host_buf), "Ed25519PublicKey = %s\nTransports = quic\n", old_pub);
 	yamlconf_host_set_text(yamlconf_global, netname, "target1", host_buf);
 	snprintf(host_buf, sizeof(host_buf), "Ed25519PublicKey = %s\n", t2_old_pub);
@@ -128,9 +138,8 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 	relay_conn->status.active = true;
 	node_t *relay = new_node("relay");
 	relay->hostname = xstrdup("198.51.100.1 port 655");
-	char *rpub = ecdsa_get_base64_public_key(relay_priv);
-	relay->ecdsa = ecdsa_set_base64_public_key(rpub);
-	free(rpub);
+	relay->ecdsa = ecdsa_set_base64_public_key(relay_pub);
+	relay->in_config = true;
 	relay->status.reachable = true;
 	relay->connection = relay_conn;
 	relay->nexthop = relay;
@@ -138,13 +147,20 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 	node_add(relay);
 
 	node_t *voter1 = make_mesh_peer("voter1", v1_priv, relay_conn);
+	voter1->in_config = true;
 	node_t *voter2 = make_mesh_peer("voter2", v2_priv, relay_conn);
+	voter2->in_config = true;
+	/* Unpinned TOFU/Sybil peer: must NOT be queried or allowed to vote! */
+	node_t *sybil1 = make_mesh_peer("sybil1", sybil_priv, relay_conn);
 	node_t *target = make_mesh_peer("target1", target_old_priv, relay_conn);
+	target->in_config = true;
 	target->transports = TRANSPORT_BIT(TRANSPORT_QUIC);
 	node_t *target2 = make_mesh_peer("target2", target2_old_priv, relay_conn);
+	target2->in_config = true;
 
 	/* 1. ANS_PUBKEY with a mismatched key must NOT mutate transports or YAML,
-	      and must start a nonce-bound quorum round querying relay, voter1, voter2, target2. */
+	      and must start a nonce-bound quorum round querying ONLY pinned peers
+	      (relay, voter1, voter2, target2 = 4, excluding unpinned sybil1). */
 	g_captured_count = 0;
 	char req[2048];
 	snprintf(req, sizeof(req), "%d target1 alpha %d %s https", REQ_KEY, ANS_PUBKEY, new_pub);
@@ -154,6 +170,17 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 	assert_string_equal(new_pub, target->pending_pubkey);
 	assert_int_equal(32, strlen(target->quorum_nonce));
 	assert_int_equal(4, target->quorum_asked_peers); /* relay, voter1, voter2, target2 */
+
+	/* 1b. Cryptographically valid vote from unpinned TOFU peer sybil1 must be rejected */
+	char sybil_sig[256];
+	sign_quorum_vote(sybil_priv, "sybil1", "alpha", "target1",
+	                 target->quorum_nonce, new_pub,
+	                 KEY_QUORUM_FLAG_HAS_KEY, sybil_sig, sizeof(sybil_sig));
+	snprintf(req, sizeof(req), "%d sybil1 alpha %d target1 %s %d %s %s",
+	         REQ_KEY, KEY_QUORUM_ANS, new_pub, KEY_QUORUM_FLAG_HAS_KEY,
+	         target->quorum_nonce, sybil_sig);
+	assert_true(req_key_h(relay_conn, req));
+	assert_int_equal(0, target->quorum_votes_new);
 
 	/* 2. Unsigned legacy 3-field KEY_QUORUM_ANS must be strictly rejected */
 	snprintf(req, sizeof(req), "%d voter1 alpha %d target1 %s %d",
@@ -217,8 +244,9 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 	assert_true(req_key_h(relay_conn, req));
 	assert_int_equal(1, target->quorum_votes_new);
 
-	/* 7. Valid signed vote from voter2 (votes_new == 2), then abstention ("-") from
-	      relay & target2 reduces asked_peers from 4 -> 2 and triggers approval! */
+	/* 7. Valid signed vote from voter2 (votes_new == 2); anti-early-race guard
+	      waits until 100% of asked pinned peers (4/4: voter1, voter2, relay, target2)
+	      have responded before approving early! */
 	char v2_sig[256];
 	sign_quorum_vote(v2_priv, "voter2", "alpha", "target1",
 	                 target->quorum_nonce, new_pub,
@@ -228,7 +256,7 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 	         target->quorum_nonce, v2_sig);
 	assert_true(req_key_h(relay_conn, req));
 	assert_int_equal(2, target->quorum_votes_new);
-	assert_non_null(target->pending_pubkey); /* 2 of 4 still needs abstentions or 3rd vote */
+	assert_non_null(target->pending_pubkey); /* 2/4 responses: wait for remaining peers */
 
 	char abstain_sig[256];
 	sign_quorum_vote(relay_priv, "relay", "alpha", "target1",
@@ -236,7 +264,16 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 	snprintf(req, sizeof(req), "%d relay alpha %d target1 - 0 %s %s",
 	         REQ_KEY, KEY_QUORUM_ANS, target->quorum_nonce, abstain_sig);
 	assert_true(req_key_h(relay_conn, req));
-	/* 2 votes > asked_peers/2 (asked_peers became 3, 2*2 > 3) -> APPROVED! */
+	/* 3/4 responses: early-approval race protection still holds until 4th peer answers! */
+	assert_non_null(target->pending_pubkey);
+
+	char abstain_t2_sig[256];
+	sign_quorum_vote(target2_old_priv, "target2", "alpha", "target1",
+	                 target->quorum_nonce, "-", 0, abstain_t2_sig, sizeof(abstain_t2_sig));
+	snprintf(req, sizeof(req), "%d target2 alpha %d target1 - 0 %s %s",
+	         REQ_KEY, KEY_QUORUM_ANS, target->quorum_nonce, abstain_t2_sig);
+	assert_true(req_key_h(relay_conn, req));
+	/* 4/4 asked pinned peers responded, votes_new=2 >= 2, verified_old=0 -> APPROVED! */
 	assert_null(target->pending_pubkey);
 	char *updated_pk = ecdsa_get_base64_public_key(target->ecdsa);
 	assert_string_equal(new_pub, updated_pk);
@@ -289,7 +326,11 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 
 	(void)voter1;
 	(void)voter2;
+	(void)sybil1;
 
+	free(relay_pub);
+	free(v1_pub);
+	free(v2_pub);
 	free(old_pub);
 	free(new_pub);
 	free(t2_old_pub);
@@ -297,11 +338,13 @@ static void test_strict_ed25519_key_quorum_and_replay_and_veto(void **state) {
 	ecdsa_free(relay_priv);
 	ecdsa_free(v1_priv);
 	ecdsa_free(v2_priv);
+	ecdsa_free(sybil_priv);
 	ecdsa_free(target_old_priv);
 	ecdsa_free(target_new_priv);
 	ecdsa_free(target2_old_priv);
 	ecdsa_free(target2_new_priv);
 
+	exit_key_quorum();
 	relay->connection = NULL;
 	free_connection(relay_conn);
 	free_connection(myself->connection);

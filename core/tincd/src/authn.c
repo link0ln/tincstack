@@ -219,9 +219,11 @@ bool authn_verify(const uint8_t *payload, size_t plen, const uint8_t *server_fp,
 		ecdsa_free(pubkey);
 	}
 
-	/* Freshness. */
-	int64_t skew = (int64_t) now.tv_sec - (int64_t) ts;
-	bool fresh = skew >= -AUTHN_TS_SKEW && skew <= AUTHN_TS_SKEW;
+	/* Freshness: compute skew strictly in uint64_t so extreme wire timestamps
+	   (e.g. >= 2^63) cannot trigger signed int64_t overflow UB (L-TR-01). */
+	uint64_t now_u = now.tv_sec > 0 ? (uint64_t) now.tv_sec : 0;
+	uint64_t skew = now_u >= ts ? now_u - ts : ts - now_u;
+	bool fresh = now.tv_sec > 0 && skew <= (uint64_t) AUTHN_TS_SKEW;
 
 	ok = ok & known & fresh;
 
@@ -229,7 +231,7 @@ bool authn_verify(const uint8_t *payload, size_t plen, const uint8_t *server_fp,
 		if(!known) {
 			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "%s: authenticator from %s names an unknown node", carrier, hostname);
 		} else if(!fresh) {
-			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "%s: stale authenticator from %s (skew %lld s)", carrier, hostname, (long long) skew);
+			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "%s: stale authenticator from %s (skew %llu s)", carrier, hostname, (unsigned long long) skew);
 		} else {
 			logger(DEBUG_CONNECTIONS, LOG_DEBUG, "%s: authenticator signature check failed for claimed %s", carrier, name);
 		}

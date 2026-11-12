@@ -31,7 +31,7 @@
 static int edge_weight_compare(const edge_t *a, const edge_t *b) {
 	int result;
 
-	result = a->weight - b->weight;
+	result = (a->weight > b->weight) - (a->weight < b->weight);
 
 	if(result) {
 		return result;

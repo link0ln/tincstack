@@ -42,19 +42,16 @@ static ssize_t MIN(ssize_t x, ssize_t y) {
 #endif
 
 #define CONTROL_OUTBUF_CEILING (4U * 1024U * 1024U)
+#define CONTROL_CMD_OUTBUF_CEILING (16U * 1024U * 1024U)
 #define PEER_OUTBUF_DEFAULT_CEILING (16U * 1024U * 1024U)
 
-static bool connection_outbuf_exceeded(connection_t *c, size_t add_len) {
-	size_t out_pending = c->outbuf.len > c->outbuf.offset ? c->outbuf.len - c->outbuf.offset : 0;
-	size_t queued = out_pending + c->transport_outbuf_len;
-
+static size_t connection_outbuf_ceiling(const connection_t *c) {
 	if(c->status.control) {
-		if((c->status.pcap || c->status.log) && queued + add_len > CONTROL_OUTBUF_CEILING) {
-			c->status.remove_unused = true;
-			return true;
+		if(c->status.pcap || c->status.log) {
+			return CONTROL_OUTBUF_CEILING;
 		}
 
-		return false;
+		return CONTROL_CMD_OUTBUF_CEILING;
 	}
 
 	size_t ceiling = maxoutbufsize > 0 ? (size_t)maxoutbufsize : PEER_OUTBUF_DEFAULT_CEILING;
@@ -63,8 +60,31 @@ static bool connection_outbuf_exceeded(connection_t *c, size_t add_len) {
 		ceiling = 256U * 1024U;
 	}
 
-	if(queued + add_len > ceiling) {
-		c->status.remove_unused = true;
+	return ceiling;
+}
+
+bool connection_can_buffer(connection_t *c, size_t extra) {
+	if(!c) {
+		return false;
+	}
+
+	size_t out_pending = c->outbuf.len > c->outbuf.offset ? c->outbuf.len - c->outbuf.offset : 0;
+	size_t queued = out_pending + c->transport_outbuf_len;
+	size_t ceiling = connection_outbuf_ceiling(c);
+
+	if(extra > ceiling || queued > ceiling - extra) {
+		return false;
+	}
+
+	return true;
+}
+
+static bool connection_outbuf_exceeded(connection_t *c, size_t add_len) {
+	if(!connection_can_buffer(c, add_len)) {
+		if(c) {
+			c->status.remove_unused = true;
+		}
+
 		return true;
 	}
 

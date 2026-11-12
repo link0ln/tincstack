@@ -87,6 +87,41 @@ class DiagManagerTest {
     assertEquals(false, pingFrag["ok"])
     assertEquals("frag_needed", pingFrag["status"])
     assertEquals(1380, pingFrag["mtu"])
+
+    // H-AND-10: selectBestVpnIp prioritizes InterfaceAddress/Ifconfig and /32 over 0.0.0.0/0 and /24
+    assertEquals(
+      "10.99.0.5",
+      DiagManager.selectBestVpnIp(listOf("0.0.0.0/0#10", "::/0#10", "10.99.0.0/24#10", "10.99.0.5/32#10")),
+    )
+    assertEquals(
+      "10.99.0.77",
+      DiagManager.selectBestVpnIp(
+        subnets = listOf("0.0.0.0/0#10", "10.99.0.5/32#10"),
+        interfaceAddresses = listOf("10.99.0.77/24"),
+      ),
+    )
+
+    // M-AND-09: transit peer without a direct metaconnection is classified as "relay", not "direct-tcp"
+    val transitPeerLine =
+      "leafB id 040506 at 198.51.100.22 port 655 cipher 0 digest 0 maclength 0 compression 0 options 700000c " +
+        "status 0016 nexthop ruvds via ruvds distance 2 pmtu 1250 (min 1250 max 1420) rx 10 1000 tx 10 1000 transports plain rtt 55.0"
+    val relaySnap = DiagManager.buildSnapshotFromLines(
+      net = "mynet",
+      nodeLines = listOf(selfLine, ruvdsTcpFallbackLine, transitPeerLine),
+      subnetLines = listOf("0.0.0.0/0#10 owner ruvds", "10.99.0.0/24#10 owner ruvds", "10.99.0.1/32#10 owner ruvds"),
+      connLines = listOf("ruvds at 198.51.100.10 port 443 options 700000c socket 6 status 5 transport https"),
+    )
+    assertEquals("direct-tcp", relaySnap.nodes["ruvds"]!!.link)
+    assertEquals("10.99.0.1", relaySnap.nodes["ruvds"]!!.vpnAddress)
+    assertEquals("relay", relaySnap.nodes["leafB"]!!.link)
+
+    // Even if nexthop == name temporarily in dump nodes, without a direct connection it must be "relay"
+    val noConnSnap = DiagManager.buildSnapshotFromLines(
+      net = "mynet",
+      nodeLines = listOf(selfLine, ruvdsTcpFallbackLine),
+      connLines = emptyList(),
+    )
+    assertEquals("relay", noConnSnap.nodes["ruvds"]!!.link)
   }
 
   @Test
@@ -187,6 +222,13 @@ class DiagManagerTest {
       val afterRestart = DiagManager.ensurePassword(ctx)
       assertEquals(first, afterRestart)
       assertEquals(first, DiagManager.getPassword(ctx))
+
+      // L-AND-04: Regenerating password rotates stored secret
+      val rotated = DiagManager.regeneratePassword(ctx)
+      assertEquals(16, rotated.length)
+      assertFalse(first == rotated)
+      assertEquals(rotated, store["password"])
+      assertEquals(rotated, DiagManager.getPassword(ctx))
     } finally {
       DiagManager.resetAuthForTests()
     }
@@ -259,6 +301,105 @@ class DiagManagerTest {
     } catch (e: IllegalArgumentException) {
       assertTrue(e.message!!.contains("scripts"))
     }
+
+    // C-AND-02: Attempting to inject `ScriptsInterpreter` (case-insensitive) in options or host block must be rejected
+    val withInterpreterOpt = editedRedacted.replace("Port: 8443", "Port: 8443\n      scriptsinterpreter: /system/bin/sh")
+    try {
+      DiagManager.restoreYamlSecretsAndValidate(withInterpreterOpt, origYaml)
+      fail("Expected ScriptsInterpreter injection in options to be rejected")
+    } catch (e: IllegalArgumentException) {
+      assertTrue(e.message!!.contains("ScriptsInterpreter", ignoreCase = true))
+    }
+
+    val withInterpreterHost = editedRedacted.replace(
+      "Subnet = 10.99.0.5/32",
+      "Subnet = 10.99.0.5/32\n        ScriptsInterpreter = /system/bin/sh",
+    )
+    try {
+      DiagManager.restoreYamlSecretsAndValidate(withInterpreterHost, origYaml)
+      fail("Expected ScriptsInterpreter injection in host block to be rejected")
+    } catch (e: IllegalArgumentException) {
+      assertTrue(e.message!!.contains("ScriptsInterpreter", ignoreCase = true))
+    }
+
+    // C-AND-02: Cross-section `<redacted>` / `***REDACTED***` exfiltration into public options/hosts must be rejected
+    val crossSectionOpt = editedRedacted.replace("Name: phone1", "Name: \"<redacted>\"")
+    try {
+      DiagManager.restoreYamlSecretsAndValidate(crossSectionOpt, origYaml)
+      fail("Expected <redacted> in non-secret option to be rejected")
+    } catch (_: IllegalArgumentException) {
+    }
+
+    val crossSectionHost = editedRedacted.replace("Subnet = 10.99.0.5/32", "Subnet = ***REDACTED***")
+    try {
+      DiagManager.restoreYamlSecretsAndValidate(crossSectionHost, origYaml)
+      fail("Expected ***REDACTED*** in host Subnet to be rejected")
+    } catch (_: IllegalArgumentException) {
+    }
+
+    // C-AND-02: YAML anchors (&), aliases (*), and merge keys (<<) must be rejected
+    val anchorExploit = """
+      |networks:
+      |  mynet:
+      |    keys:
+      |      ed25519_priv: &leak "***REDACTED***"
+      |    options:
+      |      Name: *leak
+      |""".trimMargin()
+    try {
+      DiagManager.restoreYamlSecretsAndValidate(anchorExploit, origYaml)
+      fail("Expected YAML anchor/alias to be rejected")
+    } catch (e: IllegalArgumentException) {
+      assertTrue(e.message!!.contains("aliases") || e.message!!.contains("anchors"))
+    }
+
+    val mergeExploit = """
+      |networks:
+      |  mynet:
+      |    options:
+      |      <<: { Name: phone1 }
+      |""".trimMargin()
+    try {
+      DiagManager.restoreYamlSecretsAndValidate(mergeExploit, origYaml)
+      fail("Expected YAML merge key (<<) to be rejected")
+    } catch (e: IllegalArgumentException) {
+      assertTrue(e.message!!.contains("merge"))
+    }
+
+    // C-AND-02: ObfsPassword, Obfs*MagicHeader, acme_account, and Proxy credentials redact & restore cleanly
+    val obfsAndProxyYaml = """
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone1
+      |      ObfsPassword: my_obfs_secret_pass
+      |      ObfsInitMagicHeader: 123456789
+      |      Proxy: socks5 127.0.0.1 1080 proxyuser proxypassword
+      |    hosts:
+      |      hub: |
+      |        Address = 198.51.100.10
+      |        ObfsPassword = peer_obfs_secret
+      |        Proxy = http://alice:topsecret@10.0.0.1:8080
+      |""".trimMargin()
+    val redactedObfs = DiagManager.redactYamlSecrets(obfsAndProxyYaml)
+    assertFalse(redactedObfs.contains("my_obfs_secret_pass"))
+    assertFalse(redactedObfs.contains("123456789"))
+    assertFalse(redactedObfs.contains("proxyuser"))
+    assertFalse(redactedObfs.contains("proxypassword"))
+    assertFalse(redactedObfs.contains("peer_obfs_secret"))
+    assertFalse(redactedObfs.contains("topsecret"))
+    assertTrue(redactedObfs.contains("socks5 127.0.0.1 1080"))
+
+    val restoredObfs = DiagManager.restoreYamlSecretsAndValidate(redactedObfs, obfsAndProxyYaml)
+    assertTrue(restoredObfs.contains("my_obfs_secret_pass"))
+    assertTrue(restoredObfs.contains("123456789"))
+    assertTrue(restoredObfs.contains("socks5 127.0.0.1 1080 proxyuser proxypassword"))
+    assertTrue(restoredObfs.contains("peer_obfs_secret"))
+    assertTrue(restoredObfs.contains("http://alice:topsecret@10.0.0.1:8080"))
+
+    // L-AND-01: JsonCodec.parse falls back to Double on integers overflowing signed 64-bit Long
+    val bigJson = DiagManager.JsonCodec.parse("""{"ok":true,"big":99999999999999999999999999}""") as Map<*, *>
+    assertTrue(bigJson["big"] is Double)
   }
 
   private data class RawHttpResponse(
@@ -330,7 +471,7 @@ class DiagManagerTest {
       assertTrue(loginPage.body.contains("/api/login"))
       assertFalse(loginPage.body.contains("peers-tbody"))
 
-      // 2. Unauthenticated GET /api/overview & POST /api/mark return 401
+      // 2. Unauthenticated GET /api/overview & POST /api/mark return 401 BEFORE reading body (H-AND-01)
       assertEquals(401, sendHttp(freePort, "GET", "/api/overview?net=mynet").status)
       assertEquals(
         401,
@@ -338,19 +479,66 @@ class DiagManagerTest {
           freePort,
           "POST",
           "/api/mark",
-          headers = mapOf("Origin" to origin, "Content-Type" to "application/json"),
+          headers = mapOf("Origin" to origin, "X-Diag-CSRF" to "1", "Content-Type" to "application/json"),
           body = """{"net":"mynet","note":"unauth"}""",
         ).status,
       )
+      Socket("127.0.0.1", freePort).use { sock ->
+        sock.soTimeout = 5_000
+        val preAuthHugeReq = "POST /api/action HTTP/1.1\r\n" +
+          "Host: 127.0.0.1:$freePort\r\n" +
+          "Origin: $origin\r\n" +
+          "X-Diag-CSRF: 1\r\n" +
+          "Content-Type: application/json\r\n" +
+          "Content-Length: 4000000\r\n\r\n"
+        sock.getOutputStream().write(preAuthHugeReq.toByteArray(StandardCharsets.UTF_8))
+        sock.getOutputStream().flush()
+        val firstLine = sock.getInputStream().bufferedReader().readLine()
+        assertTrue("Expected immediate 401 before body read, got: $firstLine", firstLine.contains("401"))
+      }
 
-      // 3. Wrong password returns 401
+      // 3. Login CSRF & cap guards: missing X-Diag-CSRF -> 403, wrong port Origin -> 403, >1024B -> 413, wrong pwd -> 401
+      assertEquals(
+        403,
+        sendHttp(
+          freePort,
+          "POST",
+          "/api/login",
+          headers = mapOf("Origin" to origin, "Content-Type" to "application/json"),
+          body = """{"password":"$pwd"}""",
+        ).status,
+      )
+      assertEquals(
+        403,
+        sendHttp(
+          freePort,
+          "POST",
+          "/api/login",
+          headers = mapOf(
+            "Origin" to "http://127.0.0.1:${freePort + 1}",
+            "X-Diag-CSRF" to "1",
+            "Content-Type" to "application/json",
+          ),
+          body = """{"password":"$pwd"}""",
+        ).status,
+      )
+      assertEquals(
+        413,
+        sendHttp(
+          freePort,
+          "POST",
+          "/api/login",
+          headers = mapOf("Origin" to origin, "X-Diag-CSRF" to "1", "Content-Type" to "application/json"),
+          body = """{"password":"${"a".repeat(1200)}"}""",
+        ).status,
+      )
       assertEquals(
         401,
         sendHttp(
           freePort,
           "POST",
           "/api/login",
-          headers = mapOf("Origin" to origin, "Content-Type" to "application/json"),
+          headers = mapOf("Origin" to origin, "X-Diag-CSRF" to "1", "Content-Type" to "application/json"),
           body = """{"password":"wrongpassword"}""",
         ).status,
       )
@@ -360,7 +548,7 @@ class DiagManagerTest {
         freePort,
         "POST",
         "/api/login",
-        headers = mapOf("Origin" to origin, "Content-Type" to "application/json"),
+        headers = mapOf("Origin" to origin, "X-Diag-CSRF" to "1", "Content-Type" to "application/json"),
         body = """{"password":"$pwd"}""",
       )
       assertEquals(200, goodLogin.status)
@@ -377,12 +565,16 @@ class DiagManagerTest {
       assertTrue(dashResp.body.contains("peers-tbody"))
       assertTrue(dashResp.body.contains("logoutDiag()"))
 
-      // 6. Authenticated GET /api/overview and malformed %ZZ query resilience (AN-02)
+      // 6. Authenticated GET /api/overview (and /api/state) and malformed %ZZ query resilience (AN-02)
       val ovResp = sendHttp(freePort, "GET", "/api/overview?net=mynet&bad=%ZZ", headers = mapOf("Cookie" to cookiePair))
       assertEquals(200, ovResp.status)
       val ovJson = DiagManager.JsonCodec.parse(ovResp.body) as Map<*, *>
       assertEquals(true, ovJson["ok"])
       assertEquals("android", ovJson["platform"])
+      assertEquals(
+        200,
+        sendHttp(freePort, "GET", "/api/state?net=mynet", headers = mapOf("Cookie" to cookiePair)).status,
+      )
 
       // 7. Path traversal & unknown network rejection (AN-01)
       assertEquals(
@@ -394,14 +586,24 @@ class DiagManagerTest {
         sendHttp(freePort, "GET", "/api/overview?net=nonexistent", headers = mapOf("Cookie" to cookiePair)).status,
       )
 
-      // 8. CSRF: cookie-authenticated POST without Origin or with cross-site Origin returns 403
+      // 8. CSRF: cookie-authenticated POST without X-Diag-CSRF, without Origin, or with cross-site/cross-port Origin returns 403
       assertEquals(
         403,
         sendHttp(
           freePort,
           "POST",
           "/api/mark",
-          headers = mapOf("Cookie" to cookiePair, "Content-Type" to "application/json"),
+          headers = mapOf("Cookie" to cookiePair, "Origin" to origin, "Content-Type" to "application/json"),
+          body = """{"net":"mynet","note":"missing-csrf-hdr"}""",
+        ).status,
+      )
+      assertEquals(
+        403,
+        sendHttp(
+          freePort,
+          "POST",
+          "/api/mark",
+          headers = mapOf("Cookie" to cookiePair, "X-Diag-CSRF" to "1", "Content-Type" to "application/json"),
           body = """{"net":"mynet","note":"csrf"}""",
         ).status,
       )
@@ -411,17 +613,42 @@ class DiagManagerTest {
           freePort,
           "POST",
           "/api/mark",
-          headers = mapOf("Cookie" to cookiePair, "Origin" to "http://evil.example", "Content-Type" to "application/json"),
+          headers = mapOf(
+            "Cookie" to cookiePair,
+            "Origin" to "http://evil.example",
+            "X-Diag-CSRF" to "1",
+            "Content-Type" to "application/json",
+          ),
           body = """{"net":"mynet","note":"csrf"}""",
+        ).status,
+      )
+      assertEquals(
+        403,
+        sendHttp(
+          freePort,
+          "POST",
+          "/api/mark",
+          headers = mapOf(
+            "Cookie" to cookiePair,
+            "Origin" to "http://127.0.0.1:${freePort + 1}",
+            "X-Diag-CSRF" to "1",
+            "Content-Type" to "application/json",
+          ),
+          body = """{"net":"mynet","note":"cross-port-csrf"}""",
         ).status,
       )
 
-      // 9. Authenticated POST /api/mark with valid Origin succeeds
+      // 9. Authenticated POST /api/mark with valid Origin and X-Diag-CSRF succeeds
       val markRespHttp = sendHttp(
         freePort,
         "POST",
         "/api/mark",
-        headers = mapOf("Cookie" to cookiePair, "Origin" to origin, "Content-Type" to "application/json"),
+        headers = mapOf(
+          "Cookie" to cookiePair,
+          "Origin" to origin,
+          "X-Diag-CSRF" to "1",
+          "Content-Type" to "application/json",
+        ),
         body = """{"net":"mynet","note":"test lag from junit"}""",
       )
       assertEquals(200, markRespHttp.status)
@@ -444,19 +671,24 @@ class DiagManagerTest {
           freePort,
           "POST",
           "/api/mark",
-          headers = mapOf("Authorization" to "Bearer $pwd", "Content-Type" to "application/json"),
+          headers = mapOf("Authorization" to "Bearer $pwd", "X-Diag-CSRF" to "1", "Content-Type" to "application/json"),
           body = """{"net":"mynet","note":"cli bearer"}""",
         ).status,
       )
 
-      // 11. DNS rebinding check on Host header & truncated body check (AN-01, AN-11)
-      assertTrue(DiagManager.isAllowedHost("[::1]:$freePort"))
-      assertTrue(DiagManager.isAllowedHost("10.99.0.5:$freePort", setOf("10.99.0.5")))
-      assertFalse(DiagManager.isAllowedHost("evil.rebind.test:$freePort", setOf("10.99.0.5")))
+      // 11. DNS rebinding & cross-port check on Host header & truncated body check (AN-01, AN-11, C-AND-02)
+      assertTrue(DiagManager.isAllowedHost("[::1]:$freePort", expectedPort = freePort))
+      assertTrue(DiagManager.isAllowedHost("10.99.0.5:$freePort", setOf("10.99.0.5"), expectedPort = freePort))
+      assertFalse(DiagManager.isAllowedHost("127.0.0.1:${freePort + 1}", expectedPort = freePort))
+      assertFalse(DiagManager.isAllowedHost("evil.rebind.test:$freePort", setOf("10.99.0.5"), expectedPort = freePort))
 
       assertEquals(
         403,
         sendHttp(freePort, "GET", "/", headers = mapOf("Host" to "evil.rebind.test:$freePort")).status,
+      )
+      assertEquals(
+        403,
+        sendHttp(freePort, "GET", "/", headers = mapOf("Host" to "127.0.0.1:${freePort + 1}")).status,
       )
 
       Socket("127.0.0.1", freePort).use { sock ->
@@ -464,6 +696,7 @@ class DiagManagerTest {
         val rawReq = "POST /api/mark HTTP/1.1\r\n" +
           "Host: 127.0.0.1:$freePort\r\n" +
           "Authorization: Bearer $pwd\r\n" +
+          "X-Diag-CSRF: 1\r\n" +
           "Content-Type: application/json\r\n" +
           "Content-Length: 100\r\n\r\n" +
           partialBody
@@ -481,7 +714,12 @@ class DiagManagerTest {
           freePort,
           "POST",
           "/api/logout",
-          headers = mapOf("Cookie" to cookiePair, "Origin" to origin, "Content-Type" to "application/json"),
+          headers = mapOf(
+            "Cookie" to cookiePair,
+            "Origin" to origin,
+            "X-Diag-CSRF" to "1",
+            "Content-Type" to "application/json",
+          ),
           body = "{}",
         ).status,
       )
@@ -489,6 +727,18 @@ class DiagManagerTest {
         401,
         sendHttp(freePort, "GET", "/api/overview?net=mynet", headers = mapOf("Cookie" to cookiePair)).status,
       )
+
+      // 13. Brute-force rate-limiting on /api/login returns 429 after repeated failures (H-AND-01)
+      val attemptStatuses = (1..4).map {
+        sendHttp(
+          freePort,
+          "POST",
+          "/api/login",
+          headers = mapOf("Origin" to origin, "X-Diag-CSRF" to "1", "Content-Type" to "application/json"),
+          body = """{"password":"wrong-attempt-$it"}""",
+        ).status
+      }
+      assertEquals(listOf(401, 401, 401, 429), attemptStatuses)
     } finally {
       DiagManager.testKnownNetsOverride = null
       DiagManager.stopServer(persist = false)

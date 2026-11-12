@@ -88,7 +88,7 @@ class LogSink(threading.Thread):
         self._size = 0
 
     def _open(self) -> None:
-        self._f = open(self.path, "ab", buffering=0)
+        self._f = paths.open_private_append(self.path, binary=True)
         try:
             self._size = os.path.getsize(self.path)
         except OSError:
@@ -165,9 +165,19 @@ class Runtime:
         # `full_tunnel` names an exit node, while that network runs. The system
         # layer is injectable for tests; None = the real one on Windows.
         self._ft: dict[str, fulltunnel.Maintainer] = {}
-        self._ft_lock = threading.Lock()
+        self._ft_lock = threading.RLock()
         self._ft_system = ft_system
         self._ft_interval = ft_interval
+        self._all_stopped = False
+        if self.base and (paths.is_elevated() or paths._under_protected_dir(self.base)):
+            try:
+                paths.mkdir_private(os.path.join(self.base, "logs"))
+            except OSError:
+                pass
+            if os.path.isfile(self.yaml):
+                paths.lock_down_acl(self.yaml)
+            if os.path.isfile(self.yaml + ".lock"):
+                paths.lock_down_acl(self.yaml + ".lock")
         self._ensure_bins()
 
     @staticmethod
@@ -243,16 +253,74 @@ class Runtime:
         except OSError:
             return False
 
+    @staticmethod
+    def _pid_cmdline(pid: int) -> list[str] | None:
+        """Return argv tokens for `pid` when queryable, or None if unavailable."""
+        if pid <= 0:
+            return None
+        if sys.platform == "win32":
+            try:
+                p = subprocess.run(
+                    [
+                        "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                        f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine",
+                    ],
+                    capture_output=True, text=True, timeout=3.0,
+                    stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+                )
+                if p.returncode != 0:
+                    return None
+                raw = (p.stdout or "").strip()
+                if not raw:
+                    return None
+                import shlex
+                return shlex.split(raw, posix=False)
+            except Exception:
+                return None
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                data = f.read()
+            if not data:
+                return None
+            parts = [x.decode("utf-8", errors="replace") for x in data.rstrip(b"\x00").split(b"\x00")]
+            return parts if parts and parts[0] else None
+        except OSError:
+            return None
+
+    @classmethod
+    def _pid_matches_net(cls, pid: int, net_name: str) -> bool:
+        """Verify `pid` is a `tincd` instance running `-n <net_name>` when its
+        command line can be inspected. Returns True when cmdline is unqueryable
+        so `_is_tincd_pid` remains the fallback."""
+        argv = cls._pid_cmdline(pid)
+        if not argv:
+            return True
+        exe_base = os.path.basename(argv[0].strip('"')).lower()
+        if exe_base not in ("tincd", "tincd.exe"):
+            return False
+        cleaned = [tok.strip('"') for tok in argv[1:]]
+        for i, tok in enumerate(cleaned):
+            if tok in ("-n", "--net") and i + 1 < len(cleaned):
+                return cleaned[i + 1] == net_name
+            if tok.startswith("-n") and len(tok) > 2:
+                return tok[2:] == net_name
+            if tok.startswith("--net="):
+                return tok.split("=", 1)[1] == net_name
+        return False
+
     def _kill_orphan_daemons(self, net_name: str | None = None) -> None:
         """Terminate only stale `tincd` PIDs recorded in `<runtime_dir(net)>/pid`
-        for networks confirmed NOT responding on their control socket. Never uses
-        a global image kill and never kills anything when `load_error` is set."""
+        for networks confirmed NOT responding on their control socket and matching
+        `-n <net>` in their command line. Never uses a global image kill and never
+        kills anything when `load_error` is set."""
         if self.load_error or getattr(self.app, "load_error", ""):
             return
         if net_name:
             nets = [net_name]
         else:
-            nets = list(dict.fromkeys(list(self._procs) + list(self.app.networks)))
+            with yaml_config._MEM_LOCK:
+                cfg_nets = list(self.app.networks)
+            nets = list(dict.fromkeys(list(self._procs) + cfg_nets))
             if os.path.isdir(self.base):
                 try:
                     for entry in os.listdir(self.base):
@@ -267,15 +335,28 @@ class Runtime:
             if self.has_live_process(n) or self.is_running(n):
                 continue
             pid = self._read_pidfile_pid(pid_file)
-            if pid is not None:
+            matched = pid is not None and self._pid_matches_net(pid, n)
+            if pid is not None and matched:
                 self._terminate_tincd_pid(pid)
-            if pid is None or not self._is_tincd_pid(pid):
+            if pid is None or not matched or not self._is_tincd_pid(pid):
                 try:
                     os.remove(pid_file)
                 except OSError:
                     pass
 
+    def stage_binaries(self, bindir: str | None = None) -> str:
+        """Stage `tincd.exe`, `tinc.exe`, and `wintun.dll` into `bindir`, skipping
+        any binary whose SHA-256 already matches on disk so running daemons do
+        not trigger `PermissionError`."""
+        import management
+        target_dir = bindir or paths.bin_stage_dir(management.is_admin())
+        names = ["tincd.exe", "tinc.exe", "wintun.dll"]
+        b = paths.bundle()
+        self._stage_all(names, target_dir, b)
+        return target_dir
+
     def _stage_all(self, names: list[str], bindir: str, b) -> None:
+        paths.reject_reparse_point(bindir)
         for n in names:
             src = os.path.join(paths.resource_dir(), n)
             if os.path.isfile(src):
@@ -289,15 +370,8 @@ class Runtime:
 
     def _ensure_bins(self) -> None:
         """Windows: copy the bundled tincd/tinc (+ wintun.dll) to a STABLE bin
-        dir and run from there. A onefile exe unpacks to a random %TEMP% path
-        each launch; Windows Firewall keys rules by program path, so a stable
-        path stops the repeated 'allow tincd' prompts (and lets us pre-add a
-        firewall rule that persists). Elevated, that dir is under Program
-        Files (paths.bin_stage_dir): a daemon run as administrator from a
-        user-writable folder is a privilege escalation. Files are compared by
-        SHA-256 (paths.stage_file), so an upgrade replaces them even when the
-        size did not change. Elsewhere: use the resolved paths as they are
-        (resources/, $TINCSTACK_BIN_DIR or $PATH)."""
+        dir and run from there. When elevated or frozen, NEVER fall back to
+        executing binaries from `%TEMP%\\_MEI*`!"""
         self.tincd = paths.tincd_exe()
         self.tinc = paths.tinc_exe()
         self.bindir = os.path.dirname(self.tincd)
@@ -305,19 +379,19 @@ class Runtime:
         if sys.platform != "win32":
             return
         import management
+        elevated = management.is_admin()
+        must_not_fallback = elevated or paths.is_frozen()
         names = ["tincd.exe", "tinc.exe", "wintun.dll"]
-        bindir = paths.bin_stage_dir(management.is_admin())
-        # The onefile carries a manifest of its own files (paths.bundle()):
-        # its unpack dir is writable by the user's unelevated processes, and
-        # tincd.exe there is not even open, so it is checked, not trusted.
+        bindir = paths.bin_stage_dir(elevated)
+        if must_not_fallback:
+            self.tincd = os.path.join(bindir, "tincd.exe")
+            self.tinc = os.path.join(bindir, "tinc.exe")
+            self.bindir = bindir
         b = paths.bundle()
         try:
             try:
                 self._stage_all(names, bindir, b)
             except OSError:
-                # A daemon from the previous version still runs from bindir and
-                # holds tincd.exe / wintun.dll open: terminate orphan daemons
-                # and retry once so upgrades always replace the binary cleanly.
                 self._kill_orphan_daemons()
                 time.sleep(0.3)
                 self._stage_all(names, bindir, b)
@@ -325,17 +399,18 @@ class Runtime:
             self.tinc = os.path.join(bindir, "tinc.exe")
             self.bindir = bindir
         except paths.IntegrityError as e:
-            # Never fall back to the file that failed the check: keep what is
-            # staged (it passed the check when it was staged), or nothing.
             self.tincd = os.path.join(bindir, "tincd.exe")
             self.tinc = os.path.join(bindir, "tinc.exe")
             self.bindir = bindir
             self.stage_note = f"refused to stage the bundled core: {e}"
         except OSError as e:
-            # Most likely a daemon from the previous version still runs from
-            # bindir and holds the file. Run the bundled copy instead of the
-            # stale staged one, and say so.
-            self.stage_note = f"could not update {bindir} ({e}); running the bundled core"
+            if must_not_fallback:
+                self.tincd = os.path.join(bindir, "tincd.exe")
+                self.tinc = os.path.join(bindir, "tinc.exe")
+                self.bindir = bindir
+                self.stage_note = f"could not update {bindir} ({e}); using existing staged binaries"
+            else:
+                self.stage_note = f"could not update {bindir} ({e}); running the bundled core"
 
     # -- paths --
     def runtime_dir(self, net: str) -> str:
@@ -364,39 +439,47 @@ class Runtime:
         return rc == 0
 
     # -- lifecycle --
-    def start(self, net_name: str) -> tuple[bool, str]:
+    def start(self, net_name: str, detached: bool = False) -> tuple[bool, str]:
         with self._op_lock:
-            return self._start_locked(net_name)
+            return self._start_locked(net_name, detached=detached)
 
-    def _start_locked(self, net_name: str) -> tuple[bool, str]:
-        nc = self.app.net(net_name)
+    def _rotate_log_once(self, log_file: str) -> None:
+        try:
+            if not os.path.isfile(log_file) or os.path.getsize(log_file) <= self.log_max_bytes:
+                return
+        except OSError:
+            return
+        for i in range(self.log_backups, 0, -1):
+            src = log_file if i == 1 else f"{log_file}.{i - 1}"
+            dst = f"{log_file}.{i}"
+            try:
+                if os.path.exists(src):
+                    os.replace(src, dst)
+            except OSError:
+                pass
+
+    def _start_locked(self, net_name: str, detached: bool = False) -> tuple[bool, str]:
+        with yaml_config._MEM_LOCK:
+            nc = self.app.net(net_name)
         if nc is None:
             return False, f"network '{net_name}' not in config"
         if not os.path.isfile(self.tincd):
             return False, f"tincd not found: {self.tincd}"
+        self._all_stopped = False
         if self.is_running(net_name):
-            # a daemon this process did not start (the manager restarted): it
-            # still gets its full tunnel maintained
-            self.full_tunnel_sync(net_name)
-            self._sync_diag_port(net_name)
+            if not detached:
+                self.full_tunnel_sync(net_name)
+            self._sync_diag_port(net_name, sync=detached)
             return True, "already running"
-        # If a previous child process for this network is still alive (e.g. a
-        # single control-socket poll timed out right before Start was clicked),
-        # check once more; if still wedged, stop it cleanly first so two tincd
-        # instances never run side by side with duplicate Wintun adapters.
         if self.has_live_process(net_name):
             if self.is_running(net_name):
-                self.full_tunnel_sync(net_name)
-                self._sync_diag_port(net_name)
+                if not detached:
+                    self.full_tunnel_sync(net_name)
+                self._sync_diag_port(net_name, sync=detached)
                 return True, "already running"
             self.stop(net_name)
         else:
-            # Clean up any stale pidfile / wedged tincd recorded for THIS network.
             self._kill_orphan_daemons(net_name)
-        # No key check here: the core materialises Name/keys/pool on first start
-        # (M1 zero-config) — an empty network stanza is a valid starting point.
-        # pre-allow tincd (stable path) through the firewall so Windows doesn't
-        # prompt on launch
         if sys.platform == "win32" and not self._fw_done:
             try:
                 import management
@@ -404,10 +487,57 @@ class Runtime:
             except Exception:
                 pass
             self._fw_done = True
-        os.makedirs(self.runtime_dir(net_name), exist_ok=True)
+        paths.mkdir_private(self.runtime_dir(net_name))
+        if detached:
+            log_file = self.log_path(net_name)
+            self._rotate_log_once(log_file)
+            log_fh = None
+            try:
+                log_fh = paths.open_private_append(log_file, binary=True)
+                popen_kw: dict = {
+                    "stdout": log_fh,
+                    "stderr": subprocess.STDOUT,
+                    "stdin": subprocess.DEVNULL,
+                    "cwd": os.path.dirname(self.tincd),
+                }
+                if sys.platform == "win32":
+                    popen_kw["creationflags"] = (
+                        _NO_WINDOW
+                        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                        | getattr(subprocess, "DETACHED_PROCESS", 0)
+                    )
+                else:
+                    popen_kw["start_new_session"] = True
+                proc = subprocess.Popen(
+                    [self.tincd, "-n", net_name, "-c", self.yaml, "-D"],
+                    **popen_kw,
+                )
+            except OSError as e:
+                return False, f"spawn failed: {e}"
+            finally:
+                if log_fh is not None:
+                    try:
+                        log_fh.close()
+                    except OSError:
+                        pass
+            started_ok = False
+            for _ in range(20):
+                time.sleep(0.25)
+                if proc.poll() is not None:
+                    return False, f"tincd exited rc={proc.returncode} (see {log_file})"
+                if self.is_running(net_name):
+                    started_ok = True
+                    break
+            if sys.platform == "win32" and nc.device_type in ("", "wintun"):
+                self._apply_wintun_mtu(net_name)
+            if started_ok:
+                self._sync_diag_port(net_name, sync=True)
+                if nc.full_tunnel:
+                    self._full_tunnel_oneshot(net_name)
+                return True, "started"
+            return True, "started (control not yet responding)"
+
         try:
-            # default debug level (notices/warnings/errors only) — -d2 floods the
-            # log with per-connection lines
             proc = subprocess.Popen(
                 [self.tincd, "-n", net_name, "-c", self.yaml, "-D"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -422,7 +552,6 @@ class Runtime:
         if sys.platform == "win32" and nc.device_type in ("", "wintun"):
             threading.Thread(target=self._apply_wintun_mtu, args=(net_name,),
                              name=f"mtu-{net_name}", daemon=True).start()
-        # the maintainer waits for the daemon and its adapter by itself
         self.full_tunnel_sync(net_name)
         for _ in range(20):
             time.sleep(0.25)
@@ -433,6 +562,33 @@ class Runtime:
                 self._sync_diag_port(net_name)
                 return True, "started"
         return True, "started (control not yet responding)"
+
+    def _full_tunnel_oneshot(self, net_name: str) -> None:
+        """Apply one synchronous FullTunnel pass for detached CLI start without
+        spawning a background daemon thread that exits with the CLI process."""
+        system = self._ft_sys()
+        if system is None:
+            return
+        with yaml_config._MEM_LOCK:
+            nc = self.app.net(net_name)
+            if not nc or not nc.full_tunnel:
+                return
+            want = nc.full_tunnel
+            opts = dict(nc.options)
+            hosts = dict(nc.hosts)
+            own = nc.node_name
+        aliases = routes.adapter_aliases(opts, net_name)
+        jpath = self.full_tunnel_journal_path(net_name)
+        paths.mkdir_private(self.runtime_dir(net_name))
+        ft = fulltunnel.FullTunnel(
+            net=net_name, exit_node=want, aliases=aliases,
+            system=system, journal_path=jpath,
+        )
+        tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
+        snap = tc.snapshot(net_name)
+        if not getattr(snap, "error", ""):
+            for line in ft.step(snap, opts, hosts, own, refresh_dns=True):
+                self._log_line(net_name, f"[tincmgr] {line}")
 
     def _live_diag_port(self) -> int:
         if self.diag_port_fn is not None:
@@ -446,7 +602,7 @@ class Runtime:
         except Exception:
             return 0
 
-    def _sync_diag_port(self, net_name: str) -> None:
+    def _sync_diag_port(self, net_name: str, sync: bool = False) -> None:
         port = self._live_diag_port()
 
         def _bg() -> None:
@@ -457,13 +613,15 @@ class Runtime:
             except Exception:
                 pass
 
-        threading.Thread(target=_bg, name=f"diag-port-{net_name}", daemon=True).start()
+        if sync:
+            _bg()
+        else:
+            threading.Thread(target=_bg, name=f"diag-port-{net_name}", daemon=True).start()
 
     def _log_line(self, net_name: str, text: str) -> None:
-        # own file (separate from the daemon's log)
+        # own file (separate from the daemon's log), protected by private DACL
         try:
-            with open(os.path.join(self.base, net_name + "-tincmgr.log"), "a",
-                      encoding="utf-8") as f:
+            with paths.open_private_append(os.path.join(self.base, net_name + "-tincmgr.log")) as f:
                 f.write(text + "\n")
         except Exception:
             pass
@@ -530,10 +688,10 @@ class Runtime:
         self._kill_orphan_daemons(net_name)
         return (not self.is_running(net_name)), "stopped"
 
-    def restart(self, net_name: str) -> tuple[bool, str]:
+    def restart(self, net_name: str, detached: bool = False) -> tuple[bool, str]:
         with self._op_lock:
             self._stop_locked(net_name)
-            return self._start_locked(net_name)
+            return self._start_locked(net_name, detached=detached)
 
     # -- full tunnel: all IPv4 traffic through the exit node (fulltunnel.py) --
     def _ft_sys(self) -> "fulltunnel.System | None":
@@ -548,8 +706,25 @@ class Runtime:
     def _full_tunnel_off(self, net_name: str) -> None:
         with self._ft_lock:
             m = self._ft.pop(net_name, None)
-        if m is not None:
-            m.stop()
+            if m is not None:
+                m.stop()
+        jpath = self.full_tunnel_journal_path(net_name)
+        if os.path.isfile(jpath):
+            with yaml_config._MEM_LOCK:
+                nc = self.app.net(net_name)
+                opts = dict(nc.options) if nc else {}
+            aliases = routes.adapter_aliases(opts, net_name)
+            for line in fulltunnel.cleanup_journal(jpath, self._ft_sys(), aliases):
+                self._log_line(net_name, f"[tincmgr] {line}")
+
+    def active_full_tunnel_net(self, exclude: str = "") -> str:
+        """Return another network name that currently has an active FullTunnel
+        Maintainer (or '' if none)."""
+        with self._ft_lock:
+            for other in self._ft:
+                if other != exclude:
+                    return other
+        return ""
 
     def full_tunnel_exit(self, net_name: str) -> str:
         """Exit node currently maintained for `net_name`, or '' when off."""
@@ -560,58 +735,59 @@ class Runtime:
     def full_tunnel_sync(self, net_name: str) -> str:
         """Make the maintainer match the config: running while `full_tunnel`
         names an exit node and the daemon runs, stopped (split routes and pins
-        removed) otherwise. Safe to call from any thread, and cheap when
-        nothing changes. Returns a line for the status bar."""
+        removed) otherwise. Serialized under `_op_lock` + `_ft_lock`, and
+        refuses activating simultaneous full-tunnel maintainers on two networks."""
         with self._op_lock:
-            with yaml_config._MEM_LOCK:
-                nc = self.app.net(net_name)
-                want = nc.full_tunnel if nc else ""
-                opts_snap = dict(nc.options) if nc else {}
-            jpath = self.full_tunnel_journal_path(net_name)
-            aliases = routes.adapter_aliases(opts_snap, net_name)
             with self._ft_lock:
-                cur = self._ft.get(net_name)
-            if cur is not None and cur.exit_node != want:
-                self._full_tunnel_off(net_name)
-                cur = None
-            if not want:
-                if os.path.isfile(jpath):
-                    for line in fulltunnel.cleanup_journal(jpath, self._ft_sys(), aliases):
-                        self._log_line(net_name, f"[tincmgr] {line}")
-                return "full tunnel off"
-            if cur is not None:
-                return f"full tunnel via {want}: {cur.ft.state}"
-            system = self._ft_sys()
-            if system is None:
-                return f"full tunnel via {want} saved; routes are only applied on Windows"
-            if not self._daemon_alive(net_name):
-                return f"full tunnel via {want} saved; applied when '{net_name}' starts"
-            if os.path.isfile(jpath):
-                for line in fulltunnel.cleanup_journal(jpath, system, aliases):
-                    self._log_line(net_name, f"[tincmgr] {line}")
-            os.makedirs(self.runtime_dir(net_name), exist_ok=True)
-            ft = fulltunnel.FullTunnel(net=net_name, exit_node=want,
-                                       aliases=aliases,
-                                       system=system,
-                                       journal_path=jpath)
-            tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
-
-            def config() -> tuple[dict, dict, str]:
                 with yaml_config._MEM_LOCK:
-                    cfg = self.app.net(net_name)
-                    if cfg is None:
-                        return {}, {}, ""
-                    return dict(cfg.options), dict(cfg.hosts), cfg.node_name
+                    nc = self.app.net(net_name)
+                    want = nc.full_tunnel if nc else ""
+                    opts_snap = dict(nc.options) if nc else {}
+                jpath = self.full_tunnel_journal_path(net_name)
+                aliases = routes.adapter_aliases(opts_snap, net_name)
+                cur = self._ft.get(net_name)
+                if cur is not None and cur.exit_node != want:
+                    self._full_tunnel_off(net_name)
+                    cur = None
+                if not want:
+                    if os.path.isfile(jpath):
+                        for line in fulltunnel.cleanup_journal(jpath, self._ft_sys(), aliases):
+                            self._log_line(net_name, f"[tincmgr] {line}")
+                    return "full tunnel off"
+                if cur is not None:
+                    return f"full tunnel via {want}: {cur.ft.state}"
+                other_ft = self.active_full_tunnel_net(exclude=net_name)
+                if other_ft:
+                    return f"full tunnel via {want} refused: full tunnel is already active on '{other_ft}'"
+                system = self._ft_sys()
+                if system is None:
+                    return f"full tunnel via {want} saved; routes are only applied on Windows"
+                if not self._daemon_alive(net_name):
+                    return f"full tunnel via {want} saved; applied when '{net_name}' starts"
+                self._all_stopped = False
+                if os.path.isfile(jpath):
+                    for line in fulltunnel.cleanup_journal(jpath, system, aliases):
+                        self._log_line(net_name, f"[tincmgr] {line}")
+                paths.mkdir_private(self.runtime_dir(net_name))
+                ft = fulltunnel.FullTunnel(net=net_name, exit_node=want,
+                                           aliases=aliases,
+                                           system=system,
+                                           journal_path=jpath)
+                tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
 
-            m = fulltunnel.Maintainer(ft, lambda: tc.snapshot(net_name), config,
-                                      lambda line: self._log_line(net_name, f"[tincmgr] {line}"),
-                                      interval=self._ft_interval)
-            with self._ft_lock:
-                if net_name in self._ft:          # another thread won the race
-                    return f"full tunnel via {want}: {self._ft[net_name].ft.state}"
+                def config() -> tuple[dict, dict, str]:
+                    with yaml_config._MEM_LOCK:
+                        cfg = self.app.net(net_name)
+                        if cfg is None:
+                            return {}, {}, ""
+                        return dict(cfg.options), dict(cfg.hosts), cfg.node_name
+
+                m = fulltunnel.Maintainer(ft, lambda: tc.snapshot(net_name), config,
+                                          lambda line: self._log_line(net_name, f"[tincmgr] {line}"),
+                                          interval=self._ft_interval)
                 self._ft[net_name] = m
-            m.start()
-            return f"full tunnel via {want}: starting"
+                m.start()
+                return f"full tunnel via {want}: starting"
 
     def full_tunnel_state(self, net_name: str) -> str:
         """What the maintainer is doing right now, '' when it is not running."""
@@ -621,21 +797,28 @@ class Runtime:
 
     def start_autostart(self) -> list[tuple[str, bool, str]]:
         results = []
-        for name, nc in self.app.networks.items():
-            if nc.autostart:
+        with yaml_config._MEM_LOCK:
+            nets = [(name, nc.autostart) for name, nc in self.app.networks.items()]
+        for name, autostart in nets:
+            if autostart:
                 ok, msg = self.start(name)
                 results.append((name, ok, msg))
         return results
 
     def stop_all(self) -> None:
         with self._op_lock:
-            for name in list(self.app.networks):
+            if self._all_stopped and not self._procs and not self._ft:
+                return
+            with yaml_config._MEM_LOCK:
+                net_names = list(self.app.networks)
+            for name in net_names:
                 if self.is_running(name) or name in self._procs:
                     self._stop_locked(name, timeout=5.0)
                 else:
                     self._full_tunnel_off(name)
             for name in list(self._ft):
                 self._full_tunnel_off(name)
+            self._all_stopped = True
 
     def status(self, net: str) -> str:
         return "running" if self.is_running(net) else "stopped"

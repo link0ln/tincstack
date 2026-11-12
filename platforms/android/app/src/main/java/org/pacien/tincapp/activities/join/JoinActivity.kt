@@ -46,8 +46,8 @@ class JoinActivity : BaseActivity() {
     binding.joinPanel.joinTitle.visibility = View.GONE
     panel = JoinPanel(this, binding.joinPanel, this) { net ->
       startActivity(Intent(this, MainActivity::class.java)
-        .setAction(Actions.ACTION_CONNECT)
-        .setData(Actions.buildNetworkUri(net))
+        .putExtra(MainActivity.EXTRA_JOINED_NET, net)
+        .putExtra(Actions.EXTRA_INTERNAL_TOKEN, Actions.internalToken)
         .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
       finish()
     }

@@ -248,7 +248,11 @@ def test_diag_web_server_http_api(tmp_path):
     assert srv.get_password() == pwd
 
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    auth_hdrs = {"Content-Type": "application/json", "X-Diag-Password": pwd}
+    auth_hdrs = {
+        "Content-Type": "application/json",
+        "X-Diag-Password": pwd,
+        "X-Diag-CSRF": "1",
+    }
     try:
         # 0a. Unauthenticated GET / serves the self-contained login page, NOT the WebUI
         with opener.open(f"http://127.0.0.1:{port}/", timeout=3.0) as resp:
@@ -268,7 +272,7 @@ def test_diag_web_server_http_api(tmp_path):
         bad_login = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/login",
             data=json.dumps({"password": "wrong-password"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-Diag-CSRF": "1"},
             method="POST",
         )
         with pytest.raises(urllib.error.HTTPError) as ei_bad:
@@ -278,7 +282,11 @@ def test_diag_web_server_http_api(tmp_path):
         good_login = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/login",
             data=json.dumps({"password": pwd}).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{port}"},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": f"http://127.0.0.1:{port}",
+                "X-Diag-CSRF": "1",
+            },
             method="POST",
         )
         with opener.open(good_login, timeout=3.0) as resp:
@@ -298,12 +306,12 @@ def test_diag_web_server_http_api(tmp_path):
             assert "In-Tunnel" in html
             assert "logoutDiag" in html
 
-        # 1b. Cookie-authenticated POST without Origin is rejected (CSRF protection -> 403),
-        #     while POST with matching Origin succeeds, and /api/logout revokes the session!
+        # 1b. Cookie-authenticated POST without Origin or X-Diag-CSRF is rejected (CSRF protection -> 403),
+        #     while POST with matching Origin + X-Diag-CSRF succeeds, and /api/logout revokes the session!
         csrf_req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/mark",
             data=json.dumps({"net": "vpn1", "note": "missing origin"}).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Cookie": cookie_pair},
+            headers={"Content-Type": "application/json", "Cookie": cookie_pair, "X-Diag-CSRF": "1"},
             method="POST",
         )
         with pytest.raises(urllib.error.HTTPError) as ei_csrf:
@@ -317,6 +325,7 @@ def test_diag_web_server_http_api(tmp_path):
                 "Content-Type": "application/json",
                 "Cookie": cookie_pair,
                 "Origin": f"http://127.0.0.1:{port}",
+                "X-Diag-CSRF": "1",
             },
             method="POST",
         )
@@ -663,3 +672,341 @@ def test_diagnostics_dialog_qt(tmp_path):
     dlg.toggle_server()
     assert not srv.enabled
     srv.stop(wait=True)
+
+
+def test_diag_csrf_header_cross_port_origin_and_login_rate_limit(tmp_path):
+    """C-WIN-04 & M-WIN-01: strict Host:<port>, Origin:<port>, mandatory X-Diag-CSRF
+    on all POST routes (including /api/login), and login rate-limiting (HTTP 429)."""
+    yaml_path = str(tmp_path / "tinc.yaml")
+    yaml_config.save_text(yaml_path, "networks:\n  vpn1:\n    options:\n      Name: book\n")
+    app_cfg = yaml_config.load(yaml_path)
+    tc = TincControl(tinc_exe="tinc", yaml_path=yaml_path, runner=lambda c, t: (0, "", ""))
+    col = diagnostics.TelemetryCollector(str(tmp_path))
+    prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
+    srv = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
+    pwd = srv.get_password()
+
+    port = _free_port()
+    other_port = port + 1 if port < 65000 else port - 1
+    ok, _ = srv.start(port)
+    assert ok
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        # 1. Missing X-Diag-CSRF on /api/login -> 403
+        req_no_csrf_login = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/login",
+            data=json.dumps({"password": pwd}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{port}"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei1:
+            opener.open(req_no_csrf_login, timeout=3.0)
+        assert ei1.value.code == 403
+
+        # 2. Cross-port localhost Origin on /api/login -> 403 (eliminates Login CSRF)
+        req_xport_login = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/login",
+            data=json.dumps({"password": pwd}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": f"http://127.0.0.1:{other_port}",
+                "X-Diag-CSRF": "1",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei2:
+            opener.open(req_xport_login, timeout=3.0)
+        assert ei2.value.code == 403
+
+        # 3. Mismatched Host port -> 403
+        req_bad_host_port = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/overview?net=vpn1",
+            headers={"Host": f"127.0.0.1:{other_port}", "X-Diag-Password": pwd},
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei3:
+            opener.open(req_bad_host_port, timeout=3.0)
+        assert ei3.value.code == 403
+
+        # 4. Missing X-Diag-CSRF on /api/mark even with X-Diag-Password -> 403
+        req_no_csrf_mark = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/mark",
+            data=json.dumps({"net": "vpn1", "note": "x"}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Diag-Password": pwd},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei4:
+            opener.open(req_no_csrf_mark, timeout=3.0)
+        assert ei4.value.code == 403
+
+        # 5. Login rate-limiting: first 4 failures -> 401, 5th failure -> 429, then subsequent attempt -> HTTP 429 + Retry-After
+        for _ in range(diagnostics.LOGIN_MAX_FAILURES - 1):
+            bad = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/login",
+                data=json.dumps({"password": "wrong"}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "X-Diag-CSRF": "1"},
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as ei_fail:
+                opener.open(bad, timeout=3.0)
+            assert ei_fail.value.code == 401
+
+        fifth_bad = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/login",
+            data=json.dumps({"password": "wrong"}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Diag-CSRF": "1"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei_5th:
+            opener.open(fifth_bad, timeout=3.0)
+        assert ei_5th.value.code == 429
+
+        rate_limited = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/login",
+            data=json.dumps({"password": pwd}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Diag-CSRF": "1"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei_429:
+            opener.open(rate_limited, timeout=3.0)
+        assert ei_429.value.code == 429
+        assert int(ei_429.value.headers.get("Retry-After") or "0") >= 1
+    finally:
+        srv.stop()
+
+
+def test_diag_forbids_scripts_and_scripts_interpreter_rce(tmp_path):
+    """C-WIN-04: WebUI preserves untouched existing scripts/ScriptsInterpreter
+    but rejects any attempt to add or modify scripts:, ScriptsInterpreter, or
+    ScriptsExtension with HTTP 403 / WebUISecurityError."""
+    yaml_path = str(tmp_path / "tinc.yaml")
+    yaml_config.save_text(
+        yaml_path,
+        textwrap.dedent("""\
+            networks:
+              vpn1:
+                options:
+                  Name: book
+                  Port: 655
+                  ScriptsInterpreter: cmd.exe
+                scripts:
+                  tinc-up: echo existing-script
+        """),
+    )
+    app_cfg = yaml_config.load(yaml_path)
+    tc = TincControl(tinc_exe="tinc", yaml_path=yaml_path, runner=lambda c, t: (0, "", ""))
+    col = diagnostics.TelemetryCollector(str(tmp_path))
+    prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
+    srv = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
+
+    # 1. Saving normal options while leaving existing ScriptsInterpreter untouched succeeds
+    ok, msg, _ = srv.default_action_handler(
+        "vpn1", "save_options", {"options": {"Name": "book", "Port": 1655, "ScriptsInterpreter": "cmd.exe"}}
+    )
+    assert ok, msg
+    assert yaml_config.load(yaml_path).net("vpn1").options["Port"] == 1655
+    assert yaml_config.load(yaml_path).net("vpn1").scripts == {"tinc-up": "echo existing-script"}
+
+    # 2. Attempting to change ScriptsInterpreter or add ScriptsExtension via save_options -> 403 refusal
+    ok_si, msg_si, extra_si = srv.default_action_handler(
+        "vpn1", "save_options", {"options": {"Name": "book", "ScriptsInterpreter": "powershell.exe"}}
+    )
+    assert not ok_si and "forbidden" in msg_si.lower() and extra_si.get("_http_status") == 403
+
+    ok_se, msg_se, extra_se = srv.default_action_handler(
+        "vpn1",
+        "save_options",
+        {"options": {"Name": "book", "ScriptsInterpreter": "cmd.exe", "ScriptsExtension": ".bat"}},
+    )
+    assert not ok_se and "forbidden" in msg_se.lower() and extra_se.get("_http_status") == 403
+
+    # 3. Attempting to alter scripts: or add host-up in save_raw_yaml -> 403 refusal (HTTP 403 on /api/action)
+    cfg_view = srv.build_config("vpn1")
+    tampered_script = cfg_view["raw_yaml"].replace("echo existing-script", "calc.exe")
+    ok_sc, msg_sc, extra_sc = srv.default_action_handler("vpn1", "save_raw_yaml", {"raw_yaml": tampered_script})
+    assert not ok_sc and "forbidden" in msg_sc.lower() and extra_sc.get("_http_status") == 403
+
+    port = _free_port()
+    srv.start(port)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        for bad_payload in (
+            {"net": "vpn1", "action": "save_raw_yaml", "raw_yaml": tampered_script},
+            {"net": "vpn1", "action": "save_options", "options": {"Name": "book", "ScriptsInterpreter": "powershell.exe"}},
+        ):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/action",
+                data=json.dumps(bad_payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Diag-Password": srv.get_password(),
+                    "X-Diag-CSRF": "1",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as ei_sec:
+                opener.open(req, timeout=3.0)
+            assert ei_sec.value.code == 403
+    finally:
+        srv.stop()
+
+    assert yaml_config.load(yaml_path).net("vpn1").scripts == {"tinc-up": "echo existing-script"}
+
+
+def test_diag_redacts_obfs_proxy_and_3way_merges_concurrent_daemon_keys(tmp_path):
+    """H-WIN-03, M-WIN-05, L-WIN-02: redacts ObfsPassword / Obfs*MagicHeader / Proxy
+    in build_config and /api/export, preserves concurrent daemon-learned keys/hosts
+    across WebUI edits, normalizes multi-value options, and exposes all 9 carriers."""
+    yaml_path = str(tmp_path / "tinc.yaml")
+    yaml_config.save_text(
+        yaml_path,
+        textwrap.dedent("""\
+            networks:
+              vpn1:
+                options:
+                  Name: book
+                  Port: 655
+                  ObfsPassword: super-secret-obfs-pw
+                  ObfsInitMagicHeader: 123456789
+                  ObfsTransportMagicHeader: 987654321
+                  Proxy: socks5 127.0.0.1 1080 user secret-proxy-pass
+                hosts:
+                  book: |
+                    Ed25519PublicKey = AAAA
+                    Subnet = 10.200.0.2/32
+        """),
+    )
+    app_cfg = yaml_config.load(yaml_path)
+    tc = TincControl(tinc_exe="tinc", yaml_path=yaml_path, runner=lambda c, t: (0, "", ""))
+    col = diagnostics.TelemetryCollector(str(tmp_path))
+    prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
+    srv = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
+
+    cfg_view = srv.build_config("vpn1")
+    bundle = srv.build_export_bundle("vpn1")
+    for blob in (json.dumps(cfg_view), json.dumps(bundle)):
+        assert "super-secret-obfs-pw" not in blob
+        assert "123456789" not in blob
+        assert "987654321" not in blob
+        assert "secret-proxy-pass" not in blob
+
+    # Simulate daemon concurrently learning a new peer + TlsFingerprint on disk AFTER build_config
+    yaml_config.save_text(
+        yaml_path,
+        textwrap.dedent("""\
+            networks:
+              vpn1:
+                options:
+                  Name: book
+                  Port: 655
+                  ObfsPassword: super-secret-obfs-pw
+                  ObfsInitMagicHeader: 123456789
+                  ObfsTransportMagicHeader: 987654321
+                  Proxy: socks5 127.0.0.1 1080 user secret-proxy-pass
+                hosts:
+                  book: |
+                    Ed25519PublicKey = AAAA
+                    Subnet = 10.200.0.2/32
+                    TlsFingerprint = DAEMON_LEARNED_FP
+                  newly_joined: |
+                    Ed25519PublicKey = NEWPEER
+                    Subnet = 10.200.0.99/32
+        """),
+    )
+
+    # User submits edited raw_yaml from the stale cfg_view -> 3-way merge preserves both secrets AND daemon-learned entries!
+    edited_raw = cfg_view["raw_yaml"].replace("Port: 655", "Port: 2655")
+    ok, msg, _ = srv.default_action_handler("vpn1", "save_raw_yaml", {"raw_yaml": edited_raw})
+    assert ok, msg
+    merged = yaml_config.load(yaml_path).net("vpn1")
+    assert merged.options["Port"] == 2655
+    assert merged.options["ObfsPassword"] == "super-secret-obfs-pw"
+    assert merged.options["ObfsInitMagicHeader"] == 123456789
+    assert merged.options["Proxy"] == "socks5 127.0.0.1 1080 user secret-proxy-pass"
+    assert "newly_joined" in merged.hosts
+    assert "TlsFingerprint = DAEMON_LEARNED_FP" in merged.hosts["book"]
+
+    # Multi-value option normalization in save_options (M-WIN-05)
+    ok2, msg2, _ = srv.default_action_handler(
+        "vpn1",
+        "save_options",
+        {
+            "options": {
+                "Name": "book",
+                "Port": 2655,
+                "NoDirectNodes": "peerA, peerB",
+                "ConnectTo": "hub1 hub2",
+                "PreferredTransports": "ws, h3, quic, plain",
+                "ObfsPassword": "***REDACTED***",
+            }
+        },
+    )
+    assert ok2, msg2
+    after_opts = yaml_config.load(yaml_path).net("vpn1").options
+    assert after_opts["NoDirectNodes"] == ["peerA", "peerB"]
+    assert after_opts["ConnectTo"] == ["hub1", "hub2"]
+    assert after_opts["PreferredTransports"] == ["ws", "h3", "quic", "plain"]
+    assert after_opts["ObfsPassword"] == "super-secret-obfs-pw"
+
+    # L-WIN-02 & C-WIN-04 in DIAG_WEBUI_HTML
+    assert "X-Diag-CSRF" in DIAG_WEBUI_HTML
+    for carrier in ("plain", "sf", "sftcp", "obfs", "https", "ws", "quic", "h3", "dco"):
+        assert f'"{carrier}"' in DIAG_WEBUI_HTML
+
+
+def test_diag_enabled_persistence_and_primary_vpn_ip_selection(tmp_path):
+    """H-WIN-04 & M-WIN-02: diag_web.json persists enabled state across shutdown
+    (stop(persist=False)) while explicit stop(persist=True) clears it; primary VPN IP
+    selection prefers Ifconfig / /32 host Subnet over /24 or 0.0.0.0/0; simultaneous
+    full_tunnel across two networks is refused."""
+    yaml_path = str(tmp_path / "tinc.yaml")
+    yaml_config.save_text(
+        yaml_path,
+        textwrap.dedent("""\
+            networks:
+              vpn1:
+                full_tunnel: gw1
+                options:
+                  Name: book
+                  Ifconfig: 10.200.0.2/24
+                hosts:
+                  book: |
+                    Subnet = 0.0.0.0/0
+                    Subnet = 10.200.0.0/24
+                    Subnet = 10.200.0.2/32
+              vpn2:
+                options:
+                  Name: book2
+        """),
+    )
+    app_cfg = yaml_config.load(yaml_path)
+    nc1 = app_cfg.net("vpn1")
+    snap_self = Node(
+        name="book",
+        address="MYSELF",
+        subnets=["0.0.0.0/0", "10.200.0.0/24", "10.200.0.2/32"],
+    )
+    assert diagnostics.select_primary_vpn_ip(nc1.options, nc1.hosts["book"], snap_self) == "10.200.0.2"
+    assert diagnostics.select_primary_vpn_ip(None, nc1.hosts["book"], snap_self) == "10.200.0.2"
+
+    tc = TincControl(tinc_exe="tinc", yaml_path=yaml_path, runner=lambda c, t: (0, "", ""))
+    col = diagnostics.TelemetryCollector(str(tmp_path))
+    prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
+    srv = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
+
+    port = _free_port()
+    srv.start(port)
+    assert (tmp_path / "diag_web.json").is_file()
+    assert diagnostics.load_diag_settings(str(tmp_path))["enabled"] is True
+
+    # App shutdown (persist=False) keeps enabled=True in diag_web.json!
+    srv.stop(wait=True, persist=False)
+    assert diagnostics.load_diag_settings(str(tmp_path))["enabled"] is True
+
+    # Explicit user stop (persist=True) sets enabled=False in diag_web.json!
+    srv.start(port)
+    srv.stop(wait=True, persist=True)
+    assert diagnostics.load_diag_settings(str(tmp_path))["enabled"] is False
+
+    # Simultaneous full_tunnel on vpn2 is refused while vpn1 has full_tunnel set (M-WIN-02)
+    ok_ft, msg_ft, _ = srv.default_action_handler("vpn2", "full_tunnel", {"peer": "gw2", "enable": True})
+    assert not ok_ft and "vpn1" in msg_ft

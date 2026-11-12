@@ -55,11 +55,32 @@ def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def is_elevated() -> bool:
+    """True when running with an elevated Administrator token on Windows."""
+    if sys.platform != "win32":
+        return False
+    try:
+        return _token_identity()[0]
+    except Exception:
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+        except Exception:
+            return False
+
+
+def untrusted_env() -> bool:
+    """True when environment variables may have been inherited across UAC from an
+    unprivileged caller (frozen Windows build or elevated Windows token)."""
+    return is_frozen() or (sys.platform == "win32" and is_elevated())
+
+
 def resource_dir() -> str:
     """Directory that holds tincd / tinc / wintun.dll (see module docstring)."""
-    override = os.environ.get(BIN_DIR_ENV)
-    if override:
-        return override
+    if not untrusted_env():
+        override = os.environ.get(BIN_DIR_ENV)
+        if override:
+            return override
     if is_frozen():
         # onefile: extracted to _MEIPASS; onedir: next to the exe
         return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
@@ -177,6 +198,67 @@ def protected_dir() -> str | None:
         return None
 
 
+def elevated_config_path() -> str | None:
+    """Config path inside %ProgramFiles%\\tincmgr for elevated Windows processes."""
+    prot = protected_dir()
+    return os.path.join(prot, CONFIG_BASENAMES[0]) if prot else None
+
+
+def _under_protected_dir(path: str) -> bool:
+    """True when `path` is equal to or nested inside `protected_dir()`."""
+    prot = protected_dir()
+    if not prot or not path:
+        return False
+    p = os.path.normcase(os.path.abspath(path))
+    d = os.path.normcase(os.path.abspath(prot)).rstrip("\\/")
+    return p == d or p.startswith(d + os.sep)
+
+
+def is_reparse_point(path: str) -> bool:
+    """True when `path` is a symlink, junction, or Win32 reparse point."""
+    if not path:
+        return False
+    try:
+        if os.path.islink(path):
+            return True
+    except OSError:
+        pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+            k32.GetFileAttributesW.restype = wintypes.DWORD
+            attrs = k32.GetFileAttributesW(path)
+            if attrs != 0xFFFFFFFF and (attrs & 0x400):  # FILE_ATTRIBUTE_REPARSE_POINT
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def reject_reparse_point(path: str) -> None:
+    """Raise OSError if `path` (or on Windows any existing parent directory above
+    the drive root) is a symlink / junction / reparse point."""
+    if not path:
+        return
+    if is_reparse_point(path):
+        raise OSError(f"refusing symlink or reparse point: {path}")
+    if sys.platform == "win32":
+        cur = os.path.abspath(path)
+        while True:
+            parent = os.path.dirname(cur)
+            if not parent or parent == cur:
+                break
+            _drive, tail = os.path.splitdrive(parent)
+            if tail in ("\\", "/", ""):
+                break
+            if os.path.exists(parent) and is_reparse_point(parent):
+                raise OSError(f"refusing reparse-point ancestor {parent} for {path}")
+            cur = parent
+
+
 def bin_stage_dir(elevated: bool) -> str:
     """Where the core binaries are staged and run from: the protected folder
     when elevated (an elevated tincd must not be replaceable by the user), else
@@ -201,12 +283,20 @@ def stage_file(src: str, dst: str) -> bool:
     that were hashed are the bytes written, so swapping src between the check
     and the copy changes nothing. Written to dst.new and renamed into place:
     a failed copy never leaves a truncated binary behind."""
+    reject_reparse_point(src)
+    reject_reparse_point(dst)
     with open(src, "rb") as f:
         data = f.read()
-    if os.path.isfile(dst) and sha256_file(dst) == hashlib.sha256(data).hexdigest():
-        return False
+    src_sha = hashlib.sha256(data).hexdigest()
+    if os.path.isfile(dst):
+        try:
+            if sha256_file(dst) == src_sha:
+                return False
+        except OSError:
+            pass
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     tmp = dst + ".new"
+    reject_reparse_point(tmp)
     with open(tmp, "wb") as f:
         f.write(data)
         f.flush()
@@ -226,14 +316,20 @@ def stage_verified(src: str, dst: str, sha256: str) -> bool:
     can write to (a onefile's %TEMP%\\_MEIxxxx) into one it cannot: what is
     checked is exactly what is written, so swapping src at any moment either
     fails the check or changes nothing. True if dst had to be written."""
+    reject_reparse_point(dst)
     with open(src, "rb") as f:
         data = f.read()
     if hashlib.sha256(data).hexdigest() != sha256:
         raise IntegrityError(f"{src} does not match this build's manifest; not copied")
-    if os.path.isfile(dst) and sha256_file(dst) == sha256:
-        return False
+    if os.path.isfile(dst):
+        try:
+            if sha256_file(dst) == sha256:
+                return False
+        except OSError:
+            pass
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     tmp = dst + ".new"
+    reject_reparse_point(tmp)
     with open(tmp, "wb") as f:
         f.write(data)
         f.flush()
@@ -308,6 +404,18 @@ def private_sddl(elevated: bool, user_sid: str | None) -> str:
     return f"D:P{base}(A;;FA;;;{user_sid})"
 
 
+def private_dir_sddl(elevated: bool, user_sid: str | None) -> str:
+    """Protected directory SDDL with OICI inheritance so files created inside by
+    child processes (such as tincd's `pid` file containing `controlcookie`, or
+    rotated logs) inherit only SYSTEM + Administrators access when elevated."""
+    base = "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    if elevated:
+        return "O:BAD:P" + base
+    if not user_sid or not re.fullmatch(r"S-1(-\d+)+", user_sid):
+        raise OSError(f"no usable user SID ({user_sid!r}) for a private directory")
+    return f"D:P{base}(A;OICI;FA;;;{user_sid})"
+
+
 def _token_identity() -> tuple[bool, str | None]:
     """(elevated, user SID string) of this process's token."""
     import ctypes
@@ -352,6 +460,7 @@ def open_private_new(path: str) -> int:
     file is born with private_sddl() -- never an inherited ACL, and never
     fixed up afterwards, when the bytes may already have been read. POSIX:
     O_EXCL, mode 0600."""
+    reject_reparse_point(path)
     if sys.platform != "win32":
         return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     import ctypes
@@ -393,17 +502,149 @@ def open_private_new(path: str) -> int:
         raise
 
 
+def lock_down_acl(path: str, elevated: bool | None = None) -> None:
+    """Apply a protected private DACL (POSIX 0700/0600; Windows SYSTEM +
+    Administrators when elevated, plus user SID when unelevated) to an existing
+    file or directory, refusing symlinks/reparse points."""
+    path = os.path.abspath(path)
+    reject_reparse_point(path)
+    if not os.path.exists(path):
+        return
+    is_dir = os.path.isdir(path)
+    if sys.platform != "win32":
+        os.chmod(path, 0o700 if is_dir else 0o600)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL)]
+    advapi32.GetSecurityDescriptorOwner.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+    tok_elev, sid = _token_identity()
+    use_elev = tok_elev if elevated is None else bool(elevated)
+    sddl = private_dir_sddl(use_elev, sid) if is_dir else private_sddl(use_elev, sid)
+    sd = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(sd), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        present, defaulted = wintypes.BOOL(False), wintypes.BOOL(False)
+        dacl = ctypes.c_void_p()
+        owner = ctypes.c_void_p()
+        owner_defaulted = wintypes.BOOL(False)
+        advapi32.GetSecurityDescriptorDacl(sd, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted))
+        advapi32.GetSecurityDescriptorOwner(sd, ctypes.byref(owner), ctypes.byref(owner_defaulted))
+        se_file_object = 1
+        sec_info = 0x00000004 | 0x80000000  # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+        if use_elev and owner.value:
+            sec_info |= 0x00000001  # OWNER_SECURITY_INFORMATION
+        rc = advapi32.SetNamedSecurityInfoW(
+            path, se_file_object, sec_info,
+            owner if (use_elev and owner.value) else None, None, dacl, None,
+        )
+        if rc != 0:
+            raise ctypes.WinError(rc)
+    finally:
+        kernel32.LocalFree(sd)
+
+
+def open_private_append(path: str, binary: bool = False):
+    """Open or create `path` for appending with private ACLs (0600 on POSIX;
+    private_sddl() on Windows), refusing symlinks/reparse points, and return a
+    writable file object."""
+    path = os.path.abspath(path)
+    reject_reparse_point(path)
+    d = os.path.dirname(path)
+    if d and not os.path.isdir(d):
+        os.makedirs(d, exist_ok=True)
+    if sys.platform != "win32":
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+    else:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        class SecurityAttributes(ctypes.Structure):
+            _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                        ("bInheritHandle", wintypes.BOOL)]
+
+        existed = os.path.exists(path)
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                         wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        elevated, sid = _token_identity()
+        sd = ctypes.c_void_p()
+        if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                private_sddl(elevated, sid), 1, ctypes.byref(sd), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            sa = SecurityAttributes(ctypes.sizeof(SecurityAttributes), sd, False)
+            file_append_data = 0x00000004
+            share_rw = 0x00000001 | 0x00000002
+            open_always, attr_normal = 4, 0x80
+            h = kernel32.CreateFileW(path, file_append_data, share_rw, ctypes.byref(sa),
+                                     open_always, attr_normal, None)
+            if h is None or h == wintypes.HANDLE(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.LocalFree(sd)
+        try:
+            fd = msvcrt.open_osfhandle(h, os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0))
+        except OSError:
+            kernel32.CloseHandle(h)
+            raise
+        if existed:
+            try:
+                lock_down_acl(path, elevated=elevated)
+            except OSError:
+                pass
+    try:
+        if binary:
+            return os.fdopen(fd, "ab", buffering=0)
+        return os.fdopen(fd, "a", encoding="utf-8", newline="\n")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
 def mkdir_private(path: str) -> str:
     """Create directory `path` restricted to the current security context
-    (Windows: private_sddl() protected DACL, refusing reparse points; POSIX:
+    (Windows: private_dir_sddl() protected DACL, refusing reparse points; POSIX:
     mode 0700, refusing symlinks). Returns `path`."""
     path = os.path.abspath(path)
+    reject_reparse_point(path)
     if sys.platform != "win32":
-        if os.path.islink(path):
-            raise OSError(f"refusing symlink directory: {path}")
         os.makedirs(path, mode=0o700, exist_ok=True)
-        if os.path.islink(path):
-            raise OSError(f"refusing symlink directory: {path}")
+        reject_reparse_point(path)
         os.chmod(path, 0o700)
         return path
 
@@ -440,7 +681,7 @@ def mkdir_private(path: str) -> str:
     elevated, sid = _token_identity()
     sd = ctypes.c_void_p()
     if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            private_sddl(elevated, sid), 1, ctypes.byref(sd), None):
+            private_dir_sddl(elevated, sid), 1, ctypes.byref(sd), None):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         sa = SecurityAttributes(ctypes.sizeof(SecurityAttributes), sd, False)
@@ -476,10 +717,12 @@ def mkdir_private(path: str) -> str:
 
 def write_private(path: str, data: bytes) -> None:
     """Replace `path` atomically with `data`, created by open_private_new()."""
+    reject_reparse_point(path)
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
     tmp = path + ".new"
+    reject_reparse_point(tmp)
     try:
         os.remove(tmp)            # a leftover would keep its own ACL
     except FileNotFoundError:
@@ -505,13 +748,19 @@ def adopt_config(protected: str, legacy: str | None) -> tuple[str, str]:
     the file they run with; re-reading it on every start is what let any
     unelevated process decide what the elevated one executes (ScriptsInterpreter,
     scripts in the runtime folder). Returns (path, note for the status bar)."""
+    reject_reparse_point(protected)
     if os.path.isfile(protected):
+        try:
+            lock_down_acl(protected)
+        except OSError:
+            pass
         if legacy and os.path.normcase(os.path.abspath(legacy)) != os.path.normcase(os.path.abspath(protected)):
             return protected, (f"config: {protected} -- {legacy} is not read: the elevated app "
                                "only uses a config in a folder only administrators can change")
         return protected, ""
     os.makedirs(os.path.dirname(protected), exist_ok=True)
     if legacy:
+        reject_reparse_point(legacy)
         with open(legacy, "rb") as f:
             data = f.read()
     else:

@@ -184,4 +184,21 @@ class AppUpdaterTest {
     )
     AppUpdater.expectedApkSha256(rel) { ByteArray(0) }
   }
+
+  @Test
+  fun parseJsonFallsBackToDoubleOnHugeIntegersAndCapsMetadataSize() {
+    val parsed = AppUpdater.parseJson("""{"small": 42, "huge": 99999999999999999999999999999}""") as Map<*, *>
+    assertEquals(42L, parsed["small"])
+    assertTrue(parsed["huge"] is Double)
+
+    val withinCap = ByteArray(1024) { 'x'.code.toByte() }
+    assertEquals(1024, AppUpdater.readBoundedBytes(withinCap.inputStream(), maxBytes = 2048).size)
+
+    try {
+      AppUpdater.readBoundedBytes(ByteArray(4096).inputStream(), maxBytes = 2048, label = "test-json")
+      org.junit.Assert.fail("Expected IOException when metadata stream exceeds cap")
+    } catch (e: IOException) {
+      assertTrue(e.message!!.contains("exceeds 2048 bytes"))
+    }
+  }
 }

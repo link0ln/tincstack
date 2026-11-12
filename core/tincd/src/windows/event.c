@@ -32,7 +32,7 @@ static bool running = false;
 static DWORD event_count = 0;
 
 static const long READ_EVENTS = FD_READ | FD_ACCEPT | FD_CLOSE;
-static const long WRITE_EVENTS = FD_WRITE | FD_CONNECT;
+static const long WRITE_EVENTS = FD_WRITE | FD_CONNECT | FD_CLOSE;
 
 void io_add(io_t *io, io_cb_t cb, void *data, int fd, int flags) {
 	if(io->cb) {
@@ -40,6 +40,7 @@ void io_add(io_t *io, io_cb_t cb, void *data, int fd, int flags) {
 	}
 
 	io->fd = fd;
+	io->flags = 0;
 
 	if(io->fd != -1) {
 		io->event = WSACreateEvent();
@@ -97,6 +98,11 @@ void io_set(io_t *io, int flags) {
 	if(WSAEventSelect(io->fd, io->event, events) != 0) {
 		logger(DEBUG_ALWAYS, LOG_WARNING, "WSAEventSelect failed on fd %d: %s", io->fd, winerror(WSAGetLastError()));
 	}
+
+	if(!events) {
+		WSAResetEvent(io->event);
+		io_tree.generation++;
+	}
 }
 
 void io_del(io_t *io) {
@@ -127,7 +133,13 @@ static DWORD tv_to_timeout_ms(const struct timeval *tv) {
 		return 0;
 	}
 
-	return (DWORD)(tv->tv_sec * 1000 + (tv->tv_usec + 999) / 1000);
+	uint64_t ms = (uint64_t)tv->tv_sec * 1000ULL + (uint64_t)((tv->tv_usec + 999) / 1000);
+
+	if(ms >= (uint64_t)(WSA_INFINITE - 1)) {
+		return WSA_INFINITE - 1;
+	}
+
+	return (DWORD)ms;
 }
 
 static bool dispatch_event_batch(WSAEVENT *events, io_t **io_map, DWORD batch_len, DWORD wait_ms, unsigned int curgen, bool *dispatched) {
@@ -154,7 +166,9 @@ static bool dispatch_event_batch(WSAEVENT *events, io_t **io_map, DWORD batch_le
 		io_t *io = io_map[fired_index];
 
 		if(io->fd == -1) {
-			io->cb(io->data, 0);
+			if(io->cb) {
+				io->cb(io->data, 0);
+			}
 
 			if(!running || curgen != io_tree.generation) {
 				return false;
@@ -163,13 +177,27 @@ static bool dispatch_event_batch(WSAEVENT *events, io_t **io_map, DWORD batch_le
 			WSANETWORKEVENTS network_events;
 
 			if(WSAEnumNetworkEvents(io->fd, io->event, &network_events) != 0) {
+				WSAResetEvent(io->event);
 				logger(DEBUG_ALWAYS, LOG_WARNING, "WSAEnumNetworkEvents failed on fd %d: %s", io->fd, winerror(WSAGetLastError()));
 				event_offset = fired_index + 1;
 				wait_ms = 0;
 				continue;
 			}
 
+			if(!io->cb || io->flags == 0) {
+				WSAResetEvent(io->event);
+				event_offset = fired_index + 1;
+				wait_ms = 0;
+				continue;
+			}
+
+			bool handled_close = false;
+
 			if((network_events.lNetworkEvents & READ_EVENTS) && (io->flags & IO_READ)) {
+				if(network_events.lNetworkEvents & FD_CLOSE) {
+					handled_close = true;
+				}
+
 				io->cb(io->data, IO_READ);
 
 				if(!running || curgen != io_tree.generation) {
@@ -177,7 +205,9 @@ static bool dispatch_event_batch(WSAEVENT *events, io_t **io_map, DWORD batch_le
 				}
 			}
 
-			if((network_events.lNetworkEvents & WRITE_EVENTS) && (io->flags & IO_WRITE)) {
+			if(((network_events.lNetworkEvents & (FD_WRITE | FD_CONNECT)) ||
+			                ((network_events.lNetworkEvents & FD_CLOSE) && !handled_close)) &&
+			                (io->flags & IO_WRITE)) {
 				io->cb(io->data, IO_WRITE);
 
 				if(!running || curgen != io_tree.generation) {
@@ -292,9 +322,9 @@ bool event_loop(void) {
 		bool secondary_dispatched = false;
 		bool intact = true;
 
-		/* When > 63 handles exist, do non-blocking (0 ms) sweeps over all
+		/* When > 64 handles exist, do non-blocking (0 ms) sweeps over all
 		   secondary batches first so handles beyond index 63 are never starved. */
-		if(total_ios > WSA_MAXIMUM_WAIT_EVENTS - 1) {
+		if(total_ios > WSA_MAXIMUM_WAIT_EVENTS) {
 			for(size_t batch_base = WSA_MAXIMUM_WAIT_EVENTS; batch_base < total_ios && running; batch_base += WSA_MAXIMUM_WAIT_EVENTS) {
 				DWORD batch_len = (DWORD)((total_ios - batch_base > WSA_MAXIMUM_WAIT_EVENTS)
 				                          ? WSA_MAXIMUM_WAIT_EVENTS

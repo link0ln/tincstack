@@ -18,13 +18,14 @@ editor writes only what the user changed (see yaml_config.save).
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from typing import Any
 
-CARRIERS: tuple[str, ...] = ("plain", "obfs", "https", "quic")
+CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "quic")
 PREFER_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "quic")
-VALID_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "quic")
+VALID_CARRIERS: tuple[str, ...] = ("plain", "sf", "sftcp", "obfs", "https", "ws", "quic", "h3", "dco")
 MULTIPATH_MODES: tuple[str, ...] = ("off", "failover", "flowhash", "redundant", "split")
 
 MULTIPATH_MODE_HELP = {
@@ -87,14 +88,15 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
     OptionSpec("ObfsTransportHeaderJunkSize", "int", 0,
                "Junk bytes prepended to transport frames (0 = off)", "obfs", 0, 1024),
     OptionSpec("ObfsInitMagicHeader", "magic", 0,
-               "Handshake magic header: 0 = off, N, or MIN-MAX range", "obfs"),
+               "Handshake magic header: 0 = off, or 31-bit integer (0..2147483647)", "obfs"),
     OptionSpec("ObfsTransportMagicHeader", "magic", 0,
-               "Transport frame magic header: 0 = off, N, or MIN-MAX range", "obfs"),
+               "Transport frame magic header: 0 = off, or 31-bit integer (0..2147483647)", "obfs"),
     # The core's key is HttpsPort (docs/config-schema.md). Until 2026-09-23 the
     # editor wrote `HttpsFront` / `HttpsFrontPort`, which no core reads: the
-    # setting looked saved and did nothing.
-    OptionSpec("HttpsPort", "front_port", 443,
-               "TCP port of the HTTPS front; 0 = off (default 443 on a listening node)", "https"),
+    # setting looked saved and did nothing. Empty ("") = daemon auto (443 on a
+    # listening node, off when Port = 0).
+    OptionSpec("HttpsPort", "front_port", "",
+               "TCP port of the HTTPS front; empty = auto (443 if listening, off on Port=0), 0 = off", "https"),
     OptionSpec("HttpsPortPublic", "front_port", 0,
                "External TCP port advertised for the HTTPS front (0 = HttpsPort)", "https"),
     OptionSpec("HttpsSni", "str", "",
@@ -105,9 +107,9 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
     OptionSpec("HttpsDecoyRoot", "path", "",
                "Static content served to probers (empty = built-in default page)", "https"),
     OptionSpec("HttpsDecoyUpstream", "str", "",
-               "Or transparently proxy probers to this host:port / URL", "https"),
-    OptionSpec("QuicPort", "front_port", 443,
-               "UDP port of the QUIC front; 0 = off (default 443 on a listening node)", "quic"),
+               "Or transparently proxy probers to this host:port or [ipv6]:port", "https"),
+    OptionSpec("QuicPort", "front_port", "",
+               "UDP port of the QUIC front; empty = auto (443 if listening, off on Port=0), 0 = off", "quic"),
     OptionSpec("QuicPortPublic", "front_port", 0,
                "External UDP port advertised for the QUIC front (0 = QuicPort)", "quic"),
 )
@@ -115,8 +117,35 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
 SPEC_BY_NAME: dict[str, OptionSpec] = {o.name: o for o in TRANSPORT_OPTIONS}
 GROUPS: tuple[str, ...] = ("negotiation", "obfs", "https", "quic")
 
-_MAGIC_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
-_UPSTREAM_RE = re.compile(r"^(https?://\S+|[A-Za-z0-9.\-\[\]:]+:\d{1,5})$")
+_MAGIC_MAX = 0x7FFFFFFF
+_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
+
+
+def _valid_decoy_upstream(raw: str) -> bool:
+    """Validate `HttpsDecoyUpstream` matching `decoy.c` (`host:port` or
+    `[ipv6]:port` with port 1..65535; URLs with schemes and portless `[ipv6]`
+    are rejected)."""
+    s = (raw or "").strip()
+    if not s or "://" in s or "/" in s or any(ch.isspace() for ch in s):
+        return False
+    if s.startswith("["):
+        m = re.fullmatch(r"\[([^\[\]]+)\]:(\d{1,5})", s)
+        if not m:
+            return False
+        host, port_s = m.group(1), m.group(2)
+        try:
+            ipaddress.IPv6Address(host)
+            port = int(port_s)
+        except ValueError:
+            return False
+        return 1 <= port <= 65535
+    if "[" in s or "]" in s or s.count(":") != 1:
+        return False
+    host, port_s = s.rsplit(":", 1)
+    if not host or not _HOST_RE.fullmatch(host) or not port_s.isdigit():
+        return False
+    port = int(port_s)
+    return 1 <= port <= 65535
 
 
 _CARRIER_ALIASES = {
@@ -201,6 +230,8 @@ def validate(options: dict) -> list[str]:
             if len(set(lst)) != len(lst):
                 errors.append(f"{spec.name}: duplicate carrier")
         elif spec.kind in ("int", "port", "front_port"):
+            if spec.kind == "front_port" and spec.default == "" and v in ("", None):
+                continue
             n = _as_int(v)
             lo, hi = {"port": (1, 65535), "front_port": (0, 65535)}.get(spec.kind, (spec.minimum, spec.maximum))
             if n is None:
@@ -211,17 +242,15 @@ def validate(options: dict) -> list[str]:
             if _as_bool(v) is None:
                 errors.append(f"{spec.name}: must be yes/no, got {v!r}")
         elif spec.kind == "magic":
-            m = _MAGIC_RE.match(str(v).strip())
-            if not m:
-                errors.append(f"{spec.name}: must be 0, N or MIN-MAX, got {v!r}")
-            elif m.group(2) is not None and int(m.group(1)) >= int(m.group(2)):
-                errors.append(f"{spec.name}: range MIN-MAX needs MIN < MAX, got {v!r}")
+            n = _as_int(v)
+            if n is None or not (0 <= n <= _MAGIC_MAX):
+                errors.append(f"{spec.name}: must be a single integer between 0 and {_MAGIC_MAX}, got {v!r}")
         elif spec.kind == "path":
             if v is not None and not isinstance(v, str):
                 errors.append(f"{spec.name}: must be a path string")
         elif spec.kind == "str":
-            if spec.name == "HttpsDecoyUpstream" and v and not _UPSTREAM_RE.match(str(v).strip()):
-                errors.append(f"{spec.name}: expected host:port or http(s)://…, got {v!r}")
+            if spec.name == "HttpsDecoyUpstream" and v and not _valid_decoy_upstream(str(v)):
+                errors.append(f"{spec.name}: expected host:port or [ipv6]:port (no http:// scheme), got {v!r}")
             elif spec.name == "MultipathMode" and str(v).strip().lower() not in MULTIPATH_MODES:
                 errors.append(f"{spec.name}: must be one of {', '.join(MULTIPATH_MODES)}, got {v!r}")
     lo = _as_int(options.get("ObfsJunkPacketMinSize", 40))
@@ -253,12 +282,16 @@ def changes(loaded: dict, edited: dict[str, Any]) -> dict[str, Any]:
         else:
             old_n, new_n = old, new
         if present:
-            if old_n != new_n:
+            if spec is not None and spec.kind == "front_port" and spec.default == "" and new_n in ("", None):
+                out[name] = None
+            elif old_n != new_n:
                 out[name] = new_n
         else:
             if spec is not None and new_n == default_for(name):
                 continue
             if spec is not None and spec.kind in ("path", "str") and new_n in ("", None):
+                continue
+            if spec is not None and spec.kind == "front_port" and spec.default == "" and new_n in ("", None):
                 continue
             out[name] = new_n
     return out

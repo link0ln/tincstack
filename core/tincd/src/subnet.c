@@ -56,7 +56,8 @@ static uint32_t hash_function_ipv4_t(const ipv4_t *p) {
 	a) Most IPv4 networks routed via tinc are not /0
 	b) Most IPv4 networks have more unique low order bits
 	*/
-	uint16_t *halfwidth = (uint16_t *)p;
+	uint16_t halfwidth[2];
+	memcpy(halfwidth, p, sizeof(halfwidth));
 	uint32_t hash = hash_seed;
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -81,7 +82,8 @@ static uint32_t hash_function_ipv4_t(const ipv4_t *p) {
 
 
 static uint32_t hash_function_ipv6_t(const ipv6_t *p) {
-	uint32_t *fullwidth = (uint32_t *)p;
+	uint32_t fullwidth[4];
+	memcpy(fullwidth, p, sizeof(fullwidth));
 	uint32_t hash = hash_seed;
 
 	for(int i = 0; i < 4; i++) {
@@ -93,7 +95,8 @@ static uint32_t hash_function_ipv6_t(const ipv6_t *p) {
 }
 
 static uint32_t hash_function_mac_t(const mac_t *p) {
-	uint16_t *halfwidth = (uint16_t *)p;
+	uint16_t halfwidth[3];
+	memcpy(halfwidth, p, sizeof(halfwidth));
 	uint32_t hash = hash_seed;
 
 	for(int i = 0; i < 3; i++) {

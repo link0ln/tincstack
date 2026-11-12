@@ -54,10 +54,19 @@ data class PeerStatus(
       indexOf(key).takeIf { it >= 0 && it + 1 < size }?.let { this[it + 1] }
 
     /** `tinc dump connections`: peer name to carrier, the CLI's own control connection left out. */
-    fun parseConnections(lines: List<String>): Map<String, String> =
-      lines.map(::fields)
-        .filter { it.size >= 2 && !it[0].startsWith("<") }
-        .associate { it[0] to (it.after("transport") ?: "plain") }
+    fun parseConnections(lines: List<String>): Map<String, String> {
+      val result = LinkedHashMap<String, String>()
+      for (f in lines.map(::fields)) {
+        if (f.size < 2 || f[0].startsWith("<")) continue
+        val name = f[0]
+        val transport = f.after("transport") ?: "plain"
+        val prev = result[name]
+        if (prev == null || prev == "plain") {
+          result[name] = transport
+        }
+      }
+      return result
+    }
 
     fun parseNode(line: String, connections: Map<String, String> = emptyMap()): PeerStatus? {
       val f = fields(line)

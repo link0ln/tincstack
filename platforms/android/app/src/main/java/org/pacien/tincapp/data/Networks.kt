@@ -18,7 +18,10 @@
 
 package org.pacien.tincapp.data
 
+import org.pacien.tincapp.activities.main.MainActivity
 import org.pacien.tincapp.context.AppPaths
+import org.pacien.tincapp.diagnostics.DiagManager
+import org.pacien.tincapp.service.TincVpnService
 import org.slf4j.LoggerFactory
 import java.io.File
 
@@ -51,10 +54,27 @@ object Networks {
   }
 
   fun remove(name: String) {
+    val stanza = runCatching { TincYaml(AppPaths.tincYamlFile(name)).resolveNetwork(name) }.getOrNull()
     val dir = AppPaths.confDir(name)
     log.info("Removing network {}", name)
     dir.deleteRecursively()
-    AppPaths.logFile(name).delete()
+    runCatching { AppPaths.logFile(name).delete() }
+    runCatching {
+      AppPaths.pidFile(name).delete()
+      File(AppPaths.runtimeDir(), "tinc.$name.socket").delete()
+      if (!stanza.isNullOrBlank() && stanza != name) {
+        AppPaths.pidFile(stanza).delete()
+        File(AppPaths.runtimeDir(), "tinc.$stanza.socket").delete()
+      }
+    }
+    runCatching { TincVpnService.forgetNetwork(name) }
+    runCatching { MainActivity.forgetNetworkSelection(name) }
+    runCatching {
+      DiagManager.forgetNetwork(name)
+      if (!stanza.isNullOrBlank() && stanza != name) {
+        DiagManager.forgetNetwork(stanza)
+      }
+    }
   }
 
   /** What the main screen shows about a network, read from its tinc.yaml. */

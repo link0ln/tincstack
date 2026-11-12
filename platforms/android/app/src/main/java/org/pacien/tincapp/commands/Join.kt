@@ -162,7 +162,7 @@ object Join {
       }
       if ((!connected && elapsed >= CONNECT_DEADLINE_S) || elapsed >= JOIN_DEADLINE_S) {
         timedOut = true
-        process.destroy()
+        Executor.destroyProcessForcibly(process)
         break
       }
     }

@@ -75,7 +75,17 @@ object AnnouncedRoutes {
   }
 
   private fun v6Bytes(s: String): ByteArray? {
-    val halves = s.split("::")
+    val normalized = if (s.contains('.')) {
+      val lastColon = s.lastIndexOf(':')
+      if (lastColon < 0) return null
+      val v4 = v4Bytes(s.substring(lastColon + 1)) ?: return null
+      val g1 = ((v4[0].toInt() and 0xff) shl 8) or (v4[1].toInt() and 0xff)
+      val g2 = ((v4[2].toInt() and 0xff) shl 8) or (v4[3].toInt() and 0xff)
+      s.substring(0, lastColon + 1) + String.format(java.util.Locale.ROOT, "%x:%x", g1, g2)
+    } else {
+      s
+    }
+    val halves = normalized.split("::")
     if (halves.size > 2) return null
     fun groups(part: String): List<Int>? {
       if (part.isEmpty()) return emptyList()
@@ -91,10 +101,26 @@ object AnnouncedRoutes {
     return ByteArray(16) { i -> (all[i / 2] shr (if (i % 2 == 0) 8 else 0)).toByte() }
   }
 
+  private fun isIpv4MappedBytes(b: ByteArray): Boolean =
+    b.size == 16 &&
+      (0..9).all { b[it] == 0.toByte() } &&
+      b[10] == 0xff.toByte() &&
+      b[11] == 0xff.toByte()
+
   /** [c] with its host bits cleared (VpnService.Builder.addRoute refuses anything else), null if it is not an IP subnet. */
   fun normalise(c: CidrAddress): CidrAddress? {
     val b = bytes(c.address) ?: return null
     if (c.prefix < 0 || c.prefix > b.size * 8) return null
+    if (isIpv4MappedBytes(b)) {
+      if (c.prefix < 96) return null
+      val v4 = b.copyOfRange(12, 16)
+      val v4Prefix = c.prefix - 96
+      for (i in v4.indices) {
+        val keep = (v4Prefix - i * 8).coerceIn(0, 8)
+        v4[i] = (v4[i].toInt() and (0xff shl (8 - keep)) and 0xff).toByte()
+      }
+      return CidrAddress(InetAddress.getByAddress(v4).hostAddress!!, v4Prefix)
+    }
     for (i in b.indices) {
       val keep = (c.prefix - i * 8).coerceIn(0, 8)
       b[i] = (b[i].toInt() and (0xff shl (8 - keep)) and 0xff).toByte()
@@ -104,9 +130,10 @@ object AnnouncedRoutes {
 
   /** [outer] contains all of [inner] (same family). */
   fun covers(outer: CidrAddress, inner: CidrAddress): Boolean {
-    if (isV6(outer) != isV6(inner) || outer.prefix > inner.prefix) return false
     val o = normalise(outer) ?: return false
-    val i = normalise(CidrAddress(inner.address, outer.prefix)) ?: return false
+    val iNorm = normalise(inner) ?: return false
+    if (isV6(o) != isV6(iNorm) || o.prefix > iNorm.prefix) return false
+    val i = normalise(CidrAddress(iNorm.address, o.prefix)) ?: return false
     return o == i
   }
 

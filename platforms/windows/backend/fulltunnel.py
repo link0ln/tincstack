@@ -54,6 +54,7 @@ import transports
 SPLIT = ("0.0.0.0/1", "128.0.0.0/1")
 SPLIT_V6 = ("::/1", "8000::/1")
 DEFAULT_V4 = "0.0.0.0/0"
+DEFAULT_V6 = "::/0"
 DEFAULT_TUNNEL_DNS = ("1.1.1.1", "8.8.8.8")
 INTERVAL = 3.0          # seconds between reconciliation passes
 RESOLVE_TTL = 300.0     # seconds a resolved ConnectTo hostname is reused
@@ -62,9 +63,9 @@ RESOLVE_TIMEOUT = 3.0   # max seconds to wait on a DNS lookup
 
 @dataclass(frozen=True)
 class Route:
-    """One IPv4 route as the routing table reports it."""
-    prefix: str          # "0.0.0.0/0"
-    nexthop: str         # "192.168.1.1"; "0.0.0.0" = on-link
+    """One IPv4 or IPv6 route as the routing table reports it."""
+    prefix: str          # "0.0.0.0/0" or "::/0"
+    nexthop: str         # "192.168.1.1" / "fe80::1"; "0.0.0.0" or "::" = on-link
     ifindex: int
     metric: int = 0
 
@@ -73,11 +74,11 @@ class Route:
 class Gateway:
     """The physical default route the pins go through."""
     ifindex: int
-    nexthop: str         # "0.0.0.0" = on-link (PPP, some LTE modems)
+    nexthop: str         # "0.0.0.0" / "::" = on-link (PPP, some LTE modems)
 
     @property
     def via(self) -> str:
-        return "" if self.nexthop in ("", "0.0.0.0") else self.nexthop
+        return "" if self.nexthop in ("", "0.0.0.0", "::") else self.nexthop
 
 
 # ---- pure logic ----------------------------------------------------------------
@@ -92,11 +93,35 @@ def _ipv4(text: str):
         return None
 
 
+def _ipv6(text: str):
+    try:
+        raw = str(text).strip()
+        if raw.startswith("[") and raw.endswith("]"):
+            raw = raw[1:-1]
+        if "%" in raw:
+            raw = raw.split("%", 1)[0]
+        ip = ipaddress.ip_address(raw)
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is None:
+            return ip
+        return None
+    except (ValueError, TypeError):
+        return None
+
+
 def _nets(items: Iterable) -> list:
     out = []
     for s in items:
         n = routes.parse_subnet(s) if isinstance(s, str) else s
         if n is not None and n.version == 4:
+            out.append(n)
+    return out
+
+
+def _nets_v6(items: Iterable) -> list:
+    out = []
+    for s in items:
+        n = routes.parse_subnet(s) if isinstance(s, str) else s
+        if n is not None and n.version == 6:
             out.append(n)
     return out
 
@@ -113,6 +138,19 @@ def pinnable(addr: str, local_nets: Iterable = (), vpn_nets: Iterable = ()) -> b
     if any(ip in n for n in _nets(local_nets)):
         return False
     if any(ip in n for n in _nets(vpn_nets)):
+        return False
+    return True
+
+
+def pinnable_v6(addr: str, local_nets_v6: Iterable = (), vpn_nets_v6: Iterable = ()) -> bool:
+    """True if `addr` is a peer IPv6 endpoint that must be pinned (/128) via the
+    physical IPv6 gateway before ::/1 + 8000::/1 are installed on Wintun."""
+    ip = _ipv6(addr)
+    if ip is None or ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local:
+        return False
+    if any(ip in n for n in _nets_v6(local_nets_v6)):
+        return False
+    if any(ip in n for n in _nets_v6(vpn_nets_v6)):
         return False
     return True
 
@@ -178,6 +216,105 @@ def vpn_networks(snap, options: dict) -> list:
         if n is not None and n.version == 4 and n.prefixlen > 0 \
                 and str(n) not in SPLIT and str(n) != DEFAULT_V4:
             out.append(n)
+    return out
+
+
+def own_tunnel_ips_v6(snap, options: dict, own: str = "") -> list:
+    """The local tunnel adapter's own /128 IPv6 addresses."""
+    out = []
+    opts = options or {}
+    if not own:
+        own_val = opts.get("Name", "")
+        own = str(own_val[0] if isinstance(own_val, list) and own_val else (own_val or "")).strip()
+    for key in ("InterfaceAddress", "WintunAddress"):
+        v = opts.get(key)
+        for item in (v if isinstance(v, (list, tuple)) else [v]):
+            if not item:
+                continue
+            try:
+                ifc = ipaddress.ip_interface(str(item).split()[0])
+                if ifc.version == 6:
+                    out.append(ipaddress.IPv6Network(f"{ifc.ip}/128"))
+            except ValueError:
+                continue
+    if own:
+        for s in getattr(snap, "subnets", []) or []:
+            if getattr(s, "owner", "") != own:
+                continue
+            n = routes.parse_subnet(s.subnet)
+            if n is not None and n.version == 6 and n.prefixlen == 128:
+                out.append(n)
+    return out
+
+
+def vpn_networks_v6(snap, options: dict) -> list:
+    """Locally configured IPv6 subnets on the tunnel adapter (excluding ::/0 and SPLIT_V6)."""
+    out = list(own_tunnel_ips_v6(snap, options))
+    opts = options or {}
+    for key in ("InterfaceAddress", "WintunAddress"):
+        v = opts.get(key)
+        for item in (v if isinstance(v, (list, tuple)) else [v]):
+            if not item:
+                continue
+            try:
+                ifc = ipaddress.ip_interface(str(item).split()[0])
+                if ifc.version == 6 and ifc.network.prefixlen > 0 \
+                        and str(ifc.network) not in SPLIT_V6 and str(ifc.network) != DEFAULT_V6:
+                    out.append(ifc.network)
+            except ValueError:
+                continue
+    pool = opts.get("AddressPool")
+    for item in (pool if isinstance(pool, (list, tuple)) else [pool]):
+        if not item:
+            continue
+        n = routes.parse_subnet(str(item).split()[0])
+        if n is not None and n.version == 6 and n.prefixlen > 0 \
+                and str(n) not in SPLIT_V6 and str(n) != DEFAULT_V6:
+            out.append(n)
+    for item in routes.values(opts):
+        n = routes.parse_subnet(routes.destination(item))
+        if n is not None and n.version == 6 and n.prefixlen > 0 \
+                and str(n) not in SPLIT_V6 and str(n) != DEFAULT_V6:
+            out.append(n)
+    return out
+
+
+def neighbour_addresses_v6(snap, own: str) -> set[str]:
+    out = set()
+    for e in getattr(snap, "edges", []) or []:
+        ip = _ipv6(e.address) if e.frm == own else None
+        if ip:
+            out.add(str(ip))
+    return out
+
+
+def snapshot_addresses_v6(snap, own: str, options: dict | None = None,
+                          hosts: dict | None = None) -> set[str]:
+    out = set()
+    nodes = getattr(snap, "nodes", {}) or {}
+    edges = getattr(snap, "edges", []) or []
+    direct_peers = {e.to for e in edges if e.frm == own}
+
+    def _skip_peer(peer_name: str) -> bool:
+        if not peer_name or peer_name in direct_peers:
+            return False
+        nd_obj = nodes.get(peer_name)
+        if nd_obj is not None and getattr(nd_obj, "no_direct", False):
+            return True
+        return transports.is_peer_no_direct(options, (hosts or {}).get(peer_name, ""), peer_name)
+
+    for n in nodes.values():
+        if n.name == own or n.is_self or _skip_peer(n.name):
+            continue
+        ip = _ipv6(n.address)
+        if ip:
+            out.add(str(ip))
+    for e in edges:
+        if e.to == own or _skip_peer(e.to):
+            continue
+        ip = _ipv6(e.address)
+        if ip:
+            out.add(str(ip))
     return out
 
 
@@ -268,11 +405,26 @@ def choose_gateway(table: Iterable[Route], tunnel_ifindex: int | None) -> Gatewa
     return Gateway(best.ifindex, best.nexthop) if best else None
 
 
+def choose_gateway_v6(table_v6: Iterable[Route], tunnel_ifindex: int | None) -> Gateway | None:
+    """The physical IPv6 default route (::/0) with the lowest metric not on the tunnel adapter."""
+    best = None
+    for r in table_v6:
+        if r.prefix != DEFAULT_V6 or r.ifindex == tunnel_ifindex:
+            continue
+        if best is None or r.metric < best.metric:
+            best = r
+    return Gateway(best.ifindex, best.nexthop) if best else None
+
+
 def has_route(table: Iterable[Route], prefix: str, ifindex: int, via: str | None = None) -> bool:
-    want_nh = None if via is None else (via or "0.0.0.0")
+    on_link = ("", "0.0.0.0", "::")
+    want_on_link = via is not None and via in on_link
     return any(
         r.prefix == prefix and r.ifindex == ifindex
-        and (want_nh is None or r.nexthop == want_nh)
+        and (
+            via is None
+            or (r.nexthop in on_link if want_on_link else r.nexthop == via)
+        )
         for r in table
     )
 
@@ -361,17 +513,66 @@ class System:
     def supports_ipv6(self) -> bool:
         return False
 
+    def route_table_v6(self) -> list[Route]:
+        return []
+
+    def local_nets_v6(self) -> list[str]:
+        return []
+
+    def adapter_guid(self, ifindex: int) -> str:
+        return ""
+
     def set_tunnel_dns(self, ifindex: int, servers: list[str]) -> tuple[bool, str]:
         return True, ""
 
     def clear_tunnel_dns(self, ifindex: int) -> tuple[bool, str]:
         return True, ""
 
+    def clear_tunnel_dns_by_id(self, alias: str = "", guid: str = "") -> tuple[bool, str]:
+        return True, ""
+
+
+def _safe_clear_dns(
+    system: System,
+    dns_if: int | None,
+    dns_guid: str = "",
+    dns_alias: str = "",
+    aliases: Iterable[str] = (),
+) -> None:
+    """Restore adapter DNS without ever wiping a foreign adapter that reused `dns_if`."""
+    alias_list = [str(a) for a in aliases if a]
+    if dns_alias and dns_alias not in alias_list:
+        alias_list.insert(0, dns_alias)
+    if dns_if is not None:
+        cur_guid = system.adapter_guid(int(dns_if))
+        if dns_guid:
+            if cur_guid and cur_guid.lower() == dns_guid.lower():
+                system.clear_tunnel_dns(int(dns_if))
+                return
+            cand_if = system.ifindex(alias_list) if alias_list else None
+            if cand_if is not None:
+                cand_guid = system.adapter_guid(int(cand_if))
+                if not cand_guid or cand_guid.lower() == dns_guid.lower():
+                    system.clear_tunnel_dns(int(cand_if))
+                    return
+            system.clear_tunnel_dns_by_id(dns_alias, dns_guid)
+            return
+        system.clear_tunnel_dns(int(dns_if))
+        return
+    if dns_alias or dns_guid:
+        cand_if = system.ifindex(alias_list) if alias_list else None
+        if cand_if is not None:
+            cand_guid = system.adapter_guid(int(cand_if))
+            if not dns_guid or not cand_guid or cand_guid.lower() == dns_guid.lower():
+                system.clear_tunnel_dns(int(cand_if))
+                return
+        system.clear_tunnel_dns_by_id(dns_alias, dns_guid)
+
 
 def cleanup_journal(journal_path: str, system: System | None,
                     aliases: Iterable[str] = ()) -> list[str]:
     """Remove any orphaned split routes, IPv6 leak-guard routes, DNS settings,
-    and /32 gateway pins recorded by a previous session in `journal_path`."""
+    and /32 + /128 gateway pins recorded by a previous session in `journal_path`."""
     if not journal_path or not os.path.isfile(journal_path):
         return []
     log: list[str] = []
@@ -408,8 +609,17 @@ def cleanup_journal(journal_path: str, system: System | None,
             for p6 in SPLIT_V6:
                 system.delete_route(p6, int(v6_if))
         dns_if = data.get("dns_if")
-        if dns_if is not None:
-            system.clear_tunnel_dns(int(dns_if))
+        dns_guid = str(data.get("dns_guid") or "")
+        dns_alias = str(data.get("dns_alias") or "")
+        if dns_if is not None or dns_guid or dns_alias:
+            _safe_clear_dns(
+                system,
+                int(dns_if) if dns_if is not None else None,
+                dns_guid=dns_guid,
+                dns_alias=dns_alias,
+                aliases=alias_list,
+            )
+            log.append(f"full tunnel: cleaned journaled DNS ({dns_alias or dns_guid or dns_if})")
         for item in data.get("pins") or []:
             if not isinstance(item, dict) or not item.get("ip") or item.get("ifindex") is None:
                 continue
@@ -418,6 +628,14 @@ def cleanup_journal(journal_path: str, system: System | None,
             ok, _ = system.delete_route(f"{ip}/32", int(item["ifindex"]), via)
             if ok:
                 log.append(f"full tunnel: cleaned journaled pin {ip}/32")
+        for item in data.get("pins_v6") or []:
+            if not isinstance(item, dict) or not item.get("ip") or item.get("ifindex") is None:
+                continue
+            ip6 = str(item["ip"])
+            via6 = str(item.get("via") or "")
+            ok6, _ = system.delete_route(f"{ip6}/128", int(item["ifindex"]), via6)
+            if ok6:
+                log.append(f"full tunnel: cleaned journaled pin {ip6}/128")
     try:
         os.remove(journal_path)
     except OSError:
@@ -434,30 +652,67 @@ class FullTunnel:
     clock: Callable[[], float] = time.monotonic
     journal_path: str = ""
     resolve_timeout: float = RESOLVE_TIMEOUT
-    pins: dict = field(default_factory=dict)        # ip -> Gateway it is pinned through
+    pins: dict = field(default_factory=dict)        # ipv4 -> Gateway it is pinned through
+    pins_v6: dict = field(default_factory=dict)     # ipv6 -> Gateway it is pinned through
     split_if: int | None = None                     # adapter the split routes are on
     state: str = "starting"
     _resolved: dict = field(default_factory=dict)   # host -> (expiry, [ip])
     _v6_if: int | None = None
     _dns_if: int | None = None
+    _dns_guid: str = ""
+    _dns_alias: str = ""
 
-    def _write_journal(self) -> None:
+    def _write_journal(
+        self,
+        *,
+        extra_pins: dict | None = None,
+        extra_pins_v6: dict | None = None,
+        split_if: int | None = None,
+        v6_if: int | None = None,
+        dns_if: int | None = None,
+        dns_guid: str | None = None,
+        dns_alias: str | None = None,
+    ) -> None:
         if not self.journal_path:
             return
-        if self.split_if is None and self._v6_if is None and self._dns_if is None and not self.pins:
+        eff_pins = dict(self.pins)
+        if extra_pins:
+            eff_pins.update(extra_pins)
+        eff_pins_v6 = dict(self.pins_v6)
+        if extra_pins_v6:
+            eff_pins_v6.update(extra_pins_v6)
+        eff_split = self.split_if if split_if is None else split_if
+        eff_v6 = self._v6_if if v6_if is None else v6_if
+        eff_dns = self._dns_if if dns_if is None else dns_if
+        eff_guid = self._dns_guid if dns_guid is None else dns_guid
+        eff_alias = self._dns_alias if dns_alias is None else dns_alias
+        if (
+            eff_split is None
+            and eff_v6 is None
+            and eff_dns is None
+            and not eff_guid
+            and not eff_pins
+            and not eff_pins_v6
+        ):
             try:
                 os.remove(self.journal_path)
             except OSError:
                 pass
             return
         payload = {
-            "split_if": self.split_if,
-            "v6_if": self._v6_if,
-            "dns_if": self._dns_if,
+            "split_if": eff_split,
+            "v6_if": eff_v6,
+            "dns_if": eff_dns,
+            "dns_guid": eff_guid,
+            "dns_alias": eff_alias,
             "aliases": list(self.aliases),
             "pins": [
                 {"ip": ip, "ifindex": gw.ifindex, "via": gw.via}
-                for ip, gw in sorted(self.pins.items())
+                for ip, gw in sorted(eff_pins.items())
+            ],
+            "pins_v6": [
+                {"ip": ip6, "ifindex": gw.ifindex, "via": gw.via}
+                for ip6, gw in sorted(eff_pins_v6.items())
             ],
         }
         try:
@@ -465,8 +720,16 @@ class FullTunnel:
         except OSError:
             pass
 
-    def _connect_to_ips(self, options: dict, hosts: dict, own: str = "") -> set[str]:
-        out = set()
+    def _resolve_peer_ips(
+        self,
+        options: dict,
+        hosts: dict,
+        own: str = "",
+        refresh_dns: bool = False,
+    ) -> tuple[set[str], set[str], set[str]]:
+        out_v4: set[str] = set()
+        out_v6: set[str] = set()
+        v6_only_ct: set[str] = set()
         now = self.clock()
         ct_targets = list(connect_to_hosts(options, hosts))
         extra_targets: list[str] = []
@@ -479,43 +742,52 @@ class FullTunnel:
             for a in host_addresses(text):
                 if a not in ct_targets and a not in extra_targets:
                     extra_targets.append(a)
+
+        def _lookup_host(host: str) -> tuple[list[str], list[str]]:
+            ip4 = _ipv4(host)
+            if ip4:
+                return [str(ip4)], []
+            ip6 = _ipv6(host)
+            if ip6:
+                return [], [str(ip6)]
+            exp, cached = self._resolved.get(host, (0.0, []))
+            if refresh_dns or now >= exp:
+                try:
+                    raw_addrs = _resolve_with_timeout(
+                        self.system.resolve, host, self.resolve_timeout
+                    )
+                    fresh: list[str] = []
+                    for a in raw_addrs:
+                        v4 = _ipv4(a)
+                        v6 = _ipv6(a)
+                        canon = str(v4) if v4 else (str(v6) if v6 else "")
+                        if canon and canon not in fresh:
+                            fresh.append(canon)
+                    if fresh or not cached:
+                        cached = fresh
+                except OSError:
+                    cached = cached or []   # keep the last answer while DNS is down
+                self._resolved[host] = (now + RESOLVE_TTL, cached)
+            v4s = [str(_ipv4(a)) for a in cached if _ipv4(a)]
+            v6s = [str(_ipv6(a)) for a in cached if _ipv6(a)]
+            return v4s, v6s
+
         for host in ct_targets:
-            ip = _ipv4(host)
-            if ip:
-                out.add(str(ip))
-                continue
-            exp, ips = self._resolved.get(host, (0.0, []))
-            # Do not block Maintainer on ConnectTo DNS refreshes while split
-            # tunnel is active and we already have cached IP(s) for this host.
-            if now >= exp and (self.split_if is None or not ips):
-                try:
-                    fresh = [str(_ipv4(a)) for a in _resolve_with_timeout(
-                        self.system.resolve, host, self.resolve_timeout) if _ipv4(a)]
-                    if fresh or not ips:
-                        ips = fresh
-                except OSError:
-                    ips = ips or []   # keep the last answer while DNS is down
-                self._resolved[host] = (now + RESOLVE_TTL, ips)
-            out.update(ips)
+            v4s, v6s = _lookup_host(host)
+            out_v4.update(v4s)
+            out_v6.update(v6s)
+            if v6s and not v4s:
+                v6_only_ct.update(v6s)
         for host in extra_targets:
-            ip = _ipv4(host)
-            if ip:
-                out.add(str(ip))
-                continue
-            exp, ips = self._resolved.get(host, (0.0, []))
-            # Avoid blocking on DNS queries for non-ConnectTo hosts while the
-            # split tunnel is active (when DNS itself may traverse a broken tunnel).
-            if now >= exp and self.split_if is None:
-                try:
-                    fresh = [str(_ipv4(a)) for a in _resolve_with_timeout(
-                        self.system.resolve, host, self.resolve_timeout) if _ipv4(a)]
-                    if fresh or not ips:
-                        ips = fresh
-                except OSError:
-                    ips = ips or []
-                self._resolved[host] = (now + RESOLVE_TTL, ips)
-            out.update(ips)
-        return out
+            v4s, v6s = _lookup_host(host)
+            out_v4.update(v4s)
+            out_v6.update(v6s)
+        return out_v4, out_v6, v6_only_ct
+
+    def _connect_to_ips(self, options: dict, hosts: dict, own: str = "",
+                        refresh_dns: bool = False) -> set[str]:
+        v4s, _, _ = self._resolve_peer_ips(options, hosts, own, refresh_dns=refresh_dns)
+        return v4s
 
     def _set_state(self, text: str, log: list[str]) -> None:
         if text != self.state:
@@ -527,9 +799,17 @@ class FullTunnel:
             for p6 in SPLIT_V6:
                 self.system.delete_route(p6, self._v6_if)
             self._v6_if = None
-        if self._dns_if is not None:
-            self.system.clear_tunnel_dns(self._dns_if)
+        if self._dns_if is not None or self._dns_guid:
+            _safe_clear_dns(
+                self.system,
+                self._dns_if,
+                dns_guid=self._dns_guid,
+                dns_alias=self._dns_alias,
+                aliases=self.aliases,
+            )
             self._dns_if = None
+            self._dns_guid = ""
+            self._dns_alias = ""
         if self.split_if is None:
             self._write_journal()
             return
@@ -539,7 +819,15 @@ class FullTunnel:
         self.split_if = None
         self._write_journal()
 
-    def step(self, snap, options: dict, hosts: dict, own: str) -> list[str]:
+    def _unpin_all_v6(self, log: list[str]) -> None:
+        for ip6 in sorted(list(self.pins_v6)):
+            old_gw6 = self.pins_v6.pop(ip6)
+            ok6, msg6 = self.system.delete_route(f"{ip6}/128", old_gw6.ifindex, old_gw6.via)
+            if not ok6:
+                log.append(f"full tunnel: unpinning {ip6}: {msg6}")
+
+    def step(self, snap, options: dict, hosts: dict, own: str,
+             refresh_dns: bool = False) -> list[str]:
         """One reconciliation pass. Returns log lines for what changed."""
         log: list[str] = []
         sysm = self.system
@@ -547,9 +835,19 @@ class FullTunnel:
         if tunnel_if is None:
             # tincd not up yet, or restarting: Windows took the adapter's
             # routes with it, so there is nothing of ours on it any more
+            if self._dns_if is not None or self._dns_guid:
+                _safe_clear_dns(
+                    sysm,
+                    self._dns_if,
+                    dns_guid=self._dns_guid,
+                    dns_alias=self._dns_alias,
+                    aliases=self.aliases,
+                )
             self.split_if = None
             self._v6_if = None
             self._dns_if = None
+            self._dns_guid = ""
+            self._dns_alias = ""
             self._write_journal()
             self._set_state("waiting for the tunnel adapter", log)
             return log
@@ -557,6 +855,8 @@ class FullTunnel:
             self.split_if = None     # a new adapter instance after a restart
             self._v6_if = None
             self._dns_if = None
+            self._dns_guid = ""
+            self._dns_alias = ""
         table = sysm.route_table()
         gw = choose_gateway(table, tunnel_if)
         if gw is None:
@@ -567,12 +867,20 @@ class FullTunnel:
         local = sysm.local_nets()
         vpn = vpn_networks(snap, options)
         own_v4 = own_tunnel_ips(snap, options, own)
+        ct_v4, ct_v6, v6_only_ct = self._resolve_peer_ips(
+            options, hosts, own, refresh_dns=refresh_dns
+        )
         # External peer endpoints on direct edges / ConnectTo must NEVER be
         # excluded by wider (< /32) VPN prefixes -- only skip local_nets or our
         # own /32 tunnel IP.
-        must = {a for a in neighbour_addresses(snap, own) | self._connect_to_ips(options, hosts, own)
+        must = {a for a in neighbour_addresses(snap, own) | ct_v4
                 if pinnable(a, local, own_v4)}
         want = must | {a for a in snapshot_addresses(snap, own, options, hosts) if pinnable(a, local, vpn)}
+
+        # Persist intended /32 pins to rollback journal BEFORE mutating OS routes
+        intended_pins = {ip: gw for ip in want}
+        if intended_pins != self.pins:
+            self._write_journal(extra_pins=intended_pins)
 
         # 1. pins first, through the current physical gateway
         failed = {}
@@ -617,6 +925,102 @@ class FullTunnel:
             self._remove_split(log)
             self._set_state(f"paused: {why}", log)
             return log
+
+        # Prepare IPv6 /128 endpoint bypass pins BEFORE ::/1 and 8000::/1
+        want_split_v6 = sysm.supports_ipv6() and not _has_ipv6_default_route(options)
+        allow_split_v6 = False
+        if want_split_v6:
+            table_v6 = sysm.route_table_v6()
+            gw6 = choose_gateway_v6(table_v6, tunnel_if)
+            local6 = sysm.local_nets_v6()
+            vpn6 = vpn_networks_v6(snap, options)
+            own_v6 = own_tunnel_ips_v6(snap, options, own)
+            active_edges_v6 = {
+                a for a in neighbour_addresses_v6(snap, own)
+                if pinnable_v6(a, local6, own_v6)
+            }
+            must_v6_carrier = active_edges_v6 | {
+                a for a in v6_only_ct if pinnable_v6(a, local6, own_v6)
+            }
+            must_v6_all = active_edges_v6 | {
+                a for a in ct_v6 if pinnable_v6(a, local6, own_v6)
+            }
+            want_v6 = must_v6_all | {
+                a for a in snapshot_addresses_v6(snap, own, options, hosts)
+                if pinnable_v6(a, local6, vpn6)
+            }
+            if gw6 is not None:
+                if want_v6:
+                    self._write_journal(extra_pins_v6={ip6: gw6 for ip6 in want_v6})
+                failed_v6 = {}
+                for ip6 in sorted(want_v6):
+                    prefix6 = f"{ip6}/128"
+                    have6 = self.pins_v6.get(ip6)
+                    stale6 = [
+                        r for r in table_v6
+                        if r.prefix == prefix6 and r.ifindex == gw6.ifindex
+                        and (r.nexthop if r.nexthop not in ("", "::", "0.0.0.0") else "") != gw6.via
+                    ]
+                    if have6 == gw6 and has_route(table_v6, prefix6, gw6.ifindex, gw6.via) and not stale6:
+                        continue
+                    if have6 is not None and have6 != gw6:
+                        sysm.delete_route(prefix6, have6.ifindex, have6.via)
+                    for sr6 in stale6:
+                        st_via6 = "" if sr6.nexthop in ("", "::", "0.0.0.0") else sr6.nexthop
+                        if have6 is None or (have6.ifindex, have6.via) != (sr6.ifindex, st_via6):
+                            sysm.delete_route(prefix6, sr6.ifindex, st_via6)
+                    ok6, msg6 = sysm.add_route(prefix6, gw6.ifindex, gw6.via)
+                    if ok6:
+                        self.pins_v6[ip6] = gw6
+                        log.append(f"full tunnel: pinned {ip6} via {gw6.via or 'on-link'} (if {gw6.ifindex})")
+                    else:
+                        self.pins_v6.pop(ip6, None)
+                        failed_v6[ip6] = msg6
+                for ip6 in sorted(set(self.pins_v6) - want_v6):
+                    old_gw6 = self.pins_v6.pop(ip6)
+                    ok6, msg6 = sysm.delete_route(f"{ip6}/128", old_gw6.ifindex, old_gw6.via)
+                    log.append(
+                        f"full tunnel: unpinned stale {ip6}"
+                        if ok6 else f"full tunnel: unpinning {ip6}: {msg6}"
+                    )
+                missing_v6 = sorted(ip6 for ip6 in must_v6_all if ip6 in failed_v6)
+                if missing_v6:
+                    log.append(
+                        f"full tunnel: skipping IPv6 split routes; could not pin "
+                        f"{missing_v6[0]} ({failed_v6[missing_v6[0]]})"
+                    )
+                    allow_split_v6 = False
+                else:
+                    allow_split_v6 = True
+            else:
+                self._unpin_all_v6(log)
+                if must_v6_carrier:
+                    # Active carrier or IPv6-only ConnectTo endpoint uses IPv6 without a
+                    # physical IPv6 default gateway to pin through: never loop it into Wintun!
+                    log.append(
+                        f"full tunnel: skipping IPv6 split routes; IPv6 endpoint "
+                        f"{sorted(must_v6_carrier)[0]} has no physical IPv6 gateway to pin through"
+                    )
+                    allow_split_v6 = False
+                else:
+                    # Peer is reached over IPv4 and host has no physical v6 default gateway:
+                    # safe to install ::/1 + 8000::/1 leak-guard routes on Wintun.
+                    allow_split_v6 = True
+        else:
+            self._unpin_all_v6(log)
+
+        dns_servers = _tunnel_dns_servers(options)
+        tun_guid = sysm.adapter_guid(tunnel_if)
+        tun_alias = self.aliases[0] if self.aliases else ""
+        # Persist rollback journal BEFORE mutating split routes / adapter DNS
+        self._write_journal(
+            split_if=tunnel_if,
+            v6_if=tunnel_if if allow_split_v6 else self._v6_if,
+            dns_if=tunnel_if if dns_servers else self._dns_if,
+            dns_guid=tun_guid if dns_servers else self._dns_guid,
+            dns_alias=tun_alias if dns_servers else self._dns_alias,
+        )
+
         for p in SPLIT:
             if has_route(table, p, tunnel_if):
                 self.split_if = tunnel_if
@@ -628,7 +1032,7 @@ class FullTunnel:
                     return log
                 self.split_if = tunnel_if
                 log.append(f"full tunnel: added {p} on the tunnel adapter (if {tunnel_if})")
-        if sysm.supports_ipv6() and not _has_ipv6_default_route(options):
+        if allow_split_v6:
             if self._v6_if != tunnel_if:
                 v6_ok = True
                 for p6 in SPLIT_V6:
@@ -637,15 +1041,19 @@ class FullTunnel:
                         v6_ok = False
                 if v6_ok:
                     self._v6_if = tunnel_if
+                else:
+                    for p6 in SPLIT_V6:
+                        sysm.delete_route(p6, tunnel_if)
         elif self._v6_if is not None:
             for p6 in SPLIT_V6:
                 sysm.delete_route(p6, self._v6_if)
             self._v6_if = None
-        dns_servers = _tunnel_dns_servers(options)
         if dns_servers and self._dns_if != tunnel_if:
             ok_dns, _ = sysm.set_tunnel_dns(tunnel_if, dns_servers)
             if ok_dns:
                 self._dns_if = tunnel_if
+                self._dns_guid = tun_guid
+                self._dns_alias = tun_alias
         self._write_journal()
         self._set_state(f"active via {self.exit_node}", log)
         return log
@@ -665,9 +1073,15 @@ class FullTunnel:
             ok, msg = self.system.delete_route(f"{ip}/32", gw.ifindex, gw.via)
             if not ok:
                 log.append(f"full tunnel: unpinning {ip}: {msg}")
-        if self.pins:
-            log.append(f"full tunnel: removed {len(self.pins)} pin(s)")
+        for ip6, gw6 in sorted(self.pins_v6.items()):
+            ok6, msg6 = self.system.delete_route(f"{ip6}/128", gw6.ifindex, gw6.via)
+            if not ok6:
+                log.append(f"full tunnel: unpinning {ip6}: {msg6}")
+        total_pins = len(self.pins) + len(self.pins_v6)
+        if total_pins:
+            log.append(f"full tunnel: removed {total_pins} pin(s)")
         self.pins.clear()
+        self.pins_v6.clear()
         self._write_journal()
         self.state = "off"
         return log
@@ -689,21 +1103,27 @@ class Maintainer(threading.Thread):
         self._log = log
         self.interval = interval
         self._halt = threading.Event()
+        self._lock = threading.Lock()
+        self._daemon_errors = 0
+        self._cleaned_up = False
 
     @property
     def exit_node(self) -> str:
         return self.ft.exit_node
 
-    def run(self) -> None:
-        self._log(f"full tunnel: on, exit node {self.ft.exit_node}")
-        daemon_errors = 0
-        while not self._halt.is_set():
+    def _step(self) -> None:
+        """Execute one serialized reconciliation pass, re-resolving peer DNS
+        hostnames so DDNS endpoint changes update /32 and /128 bypass pins
+        even while `split_if` is active."""
+        with self._lock:
+            if self._halt.is_set() or self._cleaned_up:
+                return
             try:
                 snap = self._snapshot()
                 if getattr(snap, "error", ""):
-                    daemon_errors += 1
+                    self._daemon_errors += 1
                     self.ft.state = "waiting for the daemon"
-                    if daemon_errors >= 2:
+                    if self._daemon_errors >= 2:
                         if self.ft.split_if is not None:
                             lines: list[str] = [
                                 f"full tunnel: daemon unresponsive ({snap.error}) -- "
@@ -712,29 +1132,43 @@ class Maintainer(threading.Thread):
                             self.ft._remove_split(lines)
                             for line in lines:
                                 self._log(line)
-                        if self.ft.pins and self.ft.system.ifindex(self.ft.aliases) is None:
+                        if (self.ft.pins or self.ft.pins_v6) and self.ft.system.ifindex(self.ft.aliases) is None:
                             for line in self.ft.stop():
                                 self._log(line)
                             self.ft.state = "waiting for the daemon"
                 else:
-                    daemon_errors = 0
+                    self._daemon_errors = 0
                     options, hosts, own = self._config()
-                    for line in self.ft.step(snap, options, hosts, own):
+                    for line in self.ft.step(snap, options, hosts, own, refresh_dns=True):
                         self._log(line)
             except Exception as e:     # never let one bad pass end the loop
                 self._log(f"full tunnel: pass failed: {type(e).__name__}: {e}")
+
+    def _cleanup(self) -> None:
+        with self._lock:
+            if self._cleaned_up:
+                return
+            self._cleaned_up = True
+            try:
+                for line in self.ft.stop():
+                    self._log(line)
+            except Exception as e:
+                self._log(f"full tunnel: cleanup failed, routes may remain until reboot: "
+                          f"{type(e).__name__}: {e}")
+            self._log("full tunnel: off")
+
+    def run(self) -> None:
+        self._log(f"full tunnel: on, exit node {self.ft.exit_node}")
+        while not self._halt.is_set():
+            self._step()
             self._halt.wait(self.interval)
-        try:
-            for line in self.ft.stop():
-                self._log(line)
-        except Exception as e:
-            self._log(f"full tunnel: cleanup failed, routes may remain until reboot: "
-                      f"{type(e).__name__}: {e}")
-        self._log("full tunnel: off")
+        self._cleanup()
 
     def stop(self, timeout: float = 15.0) -> None:
         self._halt.set()
         self.join(timeout)
+        if not self.is_alive():
+            self._cleanup()
 
 
 # ---- Win32 -------------------------------------------------------------------
@@ -754,13 +1188,67 @@ class Win32(System):
                 "dest", "mask", "policy", "nexthop", "ifindex", "type", "proto",
                 "age", "nexthop_as", "metric1", "metric2", "metric3", "metric4", "metric5")]
 
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", ctypes.c_uint32),
+                ("Data2", ctypes.c_uint16),
+                ("Data3", ctypes.c_uint16),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        class _SOCKADDR_IN6(ctypes.Structure):
+            _fields_ = [
+                ("sin6_family", ctypes.c_uint16),
+                ("sin6_port", ctypes.c_uint16),
+                ("sin6_flowinfo", ctypes.c_uint32),
+                ("sin6_addr", ctypes.c_ubyte * 16),
+                ("sin6_scope_id", ctypes.c_uint32),
+            ]
+
+        class _IP_ADDRESS_PREFIX6(ctypes.Structure):
+            _fields_ = [
+                ("Ipv6", _SOCKADDR_IN6),
+                ("PrefixLength", ctypes.c_uint8),
+                ("_pad", ctypes.c_uint8 * 3),
+            ]
+
+        class _MIB_IPFORWARD_ROW2(ctypes.Structure):
+            _fields_ = [
+                ("InterfaceLuid", ctypes.c_uint64),
+                ("InterfaceIndex", ctypes.c_uint32),
+                ("DestinationPrefix", _IP_ADDRESS_PREFIX6),
+                ("NextHop", _SOCKADDR_IN6),
+                ("SitePrefixLength", ctypes.c_uint8),
+                ("_pad1", ctypes.c_uint8 * 3),
+                ("ValidLifetime", ctypes.c_uint32),
+                ("PreferredLifetime", ctypes.c_uint32),
+                ("Metric", ctypes.c_uint32),
+                ("Protocol", ctypes.c_uint32),
+                ("Loopback", ctypes.c_uint8),
+                ("AutoconfigureAddress", ctypes.c_uint8),
+                ("Publish", ctypes.c_uint8),
+                ("Immortal", ctypes.c_uint8),
+                ("Age", ctypes.c_uint32),
+                ("Origin", ctypes.c_uint32),
+            ]
+
         self._ct = ctypes
         self._ROW = _ROW
+        self._GUID = _GUID
+        self._ROW6 = _MIB_IPFORWARD_ROW2
         self._lib = ctypes.WinDLL("iphlpapi.dll")
         self._lib.ConvertInterfaceAliasToLuid.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_uint64)]
         self._lib.ConvertInterfaceAliasToLuid.restype = ctypes.c_ulong
         self._lib.ConvertInterfaceLuidToIndex.argtypes = [ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_ulong)]
         self._lib.ConvertInterfaceLuidToIndex.restype = ctypes.c_ulong
+        self._lib.ConvertInterfaceIndexToLuid.argtypes = [ctypes.c_ulong, ctypes.POINTER(ctypes.c_uint64)]
+        self._lib.ConvertInterfaceIndexToLuid.restype = ctypes.c_ulong
+        self._lib.ConvertInterfaceLuidToGuid.argtypes = [ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(_GUID)]
+        self._lib.ConvertInterfaceLuidToGuid.restype = ctypes.c_ulong
+        self._lib.GetIpForwardTable2.argtypes = [ctypes.c_uint16, ctypes.POINTER(ctypes.c_void_p)]
+        self._lib.GetIpForwardTable2.restype = ctypes.c_ulong
+        self._lib.FreeMibTable.argtypes = [ctypes.c_void_p]
+        self._lib.FreeMibTable.restype = None
 
     @staticmethod
     def _addr(v: int) -> ipaddress.IPv4Address:
@@ -798,12 +1286,63 @@ class Win32(System):
                 return int(idx.value)
         return None
 
+    def adapter_guid(self, ifindex: int) -> str:
+        ct = self._ct
+        luid = ct.c_uint64(0)
+        if self._lib.ConvertInterfaceIndexToLuid(int(ifindex), ct.byref(luid)) != 0 or not luid.value:
+            return ""
+        g = self._GUID()
+        if self._lib.ConvertInterfaceLuidToGuid(ct.byref(luid), ct.byref(g)) != 0:
+            return ""
+        b = bytes(g.Data4)
+        return (
+            f"{{{g.Data1:08X}-{g.Data2:04X}-{g.Data3:04X}-"
+            f"{b[0]:02X}{b[1]:02X}-{b[2]:02X}{b[3]:02X}{b[4]:02X}{b[5]:02X}{b[6]:02X}{b[7]:02X}}}"
+        )
+
+    def route_table_v6(self) -> list[Route]:
+        ct = self._ct
+        tbl = ct.c_void_p()
+        if self._lib.GetIpForwardTable2(socket.AF_INET6, ct.byref(tbl)) != 0 or not tbl.value:
+            return []
+        try:
+            count = ct.cast(tbl.value, ct.POINTER(ct.c_uint32))[0]
+            rows = ct.cast(tbl.value + 8, ct.POINTER(self._ROW6))
+            out: list[Route] = []
+            for i in range(count):
+                r = rows[i]
+                if r.DestinationPrefix.Ipv6.sin6_family != socket.AF_INET6:
+                    continue
+                plen = int(r.DestinationPrefix.PrefixLength)
+                if plen < 0 or plen > 128:
+                    continue
+                try:
+                    dst = ipaddress.IPv6Address(bytes(r.DestinationPrefix.Ipv6.sin6_addr))
+                    net = ipaddress.IPv6Network(f"{dst}/{plen}", strict=False)
+                    nh = ipaddress.IPv6Address(bytes(r.NextHop.sin6_addr))
+                except ValueError:
+                    continue
+                out.append(Route(str(net), str(nh), int(r.InterfaceIndex), int(r.Metric)))
+            return out
+        finally:
+            self._lib.FreeMibTable(tbl)
+
+    def local_nets_v6(self) -> list[str]:
+        out: list[str] = []
+        for r in self.route_table_v6():
+            if r.nexthop != "::" or r.prefix in SPLIT_V6 or r.prefix == DEFAULT_V6:
+                continue
+            n = routes.parse_subnet(r.prefix)
+            if n is not None and n.version == 6 and 0 < n.prefixlen < 128 and not n.is_link_local and not n.is_multicast:
+                out.append(str(n))
+        return sorted(set(out))
+
     def local_nets(self) -> list[str]:
         return routes.local_ipv4_subnets()
 
     def resolve(self, host: str) -> list[str]:
-        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
-        return sorted({i[4][0] for i in infos})
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        return sorted({i[4][0].split("%", 1)[0] for i in infos})
 
     def add_route(self, prefix: str, ifindex: int, via: str = "") -> tuple[bool, str]:
         try:
@@ -848,6 +1387,22 @@ class Win32(System):
         return routes._netsh([
             "interface", "ipv4", "delete", "dnsservers", f"name={int(ifindex)}", "all",
         ])
+
+    def clear_tunnel_dns_by_id(self, alias: str = "", guid: str = "") -> tuple[bool, str]:
+        ok, msg = True, ""
+        if alias:
+            ok, msg = routes._netsh([
+                "interface", "ipv4", "delete", "dnsservers", f"name={alias}", "all",
+            ])
+        if guid and os.name == "nt":
+            try:
+                import winreg
+                key_path = rf"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{guid}"
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE) as k:
+                    winreg.SetValueEx(k, "NameServer", 0, winreg.REG_SZ, "")
+            except OSError:
+                pass
+        return ok, msg
 
 
 def system() -> System | None:

@@ -106,7 +106,7 @@ class TransportsPanel(QtWidgets.QWidget):
             self.spins[name] = sb
             of.addRow(name + ":", sb)
         self.magic = QtWidgets.QLineEdit()
-        self.magic.setPlaceholderText("0 = off, N, or MIN-MAX")
+        self.magic.setPlaceholderText("0 = off, or 32-bit int 1..2147483647")
         self.magic.setToolTip(tr.SPEC_BY_NAME["ObfsInitMagicHeader"].help)
         self.magic.textChanged.connect(self.changed)
         of.addRow("ObfsInitMagicHeader:", self.magic)
@@ -116,8 +116,8 @@ class TransportsPanel(QtWidgets.QWidget):
         https = QtWidgets.QGroupBox("HTTPS front (carrier 'https'; the decoy on the listen port is default-on)")
         hf = QtWidgets.QFormLayout(https)
         self.https_port = QtWidgets.QSpinBox()
-        self.https_port.setRange(0, 65535)
-        self.https_port.setSpecialValueText("0 (off)")
+        self.https_port.setRange(-1, 65535)
+        self.https_port.setSpecialValueText("auto (off on leaf / 443 on server)")
         self.https_port.setToolTip(tr.SPEC_BY_NAME["HttpsPort"].help)
         self.https_port.valueChanged.connect(self.changed)
         hf.addRow("HttpsPort:", self.https_port)
@@ -144,8 +144,8 @@ class TransportsPanel(QtWidgets.QWidget):
         quic = QtWidgets.QGroupBox("QUIC (carrier 'quic'; certificate shared with the HTTPS front)")
         qf = QtWidgets.QFormLayout(quic)
         self.quic_port = QtWidgets.QSpinBox()
-        self.quic_port.setRange(0, 65535)
-        self.quic_port.setSpecialValueText("0 (off)")
+        self.quic_port.setRange(-1, 65535)
+        self.quic_port.setSpecialValueText("auto (off on leaf / 443 on server)")
         self.quic_port.setToolTip(tr.SPEC_BY_NAME["QuicPort"].help)
         self.quic_port.valueChanged.connect(self.changed)
         qf.addRow("QuicPort:", self.quic_port)
@@ -208,11 +208,13 @@ class TransportsPanel(QtWidgets.QWidget):
             v = eff[name]
             sb.setValue(int(v) if str(v).lstrip("-").isdigit() else sb.minimum())
         self.magic.setText(str(eff["ObfsInitMagicHeader"]))
-        self.https_port.setValue(int(eff["HttpsPort"]) if str(eff["HttpsPort"]).isdigit() else 443)
+        hp_raw = str(eff["HttpsPort"]).strip()
+        self.https_port.setValue(int(hp_raw) if hp_raw.isdigit() else -1)
         for name, le in self.paths.items():
             le.setText(str(eff[name] or ""))
         self.decoy_upstream.setText(str(eff["HttpsDecoyUpstream"] or ""))
-        self.quic_port.setValue(int(eff["QuicPort"]) if str(eff["QuicPort"]).isdigit() else 443)
+        qp_raw = str(eff["QuicPort"]).strip()
+        self.quic_port.setValue(int(qp_raw) if qp_raw.isdigit() else -1)
         self.blockSignals(False)
 
     def preferred(self) -> list[str]:
@@ -236,6 +238,8 @@ class TransportsPanel(QtWidgets.QWidget):
 
     def edited(self) -> dict[str, Any]:
         """Every transport option as the widgets show it now."""
+        hp_val = self.https_port.value()
+        qp_val = self.quic_port.value()
         out: dict[str, Any] = {
             "Transports": [c for c in tr.CARRIERS if self.accept[c].isChecked()],
             "PreferredTransports": self.preferred(),
@@ -243,9 +247,9 @@ class TransportsPanel(QtWidgets.QWidget):
             "MultipathConnections": self.multipath_conns.value(),
             "MultipathInterface": self.multipath_iface.text().strip(),
             "ObfsInitMagicHeader": self.magic.text().strip() or "0",
-            "HttpsPort": self.https_port.value(),
+            "HttpsPort": "" if hp_val < 0 else hp_val,
             "HttpsDecoyUpstream": self.decoy_upstream.text().strip(),
-            "QuicPort": self.quic_port.value(),
+            "QuicPort": "" if qp_val < 0 else qp_val,
         }
         for name, sb in self.spins.items():
             out[name] = sb.value()

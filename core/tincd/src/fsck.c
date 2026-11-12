@@ -32,6 +32,7 @@
 #include "xalloc.h"
 #include "keys.h"
 #include "conf.h"
+#include "yamlconf.h"
 
 static const char *exe_name = NULL;
 
@@ -66,7 +67,13 @@ again:
 
 static void print_tinc_cmd(const char *format, ...) ATTR_FORMAT(printf, 1, 2);
 static void print_tinc_cmd(const char *format, ...) {
-	if(confbasegiven) {
+	if(yamlconf_path) {
+		if(netname && !netname_defaulted) {
+			fprintf(stderr, "%s -c %s -n %s ", exe_name, yamlconf_path, netname);
+		} else {
+			fprintf(stderr, "%s -c %s ", exe_name, yamlconf_path);
+		}
+	} else if(confbasegiven) {
 		fprintf(stderr, "%s -c %s ", exe_name, confbase);
 	} else if(netname) {
 		fprintf(stderr, "%s -n %s ", exe_name, netname);
@@ -228,6 +235,38 @@ static void check_key_file_mode(const char *fname) {
 #endif // HAVE_WINDOWS
 
 static char *read_node_name(void) {
+	if(yamlconf_path) {
+		if(access(yamlconf_path, R_OK) != 0) {
+			fprintf(stderr, "ERROR: cannot read %s: %s\n", yamlconf_path, strerror(errno));
+
+			if(errno == ENOENT) {
+				fprintf(stderr, "No tinc configuration found. Create a new one with:\n\n");
+				print_tinc_cmd("init");
+				return NULL;
+			}
+
+			if(errno == EACCES && getuid() != 0) {
+				fprintf(stderr, "You are currently not running tinc as root. Use sudo?\n");
+			}
+
+			return NULL;
+		}
+
+		if(!yamlconf_global && !yamlconf_reload_global()) {
+			fprintf(stderr, "ERROR: cannot parse YAML configuration %s\n", yamlconf_path);
+			return NULL;
+		}
+
+		if(!yamlconf_has_network(yamlconf_global, netname)) {
+			fprintf(stderr, "ERROR: network `%s' not found in %s\n", netname ? netname : "(default)", yamlconf_path);
+			fprintf(stderr, "Create a new one with:\n\n");
+			print_tinc_cmd("init");
+			return NULL;
+		}
+
+		return get_my_name(true);
+	}
+
 	if(access(tinc_conf, R_OK) == 0) {
 		return get_my_name(true);
 	}
@@ -261,14 +300,127 @@ static bool build_host_conf_path(char *fname, const size_t len) {
 		return false;
 	}
 
-	snprintf(fname, len, "%s/hosts/%s", confbase, name);
+	if(yamlconf_path) {
+		snprintf(fname, len, "%s", name);
+	} else {
+		snprintf(fname, len, "%s/hosts/%s", confbase, name);
+	}
+
 	free(name);
 	return true;
+}
+
+static char *filter_out_host_key_lines(const char *old_text, const char *var_name, const char *pem_begin, const char *pem_end) {
+	if(!old_text || !*old_text) {
+		return xstrdup("");
+	}
+
+	size_t cap = strlen(old_text) + 64;
+	size_t len = 0;
+	char *out = xmalloc(cap);
+	out[0] = 0;
+
+	bool in_pem = false;
+	const char *p = old_text;
+
+	while(*p) {
+		const char *eol = strchr(p, '\n');
+		size_t llen = eol ? (size_t)(eol - p) : strlen(p);
+		const char *trimmed = p;
+
+		while(trimmed < p + llen && (*trimmed == ' ' || *trimmed == '\t')) {
+			trimmed++;
+		}
+
+		size_t tlen = (size_t)((p + llen) - trimmed);
+		bool drop = false;
+
+		if(in_pem) {
+			drop = true;
+
+			if(pem_end && tlen >= strlen(pem_end) && !strncmp(trimmed, pem_end, strlen(pem_end))) {
+				in_pem = false;
+			}
+		} else if(pem_begin && tlen >= strlen(pem_begin) && !strncmp(trimmed, pem_begin, strlen(pem_begin))) {
+			in_pem = true;
+			drop = true;
+		} else if(var_name) {
+			size_t vlen = strlen(var_name);
+
+			if(tlen >= vlen && !strncasecmp(trimmed, var_name, vlen) &&
+			                (tlen == vlen || trimmed[vlen] == ' ' || trimmed[vlen] == '\t' || trimmed[vlen] == '=')) {
+				drop = true;
+			}
+		}
+
+		if(!drop) {
+			if(len + llen + 2 > cap) {
+				cap = (len + llen + 2) * 2;
+				out = xrealloc(out, cap);
+			}
+
+			memcpy(out + len, p, llen);
+			len += llen;
+			out[len++] = '\n';
+			out[len] = 0;
+		}
+
+		p = eol ? eol + 1 : p + llen;
+	}
+
+	return out;
 }
 
 static bool ask_fix_ec_public_key(const char *fname, ecdsa_t *ec_priv) {
 	if(!ask_fix()) {
 		return true;
+	}
+
+	if(yamlconf_path) {
+		char *b64 = ecdsa_get_base64_public_key(ec_priv);
+
+		if(!b64) {
+			fprintf(stderr, "ERROR: could not serialise Ed25519 public key.\n");
+			return false;
+		}
+
+		if(!yamlconf_lock(yamlconf_path)) {
+			fprintf(stderr, "ERROR: could not lock %s: %s\n", yamlconf_path, strerror(errno));
+			free(b64);
+			return false;
+		}
+
+		if(!yamlconf_reload_global() || !yamlconf_global) {
+			yamlconf_unlock();
+			free(b64);
+			fprintf(stderr, "ERROR: could not reload %s\n", yamlconf_path);
+			return false;
+		}
+
+		char *old_text = yamlconf_host_text(yamlconf_global, netname, fname);
+		char *filtered = filter_out_host_key_lines(old_text, "Ed25519PublicKey",
+		                 "-----BEGIN ED25519 PUBLIC KEY-----",
+		                 "-----END ED25519 PUBLIC KEY-----");
+		free(old_text);
+
+		char *updated = NULL;
+		xasprintf(&updated, "%sEd25519PublicKey = %s\n", filtered, b64);
+		free(filtered);
+		free(b64);
+
+		yamlconf_host_set_text(yamlconf_global, netname, fname, updated);
+		free(updated);
+
+		bool saved = yamlconf_save(yamlconf_global, yamlconf_path);
+		yamlconf_unlock();
+
+		if(saved) {
+			fprintf(stderr, "Wrote Ed25519 public key to %s [hosts.%s].\n", yamlconf_path, fname);
+		} else {
+			fprintf(stderr, "ERROR: could not write Ed25519 public key to %s: %s\n", yamlconf_path, strerror(errno));
+		}
+
+		return saved;
 	}
 
 	if(!disable_old_keys(fname, "public Ed25519 key")) {
@@ -298,6 +450,74 @@ static bool ask_fix_ec_public_key(const char *fname, ecdsa_t *ec_priv) {
 static bool ask_fix_rsa_public_key(const char *fname, rsa_t *rsa_priv) {
 	if(!ask_fix()) {
 		return true;
+	}
+
+	if(yamlconf_path) {
+		FILE *mem = yamlconf_content_fp("");
+
+		if(!mem) {
+			fprintf(stderr, "ERROR: could not allocate temporary stream for RSA key.\n");
+			return false;
+		}
+
+		if(!rsa_write_pem_public_key(rsa_priv, mem)) {
+			fclose(mem);
+			fprintf(stderr, "ERROR: could not serialise RSA public key.\n");
+			return false;
+		}
+
+		fflush(mem);
+		long sz = ftell(mem);
+
+		if(sz <= 0 || fseek(mem, 0, SEEK_SET) != 0) {
+			fclose(mem);
+			return false;
+		}
+
+		char *pem = xmalloc((size_t)sz + 1);
+		size_t rd = fread(pem, 1, (size_t)sz, mem);
+		pem[rd] = 0;
+		fclose(mem);
+
+		if(!yamlconf_lock(yamlconf_path)) {
+			fprintf(stderr, "ERROR: could not lock %s: %s\n", yamlconf_path, strerror(errno));
+			free(pem);
+			return false;
+		}
+
+		if(!yamlconf_reload_global() || !yamlconf_global) {
+			yamlconf_unlock();
+			free(pem);
+			fprintf(stderr, "ERROR: could not reload %s\n", yamlconf_path);
+			return false;
+		}
+
+		char *old_text = yamlconf_host_text(yamlconf_global, netname, fname);
+		char *tf1 = filter_out_host_key_lines(old_text, "PublicKey",
+		                                      "-----BEGIN RSA PUBLIC KEY-----",
+		                                      "-----END RSA PUBLIC KEY-----");
+		free(old_text);
+		char *filtered = filter_out_host_key_lines(tf1, "PublicKeyFile", NULL, NULL);
+		free(tf1);
+
+		char *updated = NULL;
+		xasprintf(&updated, "%s%s", filtered, pem);
+		free(filtered);
+		free(pem);
+
+		yamlconf_host_set_text(yamlconf_global, netname, fname, updated);
+		free(updated);
+
+		bool saved = yamlconf_save(yamlconf_global, yamlconf_path);
+		yamlconf_unlock();
+
+		if(saved) {
+			fprintf(stderr, "Wrote RSA public key to %s [hosts.%s].\n", yamlconf_path, fname);
+		} else {
+			fprintf(stderr, "ERROR: could not write RSA public key to %s: %s\n", yamlconf_path, strerror(errno));
+		}
+
+		return saved;
 	}
 
 	if(!disable_old_keys(fname, "public RSA key")) {
@@ -538,7 +758,11 @@ static bool check_public_keys(splay_tree_t *config, const char *name, rsa_t *rsa
 		return false;
 	}
 
-	if(access(host_file, R_OK)) {
+	if(yamlconf_path) {
+		if(!yamlconf_global || !yamlconf_has_host(yamlconf_global, netname, name)) {
+			fprintf(stderr, "WARNING: cannot read host %s from %s\n", name, yamlconf_path);
+		}
+	} else if(access(host_file, R_OK)) {
 		fprintf(stderr, "WARNING: cannot read %s\n", host_file);
 	}
 
@@ -562,11 +786,18 @@ static bool check_public_keys(splay_tree_t *config, const char *name, rsa_t *rsa
 
 static bool check_keypairs(splay_tree_t *config, const char *name) {
 	// Check private keys.
+	if(yamlconf_path) {
+		check_key_file_mode(yamlconf_path);
+	}
+
 	char *priv_keyfile = NULL;
 	ecdsa_t *ec_priv = read_ecdsa_private_key(config, &priv_keyfile);
 
 	if(priv_keyfile) {
-		check_key_file_mode(priv_keyfile);
+		if(!yamlconf_path) {
+			check_key_file_mode(priv_keyfile);
+		}
+
 		free(priv_keyfile);
 		priv_keyfile = NULL;
 	}
@@ -582,7 +813,10 @@ static bool check_keypairs(splay_tree_t *config, const char *name) {
 	rsa_t *rsa_priv = read_rsa_private_key(config, &priv_keyfile);
 
 	if(priv_keyfile) {
-		check_key_file_mode(priv_keyfile);
+		if(!yamlconf_path) {
+			check_key_file_mode(priv_keyfile);
+		}
+
 		free(priv_keyfile);
 	}
 
@@ -604,8 +838,63 @@ static bool check_keypairs(splay_tree_t *config, const char *name) {
 	return success;
 }
 
+static void check_yaml_scripts(void) {
+	if(!yamlconf_global) {
+		return;
+	}
+
+	const char **scripts = yamlconf_script_names(yamlconf_global, netname);
+
+	if(!scripts) {
+		return;
+	}
+
+	for(size_t i = 0; scripts[i]; i++) {
+		const char *sname = scripts[i];
+
+		if(strtailcmp(sname, "-up") && strtailcmp(sname, "-down")) {
+			fprintf(stderr, "WARNING: Unknown script scripts.%s found in %s.\n", sname, yamlconf_path);
+			continue;
+		}
+
+		char prefix[PATH_MAX];
+		strncpy(prefix, sname, sizeof(prefix) - 1);
+		prefix[sizeof(prefix) - 1] = 0;
+		char *dash = strrchr(prefix, '-');
+
+		if(!dash) {
+			continue;
+		}
+
+		*dash = 0;
+
+		if(strcmp(prefix, "tinc") && strcmp(prefix, "host") && strcmp(prefix, "subnet") &&
+		                !yamlconf_has_host(yamlconf_global, netname, prefix)) {
+			fprintf(stderr, "WARNING: Unknown script scripts.%s found in %s.\n", sname, yamlconf_path);
+		}
+	}
+
+	free(scripts);
+}
+
 static void check_config_variables(const char *host_dir) {
 	check_conffile(NULL, true);
+
+	if(yamlconf_path && yamlconf_global) {
+		const char **hosts = yamlconf_host_names(yamlconf_global, netname);
+
+		if(hosts) {
+			for(size_t i = 0; hosts[i]; i++) {
+				if(check_id(hosts[i])) {
+					check_conffile(hosts[i], false);
+				}
+			}
+
+			free(hosts);
+		}
+
+		return;
+	}
 
 	DIR *dir = opendir(host_dir);
 
@@ -621,13 +910,27 @@ static void check_config_variables(const char *host_dir) {
 }
 
 static bool check_scripts_and_configs(void) {
+	char host_dir[PATH_MAX];
+	snprintf(host_dir, sizeof(host_dir), "%s" SLASH "hosts", confbase);
+
+	if(yamlconf_path) {
+		if(access(confbase, F_OK) == 0 && !check_script_confdir()) {
+			return false;
+		}
+
+		if(access(host_dir, F_OK) == 0 && !check_script_hostdir(host_dir)) {
+			return false;
+		}
+
+		check_yaml_scripts();
+		check_config_variables(host_dir);
+		return true;
+	}
+
 	// Check whether scripts are executable.
 	if(!check_script_confdir()) {
 		return false;
 	}
-
-	char host_dir[PATH_MAX];
-	snprintf(host_dir, sizeof(host_dir), "%s" SLASH "hosts", confbase);
 
 	if(!check_script_hostdir(host_dir)) {
 		return false;

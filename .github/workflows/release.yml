@@ -176,16 +176,12 @@ jobs:
         if: needs.meta.outputs.publish == 'true'
         run: |
           set -eu
-          for img in "${{ needs.meta.outputs.core }}:${{ needs.meta.outputs.version }}-${{ matrix.arch }}" \
-                     "${{ needs.meta.outputs.core }}:latest-${{ matrix.arch }}"; do
-            docker tag tincstack/core:rel "$img"
-            docker push "$img"
-          done
-          for img in "${{ needs.meta.outputs.node }}:${{ needs.meta.outputs.version }}-${{ matrix.arch }}" \
-                     "${{ needs.meta.outputs.node }}:latest-${{ matrix.arch }}"; do
-            docker tag tincstack/node:rel "$img"
-            docker push "$img"
-          done
+          core_tag="${{ needs.meta.outputs.core }}:${{ needs.meta.outputs.version }}-${{ matrix.arch }}"
+          node_tag="${{ needs.meta.outputs.node }}:${{ needs.meta.outputs.version }}-${{ matrix.arch }}"
+          docker tag tincstack/core:rel "$core_tag"
+          docker push "$core_tag"
+          docker tag tincstack/node:rel "$node_tag"
+          docker push "$node_tag"
 
   manifests:
     name: multi-arch manifests (ghcr.io)
@@ -208,12 +204,10 @@ jobs:
           node="${{ needs.meta.outputs.node }}"
           docker buildx imagetools create \
             -t "${core}:${ver}" \
-            -t "${core}:latest" \
             "${core}:${ver}-amd64" \
             "${core}:${ver}-arm64"
           docker buildx imagetools create \
             -t "${node}:${ver}" \
-            -t "${node}:latest" \
             "${node}:${ver}-amd64" \
             "${node}:${ver}-arm64"
 
@@ -484,6 +478,31 @@ jobs:
           name: android
           path: assets
 
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote latest tags on stable release
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          CORE_IMAGE: ${{ needs.meta.outputs.core }}
+          NODE_IMAGE: ${{ needs.meta.outputs.node }}
+        run: |
+          set -eu
+          if printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            for img in "$CORE_IMAGE" "$NODE_IMAGE"; do
+              docker buildx imagetools create -t "${img}:latest-amd64" "${img}:${VERSION}-amd64"
+              docker buildx imagetools create -t "${img}:latest-arm64" "${img}:${VERSION}-arm64"
+              docker buildx imagetools create -t "${img}:latest" \
+                "${img}:${VERSION}-amd64" \
+                "${img}:${VERSION}-arm64"
+            done
+          else
+            echo "::notice::$VERSION is a pre-release tag; skipping :latest promotion"
+          fi
+
       - name: Create the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -559,10 +578,17 @@ jobs:
 
           SHA256SUMS: $sums_sha
           EOF
+          prerelease_args=()
+          case "$VERSION" in
+          *-*)
+            prerelease_args=(--prerelease)
+            ;;
+          esac
           gh release create "$VERSION" \
             --repo "$REPO" \
             --title "tincstack $VERSION" \
             --notes-file notes.md \
+            "${prerelease_args[@]}" \
             "tincstack-$VERSION-source.tar.gz" \
             SHA256SUMS \
             "${built[@]}" 2>&1 | tee gh.log || {

@@ -84,10 +84,11 @@ sockaddr_t str2sockaddr(const char *address, const char *port) {
 	err = getaddrinfo(address, port, &hint, &ai);
 
 	if(err || !ai) {
-		logger(DEBUG_SCARY_THINGS, LOG_DEBUG, "Unknown type address %s port %s", address, port);
+		logger(DEBUG_SCARY_THINGS, LOG_DEBUG, "Unknown type address %s port %s",
+		       address ? address : "(null)", port ? port : "(null)");
 		result.sa.sa_family = AF_UNKNOWN;
-		result.unknown.address = xstrdup(address);
-		result.unknown.port = xstrdup(port);
+		result.unknown.address = xstrdup(address ? address : "");
+		result.unknown.port = xstrdup(port ? port : "");
 		return result;
 	}
 
@@ -115,11 +116,11 @@ void sockaddr2str(const sockaddr_t *sa, char **addrstr, char **portstr) {
 		return;
 	} else if(sa->sa.sa_family == AF_UNKNOWN) {
 		if(addrstr) {
-			*addrstr = xstrdup(sa->unknown.address);
+			*addrstr = xstrdup(sa->unknown.address ? sa->unknown.address : "unknown");
 		}
 
 		if(portstr) {
-			*portstr = xstrdup(sa->unknown.port);
+			*portstr = xstrdup(sa->unknown.port ? sa->unknown.port : "unknown");
 		}
 
 		return;
@@ -157,7 +158,9 @@ char *sockaddr2hostname(const sockaddr_t *sa) {
 		xasprintf(&str, "unspec port unspec");
 		return str;
 	} else if(sa->sa.sa_family == AF_UNKNOWN) {
-		xasprintf(&str, "%s port %s", sa->unknown.address, sa->unknown.port);
+		xasprintf(&str, "%s port %s",
+		          sa->unknown.address ? sa->unknown.address : "unknown",
+		          sa->unknown.port ? sa->unknown.port : "unknown");
 		return str;
 	}
 
@@ -176,7 +179,7 @@ char *sockaddr2hostname(const sockaddr_t *sa) {
 int sockaddrcmp_noport(const sockaddr_t *a, const sockaddr_t *b) {
 	int result;
 
-	result = a->sa.sa_family - b->sa.sa_family;
+	result = (a->sa.sa_family > b->sa.sa_family) - (a->sa.sa_family < b->sa.sa_family);
 
 	if(result) {
 		return result;
@@ -187,7 +190,8 @@ int sockaddrcmp_noport(const sockaddr_t *a, const sockaddr_t *b) {
 		return 0;
 
 	case AF_UNKNOWN:
-		return strcmp(a->unknown.address, b->unknown.address);
+		return strcmp(a->unknown.address ? a->unknown.address : "",
+		              b->unknown.address ? b->unknown.address : "");
 
 	case AF_INET:
 		return memcmp(&a->in.sin_addr, &b->in.sin_addr, sizeof(a->in.sin_addr));
@@ -205,7 +209,7 @@ int sockaddrcmp_noport(const sockaddr_t *a, const sockaddr_t *b) {
 int sockaddrcmp(const sockaddr_t *a, const sockaddr_t *b) {
 	int result;
 
-	result = a->sa.sa_family - b->sa.sa_family;
+	result = (a->sa.sa_family > b->sa.sa_family) - (a->sa.sa_family < b->sa.sa_family);
 
 	if(result) {
 		return result;
@@ -216,13 +220,15 @@ int sockaddrcmp(const sockaddr_t *a, const sockaddr_t *b) {
 		return 0;
 
 	case AF_UNKNOWN:
-		result = strcmp(a->unknown.address, b->unknown.address);
+		result = strcmp(a->unknown.address ? a->unknown.address : "",
+		                b->unknown.address ? b->unknown.address : "");
 
 		if(result) {
 			return result;
 		}
 
-		return strcmp(a->unknown.port, b->unknown.port);
+		return strcmp(a->unknown.port ? a->unknown.port : "",
+		              b->unknown.port ? b->unknown.port : "");
 
 	case AF_INET:
 		result = memcmp(&a->in.sin_addr, &b->in.sin_addr, sizeof(a->in.sin_addr));
@@ -250,30 +256,44 @@ int sockaddrcmp(const sockaddr_t *a, const sockaddr_t *b) {
 }
 
 void sockaddrcpy(sockaddr_t *a, const sockaddr_t *b) {
+	if(!a || !b || a == b) {
+		return;
+	}
+
 	if(b->sa.sa_family != AF_UNKNOWN) {
 		*a = *b;
 	} else {
+		memset(a, 0, sizeof(*a));
 		a->unknown.family = AF_UNKNOWN;
-		a->unknown.address = xstrdup(b->unknown.address);
-		a->unknown.port = xstrdup(b->unknown.port);
+		a->unknown.address = b->unknown.address ? xstrdup(b->unknown.address) : NULL;
+		a->unknown.port = b->unknown.port ? xstrdup(b->unknown.port) : NULL;
 	}
 }
 
 void sockaddrfree(sockaddr_t *a) {
-	if(a->sa.sa_family == AF_UNKNOWN) {
+	if(a && a->sa.sa_family == AF_UNKNOWN) {
 		free(a->unknown.address);
 		free(a->unknown.port);
+		a->unknown.address = NULL;
+		a->unknown.port = NULL;
+		a->unknown.family = AF_UNSPEC;
 	}
 }
 
 void sockaddrunmap(sockaddr_t *sa) {
 	if(sa->sa.sa_family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&sa->in6.sin6_addr)) {
-		sa->in.sin_addr.s_addr = ((uint32_t *) & sa->in6.sin6_addr)[3];
+		uint32_t v4;
+		memcpy(&v4, &sa->in6.sin6_addr.s6_addr[12], sizeof(v4));
+		sa->in.sin_addr.s_addr = v4;
 		sa->in.sin_family = AF_INET;
 	}
 }
 
 void sockaddr_setport(sockaddr_t *sa, const char *port) {
+	if(!sa || !port) {
+		return;
+	}
+
 	uint16_t portnum = htons(atoi(port));
 
 	if(!portnum) {
@@ -292,6 +312,7 @@ void sockaddr_setport(sockaddr_t *sa, const char *port) {
 	case AF_UNKNOWN:
 		free(sa->unknown.port);
 		sa->unknown.port = xstrdup(port);
+		break;
 
 	default:
 		return;

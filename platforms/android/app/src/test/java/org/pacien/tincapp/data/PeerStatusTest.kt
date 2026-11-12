@@ -104,4 +104,18 @@ class PeerStatusTest {
     assertNull(p.via)
     assertEquals(0.450, p.rttMs!!, 1e-9)
   }
+
+  @Test
+  fun secondaryPlainConnectionDoesNotOverwriteStealthTransport() {
+    val multiConn = listOf(
+      "node_a at 10.47.31.10 port 443 options 700000c socket 5 status 5 transport quic",
+      "node_a at 10.47.31.10 port 655 options 700000c socket 6 status 5 transport plain",
+      "node_b at 10.47.31.11 port 655 options 700000c socket 7 status 5 transport plain",
+      "node_b at 10.47.31.11 port 443 options 700000c socket 8 status 5 transport https",
+    )
+    assertEquals(
+      mapOf("node_a" to "quic", "node_b" to "https"),
+      PeerStatus.parseConnections(multiConn),
+    )
+  }
 }

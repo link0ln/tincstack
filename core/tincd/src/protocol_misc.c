@@ -88,7 +88,7 @@ bool pong_h(connection_t *c, const char *request) {
 }
 
 bool random_early_drop(connection_t *c) {
-	if(!c) {
+	if(!c || maxoutbufsize <= 0) {
 		return false;
 	}
 
@@ -111,11 +111,22 @@ bool random_early_drop(connection_t *c) {
 /* Sending and receiving packets via TCP */
 
 bool send_tcppacket(connection_t *c, const vpn_packet_t *packet) {
+	if(!c || !packet || packet->len == 0) {
+		return false;
+	}
+
 	/* If there already is a lot of data in the outbuf buffer, discard this packet.
 	   We use a very simple Random Early Drop algorithm. */
 
 	if(random_early_drop(c)) {
 		return true;
+	}
+
+	/* Ensure both the text header and binary payload fit atomically before writing
+	   the header so MaxOutputBufferSize can never desynchronize stream framing. */
+	if(!connection_can_buffer(c, (size_t)packet->len + 128U)) {
+		c->status.remove_unused = true;
+		return false;
 	}
 
 	if(!send_request(c, "%d %d", PACKET, packet->len)) {
@@ -142,11 +153,21 @@ bool tcppacket_h(connection_t *c, const char *request) {
 }
 
 bool send_sptps_tcppacket(connection_t *c, const void *packet, size_t len) {
+	if(!c || (!packet && len)) {
+		return false;
+	}
+
 	/* If there already is a lot of data in the outbuf buffer, discard this packet.
 	   We use a very simple Random Early Drop algorithm. */
 
 	if(random_early_drop(c)) {
 		return true;
+	}
+
+	/* Ensure both the SPTPS_PACKET header and raw payload fit atomically. */
+	if(!connection_can_buffer(c, len + 128U)) {
+		c->status.remove_unused = true;
+		return false;
 	}
 
 	if(!send_request(c, "%d %lu", SPTPS_PACKET, (unsigned long)len)) {
@@ -291,6 +312,8 @@ bool udp_info_h(connection_t *c, const char *request) {
 		if(sockaddrcmp(&from_addr, &from->address)) {
 			update_node_udp(from, &from_addr);
 		}
+
+		sockaddrfree(&from_addr);
 	}
 
 	node_t *to = lookup_node(to_name);
@@ -298,6 +321,20 @@ bool udp_info_h(connection_t *c, const char *request) {
 	if(!to) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got %s from %s (%s) destination %s which does not exist in our connection list", "UDP_INFO", c->name, c->hostname, to_name);
 		return true;
+	}
+
+	if(to != myself) {
+		node_t *relay_hop = (to->via == myself) ? to->nexthop : to->via;
+
+		if(!relay_hop || relay_hop == myself || relay_hop == from ||
+		                !relay_hop->nexthop || relay_hop->nexthop == from ||
+		                relay_hop->nexthop->connection == c) {
+			return true;
+		}
+
+		if(!allow_transitive_forward(from->name, to->name, UDP_INFO, request)) {
+			return true;
+		}
 	}
 
 	/* Send our own data (which could be what we just received) up the chain. */
@@ -472,6 +509,16 @@ bool mtu_info_h(connection_t *c, const char *request) {
 	if(!to) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got %s from %s (%s) destination %s which does not exist in our connection list", "MTU_INFO", c->name, c->hostname, to_name);
 		return true;
+	}
+
+	if(to != myself) {
+		if(!to->nexthop || to->nexthop == myself || to->nexthop == from || to->nexthop->connection == c) {
+			return true;
+		}
+
+		if(!allow_transitive_forward(from->name, to->name, MTU_INFO, request)) {
+			return true;
+		}
 	}
 
 	/* Continue passing the MTU value (or a better one if we have it) up the chain. */
