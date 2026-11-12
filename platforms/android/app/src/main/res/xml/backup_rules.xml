@@ -21,11 +21,11 @@
 <full-backup-content>
     <include
         domain="file"
-        path="./"
+        path="."
         requireFlags="clientSideEncryption" />
     <include
         domain="file"
-        path="./"
+        path="."
         requireFlags="deviceToDeviceTransfer" />
     <exclude
         domain="file"
@@ -39,10 +39,10 @@
 
     <include
         domain="external"
-        path="./"
+        path="."
         requireFlags="clientSideEncryption" />
     <include
         domain="external"
-        path="./"
+        path="."
         requireFlags="deviceToDeviceTransfer" />
 </full-backup-content>

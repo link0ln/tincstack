@@ -521,15 +521,8 @@ def lock_down_acl(path: str, elevated: bool | None = None) -> None:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
         wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
-    advapi32.GetSecurityDescriptorDacl.argtypes = [
-        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(wintypes.BOOL)]
-    advapi32.GetSecurityDescriptorOwner.argtypes = [
-        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
-    advapi32.SetNamedSecurityInfoW.argtypes = [
-        wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    advapi32.SetFileSecurityW.restype = wintypes.BOOL
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
 
     tok_elev, sid = _token_identity()
@@ -539,22 +532,17 @@ def lock_down_acl(path: str, elevated: bool | None = None) -> None:
     if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(sd), None):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
-        present, defaulted = wintypes.BOOL(False), wintypes.BOOL(False)
-        dacl = ctypes.c_void_p()
-        owner = ctypes.c_void_p()
-        owner_defaulted = wintypes.BOOL(False)
-        advapi32.GetSecurityDescriptorDacl(sd, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted))
-        advapi32.GetSecurityDescriptorOwner(sd, ctypes.byref(owner), ctypes.byref(owner_defaulted))
-        se_file_object = 1
-        sec_info = 0x00000004 | 0x80000000  # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
-        if use_elev and owner.value:
-            sec_info |= 0x00000001  # OWNER_SECURITY_INFORMATION
-        rc = advapi32.SetNamedSecurityInfoW(
-            path, se_file_object, sec_info,
-            owner if (use_elev and owner.value) else None, None, dacl, None,
-        )
-        if rc != 0:
-            raise ctypes.WinError(rc)
+        # `sd` built from `D:P...` already carries `SE_DACL_PROTECTED`; using
+        # `SetFileSecurityW(DACL_SECURITY_INFORMATION)` applies the exact
+        # security descriptor via `NtSetSecurityObject` on both native Windows
+        # and Wine (where `SetNamedSecurityInfoW` synthesizes a fallback `WD` ACE).
+        dacl_info = 0x00000004
+        if not advapi32.SetFileSecurityW(path, dacl_info, sd):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if use_elev:
+            # Best-effort transfer ownership to Builtin Administrators (`O:BA`)
+            # when `SeRestorePrivilege` is available on native Windows.
+            advapi32.SetFileSecurityW(path, 0x00000001, sd)
     finally:
         kernel32.LocalFree(sd)
 
@@ -663,15 +651,8 @@ def mkdir_private(path: str) -> str:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
         wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
-    advapi32.GetSecurityDescriptorDacl.argtypes = [
-        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(wintypes.BOOL)]
-    advapi32.GetSecurityDescriptorOwner.argtypes = [
-        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
-    advapi32.SetNamedSecurityInfoW.argtypes = [
-        wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    advapi32.SetFileSecurityW.restype = wintypes.BOOL
     kernel32.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p]
     kernel32.CreateDirectoryW.restype = wintypes.BOOL
     kernel32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
@@ -694,22 +675,10 @@ def mkdir_private(path: str) -> str:
             invalid_attrs, attr_dir, attr_reparse = 0xFFFFFFFF, 0x10, 0x400
             if attrs == invalid_attrs or not (attrs & attr_dir) or (attrs & attr_reparse):
                 raise OSError(f"refusing unsafe existing directory: {path}")
-            present, defaulted = wintypes.BOOL(False), wintypes.BOOL(False)
-            dacl = ctypes.c_void_p()
-            owner = ctypes.c_void_p()
-            owner_defaulted = wintypes.BOOL(False)
-            advapi32.GetSecurityDescriptorDacl(sd, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted))
-            advapi32.GetSecurityDescriptorOwner(sd, ctypes.byref(owner), ctypes.byref(owner_defaulted))
-            se_file_object = 1
-            sec_info = 0x00000004 | 0x80000000  # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
-            if elevated and owner.value:
-                sec_info |= 0x00000001  # OWNER_SECURITY_INFORMATION
-            rc = advapi32.SetNamedSecurityInfoW(
-                path, se_file_object, sec_info,
-                owner if (elevated and owner.value) else None, None, dacl, None,
-            )
-            if rc != 0:
-                raise ctypes.WinError(rc)
+            if not advapi32.SetFileSecurityW(path, 0x00000004, sd):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if elevated:
+                advapi32.SetFileSecurityW(path, 0x00000001, sd)
     finally:
         kernel32.LocalFree(sd)
     return path

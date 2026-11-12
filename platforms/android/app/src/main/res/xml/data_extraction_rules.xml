@@ -23,7 +23,7 @@
     <cloud-backup disableIfNoEncryptionCapabilities="true">
         <include
             domain="file"
-            path="./" />
+            path="." />
         <exclude
             domain="file"
             path="networks" />
@@ -35,13 +35,13 @@
             path="diag-events" />
         <include
             domain="external"
-            path="./" />
+            path="." />
     </cloud-backup>
 
     <device-transfer>
         <include
             domain="file"
-            path="./" />
+            path="." />
         <exclude
             domain="file"
             path="networks" />
@@ -53,7 +53,7 @@
             path="diag-events" />
         <include
             domain="external"
-            path="./" />
+            path="." />
     </device-transfer>
 
 </data-extraction-rules>
