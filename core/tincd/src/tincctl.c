@@ -3350,6 +3350,7 @@ const var_t variables[] = {
 	{"Interface", VAR_SERVER},
 	{"InterfaceAddress", VAR_SERVER | VAR_SAFE},
 	{"InterfaceRoute", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
+	{"PersistTun", VAR_SERVER},
 	{"InvitationExpire", VAR_SERVER},
 	{"KeyExpire", VAR_SERVER | VAR_SAFE},
 	{"ListenAddress", VAR_SERVER | VAR_MULTIPLE},

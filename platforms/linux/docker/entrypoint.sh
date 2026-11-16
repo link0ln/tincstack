@@ -39,6 +39,8 @@
 #                   for the https/quic front needs renewing (peers re-pin a
 #                   renewed certificate after SPTPS on their own). 0: off
 #   CERT_RENEW_INTERVAL  seconds between those checks (default 43200 = 12 h)
+#   PERSIST_TUN     boolean (yes/no/1/0): map to options.PersistTun and keep the
+#                   TUN/TAP interface + its kernel routes persistent across restarts
 #
 # PORT: `Port` is a server variable in this core (options.Port, the place
 # zeroconf and join write it); the daemon and `tinc invite` rank it above a
@@ -59,6 +61,7 @@ INVITE=${INVITE:-${CONNECT_TO:-}}
 LOG_LEVEL=${LOG_LEVEL:-1}
 CERT_RENEW=${CERT_RENEW:-1}
 CERT_RENEW_INTERVAL=${CERT_RENEW_INTERVAL:-43200}
+PERSIST_TUN=${PERSIST_TUN:-}
 
 YAML=$CONFIG_DIR/tinc.yaml
 RUNDIR=$CONFIG_DIR/$NETNAME          # the daemon's runtime dir in YAML mode
@@ -298,6 +301,26 @@ elif (( ! fresh )) && env_state_has OBFS_PORT_PUBLIC; then
     env_state_del OBFS_PORT_PUBLIC
 fi
 
+if [[ -n $PERSIST_TUN ]]; then
+    case ${PERSIST_TUN,,} in
+        1|yes|true|on) persist_val=yes ;;
+        0|no|false|off) persist_val=no ;;
+        *)
+            log "invalid PERSIST_TUN '$PERSIST_TUN': expected boolean (yes/no/1/0/true/false)"
+            exit 1
+            ;;
+    esac
+    cli set PersistTun "$persist_val"
+    env_state_add PERSIST_TUN
+    log "options.PersistTun = $persist_val"
+elif (( ! fresh )) && env_state_has PERSIST_TUN; then
+    if [[ -n $(cli get PersistTun 2>/dev/null || true) ]]; then
+        cli del PersistTun >/dev/null 2>&1 || true
+        log "PERSIST_TUN unset: cleared env-managed options.PersistTun"
+    fi
+    env_state_del PERSIST_TUN
+fi
+
 address_args=()
 if [[ -n $PUBLIC_ADDRESS ]]; then
     addr_host=
@@ -366,6 +389,54 @@ set_host_vars() {
 }
 
 [[ -z $name ]] || set_host_vars
+
+ensure_persistent_tun() {
+    local ptun ifn dev_type net_mode if_addr pool prefix
+    ptun=$(cli get PersistTun 2>/dev/null || true)
+    case ${ptun,,} in
+        1|yes|true|on) ;;
+        *) return 0 ;;
+    esac
+    command -v ip >/dev/null 2>&1 || return 0
+
+    ifn=$(cli get Interface 2>/dev/null || true)
+    ifn=${ifn:-$NETNAME}
+    dev_type=$(cli get DeviceType 2>/dev/null || true)
+    net_mode=$(cli get Mode 2>/dev/null || true)
+
+    if ! ip link show dev "$ifn" >/dev/null 2>&1; then
+        if [[ ${dev_type,,} == "tap" ]] || { [[ -z $dev_type ]] && [[ ${net_mode,,} == "switch" || ${net_mode,,} == "hub" ]]; }; then
+            ip tuntap add dev "$ifn" mode tap 2>/dev/null || true
+        else
+            ip tuntap add dev "$ifn" mode tun pi 2>/dev/null || true
+        fi
+    fi
+
+    ip link show dev "$ifn" >/dev/null 2>&1 || return 0
+    sysctl -w "net.ipv4.conf.$ifn.ignore_routes_with_linkdown=0" >/dev/null 2>&1 || true
+
+    if_addr=$(cli get InterfaceAddress 2>/dev/null || true)
+    if [[ -n $if_addr ]]; then
+        if [[ $if_addr != */* && $if_addr != *:* ]]; then
+            pool=$(cli get AddressPool 2>/dev/null || true)
+            prefix=24
+            if [[ $pool == */* ]]; then
+                prefix=${pool##*/}
+            fi
+            if_addr="$if_addr/$prefix"
+        fi
+        ip addr replace "$if_addr" dev "$ifn" 2>/dev/null || true
+    fi
+
+    ip link set "$ifn" txqueuelen 4000 up 2>/dev/null || true
+    if command -v tc >/dev/null 2>&1; then
+        tc qdisc replace dev "$ifn" root fq flow_limit 2000 2>/dev/null || true
+    fi
+    iface=$ifn
+    restore_iface_routes
+}
+
+ensure_persistent_tun
 
 # --- run the daemon; it materialises anything still missing ---------------
 sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608 >/dev/null 2>&1 || true

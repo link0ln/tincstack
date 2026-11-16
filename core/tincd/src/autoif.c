@@ -179,13 +179,32 @@ bool autoif_build_route_cmd(const char *spec, const char *ifname, char *buf, siz
 	}
 
 	const char *cur = spec;
-	char prefix[128];
+	char first[128];
 
-	if(!token_next(&cur, prefix, sizeof(prefix)) || !shell_safe(prefix)) {
+	if(!token_next(&cur, first, sizeof(first)) || !shell_safe(first)) {
 		return false;
 	}
 
-	/* First token must be "default" or an IPv4/IPv6 CIDR/address literal. */
+	char rtype[16] = "";
+	char prefix[128];
+
+	if(!strcasecmp(first, "unreachable")) {
+		snprintf(rtype, sizeof(rtype), "unreachable");
+	} else if(!strcasecmp(first, "blackhole")) {
+		snprintf(rtype, sizeof(rtype), "blackhole");
+	} else if(!strcasecmp(first, "prohibit")) {
+		snprintf(rtype, sizeof(rtype), "prohibit");
+	}
+
+	if(rtype[0]) {
+		if(!token_next(&cur, prefix, sizeof(prefix)) || !shell_safe(prefix)) {
+			return false;
+		}
+	} else {
+		snprintf(prefix, sizeof(prefix), "%s", first);
+	}
+
+	/* First/prefix token must be "default" or an IPv4/IPv6 CIDR/address literal. */
 	if(strcmp(prefix, "default") != 0 && !strchr(prefix, '.') && !strchr(prefix, ':')) {
 		return false;
 	}
@@ -202,6 +221,11 @@ bool autoif_build_route_cmd(const char *spec, const char *ifname, char *buf, siz
 	bool first_extra = true;
 
 	while(token_next(&cur, tok, sizeof(tok))) {
+		/* Fail-closed route types accept only table and metric (no dev/via). */
+		if(rtype[0] && strcasecmp(tok, "table") != 0 && strcasecmp(tok, "metric") != 0) {
+			return false;
+		}
+
 		/* Truncate gracefully check: if next char after token isn't ws or NUL, token_next failed. */
 		if(!strcasecmp(tok, "via")) {
 			if(!token_next(&cur, via, sizeof(via)) || !shell_safe(via) || (!strchr(via, '.') && !strchr(via, ':'))) {
@@ -270,7 +294,9 @@ bool autoif_build_route_cmd(const char *spec, const char *ifname, char *buf, siz
 	}
 
 	size_t off = 0;
-	int w = snprintf(buf + off, buflen - off, "ip route replace %s", prefix);
+	int w = rtype[0]
+	        ? snprintf(buf + off, buflen - off, "ip route replace %s %s", rtype, prefix)
+	        : snprintf(buf + off, buflen - off, "ip route replace %s", prefix);
 
 	if(w < 0 || (size_t)w >= buflen - off) {
 		return false;
@@ -288,13 +314,15 @@ bool autoif_build_route_cmd(const char *spec, const char *ifname, char *buf, siz
 		off += (size_t)w;
 	}
 
-	w = snprintf(buf + off, buflen - off, " dev %s", ifname);
+	if(!rtype[0]) {
+		w = snprintf(buf + off, buflen - off, " dev %s", ifname);
 
-	if(w < 0 || (size_t)w >= buflen - off) {
-		return false;
+		if(w < 0 || (size_t)w >= buflen - off) {
+			return false;
+		}
+
+		off += (size_t)w;
 	}
-
-	off += (size_t)w;
 
 	const struct {
 		const char *key;

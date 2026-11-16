@@ -119,6 +119,16 @@ static bool setup_device(void) {
 
 	logger(DEBUG_ALWAYS, LOG_INFO, "%s is a %s", device, device_info);
 
+	bool persist_tun = false;
+
+	if(get_config_bool(lookup_config(&config_tree, "PersistTun"), &persist_tun) && persist_tun) {
+		if(ioctl(device_fd, TUNSETPERSIST, 1) < 0) {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Could not enable TUNSETPERSIST on %s: %s", iface, strerror(errno));
+		} else {
+			logger(DEBUG_ALWAYS, LOG_INFO, "Enabled persistent tun/tap interface %s", iface);
+		}
+	}
+
 	if(ifr.ifr_flags & IFF_TAP) {
 		struct ifreq ifr_mac = {0};
 

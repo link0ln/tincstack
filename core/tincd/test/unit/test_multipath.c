@@ -1008,12 +1008,23 @@ static void test_autoif_build_route_cmd_policy_tables(void **state) {
 	assert_true(autoif_build_route_cmd("default table main advmss 1200 scope link", "tun0", cmd, sizeof(cmd)));
 	assert_string_equal("ip route replace default dev tun0 table main advmss 1200 scope link", cmd);
 
+	assert_true(autoif_build_route_cmd("unreachable default table 200 metric 4096", "tincstack", cmd, sizeof(cmd)));
+	assert_string_equal("ip route replace unreachable default table 200 metric 4096", cmd);
+
+	assert_true(autoif_build_route_cmd("blackhole 10.99.0.0/16 metric 2000", "tincstack", cmd, sizeof(cmd)));
+	assert_string_equal("ip route replace blackhole 10.99.0.0/16 metric 2000", cmd);
+
+	assert_true(autoif_build_route_cmd("prohibit 8.8.8.8/32", "tincstack", cmd, sizeof(cmd)));
+	assert_string_equal("ip route replace prohibit 8.8.8.8/32", cmd);
+
 	/* Reject shell injection, bad options, out-of-range MTU, foreign dev */
 	assert_false(autoif_build_route_cmd("0.0.0.0/0;reboot", "tincstack", cmd, sizeof(cmd)));
 	assert_false(autoif_build_route_cmd("default via -bad", "tincstack", cmd, sizeof(cmd)));
 	assert_false(autoif_build_route_cmd("default table 240 mtu 100", "tincstack", cmd, sizeof(cmd)));
 	assert_false(autoif_build_route_cmd("default dev eth0", "tincstack", cmd, sizeof(cmd)));
 	assert_false(autoif_build_route_cmd("default bogus_kw 1", "tincstack", cmd, sizeof(cmd)));
+	assert_false(autoif_build_route_cmd("unreachable default via 10.11.0.1", "tincstack", cmd, sizeof(cmd)));
+	assert_false(autoif_build_route_cmd("unreachable default dev tincstack", "tincstack", cmd, sizeof(cmd)));
 }
 
 int main(void) {
