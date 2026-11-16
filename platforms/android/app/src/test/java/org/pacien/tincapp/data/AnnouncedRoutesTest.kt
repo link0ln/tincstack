@@ -170,7 +170,12 @@ class AnnouncedRoutesTest {
       localSubnets = listOf(cidr("192.168.88.0/24")),
     )
     assertTrue(AnnouncedRoutes.isFullTunnelV4(routes))
-    assertTrue(routes.none { r -> AnnouncedRoutes.LAN_BYPASS_V4.any { ex -> AnnouncedRoutes.covers(ex, r) } })
+    val defaultSplitRoutes = routes - cidr("192.168.1.0/24")
+    assertTrue(defaultSplitRoutes.none { r -> AnnouncedRoutes.LAN_BYPASS_V4.any { ex -> AnnouncedRoutes.covers(ex, r) } })
+    assertFalse(routes.any { r -> AnnouncedRoutes.covers(r, cidr("192.168.88.1/32")) })
+    assertFalse(routes.any { r -> AnnouncedRoutes.covers(r, cidr("10.0.0.1/32")) })
+    assertFalse(routes.any { r -> AnnouncedRoutes.covers(r, cidr("172.16.0.1/32")) })
+    assertFalse(routes.any { r -> AnnouncedRoutes.covers(r, cidr("127.0.0.1/32")) })
     assertTrue(routes.any { r -> AnnouncedRoutes.covers(r, cidr("1.1.1.1/32")) })
     assertTrue(routes.any { r -> AnnouncedRoutes.covers(r, cidr("8.8.8.8/32")) })
     assertTrue(routes.contains(cidr("192.168.1.0/24")))
