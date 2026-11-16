@@ -929,7 +929,48 @@ static void test_multipath_auto_pacing_aimd_and_canary(void **state) {
 
 	n->connection = conns[0];
 
+	/* 1) Light burst (< 1.25 MB/s) must never trigger self-throttling backoff */
+	now.tv_sec = 900;
+	multipath_apply_node_tcp_pacing(n, conns[1], 420000U);
+	now.tv_sec = 901;
+	multipath_apply_node_tcp_pacing(n, conns[1], 1500U);
+	conns[1]->tcp_degraded = true;
+	multipath_handle_conn_degraded(n, conns[1]);
+	assert_int_equal(0U, n->auto_pacing_budget_Bps);
+	conns[1]->tcp_degraded = false;
+	conns[1]->peak_tx_Bps = 0;
+	conns[1]->peak_tx_at = 0;
+
+	/* 2) Explicit TcpMaxPacingRate disables auto-pacing unless TcpAutoPacing=yes override is set */
+	n->tcp_max_pacing_rate = 4350000U;
+	n->tcp_auto_pacing_override = 0;
+	assert_false(multipath_node_auto_pacing_enabled(n));
+	now.tv_sec = 910;
+	multipath_apply_node_tcp_pacing(n, conns[2], 3000000U);
+	now.tv_sec = 911;
+	multipath_apply_node_tcp_pacing(n, conns[2], 1500U);
+	conns[2]->tcp_degraded = true;
+	multipath_handle_conn_degraded(n, conns[2]);
+	assert_int_equal(0U, n->auto_pacing_budget_Bps);
+
+	n->tcp_auto_pacing_override = 1;
+	assert_true(multipath_node_auto_pacing_enabled(n));
+	multipath_handle_conn_degraded(n, conns[2]);
+	assert_int_equal(3825000U, n->auto_pacing_budget_Bps);
+
+	/* Reset before standard AIMD + canary probe sequence */
+	n->tcp_max_pacing_rate = 0;
+	n->tcp_auto_pacing_override = 0;
+	n->auto_pacing_budget_Bps = 0;
+	n->auto_pacing_policer_Bps = 0;
+	n->auto_pacing_last_backoff_at = 0;
+	n->auto_pacing_next_probe_at = 0;
+	conns[2]->tcp_degraded = false;
+	conns[2]->peak_tx_Bps = 0;
+	conns[2]->peak_tx_at = 0;
+
 	/* Measure 3.0 MB/s (24 Mbps) peak TX on conns[0] */
+	now.tv_sec = 1000;
 	multipath_apply_node_tcp_pacing(n, conns[0], 3000000U);
 	now.tv_sec = 1001;
 	multipath_apply_node_tcp_pacing(n, conns[0], 1500U);

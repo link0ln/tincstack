@@ -110,15 +110,20 @@ static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) 
 	}
 
 	/* Condition A: standalone TSPU ~0.5-3.5 Mbps policer */
+	uint64_t policed_pacing_ceil = (c->applied_pacing_rate > 0 &&
+	                                (uint64_t)c->applied_pacing_rate * 4ULL < 4000000ULL)
+	                               ? (uint64_t)c->applied_pacing_rate * 4ULL
+	                               : 4000000ULL;
+
 	if(c->tcp_segs_out >= 80 &&
 	                ((c->tcp_segs_out >= 150 && (uint64_t)c->tcp_total_retrans * 40ULL > (uint64_t)c->tcp_segs_out) ||
 	                 (c->tcp_segs_out < 150 && (uint64_t)c->tcp_total_retrans * 28ULL > (uint64_t)c->tcp_segs_out)) &&
 	                c->tcp_cwnd > 0 && c->tcp_cwnd <= 32 &&
-	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps < 4000000ULL) {
+	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps < policed_pacing_ceil) {
 		bool newly = !c->tcp_degraded;
 		c->tcp_degraded = true;
 
-		if(newly) {
+		if(newly && best_pacing_bps < 12000000ULL) {
 			multipath_handle_conn_degraded(c->node, c);
 		}
 
@@ -131,13 +136,7 @@ static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) 
 	                c->tcp_cwnd > 0 && c->tcp_cwnd <= 75 &&
 	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps < 12000000ULL &&
 	                c->tcp_pacing_bps * 4ULL < best_pacing_bps) {
-		bool newly = !c->tcp_degraded;
 		c->tcp_degraded = true;
-
-		if(newly) {
-			multipath_handle_conn_degraded(c->node, c);
-		}
-
 		return true;
 	}
 
@@ -147,13 +146,7 @@ static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) 
 	                c->tcp_cwnd > 0 && c->tcp_cwnd <= 28 &&
 	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps < 3000000ULL &&
 	                c->tcp_pacing_bps * 4ULL < best_pacing_bps) {
-		bool newly = !c->tcp_degraded;
 		c->tcp_degraded = true;
-
-		if(newly) {
-			multipath_handle_conn_degraded(c->node, c);
-		}
-
 		return true;
 	}
 
@@ -161,13 +154,7 @@ static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) 
 	if(best_pacing_bps >= 8000000ULL && c->tcp_segs_out >= 400 &&
 	                (uint64_t)c->tcp_total_retrans * 25ULL > (uint64_t)c->tcp_segs_out * 3ULL &&
 	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps * 3ULL < best_pacing_bps * 2ULL) {
-		bool newly = !c->tcp_degraded;
 		c->tcp_degraded = true;
-
-		if(newly) {
-			multipath_handle_conn_degraded(c->node, c);
-		}
-
 		return true;
 	}
 
@@ -1190,7 +1177,6 @@ void multipath_read_config(void) {
 	multipath_mode = MULTIPATH_FAILOVER;
 	multipath_target_connections = 1;
 	multipath_tcp_max_pacing_rate = 0;
-	multipath_tcp_auto_pacing = true;
 
 	int pacing_Bps = 0;
 
@@ -1198,6 +1184,7 @@ void multipath_read_config(void) {
 		multipath_tcp_max_pacing_rate = (uint32_t)pacing_Bps;
 	}
 
+	multipath_tcp_auto_pacing = (multipath_tcp_max_pacing_rate == 0);
 	get_config_bool(lookup_config(&config_tree, "TcpAutoPacing"), &multipath_tcp_auto_pacing);
 
 	char *mode_str = NULL;
@@ -1527,6 +1514,10 @@ bool multipath_node_auto_pacing_enabled(const node_t *n) {
 		return false;
 	}
 
+	if(n->tcp_max_pacing_rate > 0) {
+		return false;
+	}
+
 	return multipath_tcp_auto_pacing;
 }
 
@@ -1603,13 +1594,7 @@ void multipath_handle_conn_degraded(node_t *n, connection_t *c) {
 	uint32_t recent = conn_recent_tx_Bps(c, cur_sec);
 	uint32_t trigger_rate = c->peak_tx_Bps > recent ? c->peak_tx_Bps : recent;
 
-	/* Avoid death spiral when an idle/low-rate sibling hits ECMP tuple loss while
-	   healthy siblings are absent or if we don't know the pre-collapse TX rate. */
-	if(trigger_rate < 300000U && c->applied_pacing_rate >= 300000U) {
-		trigger_rate = c->applied_pacing_rate;
-	}
-
-	if(trigger_rate < 300000U) {
+	if(trigger_rate < 1250000U) {
 		return;
 	}
 
@@ -1629,7 +1614,8 @@ void multipath_handle_conn_degraded(node_t *n, connection_t *c) {
 	                       : (uint32_t)(((uint64_t)safe_leg * 3ULL) / 2ULL);
 	uint32_t manual_cap = node_manual_pacing_cap(n);
 	uint32_t ceiling = manual_cap > 0 ? manual_cap : 250000000U;
-	cand_budget = clamp_rate_u32(cand_budget, 262144U, ceiling);
+	uint32_t floor_Bps = ceiling < 1500000U ? ceiling : 1500000U;
+	cand_budget = clamp_rate_u32(cand_budget, floor_Bps, ceiling);
 
 	if(n->auto_pacing_budget_Bps == 0 || cand_budget < n->auto_pacing_budget_Bps) {
 		n->auto_pacing_policer_Bps = trigger_rate;
@@ -4110,8 +4096,10 @@ bool control_multipath_h(connection_t *c, const char *request) {
 
 				if(single) {
 					single->tcp_max_pacing_rate = (uint32_t)bps;
+					single->auto_pacing_budget_Bps = 0;
 				} else {
 					multipath_tcp_max_pacing_rate = (uint32_t)bps;
+					multipath_tcp_auto_pacing = (bps == 0);
 				}
 			}
 
