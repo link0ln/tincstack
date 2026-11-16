@@ -711,7 +711,7 @@ static void apply_incoming_udp_endpoint(node_t *n, bool is_probe_req) {
 	   (`update_node_udp` resets `udp_confirmed = false`) until 2-way reachability
 	   on the new address is proven by a probe reply or data packet. Record the
 	   source endpoint so `send_udp_probe_reply()` answers back to `addr`. */
-	if(is_probe_req && n->status.udp_confirmed && sockaddrcmp(addr, &n->address)) {
+	if(is_probe_req && !carrier_datagram_path(n) && n->status.udp_confirmed && n->status.udp_addr_confirmed && sockaddrcmp(addr, &n->address)) {
 		sockaddrfree(&current_probe_reply_addr);
 		sockaddrcpy(&current_probe_reply_addr, addr);
 		current_probe_reply_sock = sock_idx;
@@ -734,7 +734,7 @@ static void apply_incoming_udp_endpoint(node_t *n, bool is_probe_req) {
 	if(sockaddrcmp(addr, &n->address)) {
 		bool upgrade_to_lan = addr_is_lan && !sockaddr_is_private_lan(&n->address);
 
-		if(multipath_mode == MULTIPATH_OFF || !n->status.udp_confirmed || upgrade_to_lan || (now.tv_sec - n->last_udp_rx > pinginterval)) {
+		if(multipath_mode == MULTIPATH_OFF || !n->status.udp_confirmed || !n->status.udp_addr_confirmed || carrier_datagram_path(n) || upgrade_to_lan || (now.tv_sec - n->last_udp_rx > pinginterval)) {
 			update_node_udp(n, addr);
 		}
 	}
@@ -1139,6 +1139,7 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 	   a valid SPTPS key, use SPTPS records so the receiver deduplicates copies
 	   by SPTPS sequence number. */
 	bool has_pool_dgram = (multipath_mode != MULTIPATH_OFF &&
+	                       n->connections.count > 1 &&
 	                       multipath_node_has_datagram_carrier(n) &&
 	                       (origpkt->len - offset <= 1119));
 	bool force_sptps_pool = (multipath_mode == MULTIPATH_REDUNDANT && n->connections.count > 1) || has_pool_dgram;
@@ -1889,10 +1890,20 @@ static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void 
 		for(int i = 0; i < nconns; i++) {
 			size_t excess = 0;
 
-			if(conns[i] && conns[i]->transport && conns[i]->transport->send_datagram &&
-			                conns[i]->transport->send_datagram(conns[i], buf, buflen, &excess)) {
-				ok = true;
-			} else if(conns[i] && send_sptps_tcppacket(conns[i], buf, buflen)) {
+			if(from == myself && to == to->nexthop &&
+			                conns[i] && conns[i]->node == to &&
+			                conns[i]->transport && conns[i]->transport->send_datagram) {
+				memset(buf, 0, sizeof(to->id));
+				bool dgram_ok = conns[i]->transport->send_datagram(conns[i], buf, buflen, &excess);
+				memcpy(buf, &to->id, sizeof(to->id));
+
+				if(dgram_ok) {
+					ok = true;
+					continue;
+				}
+			}
+
+			if(conns[i] && send_sptps_tcppacket(conns[i], buf, buflen)) {
 				ok = true;
 			}
 		}
