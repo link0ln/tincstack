@@ -764,25 +764,27 @@ class TincVpnService : VpnService() {
     }
 
     @Suppress("DEPRECATION")
-    private fun activePhysicalIpv4Subnets(): List<CidrAddress> = try {
-      val cm = instance?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return emptyList()
-      val out = ArrayList<CidrAddress>()
-      for (net in cm.allNetworks) {
-        val caps = cm.getNetworkCapabilities(net) ?: continue
-        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
-        val lp = cm.getLinkProperties(net) ?: continue
-        for (la in lp.linkAddresses) {
-          val addr = la.address
-          val pfx = la.prefixLength
-          if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress && pfx in 16..30) {
-            val host = addr.hostAddress ?: continue
-            AnnouncedRoutes.normalise(CidrAddress(host, pfx))?.let(out::add)
+    private fun activePhysicalIpv4Subnets(): List<CidrAddress> {
+      try {
+        val cm = instance?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return emptyList()
+        val out = ArrayList<CidrAddress>()
+        for (net in cm.allNetworks) {
+          val caps = cm.getNetworkCapabilities(net) ?: continue
+          if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+          val lp = cm.getLinkProperties(net) ?: continue
+          for (la in lp.linkAddresses) {
+            val addr = la.address
+            val pfx = la.prefixLength
+            if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress && pfx in 16..30) {
+              val host = addr.hostAddress ?: continue
+              AnnouncedRoutes.normalise(CidrAddress(host, pfx))?.let(out::add)
+            }
           }
         }
+        return out.distinct()
+      } catch (_: Throwable) {
+        return emptyList()
       }
-      out.distinct()
-    } catch (_: Throwable) {
-      emptyList()
     }
 
     /** Timer thread: ask for a rebuild once a new set of announced routes has been seen twice in a row. */
