@@ -289,6 +289,10 @@
 								layout="@layout/row_item" />
 
 							<include
+								android:id="@+id/routing_row"
+								layout="@layout/row_item" />
+
+							<include
 								android:id="@+id/apps_row"
 								layout="@layout/row_item" />
 
@@ -322,6 +326,10 @@
 
 							<include
 								android:id="@+id/log_row"
+								layout="@layout/row_item" />
+
+							<include
+								android:id="@+id/doctor_row"
 								layout="@layout/row_item" />
 
 							<include

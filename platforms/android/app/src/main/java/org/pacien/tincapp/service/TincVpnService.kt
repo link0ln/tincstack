@@ -27,13 +27,16 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.LocalServerSocket
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import java8.util.concurrent.CompletableFuture
+import java.net.Inet4Address
 import org.pacien.tincapp.BuildConfig
 import org.pacien.tincapp.R
 import org.pacien.tincapp.activities.main.MainActivity
@@ -726,6 +729,7 @@ class TincVpnService : VpnService() {
 
     private fun remembered(netName: String, base: VpnInterfaceConfiguration): List<CidrAddress> =
       AnnouncedRoutes.deserialise(store.getString(STORE_KEY_ROUTES_PREFIX + netName, null))
+        .filter { base.routeDefaultTraffic || !AnnouncedRoutes.isDefaultRoute(it) }
         .filter { r -> base.routes.none { AnnouncedRoutes.covers(it, r) } }
 
     private fun remember(netName: String, routes: List<CidrAddress>) =
@@ -759,6 +763,28 @@ class TincVpnService : VpnService() {
       scheduleRouteCheck(netName, forSession, if (sinceLaunch < ROUTES_FAST_PHASE_MS) ROUTES_FAST_POLL_MS else ROUTES_SLOW_POLL_MS)
     }
 
+    @Suppress("DEPRECATION")
+    private fun activePhysicalIpv4Subnets(): List<CidrAddress> = try {
+      val cm = instance?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return emptyList()
+      val out = ArrayList<CidrAddress>()
+      for (net in cm.allNetworks) {
+        val caps = cm.getNetworkCapabilities(net) ?: continue
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+        val lp = cm.getLinkProperties(net) ?: continue
+        for (la in lp.linkAddresses) {
+          val addr = la.address
+          val pfx = la.prefixLength
+          if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress && pfx in 16..30) {
+            val host = addr.hostAddress ?: continue
+            AnnouncedRoutes.normalise(CidrAddress(host, pfx))?.let(out::add)
+          }
+        }
+      }
+      out.distinct()
+    } catch (_: Throwable) {
+      emptyList()
+    }
+
     /** Timer thread: ask for a rebuild once a new set of announced routes has been seen twice in a row. */
     private fun pollRoutes(netName: String) {
       val base = baseCfg
@@ -785,7 +811,7 @@ class TincVpnService : VpnService() {
         return
       }
       val subnets = AnnouncedRoutes.parse(Tinc.dumpSubnets(netName).get(ROUTES_TIMEOUT_S, TimeUnit.SECONDS))
-      val routes = AnnouncedRoutes.select(subnets, self, reachable, base)
+      val routes = AnnouncedRoutes.select(subnets, self, reachable, base, localSubnets = activePhysicalIpv4Subnets())
       if (routes == announcedRoutes || routes == refusedRoutes) {
         routeCandidate = null
         return
@@ -858,9 +884,11 @@ class TincVpnService : VpnService() {
           baseCfg = newBase
           stanza = newStanza
           refusedRoutes = null
-          val keptAnnounced = announcedRoutes.filter { r ->
-            newBase.routes.none { AnnouncedRoutes.covers(it, r) }
-          }
+          val keptAnnounced = announcedRoutes
+            .filter { newBase.routeDefaultTraffic || !AnnouncedRoutes.isDefaultRoute(it) }
+            .filter { r ->
+              newBase.routes.none { AnnouncedRoutes.covers(it, r) }
+            }
           val curState = synchronized(TincVpnService) { state }
           when (curState) {
             is State.Connected -> {

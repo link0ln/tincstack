@@ -149,5 +149,21 @@ def test_peer_no_direct_read_and_write():
     assert not node.no_direct
 
 
+def test_tcp_pacing_and_exit_node_defaults_diff_and_validation():
+    eff = tr.effective({})
+    assert eff["TcpAutoPacing"] is True
+    assert eff["TcpMaxPacingRate"] == 0
+    assert eff["ExitNode"] == ""
+
+    assert tr.changes({}, {"TcpAutoPacing": True, "TcpMaxPacingRate": 0, "ExitNode": ""}) == {}
+    assert tr.changes({"TcpAutoPacing": "yes"}, {"TcpAutoPacing": True}) == {}
+    assert tr.changes({"ExitNode": "exit_a"}, {"ExitNode": ""}) == {"ExitNode": None}
+
+    assert tr.validate({"TcpAutoPacing": False, "TcpMaxPacingRate": 12_500_000, "ExitNode": "auto"}) == []
+    errs = tr.validate({"TcpMaxPacingRate": -1}) + tr.validate({"TcpMaxPacingRate": 300_000_000})
+    assert len(errs) >= 2
+
+
+
 
 

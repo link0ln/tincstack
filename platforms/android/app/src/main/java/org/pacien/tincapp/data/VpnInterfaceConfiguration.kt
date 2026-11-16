@@ -52,7 +52,10 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
                                      val mtu: Int? = null,
                                      val reconnectOnNetworkChange: Boolean = true,
                                      val disconnectOnScreenOff: Boolean = false,
-                                     val lowPowerMode: Boolean = false) {
+                                     val lowPowerMode: Boolean = false,
+                                     val routeDefaultTraffic: Boolean = true,
+                                     val bypassLan: Boolean = false,
+                                     val exitNode: String? = null) {
   companion object {
     const val KEY_ADDRESSES = "InterfaceAddress"
     const val KEY_ROUTES = "InterfaceRoute"
@@ -67,6 +70,9 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
     const val KEY_RECONNECT_ON_NETWORK_CHANGE = "ReconnectOnNetworkChange"
     const val KEY_DISCONNECT_ON_SCREEN_OFF = "DisconnectOnScreenOff"
     const val KEY_LOW_POWER_MODE = "LowPowerMode"
+    const val KEY_ROUTE_DEFAULT_TRAFFIC = "RouteDefaultTraffic"
+    const val KEY_BYPASS_LAN = "BypassLan"
+    const val KEY_EXIT_NODE = "ExitNode"
 
     private const val KEY_ADDRESS_POOL = "AddressPool"
     private const val HOST_KEY_SUBNET = "Subnet"
@@ -75,7 +81,8 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
     val KEYS = listOf(KEY_ADDRESSES, KEY_ROUTES, KEY_DNS_SERVERS, KEY_SEARCH_DOMAINS,
       KEY_ALLOWED_APPLICATIONS, KEY_DISALLOWED_APPLICATIONS, KEY_ALLOWED_FAMILIES,
       KEY_ALLOW_BYPASS, KEY_BLOCKING, KEY_MTU, KEY_RECONNECT_ON_NETWORK_CHANGE,
-      KEY_DISCONNECT_ON_SCREEN_OFF, KEY_LOW_POWER_MODE)
+      KEY_DISCONNECT_ON_SCREEN_OFF, KEY_LOW_POWER_MODE,
+      KEY_ROUTE_DEFAULT_TRAFFIC, KEY_BYPASS_LAN)
 
     /** From the network's `tinc.yaml`; [netName] is the network directory name (stanza resolved as the daemon does). */
     fun fromTincYaml(f: File, netName: String): VpnInterfaceConfiguration =
@@ -130,7 +137,10 @@ data class VpnInterfaceConfiguration(val addresses: List<CidrAddress> = emptyLis
         yaml.optionValue(net, KEY_MTU)?.trim()?.toInt(),
         TincYaml.asTincBoolean(yaml.optionValue(net, KEY_RECONNECT_ON_NETWORK_CHANGE), true),
         TincYaml.asTincBoolean(yaml.optionValue(net, KEY_DISCONNECT_ON_SCREEN_OFF), false),
-        TincYaml.asTincBoolean(yaml.optionValue(net, KEY_LOW_POWER_MODE), false))
+        TincYaml.asTincBoolean(yaml.optionValue(net, KEY_LOW_POWER_MODE), false),
+        TincYaml.asTincBoolean(yaml.optionValue(net, KEY_ROUTE_DEFAULT_TRAFFIC), true),
+        TincYaml.asTincBoolean(yaml.optionValue(net, KEY_BYPASS_LAN), true),
+        yaml.optionValue(net, KEY_EXIT_NODE)?.trim()?.takeIf { it.isNotEmpty() && !it.equals("auto", ignoreCase = true) })
     }
 
     /** Own `/32` IPv4 `Subnet` host lines (`10.1.0.2/32` or bare `10.1.0.2`) become interface addresses with the IPv4 pool's prefix length. */

@@ -1,5 +1,7 @@
 #include "unittest.h"
+#include "../../src/node.h"
 #include "../../src/subnet.h"
+#include "../../src/xalloc.h"
 
 typedef struct net_str_testcase {
 	const char *text;
@@ -559,6 +561,64 @@ static void test_subnet_weight_overflow_and_clamp(void **state) {
 	free(owner.name);
 }
 
+static void test_exit_node_priority_and_fallback(void **state) {
+	(void)state;
+	init_subnets();
+
+	node_t *peer_a = new_node("peerA");
+	node_t *peer_b = new_node("peerB");
+	peer_a->status.reachable = true;
+	peer_b->status.reachable = true;
+	node_add(peer_a);
+	node_add(peer_b);
+
+	subnet_t *def_a = new_subnet();
+	assert_true(str2net(def_a, "0.0.0.0/0#10"));
+	subnet_add(peer_a, def_a);
+
+	subnet_t *lan_a = new_subnet();
+	assert_true(str2net(lan_a, "192.168.1.0/24#10"));
+	subnet_add(peer_a, lan_a);
+
+	subnet_t *def_b = new_subnet();
+	assert_true(str2net(def_b, "0.0.0.0/0#50"));
+	subnet_add(peer_b, def_b);
+
+	subnet_t *def6_b = new_subnet();
+	assert_true(str2net(def6_b, "::/0#50"));
+	subnet_add(peer_b, def6_b);
+
+	const ipv4_t wan_ip = {{8, 8, 8, 8}};
+	const ipv4_t lan_ip = {{192, 168, 1, 50}};
+	const ipv6_t wan_ip6 = {{0x20, 0x01, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x88}};
+
+	/* Default (preferred_exit_node == NULL): standard splay priority picks def_a (#10 beats #50) */
+	free(preferred_exit_node);
+	preferred_exit_node = NULL;
+	subnet_cache_flush_tables();
+	assert_ptr_equal(peer_a, lookup_subnet_ipv4(&wan_ip)->owner);
+	assert_ptr_equal(peer_a, lookup_subnet_ipv4(&lan_ip)->owner);
+
+	/* Explicit ExitNode = peerB: overrides 0.0.0.0/0 & ::/0, leaves 192.168.1.0/24 untouched */
+	preferred_exit_node = xstrdup("peerB");
+	subnet_cache_flush_tables();
+	assert_ptr_equal(peer_b, lookup_subnet_ipv4(&wan_ip)->owner);
+	assert_ptr_equal(peer_b, lookup_subnet_ipv6(&wan_ip6)->owner);
+	assert_ptr_equal(peer_a, lookup_subnet_ipv4(&lan_ip)->owner);
+
+	/* When preferred ExitNode becomes unreachable: automatic fallback to reachable peerA */
+	peer_b->status.reachable = false;
+	subnet_cache_flush_tables();
+	assert_ptr_equal(peer_a, lookup_subnet_ipv4(&wan_ip)->owner);
+
+	subnet_del(peer_b, def6_b);
+	subnet_del(peer_b, def_b);
+	subnet_del(peer_a, lan_a);
+	subnet_del(peer_a, def_a);
+	exit_subnets();
+	exit_nodes();
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_maskcmp),
@@ -593,6 +653,7 @@ int main(void) {
 		cmocka_unit_test(test_maskcheck_invalid_ipv4),
 		cmocka_unit_test(test_maskcheck_invalid_ipv6),
 		cmocka_unit_test(test_subnet_weight_overflow_and_clamp),
+		cmocka_unit_test(test_exit_node_priority_and_fallback),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -3163,6 +3163,65 @@ bool quic_read_config(void) {
 	return true;
 }
 
+bool quic_get_conn_diag(const struct connection_t *c, uint32_t *rtt_us, uint32_t *min_rtt_us,
+                        uint32_t *cwnd, uint64_t *pacing_bps, uint32_t *pkt_lost, uint32_t *pkt_sent) {
+	if(!c || !c->status.active || !c->transport || c->transport->id != TRANSPORT_QUIC || !c->transport_data) {
+		return false;
+	}
+
+	const quic_session_t *s = (const quic_session_t *)c->transport_data;
+
+	if(s->dead || !s->conn || !ngtcp2_conn_get_handshake_completed(s->conn)) {
+		return false;
+	}
+
+	ngtcp2_conn_info ci;
+	memset(&ci, 0, sizeof(ci));
+	ngtcp2_conn_get_conn_info2(s->conn, &ci);
+
+	uint64_t srtt_us64 = ci.smoothed_rtt > 0 && ci.smoothed_rtt < 10000000000ULL ? ci.smoothed_rtt / 1000ULL : 0ULL;
+	uint64_t mrtt_us64 = ci.min_rtt > 0 && ci.min_rtt < 10000000000ULL ? ci.min_rtt / 1000ULL : srtt_us64;
+	uint64_t cwnd_segs = ci.cwnd > 0 ? (ci.cwnd / 1200ULL) : 0ULL;
+
+	if(ci.cwnd > 0 && cwnd_segs == 0) {
+		cwnd_segs = 1;
+	}
+
+	uint64_t pbps = 0;
+
+	if(ci.smoothed_rtt > 0 && ci.smoothed_rtt < 10000000000ULL && ci.cwnd > 0) {
+		/* Estimate BDP-implied pacing rate: cwnd * 8 bits / srtt_sec */
+		uint64_t us = srtt_us64 > 0 ? srtt_us64 : 1000ULL;
+		pbps = (ci.cwnd * 8000000ULL) / us;
+	}
+
+	if(rtt_us) {
+		*rtt_us = srtt_us64 > UINT32_MAX ? UINT32_MAX : (uint32_t)srtt_us64;
+	}
+
+	if(min_rtt_us) {
+		*min_rtt_us = mrtt_us64 > UINT32_MAX ? UINT32_MAX : (uint32_t)mrtt_us64;
+	}
+
+	if(cwnd) {
+		*cwnd = cwnd_segs > UINT32_MAX ? UINT32_MAX : (uint32_t)cwnd_segs;
+	}
+
+	if(pacing_bps) {
+		*pacing_bps = pbps;
+	}
+
+	if(pkt_lost) {
+		*pkt_lost = ci.pkt_lost > UINT32_MAX ? UINT32_MAX : (uint32_t)ci.pkt_lost;
+	}
+
+	if(pkt_sent) {
+		*pkt_sent = ci.pkt_sent > UINT32_MAX ? UINT32_MAX : (uint32_t)ci.pkt_sent;
+	}
+
+	return true;
+}
+
 void quic_exit(void) {
 	if(!quic_ready) {
 		return;

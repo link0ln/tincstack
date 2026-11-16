@@ -62,10 +62,71 @@ CERT_RENEW_INTERVAL=${CERT_RENEW_INTERVAL:-43200}
 
 YAML=$CONFIG_DIR/tinc.yaml
 RUNDIR=$CONFIG_DIR/$NETNAME          # the daemon's runtime dir in YAML mode
+SAVED_ROUTES_V4=$RUNDIR/.saved-routes.v4
 READY_TIMEOUT=${READY_TIMEOUT:-60}   # seconds to wait for the control socket
+ROUTE_SNAPSHOT_INTERVAL=${ROUTE_SNAPSHOT_INTERVAL:-60}
 
 log() { printf 'entrypoint: %s\n' "$*" >&2; }
 cli() { tinc -n "$NETNAME" -c "$YAML" "$@"; }
+
+snapshot_iface_routes() {
+    local dev=${iface:-}
+    [[ -n $dev ]] || return 0
+    command -v ip >/dev/null 2>&1 || return 0
+    ip link show dev "$dev" >/dev/null 2>&1 || return 0
+
+    local tmp=$SAVED_ROUTES_V4.tmp
+    : >"$tmp"
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        case $line in
+            local\ *|broadcast\ *|multicast\ *|anycast\ *) continue ;;
+            *" table local "*|*" table local") continue ;;
+            *" proto kernel "*|*" proto kernel") continue ;;
+        esac
+        printf '%s\n' "$line" >>"$tmp"
+    done < <(ip -4 route show table all dev "$dev" 2>/dev/null || true)
+
+    if [[ -s $tmp ]]; then
+        mv -f "$tmp" "$SAVED_ROUTES_V4"
+    else
+        rm -f "$tmp"
+    fi
+}
+
+restore_iface_routes() {
+    local dev=${iface:-}
+    [[ -n $dev && -s $SAVED_ROUTES_V4 ]] || return 0
+    command -v ip >/dev/null 2>&1 || return 0
+    ip link show dev "$dev" >/dev/null 2>&1 || return 0
+
+    local restored=0 line bad=0
+    local -a words
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        read -r -a words <<<"$line"
+        (( ${#words[@]} > 0 )) || continue
+        bad=0
+        local w has_dev=0
+        for w in "${words[@]}"; do
+            if [[ ! $w =~ ^[A-Za-z0-9.:/_-]+$ ]]; then
+                bad=1
+                break
+            fi
+            [[ $w == "dev" ]] && has_dev=1
+        done
+        (( bad == 0 )) || continue
+        if (( has_dev )); then
+            ip -4 route replace "${words[@]}" 2>/dev/null && restored=$((restored + 1)) || true
+        else
+            ip -4 route replace "${words[@]}" dev "$dev" 2>/dev/null && restored=$((restored + 1)) || true
+        fi
+    done <"$SAVED_ROUTES_V4"
+
+    if (( restored > 0 )); then
+        log "restored $restored saved IPv4 route(s) for $dev"
+    fi
+}
 
 if [[ ! -e /dev/net/tun ]]; then
     mkdir -p /dev/net
@@ -345,6 +406,8 @@ ip link set "$iface" txqueuelen 4000 2>/dev/null || true
 if command -v tc >/dev/null 2>&1; then
     tc qdisc replace dev "$iface" root fq flow_limit 2000 2>/dev/null || true
 fi
+restore_iface_routes
+snapshot_iface_routes
 
 # --- choices that needed the materialised identity -------------------------
 if [[ -z $name ]]; then
@@ -411,22 +474,47 @@ if [[ ! $CERT_RENEW_INTERVAL =~ ^-?[0-9]+$ ]]; then
     exit 1
 fi
 
+route_snapshot_loop() {
+    local sleep_pid=""
+    trap '
+        [[ -z $sleep_pid ]] || kill -TERM "$sleep_pid" 2>/dev/null || true
+        [[ -z $sleep_pid ]] || wait "$sleep_pid" 2>/dev/null || true
+        exit 0
+    ' TERM INT
+    while true; do
+        sleep "$ROUTE_SNAPSHOT_INTERVAL" &
+        sleep_pid=$!
+        wait "$sleep_pid" || break
+        sleep_pid=""
+        kill -0 "$daemon" 2>/dev/null || break
+        snapshot_iface_routes
+    done
+}
+
+if [[ $ROUTE_SNAPSHOT_INTERVAL =~ ^[0-9]+$ ]] && (( 10#$ROUTE_SNAPSHOT_INTERVAL > 0 )); then
+    route_snapshot_loop &
+    route_saver=$!
+fi
+
 if [[ $CERT_RENEW != 0 ]]; then
     if (( 10#$CERT_RENEW_INTERVAL > 0 )); then
         renew_loop &
         renewer=$!
-        trap 'kill -TERM "$daemon" "$renewer" 2>/dev/null || true' TERM INT
     else
         log "CERT_RENEW_INTERVAL=$CERT_RENEW_INTERVAL <= 0: background certificate renewal disabled"
     fi
 fi
 
+trap 'snapshot_iface_routes; kill -TERM "$daemon" "${renewer:-}" "${route_saver:-}" 2>/dev/null || true' TERM INT
+
 rc=0
 while kill -0 "$daemon" 2>/dev/null; do
     wait "$daemon" && rc=0 || rc=$?
 done
-if [[ -n ${renewer:-} ]]; then
-    kill -TERM "$renewer" 2>/dev/null || true
-    wait "$renewer" 2>/dev/null || true
-fi
+for bg_pid in "${renewer:-}" "${route_saver:-}"; do
+    if [[ -n $bg_pid ]]; then
+        kill -TERM "$bg_pid" 2>/dev/null || true
+        wait "$bg_pid" 2>/dev/null || true
+    fi
+done
 exit "$rc"

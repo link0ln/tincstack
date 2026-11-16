@@ -2103,7 +2103,21 @@ static int cmd_multipath(int argc, char *argv[]) {
 		return 0;
 	}
 
-	fprintf(stderr, "Usage: multipath [status | detail | recycle [peer|all] [slow|all] | mode <mode> [conns] | uplink add|del ...]\n");
+	if(!strcasecmp(subcmd, "pacing")) {
+		char argbuf[256];
+
+		if(argc >= 4) {
+			snprintf(argbuf, sizeof(argbuf), "pacing %s %s", argv[2], argv[3]);
+		} else if(argc == 3) {
+			snprintf(argbuf, sizeof(argbuf), "pacing %s", argv[2]);
+		} else {
+			snprintf(argbuf, sizeof(argbuf), "pacing all");
+		}
+
+		return query_multipath_stream(argbuf, NULL, NULL, "pacing");
+	}
+
+	fprintf(stderr, "Usage: multipath [status | detail | recycle [peer|all] [slow|all] | pacing [peer|all] [auto|off|reset|<Bps>] | mode <mode> [conns] | uplink add|del ...]\n");
 	return 1;
 }
 
@@ -2147,6 +2161,10 @@ typedef struct doctor_node_t {
 	unsigned long long in_pkts;
 	unsigned long long out_pkts;
 	int primary_uplink;
+	unsigned int tcp_pacing_Bps;
+	int auto_pacing;
+	unsigned int auto_budget_Bps;
+	unsigned int policer_Bps;
 	bool probed;
 	bool probe_ok;
 	double probe_rtt_ms;
@@ -2179,6 +2197,8 @@ typedef struct doctor_conn_t {
 	double pacing_cap_mbps;
 	int slot;
 	int degraded;
+	unsigned int score;
+	int canary;
 } doctor_conn_t;
 
 typedef struct doctor_issue_t {
@@ -2343,6 +2363,10 @@ static void doctor_collect_cb(int rres, const char *rest, void *ctx) {
 		nd->in_pkts = kv_get_ullong(rest, "in_pkts", 0);
 		nd->out_pkts = kv_get_ullong(rest, "out_pkts", 0);
 		nd->primary_uplink = kv_get_int(rest, "primary_uplink", -1);
+		nd->tcp_pacing_Bps = (unsigned int)kv_get_ulong(rest, "tcp_pacing_Bps", 0);
+		nd->auto_pacing = kv_get_int(rest, "auto_pacing", 1);
+		nd->auto_budget_Bps = (unsigned int)kv_get_ulong(rest, "auto_budget_Bps", 0);
+		nd->policer_Bps = (unsigned int)kv_get_ulong(rest, "policer_Bps", 0);
 	} else if(!strcmp(kind, "conn") && rep->conns_n < DOCTOR_MAX_CONNS) {
 		doctor_conn_t *cn = &rep->conns[rep->conns_n++];
 		memset(cn, 0, sizeof(*cn));
@@ -2368,6 +2392,8 @@ static void doctor_collect_cb(int rres, const char *rest, void *ctx) {
 		cn->pacing_cap_mbps = kv_get_double(rest, "pacing_cap_mbps", 0.0);
 		cn->slot = kv_get_int(rest, "slot", -1);
 		cn->degraded = kv_get_int(rest, "degraded", 0);
+		cn->score = (unsigned int)kv_get_ulong(rest, "score", 100);
+		cn->canary = kv_get_int(rest, "canary", 0);
 	}
 }
 
@@ -2926,8 +2952,10 @@ static void doctor_print_json(const doctor_report_t *rep) {
 		       nd->conns, nd->udp_ok ? "true" : "false", nd->udp_rtt_ms, nd->udp_unans, nd->mtu,
 		       nd->tcponly ? "true" : "false");
 		print_json_str(nd->pref);
-		printf(", \"rx_seq\": %lu, \"rx_ok\": %lu, \"in_pkts\": %llu, \"out_pkts\": %llu",
-		       nd->rx_seq, nd->rx_ok, nd->in_pkts, nd->out_pkts);
+		printf(", \"rx_seq\": %lu, \"rx_ok\": %lu, \"in_pkts\": %llu, \"out_pkts\": %llu, \"tcp_pacing_Bps\": %u, \"auto_pacing\": %s, \"auto_budget_Bps\": %u, \"policer_Bps\": %u",
+		       nd->rx_seq, nd->rx_ok, nd->in_pkts, nd->out_pkts,
+		       nd->tcp_pacing_Bps, nd->auto_pacing ? "true" : "false",
+		       nd->auto_budget_Bps, nd->policer_Bps);
 
 		if(nd->probed) {
 			printf(", \"probe_ok\": %s, \"probe_rtt_ms\": %.3f, \"probe_mtu1280_ok\": %s",
@@ -2952,12 +2980,13 @@ static void doctor_print_json(const doctor_report_t *rep) {
 		print_json_str(cn->carrier);
 		printf(", \"ep\": ");
 		print_json_str(cn->ep);
-		printf(", \"active\": %s, \"verified\": %s, \"uplink\": %d, \"age_s\": %ld, \"last_ping_s\": %ld, \"outbuf\": %lu, \"txbuf\": %lu, \"rtt_ms\": %.1f, \"min_rtt_ms\": %.1f, \"cwnd\": %u, \"retrans\": %u, \"segs_out\": %u, \"pacing_mbps\": %.2f, \"pacing_cap_mbps\": %.2f, \"slot\": %d, \"degraded\": %s}%s\n",
+		printf(", \"active\": %s, \"verified\": %s, \"uplink\": %d, \"age_s\": %ld, \"last_ping_s\": %ld, \"outbuf\": %lu, \"txbuf\": %lu, \"rtt_ms\": %.1f, \"min_rtt_ms\": %.1f, \"cwnd\": %u, \"retrans\": %u, \"segs_out\": %u, \"pacing_mbps\": %.2f, \"pacing_cap_mbps\": %.2f, \"slot\": %d, \"degraded\": %s, \"score\": %u, \"canary\": %s}%s\n",
 		       cn->active ? "true" : "false",
 		       cn->verified ? "true" : "false",
 		       cn->uplink, cn->age_s, cn->last_ping_s, cn->outbuf, cn->txbuf,
 		       cn->rtt_ms, cn->min_rtt_ms, cn->cwnd, cn->retrans, cn->segs_out, cn->pacing_mbps,
 		       cn->pacing_cap_mbps, cn->slot, cn->degraded ? "true" : "false",
+		       cn->score, cn->canary ? "true" : "false",
 		       (i + 1 < rep->conns_n) ? "," : "");
 	}
 
@@ -3031,12 +3060,14 @@ static void doctor_print_text(const doctor_report_t *rep) {
 				snprintf(pacing_buf, sizeof(pacing_buf), "%.1fMbps", cn->pacing_mbps);
 			}
 
-			printf("    %-7s %-3s carrier=%-6s ep=%-22s rtt=%.1f/%.1fms cwnd=%-3u retrans=%u/%-6u pacing=%s obuf=%lu/%lu ping=%lds slot=%d%s\n",
+			printf("    %-7s %-3s carrier=%-6s ep=%-22s rtt=%.1f/%.1fms cwnd=%-3u retrans=%u/%-6u pacing=%s obuf=%lu/%lu ping=%lds slot=%d score=%u%s%s\n",
 			       cn->role, cn->dir, cn->carrier, cn->ep,
 			       cn->rtt_ms, cn->min_rtt_ms, cn->cwnd,
 			       cn->retrans, cn->segs_out, pacing_buf,
 			       cn->outbuf, cn->txbuf, cn->last_ping_s,
-			       cn->slot, cn->degraded ? " [DEGRADED]" : "");
+			       cn->slot, cn->score,
+			       cn->canary ? " [CANARY]" : "",
+			       cn->degraded ? " [DEGRADED]" : "");
 		}
 	}
 
@@ -3309,6 +3340,7 @@ const var_t variables[] = {
 	{"WintunInterface", VAR_SERVER},
 	{"DirectOnly", VAR_SERVER | VAR_SAFE},
 	{"Ed25519PrivateKeyFile", VAR_SERVER},
+	{"ExitNode", VAR_SERVER | VAR_SAFE},
 	{"ExperimentalProtocol", VAR_SERVER},
 	{"Forwarding", VAR_SERVER},
 	{"FWMark", VAR_SERVER},
@@ -3417,6 +3449,7 @@ const var_t variables[] = {
 	{"PublicKey", VAR_HOST | VAR_OBSOLETE},
 	{"PublicKeyFile", VAR_SERVER | VAR_HOST | VAR_OBSOLETE},
 	{"Subnet", VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
+	{"TcpAutoPacing", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"TcpMaxPacingRate", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"TCPOnly", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"TlsFingerprint", VAR_HOST | VAR_SAFE},

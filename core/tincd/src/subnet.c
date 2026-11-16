@@ -35,6 +35,7 @@
 
 /* lists type of subnet */
 static uint32_t hash_seed;
+char *preferred_exit_node = NULL;
 splay_tree_t subnet_tree = {
 	.compare = (splay_compare_t) subnet_compare,
 	.delete = (splay_action_t) free_subnet,
@@ -140,6 +141,8 @@ void init_subnets(void) {
 }
 
 void exit_subnets(void) {
+	free(preferred_exit_node);
+	preferred_exit_node = NULL;
 	splay_empty_tree(&subnet_tree);
 	subnet_cache_flush_tables();
 }
@@ -289,6 +292,19 @@ subnet_t *lookup_subnet_ipv4(const ipv4_t *address) {
 
 	// Cache the result
 
+	if(r && preferred_exit_node && *preferred_exit_node && r->net.ipv4.prefixlength == 0) {
+		node_t *exit_n = lookup_node(preferred_exit_node);
+
+		if(exit_n && exit_n != myself && exit_n->status.reachable) {
+			for splay_each(subnet_t, p, &exit_n->subnet_tree) {
+				if(p && p->type == SUBNET_IPV4 && p->net.ipv4.prefixlength == 0) {
+					r = p;
+					break;
+				}
+			}
+		}
+	}
+
 	if(r) {
 		hash_insert(ipv4_t, &ipv4_cache, address, r);
 	}
@@ -326,6 +342,19 @@ subnet_t *lookup_subnet_ipv6(const ipv6_t *address) {
 	}
 
 	// Cache the result
+
+	if(r && preferred_exit_node && *preferred_exit_node && r->net.ipv6.prefixlength == 0) {
+		node_t *exit_n = lookup_node(preferred_exit_node);
+
+		if(exit_n && exit_n != myself && exit_n->status.reachable) {
+			for splay_each(subnet_t, p, &exit_n->subnet_tree) {
+				if(p && p->type == SUBNET_IPV6 && p->net.ipv6.prefixlength == 0) {
+					r = p;
+					break;
+				}
+			}
+		}
+	}
 
 	if(r) {
 		hash_insert(ipv6_t, &ipv6_cache, address, r);

@@ -1010,3 +1010,121 @@ def test_diag_enabled_persistence_and_primary_vpn_ip_selection(tmp_path):
     # Simultaneous full_tunnel on vpn2 is refused while vpn1 has full_tunnel set (M-WIN-02)
     ok_ft, msg_ft, _ = srv.default_action_handler("vpn2", "full_tunnel", {"peer": "gw2", "enable": True})
     assert not ok_ft and "vpn1" in msg_ft
+
+
+def test_doctor_api_and_v055_controls(tmp_path):
+    yaml_path = str(tmp_path / "tinc.yaml")
+    yaml_config.save_text(
+        yaml_path,
+        textwrap.dedent("""\
+            networks:
+              vpn1:
+                options:
+                  Name: book
+                  Ifconfig: 10.200.0.2/24
+                hosts:
+                  book: |
+                    Subnet = 10.200.0.2/32
+                  gw1: |
+                    Subnet = 0.0.0.0/0
+        """),
+    )
+    app_cfg = yaml_config.load(yaml_path)
+    calls = []
+
+    def fake_runner(cmd, timeout):
+        calls.append(list(cmd))
+        if "doctor" in cmd:
+            return (
+                0,
+                json.dumps({
+                    "status": "HEALTHY" if "--fix" not in cmd else "FIXED",
+                    "multipath_mode": "flowhash",
+                    "connections": [
+                        {
+                            "peer": "gw1",
+                            "role": "latency",
+                            "carrier": "quic",
+                            "ep": "203.0.113.10:444",
+                            "score": 96,
+                            "rtt_ms": 18.4,
+                            "min_rtt_ms": 17.9,
+                            "pacing_mbps": 0.0,
+                            "pacing_cap_mbps": 0.0,
+                            "active": True,
+                            "verified": True,
+                            "canary": False,
+                            "degraded": False,
+                        }
+                    ],
+                    "issues": [],
+                }),
+                "",
+            )
+        return 0, "ok", ""
+
+    tc = TincControl(tinc_exe="tinc", yaml_path=yaml_path, runner=fake_runner)
+    col = diagnostics.TelemetryCollector(str(tmp_path))
+    prober = diagnostics.ActiveProber(tc, lambda: app_cfg, str(tmp_path))
+    srv = diagnostics.DiagWebServer(str(tmp_path), tc, col, prober, lambda: app_cfg, runtime=None)
+
+    port = _free_port()
+    srv.start(port)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        pwd = srv.get_password()
+        hdrs = {
+            "Authorization": f"Bearer {pwd}",
+            "X-Diag-CSRF": "1",
+            "Content-Type": "application/json",
+        }
+        req_doc = urllib.request.Request(f"http://127.0.0.1:{port}/api/doctor?net=vpn1&probe=1", headers=hdrs)
+        with opener.open(req_doc, timeout=5) as resp:
+            doc = json.loads(resp.read().decode("utf-8"))
+        assert doc["status"] == "HEALTHY"
+        assert doc["connections"][0]["score"] == 96
+        assert any("doctor" in c and "--probe" in c for c in calls)
+
+        req_fix = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/doctor/fix",
+            data=json.dumps({"net": "vpn1"}).encode("utf-8"),
+            headers=hdrs,
+            method="POST",
+        )
+        with opener.open(req_fix, timeout=5) as resp:
+            doc_fix = json.loads(resp.read().decode("utf-8"))
+        assert doc_fix["status"] == "FIXED"
+        assert any("doctor" in c and "--fix" in c for c in calls)
+
+        ok_rec, _, _ = srv.default_action_handler("vpn1", "multipath_recycle", {"peer": "gw1", "mode": "slow"})
+        assert ok_rec
+        assert any(c[-4:] == ["multipath", "recycle", "gw1", "slow"] for c in calls)
+
+        ok_pac, _, extra_pac = srv.default_action_handler(
+            "vpn1", "set_pacing", {"peer": "all", "auto_pacing": False, "max_pacing_rate": 5_000_000}
+        )
+        assert ok_pac and extra_pac["tcp_max_pacing_rate"] == 5_000_000
+        assert srv.build_config("vpn1")["tcp_auto_pacing"] is False
+        assert srv.build_config("vpn1")["tcp_max_pacing_rate"] == 5_000_000
+        assert srv.build_overview("vpn1")["tcp_max_pacing_rate"] == 5_000_000
+
+        ok_save, _, _ = srv.default_action_handler(
+            "vpn1",
+            "save_settings",
+            {
+                "transports": "quic, https",
+                "preferred_transports": "quic",
+                "full_tunnel": "auto",
+                "bypass_lan": False,
+                "tcp_auto_pacing": True,
+                "tcp_max_pacing_rate": 0,
+            },
+        )
+        assert ok_save
+        saved_nc = yaml_config.load(yaml_path).net("vpn1")
+        assert saved_nc.full_tunnel == "auto"
+        assert saved_nc.bypass_lan is False
+        assert srv.build_config("vpn1")["bypass_lan"] is False
+    finally:
+        srv.stop(wait=True, persist=False)
+

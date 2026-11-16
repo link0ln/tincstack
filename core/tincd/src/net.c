@@ -209,6 +209,14 @@ void terminate_connection(connection_t *c, bool report) {
 
 	/* Release any carrier-private state (e.g. the single-flow session) and,
 	   if this was a single-flow link, send a CLOSE before the socket goes. */
+	if(c->status.multipath_sub && c->status.we_dialled && !activated && c->transport) {
+		node_t *dn = c->node ? c->node : (c->name ? lookup_node(c->name) : NULL);
+
+		if(dn) {
+			multipath_record_dial_result(dn, c, false);
+		}
+	}
+
 	transport_connection_close(c);
 
 	if(c->status.no_tarpit) {
@@ -665,6 +673,8 @@ int reload_configuration(void) {
 #ifdef HAVE_LINUX
 	if(yamlconf_path && !script_exists("tinc-up") && geteuid() == 0) {
 		autoif_up();
+	} else {
+		autoif_ensure_routes();
 	}
 #endif
 

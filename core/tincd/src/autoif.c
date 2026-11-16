@@ -129,6 +129,229 @@ static bool run(const char *cmd) {
 }
 #endif
 
+static bool digits_only(const char *s) {
+	if(!s || !*s) {
+		return false;
+	}
+
+	for(; *s; s++) {
+		if(!isdigit((uint8_t)*s)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static bool token_next(const char **cursor, char *out, size_t outlen) {
+	const char *p = *cursor;
+
+	while(*p == ' ' || *p == '\t') {
+		p++;
+	}
+
+	if(!*p) {
+		*cursor = p;
+		return false;
+	}
+
+	const char *end = p;
+
+	while(*end && *end != ' ' && *end != '\t') {
+		end++;
+	}
+
+	size_t len = (size_t)(end - p);
+
+	if(len == 0 || len >= outlen) {
+		return false;
+	}
+
+	memcpy(out, p, len);
+	out[len] = '\0';
+	*cursor = end;
+	return true;
+}
+
+bool autoif_build_route_cmd(const char *spec, const char *ifname, char *buf, size_t buflen) {
+	if(!spec || !*spec || !ifname || !*ifname || !shell_safe(ifname) || !buf || buflen == 0) {
+		return false;
+	}
+
+	const char *cur = spec;
+	char prefix[128];
+
+	if(!token_next(&cur, prefix, sizeof(prefix)) || !shell_safe(prefix)) {
+		return false;
+	}
+
+	/* First token must be "default" or an IPv4/IPv6 CIDR/address literal. */
+	if(strcmp(prefix, "default") != 0 && !strchr(prefix, '.') && !strchr(prefix, ':')) {
+		return false;
+	}
+
+	char via[128] = "";
+	char table[64] = "";
+	char metric[32] = "";
+	char mtu[32] = "";
+	char advmss[32] = "";
+	char src[128] = "";
+	char scope[32] = "";
+
+	char tok[128];
+	bool first_extra = true;
+
+	while(token_next(&cur, tok, sizeof(tok))) {
+		/* Truncate gracefully check: if next char after token isn't ws or NUL, token_next failed. */
+		if(!strcasecmp(tok, "via")) {
+			if(!token_next(&cur, via, sizeof(via)) || !shell_safe(via) || (!strchr(via, '.') && !strchr(via, ':'))) {
+				return false;
+			}
+		} else if(!strcasecmp(tok, "table")) {
+			if(!token_next(&cur, table, sizeof(table)) || !shell_safe(table)) {
+				return false;
+			}
+		} else if(!strcasecmp(tok, "metric")) {
+			if(!token_next(&cur, metric, sizeof(metric)) || !digits_only(metric)) {
+				return false;
+			}
+		} else if(!strcasecmp(tok, "mtu")) {
+			if(!token_next(&cur, mtu, sizeof(mtu)) || !digits_only(mtu)) {
+				return false;
+			}
+
+			long m = strtol(mtu, NULL, 10);
+
+			if(m < 576 || m > 9000) {
+				return false;
+			}
+		} else if(!strcasecmp(tok, "advmss")) {
+			if(!token_next(&cur, advmss, sizeof(advmss)) || !digits_only(advmss)) {
+				return false;
+			}
+
+			long mss = strtol(advmss, NULL, 10);
+
+			if(mss < 500 || mss > 8960) {
+				return false;
+			}
+		} else if(!strcasecmp(tok, "src")) {
+			if(!token_next(&cur, src, sizeof(src)) || !shell_safe(src) || (!strchr(src, '.') && !strchr(src, ':'))) {
+				return false;
+			}
+		} else if(!strcasecmp(tok, "scope")) {
+			if(!token_next(&cur, scope, sizeof(scope)) ||
+			                (strcasecmp(scope, "global") && strcasecmp(scope, "link") && strcasecmp(scope, "host"))) {
+				return false;
+			}
+		} else if(!strcasecmp(tok, "dev")) {
+			char devtok[128];
+
+			if(!token_next(&cur, devtok, sizeof(devtok)) || strcmp(devtok, ifname) != 0) {
+				return false;
+			}
+		} else if(first_extra && shell_safe(tok) && (strchr(tok, '.') || strchr(tok, ':'))) {
+			/* Legacy 2-token syntax: "<prefix> <gateway>" */
+			snprintf(via, sizeof(via), "%s", tok);
+		} else {
+			return false;
+		}
+
+		first_extra = false;
+	}
+
+	/* Guard against overly long single tokens skipped cleanly above */
+	while(*cur == ' ' || *cur == '\t') {
+		cur++;
+	}
+
+	if(*cur != '\0') {
+		return false;
+	}
+
+	size_t off = 0;
+	int w = snprintf(buf + off, buflen - off, "ip route replace %s", prefix);
+
+	if(w < 0 || (size_t)w >= buflen - off) {
+		return false;
+	}
+
+	off += (size_t)w;
+
+	if(via[0]) {
+		w = snprintf(buf + off, buflen - off, " via %s", via);
+
+		if(w < 0 || (size_t)w >= buflen - off) {
+			return false;
+		}
+
+		off += (size_t)w;
+	}
+
+	w = snprintf(buf + off, buflen - off, " dev %s", ifname);
+
+	if(w < 0 || (size_t)w >= buflen - off) {
+		return false;
+	}
+
+	off += (size_t)w;
+
+	const struct {
+		const char *key;
+		const char *val;
+	} extras[] = {
+		{ "table", table },
+		{ "metric", metric },
+		{ "mtu", mtu },
+		{ "advmss", advmss },
+		{ "src", src },
+		{ "scope", scope },
+	};
+
+	for(size_t i = 0; i < sizeof(extras) / sizeof(extras[0]); i++) {
+		if(extras[i].val[0]) {
+			w = snprintf(buf + off, buflen - off, " %s %s", extras[i].key, extras[i].val);
+
+			if(w < 0 || (size_t)w >= buflen - off) {
+				return false;
+			}
+
+			off += (size_t)w;
+		}
+	}
+
+	return true;
+}
+
+bool autoif_ensure_routes(void) {
+#ifdef HAVE_LINUX
+	config_t *first_cfg = lookup_config(&config_tree, "InterfaceRoute");
+
+	if(!first_cfg) {
+		return true;
+	}
+
+	if(!iface || !shell_safe(iface) || geteuid() != 0) {
+		return false;
+	}
+
+	char cmd[512];
+	bool ok = true;
+
+	for(config_t *cfg = first_cfg; cfg; cfg = lookup_config_next(&config_tree, cfg)) {
+		if(autoif_build_route_cmd(cfg->value, iface, cmd, sizeof(cmd))) {
+			ok &= run(cmd);
+		} else {
+			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': not a route", cfg->value);
+		}
+	}
+
+	return ok;
+#else
+	return true;
+#endif
+}
+
 bool autoif_up(void) {
 #ifdef HAVE_LINUX
 
@@ -160,42 +383,7 @@ bool autoif_up(void) {
 		}
 	}
 
-	for(config_t *cfg = lookup_config(&config_tree, "InterfaceRoute"); cfg; cfg = lookup_config_next(&config_tree, cfg)) {
-		char *route = xstrdup(cfg->value);
-		char *via = strchr(route, ' ');
-
-		if(via) {
-			*via++ = 0;
-			via += strspn(via, " ");
-
-			/* Two spellings reach this option and both have to work:
-			   "<prefix> <gateway>", which is what `tinc join' writes from an
-			   invitation's Route line, and "<prefix> via <gateway>", which is
-			   what anyone who knows `ip route' types. The second one used to
-			   be dropped with "not a route" -- the gateway kept the keyword,
-			   which then failed shell_safe() on the space. */
-			if(!strncmp(via, "via ", 4)) {
-				via += 4;
-				via += strspn(via, " ");
-			}
-		}
-
-		if(shell_safe(route) && (!via || !*via || shell_safe(via))) {
-			bool built;
-
-			if(via && *via) {
-				built = build(cmd, sizeof(cmd), "ip route replace %s via %s dev %s", route, via, iface);
-			} else {
-				built = build(cmd, sizeof(cmd), "ip route replace %s dev %s", route, iface);
-			}
-
-			ok &= built && run(cmd);
-		} else {
-			logger(DEBUG_ALWAYS, LOG_WARNING, "Ignoring InterfaceRoute `%s': not a route", cfg->value);
-		}
-
-		free(route);
-	}
+	ok &= autoif_ensure_routes();
 
 	if(ok) {
 		logger(DEBUG_ALWAYS, LOG_INFO, "Interface %s configured with %s (built-in tinc-up)", iface, addr);

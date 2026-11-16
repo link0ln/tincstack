@@ -242,11 +242,13 @@ class PeersActivity : BaseActivity() {
             if (isNoDirect) R.string.peer_allow_direct_action else R.string.peer_forbid_direct_action,
           )
           menu.add(0, MENU_INFO, 3, R.string.peer_info_action)
+          menu.add(0, MENU_RECYCLE, 4, R.string.peer_recycle_action)
           setOnMenuItemClickListener { item ->
             when (item.itemId) {
               MENU_EDIT -> openConfigEditor(peer.name)
               MENU_TRANSPORT -> showPeerTransportDialog(peer.name)
               MENU_TOGGLE_DIRECT -> togglePeerNoDirect(peer)
+              MENU_RECYCLE -> recyclePeerLegs(peer.name)
               else -> fetchLivePeerInfo(peer.name)
             }
             true
@@ -296,6 +298,22 @@ class PeersActivity : BaseActivity() {
     Tinc.info(netName, peerName)
       .thenAccept { text -> runOnUiThread { infoDialog(peerName, text) } }
       .exceptionallyAccept { e -> runOnUiThread { notify(e.cause?.defaultMessage() ?: e.defaultMessage()) } }
+  }
+
+  private fun recyclePeerLegs(peerName: String) {
+    if (!TincVpnService.isDaemonRunning() || TincVpnService.getCurrentNetName() != netName) {
+      notify(getString(R.string.peers_not_connected))
+      return
+    }
+    Tinc.multipathRecycle(netName, peerName, "slow")
+      .thenAccept { out ->
+        runOnUiThread {
+          if (!isFinishing) notify(out.trim().ifEmpty { getString(R.string.peer_recycled_format, peerName) })
+        }
+      }
+      .exceptionallyAccept { e ->
+        runOnUiThread { if (!isFinishing) notify(e.cause?.defaultMessage() ?: e.defaultMessage()) }
+      }
   }
 
   private fun showPeerTransportDialog(peerName: String) {
@@ -504,6 +522,7 @@ class PeersActivity : BaseActivity() {
     private const val MENU_TRANSPORT = 2
     private const val MENU_INFO = 3
     private const val MENU_TOGGLE_DIRECT = 4
+    private const val MENU_RECYCLE = 5
 
     fun intent(context: Context, netName: String): Intent =
       Intent(context, PeersActivity::class.java).putExtra(EXTRA_NET_NAME, netName)

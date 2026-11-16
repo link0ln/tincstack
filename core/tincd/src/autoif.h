@@ -19,6 +19,15 @@
    platform has a built-in and it succeeded (or nothing had to be done). */
 bool autoif_up(void);
 
+/* Verify and re-apply any configured InterfaceRoute entries on Linux without
+   disturbing active interface addresses. Returns true if all built/checked. */
+bool autoif_ensure_routes(void);
+
+/* Parse one InterfaceRoute specification (prefix [via] gw, table, metric, mtu,
+   advmss, src, scope) and format an `ip route replace ... dev <ifname>` command.
+   Returns false on malformed or shell-unsafe specs. */
+bool autoif_build_route_cmd(const char *spec, const char *ifname, char *buf, size_t buflen);
+
 /* The node's own address as "A.B.C.D/prefix": InterfaceAddress if set, else
    the first IPv4 /32 Subnet carried at the AddressPool's prefix length.
    Caller frees; NULL when neither is known. */

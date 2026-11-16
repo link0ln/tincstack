@@ -1138,8 +1138,13 @@ static void send_sptps_packet(node_t *n, vpn_packet_t *origpkt) {
 	   Exception: in MULTIPATH_REDUNDANT mode with multiple connections and
 	   a valid SPTPS key, use SPTPS records so the receiver deduplicates copies
 	   by SPTPS sequence number. */
-	if(n->connection && (!n->status.validkey || !n->sptps.outstate || origpkt->len - offset > n->minmtu) &&
-	   !(multipath_mode == MULTIPATH_REDUNDANT && n->status.validkey && n->sptps.outstate && n->connections.count > 1)) {
+	bool has_pool_dgram = (multipath_mode != MULTIPATH_OFF &&
+	                       multipath_node_has_datagram_carrier(n) &&
+	                       (origpkt->len - offset <= 1119));
+	bool force_sptps_pool = (multipath_mode == MULTIPATH_REDUNDANT && n->connections.count > 1) || has_pool_dgram;
+
+	if(n->connection && (!n->status.validkey || !n->sptps.outstate || (!has_pool_dgram && origpkt->len - offset > n->minmtu)) &&
+	                !(n->status.validkey && n->sptps.outstate && force_sptps_pool)) {
 		connection_t *conns[2] = {NULL, NULL};
 		int nconns = multipath_select_connections(n, origpkt, conns);
 		send_tcppacket(nconns > 0 ? conns[0] : n->connection, origpkt);
@@ -1882,7 +1887,12 @@ static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void 
 		bool ok = false;
 
 		for(int i = 0; i < nconns; i++) {
-			if(conns[i] && send_sptps_tcppacket(conns[i], buf, buflen)) {
+			size_t excess = 0;
+
+			if(conns[i] && conns[i]->transport && conns[i]->transport->send_datagram &&
+			                conns[i]->transport->send_datagram(conns[i], buf, buflen, &excess)) {
+				ok = true;
+			} else if(conns[i] && send_sptps_tcppacket(conns[i], buf, buflen)) {
 				ok = true;
 			}
 		}
@@ -3443,7 +3453,8 @@ static void try_tx_sptps(node_t *n, bool mtu) {
 	   messages anyway, so there's no need for SPTPS at all. */
 
 	if(n->connection && node_tcponly(n)) {
-		if(multipath_mode == MULTIPATH_REDUNDANT && n->connections.count > 1) {
+		if((multipath_mode == MULTIPATH_REDUNDANT && n->connections.count > 1) ||
+		                (multipath_mode != MULTIPATH_OFF && multipath_node_has_datagram_carrier(n))) {
 			try_sptps(n);
 		}
 

@@ -574,6 +574,7 @@ class Runtime:
             if not nc or not nc.full_tunnel:
                 return
             want = nc.full_tunnel
+            want_bypass = bool(nc.bypass_lan)
             opts = dict(nc.options)
             hosts = dict(nc.hosts)
             own = nc.node_name
@@ -582,7 +583,7 @@ class Runtime:
         paths.mkdir_private(self.runtime_dir(net_name))
         ft = fulltunnel.FullTunnel(
             net=net_name, exit_node=want, aliases=aliases,
-            system=system, journal_path=jpath,
+            system=system, journal_path=jpath, bypass_lan=want_bypass,
         )
         tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
         snap = tc.snapshot(net_name)
@@ -742,11 +743,12 @@ class Runtime:
                 with yaml_config._MEM_LOCK:
                     nc = self.app.net(net_name)
                     want = nc.full_tunnel if nc else ""
+                    want_bypass = bool(nc.bypass_lan) if nc else True
                     opts_snap = dict(nc.options) if nc else {}
                 jpath = self.full_tunnel_journal_path(net_name)
                 aliases = routes.adapter_aliases(opts_snap, net_name)
                 cur = self._ft.get(net_name)
-                if cur is not None and cur.exit_node != want:
+                if cur is not None and (cur.exit_node != want or cur.ft.bypass_lan != want_bypass):
                     self._full_tunnel_off(net_name)
                     cur = None
                 if not want:
@@ -772,7 +774,8 @@ class Runtime:
                 ft = fulltunnel.FullTunnel(net=net_name, exit_node=want,
                                            aliases=aliases,
                                            system=system,
-                                           journal_path=jpath)
+                                           journal_path=jpath,
+                                           bypass_lan=want_bypass)
                 tc = TincControl(tinc_exe=self.tinc, yaml_path=self.yaml)
 
                 def config() -> tuple[dict, dict, str]:

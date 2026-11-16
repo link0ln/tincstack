@@ -63,6 +63,7 @@ typedef struct subnet_t {
 #define MAXNETSTR 64
 
 extern splay_tree_t subnet_tree;
+extern char *preferred_exit_node;
 
 extern int subnet_compare(const struct subnet_t *a, const struct subnet_t *b);
 extern void free_subnet(subnet_t *subnet);

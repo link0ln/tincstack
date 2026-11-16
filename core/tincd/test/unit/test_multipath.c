@@ -1,10 +1,13 @@
 #include "unittest.h"
+#include "../../src/autoif.h"
 #include "../../src/xalloc.h"
 #include "../../src/connection.h"
 #include "../../src/edge.h"
 #include "../../src/netutl.h"
 #include "../../src/node.h"
 #include "../../src/multipath.h"
+#define TINC_TRANSPORT_DAEMON
+#include "../../src/transport.h"
 
 static void test_multipath_mode_parse_and_name(void **state) {
 	(void)state;
@@ -804,6 +807,215 @@ static void test_multipath_dynamic_tcp_pacing_and_high_loss_ecmp(void **state) {
 	now.tv_sec = saved_sec;
 }
 
+static void test_multipath_health_score_and_latency_sensitivity(void **state) {
+	(void)state;
+	vpn_packet_t pkt = {0};
+
+	/* IPv4 UDP packet -> latency sensitive */
+	memset(DATA(&pkt), 0, 14 + 28);
+	DATA(&pkt)[12] = 0x08;
+	DATA(&pkt)[13] = 0x00;
+	DATA(&pkt)[14] = 0x45;
+	DATA(&pkt)[14 + 9] = 17; /* UDP */
+	pkt.len = 14 + 28;
+	assert_true(multipath_pkt_is_latency_sensitive(&pkt));
+
+	/* Small interactive TCP (SYN / SSH, 64B <= 320B) -> latency sensitive */
+	DATA(&pkt)[14 + 9] = 6; /* TCP */
+	pkt.len = 64;
+	assert_true(multipath_pkt_is_latency_sensitive(&pkt));
+
+	/* Bulk TCP segment (1000B > 320B) -> bulk, not latency sensitive */
+	pkt.len = 1000;
+	assert_false(multipath_pkt_is_latency_sensitive(&pkt));
+
+	/* Mixed https + quic pool: latency-sensitive UDP steers onto healthy quic leg */
+	static transport_t mock_quic = {
+		.id = TRANSPORT_QUIC,
+		.name = "quic",
+		.send_datagram = (bool (*)(struct connection_t *, const void *, size_t, size_t *))1,
+	};
+	static transport_t mock_https = {
+		.id = TRANSPORT_HTTPS,
+		.name = "https",
+	};
+
+	node_t *n = new_node("peer_het");
+	connection_t *c_https = new_connection();
+	c_https->name = xstrdup("peer_het");
+	c_https->node = n;
+	c_https->status.active = true;
+	c_https->socket = -1;
+	c_https->transport = &mock_https;
+	c_https->address.sa.sa_family = AF_INET;
+	c_https->address.in.sin_addr.s_addr = htonl(0x5057c827U);
+	c_https->tcp_min_rtt_us = 35000U;
+	c_https->tcp_pacing_bps = 25000000ULL;
+	c_https->relay_slot = 0;
+
+	connection_t *c_quic = new_connection();
+	c_quic->name = xstrdup("peer_het");
+	c_quic->node = n;
+	c_quic->status.active = true;
+	c_quic->socket = -1;
+	c_quic->transport = &mock_quic;
+	c_quic->address.sa.sa_family = AF_INET;
+	c_quic->address.in.sin_addr.s_addr = htonl(0x5057c827U);
+	c_quic->tcp_min_rtt_us = 35000U;
+	c_quic->tcp_pacing_bps = 25000000ULL;
+	c_quic->relay_slot = 1;
+
+	n->connection = c_https;
+	multipath_node_add_connection(n, c_https);
+	multipath_node_add_connection(n, c_quic);
+	multipath_mode = MULTIPATH_FLOWHASH;
+
+	uint8_t s_https = multipath_conn_health_score(n, c_https, 35000U);
+	uint8_t s_quic = multipath_conn_health_score(n, c_quic, 35000U);
+	assert_int_equal(100, s_https);
+	assert_int_equal(100, s_quic);
+
+	DATA(&pkt)[14 + 9] = 17; /* UDP */
+	pkt.len = 200;
+	connection_t *out[2] = {NULL, NULL};
+
+	for(int i = 0; i < 16; i++) {
+		DATA(&pkt)[14 + 20] = (uint8_t)i; /* Vary port to test all 5-tuple hashes */
+		assert_int_equal(1, multipath_select_connections(n, &pkt, out));
+		assert_ptr_equal(c_quic, out[0]);
+	}
+
+	/* Degraded leg score drops significantly */
+	c_https->tcp_degraded = true;
+	assert_true(multipath_conn_health_score(n, c_https, 35000U) <= 50);
+
+	multipath_node_del_connection(n, c_quic);
+	multipath_node_del_connection(n, c_https);
+	n->connection = NULL;
+	free_connection(c_quic);
+	free_connection(c_https);
+	free_node(n);
+	multipath_mode = MULTIPATH_FAILOVER;
+}
+
+static void test_multipath_auto_pacing_aimd_and_canary(void **state) {
+	(void)state;
+	time_t saved_sec = now.tv_sec;
+	now.tv_sec = 1000;
+
+	bool saved_auto = multipath_tcp_auto_pacing;
+	uint32_t saved_cap = multipath_tcp_max_pacing_rate;
+	multipath_tcp_auto_pacing = true;
+	multipath_tcp_max_pacing_rate = 0;
+	multipath_mode = MULTIPATH_FLOWHASH;
+	multipath_target_connections = 4;
+
+	node_t *n = new_node("peer_aimd");
+	connection_t *conns[4];
+
+	for(int i = 0; i < 4; i++) {
+		conns[i] = new_connection();
+		conns[i]->name = xstrdup("peer_aimd");
+		conns[i]->node = n;
+		conns[i]->status.active = true;
+		conns[i]->socket = -1;
+		conns[i]->address.sa.sa_family = AF_INET;
+		conns[i]->address.in.sin_addr.s_addr = htonl(0x5057c827U);
+		conns[i]->tcp_min_rtt_us = 35000U;
+		conns[i]->tcp_cwnd = 100;
+		conns[i]->tcp_pacing_bps = 24000000ULL;
+		multipath_node_add_connection(n, conns[i]);
+	}
+
+	n->connection = conns[0];
+
+	/* Measure 3.0 MB/s (24 Mbps) peak TX on conns[0] */
+	multipath_apply_node_tcp_pacing(n, conns[0], 3000000U);
+	now.tv_sec = 1001;
+	multipath_apply_node_tcp_pacing(n, conns[0], 1500U);
+	assert_true(conns[0]->peak_tx_Bps >= 3000000U);
+
+	/* Trigger policer collapse on conns[0]: backoff to 0.85 * R -> budget = 3,825,000 B/s */
+	conns[0]->tcp_degraded = true;
+	multipath_handle_conn_degraded(n, conns[0]);
+	assert_int_equal(3000000U, n->auto_pacing_policer_Bps);
+	assert_int_equal(3825000U, n->auto_pacing_budget_Bps);
+	assert_int_equal(1901, (int)n->auto_pacing_next_probe_at);
+
+	/* Advance 15m (900s): canary probe activates +10% on ONE secondary leg */
+	now.tv_sec = 1901;
+	conns[0]->tcp_degraded = false;
+	multipath_step_auto_pacing(n);
+	assert_non_null(n->auto_pacing_canary);
+	connection_t *can = n->auto_pacing_canary;
+	assert_ptr_not_equal(n->connection, can);
+	assert_true(can->is_canary);
+	assert_true(can->target_pacing_rate > conns[0]->target_pacing_rate);
+
+	/* Feed load onto canary and finish clean 30s window -> +10% promotion to 4,207,500 B/s */
+	now.tv_sec = 1910;
+	multipath_apply_node_tcp_pacing(n, can, 400000U);
+	now.tv_sec = 1932;
+	multipath_step_auto_pacing(n);
+	assert_null(n->auto_pacing_canary);
+	assert_false(can->is_canary);
+	assert_int_equal(4207500U, n->auto_pacing_budget_Bps);
+	assert_int_equal(1932 + 900, (int)n->auto_pacing_next_probe_at);
+
+	/* Next probe window triggers canary, which hits policer -> keeps budget intact, 20m cooldown */
+	now.tv_sec = 2900;
+	multipath_step_auto_pacing(n);
+	assert_non_null(n->auto_pacing_canary);
+	can = n->auto_pacing_canary;
+	can->tcp_degraded = true;
+	multipath_step_auto_pacing(n);
+	assert_null(n->auto_pacing_canary);
+	assert_false(can->is_canary);
+	assert_int_equal(4207500U, n->auto_pacing_budget_Bps);
+	assert_int_equal(2900 + 1200, (int)n->auto_pacing_next_probe_at);
+
+	for(int i = 0; i < 4; i++) {
+		multipath_node_del_connection(n, conns[i]);
+	}
+
+	n->connection = NULL;
+
+	for(int i = 0; i < 4; i++) {
+		free_connection(conns[i]);
+	}
+
+	free_node(n);
+	multipath_tcp_auto_pacing = saved_auto;
+	multipath_tcp_max_pacing_rate = saved_cap;
+	multipath_mode = MULTIPATH_FAILOVER;
+	multipath_target_connections = 1;
+	now.tv_sec = saved_sec;
+}
+
+static void test_autoif_build_route_cmd_policy_tables(void **state) {
+	(void)state;
+	char cmd[512];
+
+	assert_true(autoif_build_route_cmd("10.11.0.0/24", "tincstack", cmd, sizeof(cmd)));
+	assert_string_equal("ip route replace 10.11.0.0/24 dev tincstack", cmd);
+
+	assert_true(autoif_build_route_cmd("192.168.1.0/24 10.11.0.1", "tincstack", cmd, sizeof(cmd)));
+	assert_string_equal("ip route replace 192.168.1.0/24 via 10.11.0.1 dev tincstack", cmd);
+
+	assert_true(autoif_build_route_cmd("0.0.0.0/0 via 10.11.0.1 table 240 mtu 1280 metric 100", "tincstack", cmd, sizeof(cmd)));
+	assert_string_equal("ip route replace 0.0.0.0/0 via 10.11.0.1 dev tincstack table 240 metric 100 mtu 1280", cmd);
+
+	assert_true(autoif_build_route_cmd("default table main advmss 1200 scope link", "tun0", cmd, sizeof(cmd)));
+	assert_string_equal("ip route replace default dev tun0 table main advmss 1200 scope link", cmd);
+
+	/* Reject shell injection, bad options, out-of-range MTU, foreign dev */
+	assert_false(autoif_build_route_cmd("0.0.0.0/0;reboot", "tincstack", cmd, sizeof(cmd)));
+	assert_false(autoif_build_route_cmd("default via -bad", "tincstack", cmd, sizeof(cmd)));
+	assert_false(autoif_build_route_cmd("default table 240 mtu 100", "tincstack", cmd, sizeof(cmd)));
+	assert_false(autoif_build_route_cmd("default dev eth0", "tincstack", cmd, sizeof(cmd)));
+	assert_false(autoif_build_route_cmd("default bogus_kw 1", "tincstack", cmd, sizeof(cmd)));
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_multipath_mode_parse_and_name),
@@ -815,6 +1027,9 @@ int main(void) {
 		cmocka_unit_test(test_multipath_tspu_policed_leg_exclusion_and_sticky_latch),
 		cmocka_unit_test(test_multipath_bbr_lt_bw_and_all_degraded_fallback),
 		cmocka_unit_test(test_multipath_dynamic_tcp_pacing_and_high_loss_ecmp),
+		cmocka_unit_test(test_multipath_health_score_and_latency_sensitivity),
+		cmocka_unit_test(test_multipath_auto_pacing_aimd_and_canary),
+		cmocka_unit_test(test_autoif_build_route_cmd_policy_tables),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

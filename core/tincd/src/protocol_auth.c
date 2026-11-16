@@ -1642,6 +1642,8 @@ bool ack_h(connection_t *c, const char *request) {
 		transport_candidate_activated(c->outgoing, c);
 	}
 
+	multipath_record_dial_result(n, c, true);
+
 	/* Acceptor-side carrier rule (review row L-2 residual, docs/transports.md
 	   §2 "When the peer dials first"): the peer reached us on a carrier we
 	   rank below the one we would dial, and the dedup above parked our

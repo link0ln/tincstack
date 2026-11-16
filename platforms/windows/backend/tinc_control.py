@@ -20,6 +20,7 @@ Status decoding follows node_status_t (union bitfield) in tinc src/node.h:
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -678,6 +679,38 @@ class TincControl:
     def multipath_mode(self, net: str, mode: str, timeout: float = 8.0) -> CommandResult:
         rc, out, err = self._run(net, "multipath", "mode", mode.strip(), timeout=timeout)
         return CommandResult(rc, out.strip(), err.strip())
+
+    def multipath_recycle(self, net: str, peer: str = "all", mode: str = "slow",
+                          timeout: float = 12.0) -> CommandResult:
+        rc, out, err = self._run(net, "multipath", "recycle", peer.strip() or "all",
+                                 mode.strip() or "slow", timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def multipath_pacing(self, net: str, peer: str = "all", arg: str = "auto",
+                         timeout: float = 8.0) -> CommandResult:
+        rc, out, err = self._run(net, "multipath", "pacing", peer.strip() or "all",
+                                 arg.strip() or "auto", timeout=timeout)
+        return CommandResult(rc, out.strip(), err.strip())
+
+    def doctor(self, net: str, probe: bool = False, fix: bool = False,
+               timeout: float = 25.0) -> dict:
+        args = ["doctor", "--json"]
+        if probe:
+            args.append("--probe")
+        if fix:
+            args.append("--fix")
+        rc, out, err = self._run(net, *args, timeout=timeout)
+        text = (out or "").strip()
+        if not text:
+            return {"ok": False, "status": "ERROR", "error": (err or f"rc={rc}").strip(), "issues": [], "connections": [], "peers": []}
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                data.setdefault("ok", rc == 0)
+                return data
+        except ValueError:
+            pass
+        return {"ok": False, "status": "ERROR", "error": (err or text[:200]).strip(), "issues": [], "connections": [], "peers": []}
 
 
 if __name__ == "__main__":

@@ -34,10 +34,15 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.PopupMenu
+import android.widget.RadioButton
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.AttrRes
 import androidx.annotation.ColorInt
@@ -86,6 +91,8 @@ import org.pacien.tincapp.service.VpnStatus
 import org.pacien.tincapp.utils.AppUpdater
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 /**
  * The one screen: no network yet -> the join form; otherwise the selected
@@ -164,6 +171,11 @@ class MainActivity : BaseActivity() {
     val routing: SplitRouting?,
     val pauseOnLock: Boolean,
     val lowPowerMode: Boolean,
+    val routeDefaultTraffic: Boolean,
+    val bypassLan: Boolean,
+    val exitNode: String,
+    val tcpAutoPacing: Boolean,
+    val tcpMaxPacingRate: Long,
   )
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -605,6 +617,7 @@ class MainActivity : BaseActivity() {
     }
     binding.transportRow.setup(R.drawable.ic_transport, R.string.setting_transport_title) { showTransportDialog() }
     binding.multipathRow.setup(R.drawable.ic_transport, R.string.setting_multipath_title) { showMultipathDialog() }
+    binding.routingRow.setup(R.drawable.ic_peers, R.string.setting_routing_title) { showRoutingDialog() }
     binding.appsRow.setup(R.drawable.ic_apps, R.string.setting_apps_title) {
       selected?.let { appPicker.launch(AppPickerActivity.intent(this, it)) }
     }
@@ -620,6 +633,8 @@ class MainActivity : BaseActivity() {
     binding.configRow.rowSummary.setText(R.string.config_row_summary)
     binding.logRow.setup(R.drawable.ic_log, R.string.setting_log_title) { openLog() }
     binding.logRow.rowSummary.setText(R.string.setting_log_summary)
+    binding.doctorRow.setup(R.drawable.ic_info, R.string.setting_doctor_title) { showDoctorDialog() }
+    binding.doctorRow.rowSummary.setText(R.string.setting_doctor_summary)
     binding.diagRow.setup(R.drawable.ic_info, R.string.setting_diag_title) { showDiagDialog() }
     binding.updateRow.setup(R.drawable.ic_info, R.string.setting_update_title) {
       val rel = availableUpdate
@@ -669,6 +684,11 @@ class MainActivity : BaseActivity() {
           },
           pauseOnLock = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_DISCONNECT_ON_SCREEN_OFF), false),
           lowPowerMode = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_LOW_POWER_MODE), false),
+          routeDefaultTraffic = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC), true),
+          bypassLan = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_BYPASS_LAN), true),
+          exitNode = yaml.optionValue(s.stanza, VpnInterfaceConfiguration.KEY_EXIT_NODE)?.trim().orEmpty(),
+          tcpAutoPacing = TincYaml.asTincBoolean(yaml.optionValue(s.stanza, "TcpAutoPacing"), true),
+          tcpMaxPacingRate = yaml.optionValue(s.stanza, "TcpMaxPacingRate")?.trim()?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L,
         )
       } catch (e: Exception) {
         log.warn("Could not read the settings of {}: {}", net, e.defaultMessage())
@@ -706,6 +726,14 @@ class MainActivity : BaseActivity() {
       mpTitle
     } else {
       getString(R.string.multipath_summary_flows_format, mpTitle, mpConns)
+    }
+
+    binding.routingRow.rowSummary.text = if (s == null || s.routeDefaultTraffic) {
+      val exitLbl = s?.exitNode?.takeIf { it.isNotBlank() && !it.equals("auto", ignoreCase = true) } ?: "auto"
+      val lanLbl = getString(if (s?.bypassLan != false) R.string.routing_bypass_lan_on else R.string.routing_bypass_lan_off)
+      getString(R.string.routing_summary_full_format, exitLbl, lanLbl)
+    } else {
+      getString(R.string.routing_summary_split)
     }
 
     val routing = s?.routing
@@ -1086,6 +1114,27 @@ class MainActivity : BaseActivity() {
     }
     list.addView(chipGroup)
 
+    val autoPacingBox = CheckBox(this).apply {
+      setText(R.string.multipath_auto_pacing_label)
+      isChecked = s.tcpAutoPacing
+      setPadding(padH / 2, padV, padH, padV / 2)
+    }
+    list.addView(autoPacingBox)
+
+    val capLabel = TextView(this).apply {
+      setText(R.string.multipath_max_pacing_label)
+      setPadding(padH, padV / 2, padH, 0)
+      setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_LabelMedium)
+    }
+    list.addView(capLabel)
+
+    val capInput = EditText(this).apply {
+      inputType = InputType.TYPE_CLASS_NUMBER
+      setText(s.tcpMaxPacingRate.toString())
+      setPadding(padH, padV / 2, padH, padV)
+    }
+    list.addView(capInput)
+
     MaterialAlertDialogBuilder(this)
       .setTitle(R.string.setting_multipath_title)
       .setView(content)
@@ -1093,7 +1142,10 @@ class MainActivity : BaseActivity() {
       .setPositiveButton(R.string.action_save) { _, _ ->
         val modeChanged = chosenMode != s.multipathMode
         val connsChanged = chosenConns != s.multipathConnections
-        if (modeChanged || connsChanged) {
+        val newAutoPacing = autoPacingBox.isChecked
+        val newMaxRate = (capInput.text?.toString()?.trim()?.toLongOrNull() ?: 0L).coerceIn(0L, 250_000_000L)
+        val pacingChanged = (newAutoPacing != s.tcpAutoPacing) || (newMaxRate != s.tcpMaxPacingRate)
+        if (modeChanged || connsChanged || pacingChanged) {
           val stanza = s.summary.stanza
           Executor.runAsyncTask {
             val yaml = TincYaml(AppPaths.tincYamlFile(net))
@@ -1102,11 +1154,20 @@ class MainActivity : BaseActivity() {
               mapOf(
                 "MultipathMode" to listOf(chosenMode),
                 "MultipathConnections" to if (chosenConns <= 1) null else listOf(chosenConns.toString()),
+                "TcpAutoPacing" to if (newAutoPacing) null else listOf("no"),
+                "TcpMaxPacingRate" to if (newMaxRate <= 0L) null else listOf(newMaxRate.toString()),
               ),
             )
             if (status.active && status.netName == net) {
               try {
-                Tinc.multipathMode(net, chosenMode, chosenConns).get()
+                if (modeChanged || connsChanged) {
+                  Tinc.multipathMode(net, chosenMode, chosenConns).get()
+                }
+                if (pacingChanged) {
+                  Tinc.reload(net).get()
+                  Tinc.multipathPacing(net, "all", if (newAutoPacing) "auto" else "off").get()
+                  Tinc.multipathPacing(net, "all", newMaxRate.toString()).get()
+                }
               } catch (_: Exception) {
               }
             }
@@ -1122,6 +1183,180 @@ class MainActivity : BaseActivity() {
         }
       }
       .show()
+  }
+
+  private fun showRoutingDialog() {
+    val s = summary ?: return
+    val net = selected ?: return
+    val padH = (24 * resources.displayMetrics.density).toInt()
+    val padV = (8 * resources.displayMetrics.density).toInt()
+    val container = android.widget.LinearLayout(this).apply {
+      orientation = android.widget.LinearLayout.VERTICAL
+      setPadding(padH, padV, padH, padV)
+    }
+
+    val routeDefaultBox = CheckBox(this).apply {
+      setText(R.string.routing_route_default_label)
+      isChecked = s.routeDefaultTraffic
+    }
+    container.addView(routeDefaultBox)
+
+    val bypassLanBox = CheckBox(this).apply {
+      setText(R.string.routing_bypass_lan_label)
+      isChecked = s.bypassLan
+    }
+    container.addView(bypassLanBox)
+
+    val exitLabel = TextView(this).apply {
+      setText(R.string.routing_exit_node_label)
+      setPadding(0, padV, 0, padV / 2)
+      setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_LabelLarge)
+    }
+    container.addView(exitLabel)
+
+    val peerChoices = buildList {
+      add("")
+      val known = (s.summary.peers + (peers?.filter { !it.self }?.map { it.name }.orEmpty())).distinct().sorted()
+      addAll(known)
+      val cur = s.exitNode.trim()
+      if (cur.isNotEmpty() && !cur.equals("auto", ignoreCase = true) && cur !in this) {
+        add(cur)
+      }
+    }
+    var chosenExit = s.exitNode.trim().takeUnless { it.equals("auto", ignoreCase = true) }.orEmpty()
+    val exitRadios = mutableMapOf<String, RadioButton>()
+    peerChoices.forEach { code ->
+      val rb = RadioButton(this).apply {
+        text = if (code.isEmpty()) getString(R.string.routing_exit_auto) else code
+        isChecked = (code == chosenExit)
+        setOnClickListener {
+          chosenExit = code
+          exitRadios.forEach { (k, btn) -> btn.isChecked = (k == chosenExit) }
+        }
+      }
+      exitRadios[code] = rb
+      container.addView(rb)
+    }
+
+    MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.setting_routing_title)
+      .setView(container)
+      .setNegativeButton(R.string.action_cancel, null)
+      .setPositiveButton(R.string.action_save) { _, _ ->
+        val wantDefault = routeDefaultBox.isChecked
+        val wantBypass = bypassLanBox.isChecked
+        val stanza = s.summary.stanza
+        Executor.runAsyncTask {
+          val yaml = TincYaml(AppPaths.tincYamlFile(net))
+          yaml.setOptions(
+            stanza,
+            mapOf(
+              VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC to if (wantDefault) null else listOf("no"),
+              VpnInterfaceConfiguration.KEY_BYPASS_LAN to if (wantBypass) null else listOf("no"),
+              VpnInterfaceConfiguration.KEY_EXIT_NODE to if (chosenExit.isEmpty()) null else listOf(chosenExit),
+            ),
+          )
+          if (status.active && status.netName == net) {
+            try {
+              Tinc.reload(net).get()
+              TincVpnService.rebuildActiveSession(net).get(15L, TimeUnit.SECONDS)
+            } catch (_: Exception) {
+            }
+          }
+        }.thenAccept {
+          runOnUiThread {
+            loadSettings()
+            notify(R.string.routing_saved)
+          }
+        }.exceptionallyAccept { e ->
+          runOnUiThread { notify(getString(R.string.apps_error_write_format, e.cause?.defaultMessage() ?: e.defaultMessage())) }
+        }
+      }
+      .show()
+  }
+
+  private fun formatDoctorReport(res: Map<String, Any?>): String {
+    val sb = StringBuilder()
+    val statusStr = res["status"]?.toString() ?: if (res["ok"] == true) "OK" else "DOWN"
+    val mode = res["multipath_mode"]?.toString() ?: "-"
+    sb.append("Status: ").append(statusStr).append("  mode=").append(mode).append('\n')
+    res["error"]?.toString()?.takeIf { it.isNotBlank() }?.let { sb.append("Error: ").append(it).append('\n') }
+
+    @Suppress("UNCHECKED_CAST")
+    val conns = (res["connections"] as? List<Map<String, Any?>>).orEmpty()
+    if (conns.isNotEmpty()) {
+      sb.append("\nMultipath pool (").append(conns.size).append(" legs):\n")
+      for (c in conns) {
+        val peer = c["peer"] ?: "-"
+        val role = c["role"] ?: "-"
+        val carrier = c["carrier"] ?: "-"
+        val score = c["score"] ?: "-"
+        val rtt = (c["rtt_ms"] as? Number)?.let { String.format(Locale.ROOT, "%.1f", it.toDouble()) } ?: "-"
+        val pac = (c["pacing_mbps"] as? Number)?.takeIf { it.toDouble() > 0.0 }
+          ?.let { String.format(Locale.ROOT, "%.1fM", it.toDouble()) } ?: "auto"
+        val tags = buildList {
+          if (c["active"] == true) add("ACTIVE")
+          if (c["canary"] == true) add("CANARY")
+          if (c["degraded"] == true) add("DEGRADED")
+        }.joinToString(" ")
+        sb.append("  ").append(peer).append(" [").append(role).append('/').append(carrier).append("] ")
+          .append("score=").append(score).append(" rtt=").append(rtt).append("ms pac=").append(pac)
+        if (tags.isNotEmpty()) sb.append(' ').append(tags)
+        sb.append('\n')
+      }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    val issues = (res["issues"] as? List<Map<String, Any?>>).orEmpty()
+    val hasErr = !res["error"]?.toString().isNullOrBlank()
+    if (issues.isNotEmpty()) {
+      sb.append("\nIssues:\n")
+      for (it in issues) {
+        sb.append("  [").append(it["severity"] ?: "?").append("] ")
+          .append(it["component"] ?: "").append(' ').append(it["peer"] ?: "")
+          .append(": ").append(it["message"] ?: "").append('\n')
+        it["hint"]?.toString()?.takeIf { h -> h.isNotBlank() }?.let { h ->
+          sb.append("    hint: ").append(h).append('\n')
+        }
+      }
+    } else if (!hasErr) {
+      sb.append("\n[OK] No transport, routing, or buffer issues detected.\n")
+    }
+    return sb.toString().trimEnd()
+  }
+
+  private fun showDoctorDialog() {
+    val net = selected ?: return
+    val view = layoutInflater.inflate(R.layout.dialog_text, null)
+    val tv = view.findViewById<TextView>(R.id.dialog_text)
+    tv.setText(R.string.doctor_running)
+
+    fun refreshDoctor(probe: Boolean, fix: Boolean) {
+      tv.setText(R.string.doctor_running)
+      Executor.supplyAsyncTask { DiagManager.buildDoctor(net, probe = probe, fix = fix) }
+        .thenAccept { res ->
+          runOnUiThread {
+            if (!isFinishing && !isDestroyed) tv.text = formatDoctorReport(res)
+          }
+        }
+        .exceptionallyAccept { e ->
+          runOnUiThread {
+            if (!isFinishing && !isDestroyed) tv.text = e.cause?.defaultMessage() ?: e.defaultMessage()
+          }
+        }
+    }
+
+    val dlg = MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.setting_doctor_title)
+      .setView(view)
+      .setPositiveButton(R.string.action_close, null)
+      .setNeutralButton(R.string.doctor_action_probe, null)
+      .setNegativeButton(R.string.doctor_action_fix, null)
+      .show()
+
+    dlg.getButton(android.content.DialogInterface.BUTTON_NEUTRAL)?.setOnClickListener { refreshDoctor(probe = true, fix = false) }
+    dlg.getButton(android.content.DialogInterface.BUTTON_NEGATIVE)?.setOnClickListener { refreshDoctor(probe = true, fix = true) }
+    refreshDoctor(probe = false, fix = false)
   }
 
   private fun openLog() {

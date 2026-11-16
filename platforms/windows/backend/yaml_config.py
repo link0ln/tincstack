@@ -65,7 +65,8 @@ class NetworkCfg:
     keys: dict = field(default_factory=dict)     # 'ed25519_priv' / 'rsa_priv' / 'tls_*' -> PEM
     scripts: dict = field(default_factory=dict)  # 'tinc-up'/... -> script text
     wintun_mtu: int = 0                           # forced IPv4 MTU on the Wintun adapter (0 = 1400)
-    full_tunnel: str = ""                         # exit node for all IPv4 traffic ('' = off), fulltunnel.py
+    full_tunnel: str = ""                         # exit node for all IPv4 traffic ('', 'auto', or <peer>), fulltunnel.py
+    bypass_lan: bool = True                       # keep RFC1918 / local LAN outside full-tunnel when enabled
     extra: dict = field(default_factory=dict)    # unknown per-network keys, carried verbatim
 
     @property
@@ -96,7 +97,7 @@ class AppConfig:
 
 # ---- helpers -----------------------------------------------------------------
 
-_NET_KEYS = ("autostart", "options", "hosts", "keys", "scripts", "wintun_mtu", "full_tunnel")
+_NET_KEYS = ("autostart", "options", "hosts", "keys", "scripts", "wintun_mtu", "full_tunnel", "bypass_lan")
 
 
 def _scalar(v: Any) -> str:
@@ -139,7 +140,7 @@ _STR_OPTIONS = frozenset(k.lower() for k in (
     "HttpsSni", "QuicSni", "QuicAlpn", "CertDomain", "CloudflareToken",
     "CloudflareApi", "AcmeContact", "AcmeDirectory", "AcmeCaFile",
     "Device", "DeviceType", "Mode", "AddressFamily", "Broadcast", "Forwarding",
-    "SingleFlow", "MultipathMode", "MultipathInterface", "ScriptsInterpreter",
+    "SingleFlow", "MultipathMode", "MultipathInterface", "ExitNode", "ScriptsInterpreter",
     "ScriptsExtension", "HttpsDecoyRoot", "HttpsDecoyUpstream", "TlsCert", "TlsKey",
     "ObfsPassword", "ObfsInitMagicHeader", "ObfsTransportMagicHeader", "DirectSeal",
     "Proxy",
@@ -316,6 +317,7 @@ def from_document(doc: dict, path: str = "") -> AppConfig:
             scripts=copy.deepcopy(dict(nd.get("scripts") or {})),
             wintun_mtu=int(nd.get("wintun_mtu") or 0),
             full_tunnel=str(nd.get("full_tunnel") or "").strip(),
+            bypass_lan=bool(nd.get("bypass_lan", True)) if nd.get("bypass_lan") is not None else True,
             extra={k: copy.deepcopy(v) for k, v in nd.items() if k not in _NET_KEYS},
         )
     app.baseline = copy.deepcopy(doc)
@@ -327,12 +329,16 @@ def to_dict(app: AppConfig) -> dict:
     if app.workdir:
         out["workdir"] = app.workdir
     nets: dict = {}
+    base_nets = (app.baseline or {}).get("networks") if isinstance(app.baseline, dict) else {}
     for name, nc in app.networks.items():
         entry: dict = {"autostart": nc.autostart, "options": nc.options}
         if nc.wintun_mtu:
             entry["wintun_mtu"] = nc.wintun_mtu
         if nc.full_tunnel:
             entry["full_tunnel"] = nc.full_tunnel
+        had_bypass = isinstance(base_nets, dict) and isinstance(base_nets.get(name), dict) and "bypass_lan" in base_nets[name]
+        if not nc.bypass_lan or had_bypass:
+            entry["bypass_lan"] = bool(nc.bypass_lan)
         if nc.keys:
             entry["keys"] = nc.keys
         if nc.scripts:
@@ -658,6 +664,7 @@ def refresh_in_place(app: AppConfig, doc: dict) -> None:
             nc.autostart = fnc.autostart
             nc.wintun_mtu = fnc.wintun_mtu
             nc.full_tunnel = fnc.full_tunnel
+            nc.bypass_lan = fnc.bypass_lan
             for attr in ("options", "hosts", "keys", "scripts", "extra"):
                 d = getattr(nc, attr)
                 src = getattr(fnc, attr)

@@ -46,11 +46,28 @@ object AnnouncedRoutes {
   val FULL_TUNNEL_DNS = listOf("1.1.1.1", "8.8.8.8")
   val IPV6_SINKHOLE_ADDRESS = CidrAddress("fd00:7469:6e63::2", 126)
   val IPV6_SINKHOLE_ROUTE = CidrAddress("2000::", 3)
+  val LAN_BYPASS_V4 = listOf(
+    CidrAddress("0.0.0.0", 8),
+    CidrAddress("10.0.0.0", 8),
+    CidrAddress("100.64.0.0", 10),
+    CidrAddress("127.0.0.0", 8),
+    CidrAddress("169.254.0.0", 16),
+    CidrAddress("172.16.0.0", 12),
+    CidrAddress("192.168.0.0", 16),
+    CidrAddress("224.0.0.0", 3),
+  )
+
+  private val PUBLIC_PROBES_V4 = listOf(
+    CidrAddress("1.1.1.1", 32),
+    CidrAddress("8.8.8.8", 32),
+    CidrAddress("203.0.113.1", 32),
+  )
 
   fun isFullTunnelV4(routes: List<CidrAddress>): Boolean =
     routes.any { it.prefix == 0 && !isV6(it) } ||
       (routes.any { it.prefix == 1 && it.address == "0.0.0.0" } &&
-        routes.any { it.prefix == 1 && it.address == "128.0.0.0" })
+        routes.any { it.prefix == 1 && it.address == "128.0.0.0" }) ||
+      PUBLIC_PROBES_V4.all { probe -> routes.any { r -> !isV6(r) && r.prefix <= 16 && covers(r, probe) } }
 
   data class Announcement(val subnet: CidrAddress, val owner: String)
 
@@ -152,19 +169,112 @@ object AnnouncedRoutes {
     Announcement(CidrAddress(address, prefix), f[2])
   }
 
+  fun isDefaultRoute(c: CidrAddress): Boolean {
+    val norm = normalise(c) ?: return false
+    return norm.prefix == 0 ||
+      (!isV6(norm) && norm.prefix == 1 && (norm.address == "0.0.0.0" || norm.address == "128.0.0.0")) ||
+      (isV6(norm) && norm.prefix == 1)
+  }
+
+  fun exitPeers(announced: List<Announcement>, self: String): List<String> =
+    announced.asSequence()
+      .filter { it.owner != self }
+      .filter { a -> normalise(a.subnet)?.prefix == 0 }
+      .map { it.owner }
+      .distinct()
+      .sorted()
+      .toList()
+
+  private fun v4ToLong(bytes: ByteArray): Long =
+    ((bytes[0].toLong() and 0xffL) shl 24) or
+      ((bytes[1].toLong() and 0xffL) shl 16) or
+      ((bytes[2].toLong() and 0xffL) shl 8) or
+      (bytes[3].toLong() and 0xffL)
+
+  private fun longToV4(v: Long): String =
+    "${(v ushr 24) and 0xff}.${(v ushr 16) and 0xff}.${(v ushr 8) and 0xff}.${v and 0xff}"
+
+  private fun v4Range(c: CidrAddress): Pair<Long, Long>? {
+    val norm = normalise(c) ?: return null
+    if (isV6(norm) || norm.prefix !in 0..32) return null
+    val b = v4Bytes(norm.address) ?: return null
+    val start = v4ToLong(b)
+    val size = 1L shl (32 - norm.prefix)
+    return start to (start + size - 1L)
+  }
+
+  private fun subtractRange(
+    start: Long,
+    prefix: Int,
+    exRanges: List<Pair<Long, Long>>,
+    out: MutableList<CidrAddress>,
+  ) {
+    val size = 1L shl (32 - prefix)
+    val end = start + size - 1L
+    for ((exStart, exEnd) in exRanges) {
+      if (exStart <= start && end <= exEnd) return
+    }
+    var overlaps = false
+    for ((exStart, exEnd) in exRanges) {
+      if (exStart <= end && exEnd >= start) {
+        overlaps = true
+        break
+      }
+    }
+    if (!overlaps) {
+      out.add(CidrAddress(longToV4(start), prefix))
+      return
+    }
+    if (prefix >= 32) return
+    val half = size ushr 1
+    subtractRange(start, prefix + 1, exRanges, out)
+    subtractRange(start + half, prefix + 1, exRanges, out)
+  }
+
+  /** Subtract IPv4 [exclusions] from [base], returning minimal aligned CIDR blocks. */
+  fun excludeCidrs(base: CidrAddress, exclusions: List<CidrAddress>): List<CidrAddress> {
+    val norm = normalise(base) ?: return emptyList()
+    if (isV6(norm)) return listOf(norm)
+    val (start, _) = v4Range(norm) ?: return emptyList()
+    val exRanges = exclusions.mapNotNull(::v4Range)
+    if (exRanges.isEmpty()) return listOf(norm)
+    val out = mutableListOf<CidrAddress>()
+    subtractRange(start, norm.prefix, exRanges, out)
+    return out
+  }
+
   /** The routes to add to [base]'s, in a stable order (IPv4 first, widest first). */
-  fun select(announced: List<Announcement>, self: String, reachable: Set<String>, base: VpnInterfaceConfiguration): List<CidrAddress> {
+  fun select(
+    announced: List<Announcement>,
+    self: String,
+    reachable: Set<String>,
+    base: VpnInterfaceConfiguration,
+    localSubnets: List<CidrAddress> = emptyList(),
+  ): List<CidrAddress> {
     val v6 = base.addresses.any(::isV6)
-    val candidates = announced.asSequence()
+    val localV4 = localSubnets.mapNotNull(::normalise).filter { !isV6(it) }
+    val rawCandidates = announced.asSequence()
       .filter { it.owner != self && it.owner in reachable }
       .mapNotNull { normalise(it.subnet) }
       .filter { v6 || !isV6(it) }
       .filter { !isMulticastOrBroadcast(it) }
+      .filter { base.routeDefaultTraffic || !isDefaultRoute(it) }
+      .flatMap { c ->
+        if (!base.bypassLan || isV6(c)) {
+          sequenceOf(c)
+        } else if (isDefaultRoute(c)) {
+          excludeCidrs(c, LAN_BYPASS_V4 + localV4).asSequence()
+        } else if (localV4.isNotEmpty()) {
+          excludeCidrs(c, localV4).asSequence()
+        } else {
+          sequenceOf(c)
+        }
+      }
       .filter { c -> base.routes.none { covers(it, c) } }
       .distinct()
       .toList()
-    return candidates
-      .filter { c -> candidates.none { o -> o != c && covers(o, c) } }
+    return rawCandidates
+      .filter { c -> rawCandidates.none { o -> o != c && covers(o, c) } }
       .sortedWith(compareBy<CidrAddress>({ isV6(it) }, { it.prefix }, { key(it) }))
   }
 

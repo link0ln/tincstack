@@ -90,6 +90,26 @@ class TransportsPanel(QtWidgets.QWidget):
         self.multipath_iface.setToolTip(tr.SPEC_BY_NAME["MultipathInterface"].help)
         self.multipath_iface.textChanged.connect(self.changed)
         mf.addRow("MultipathInterface:", self.multipath_iface)
+
+        self.tcp_auto_pacing = QtWidgets.QCheckBox("AIMD auto TCP pacing ceiling (default on, 15m +10% canary)")
+        self.tcp_auto_pacing.setToolTip(tr.SPEC_BY_NAME["TcpAutoPacing"].help)
+        self.tcp_auto_pacing.toggled.connect(self.changed)
+        mf.addRow("TcpAutoPacing:", self.tcp_auto_pacing)
+
+        self.tcp_max_pacing = QtWidgets.QSpinBox()
+        self.tcp_max_pacing.setRange(0, 250_000_000)
+        self.tcp_max_pacing.setSingleStep(500_000)
+        self.tcp_max_pacing.setSpecialValueText("unlimited (0)")
+        self.tcp_max_pacing.setSuffix(" B/s")
+        self.tcp_max_pacing.setToolTip(tr.SPEC_BY_NAME["TcpMaxPacingRate"].help)
+        self.tcp_max_pacing.valueChanged.connect(self.changed)
+        mf.addRow("TcpMaxPacingRate:", self.tcp_max_pacing)
+
+        self.exit_node = QtWidgets.QLineEdit()
+        self.exit_node.setPlaceholderText("auto or peer name (e.g. euvds)")
+        self.exit_node.setToolTip(tr.SPEC_BY_NAME["ExitNode"].help)
+        self.exit_node.textChanged.connect(self.changed)
+        mf.addRow("ExitNode:", self.exit_node)
         root.addWidget(mp)
 
         # -- obfs --
@@ -204,6 +224,11 @@ class TransportsPanel(QtWidgets.QWidget):
         mp_conns = eff.get("MultipathConnections", 1)
         self.multipath_conns.setValue(int(mp_conns) if str(mp_conns).lstrip("-").isdigit() else 1)
         self.multipath_iface.setText(str(eff.get("MultipathInterface") or ""))
+        auto_p = tr._as_bool(eff.get("TcpAutoPacing", True))
+        self.tcp_auto_pacing.setChecked(True if auto_p is None else auto_p)
+        max_p = eff.get("TcpMaxPacingRate", 0)
+        self.tcp_max_pacing.setValue(int(max_p) if str(max_p).lstrip("-").isdigit() else 0)
+        self.exit_node.setText(str(eff.get("ExitNode") or ""))
         for name, sb in self.spins.items():
             v = eff[name]
             sb.setValue(int(v) if str(v).lstrip("-").isdigit() else sb.minimum())
@@ -246,6 +271,9 @@ class TransportsPanel(QtWidgets.QWidget):
             "MultipathMode": self.multipath_mode.currentText().strip().lower() or "off",
             "MultipathConnections": self.multipath_conns.value(),
             "MultipathInterface": self.multipath_iface.text().strip(),
+            "TcpAutoPacing": bool(self.tcp_auto_pacing.isChecked()),
+            "TcpMaxPacingRate": self.tcp_max_pacing.value(),
+            "ExitNode": self.exit_node.text().strip(),
             "ObfsInitMagicHeader": self.magic.text().strip() or "0",
             "HttpsPort": "" if hp_val < 0 else hp_val,
             "HttpsDecoyUpstream": self.decoy_upstream.text().strip(),

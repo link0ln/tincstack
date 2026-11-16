@@ -75,6 +75,12 @@ TRANSPORT_OPTIONS: tuple[OptionSpec, ...] = (
                "Number of parallel connections per peer for multipath (1-8, default: 1)", "negotiation", 1, 8),
     OptionSpec("MultipathInterface", "str", "",
                "Multipath uplink specification (iface[:ip[:weight[:backup[:mark]]]])", "negotiation"),
+    OptionSpec("TcpAutoPacing", "bool", True,
+               "Automatic AIMD per-peer TCP pacing ceiling with 15m +10% canary probe (default: yes)", "negotiation"),
+    OptionSpec("TcpMaxPacingRate", "int", 0,
+               "Hard upper cap on per-peer aggregate TCP pacing in bytes/sec (0 = unlimited)", "negotiation", 0, 250000000),
+    OptionSpec("ExitNode", "str", "",
+               "Preferred exit node when multiple peers announce 0.0.0.0/0 (empty/auto = automatic)", "negotiation"),
     OptionSpec("ObfsPort", "front_port", 0,
                "UDP port for the obfuscated carrier; 0 = tinc UDP port (default)", "obfs"),
     OptionSpec("ObfsPortPublic", "front_port", 0,
@@ -279,10 +285,15 @@ def changes(loaded: dict, edited: dict[str, Any]) -> dict[str, Any]:
         if spec and spec.kind == "carriers":
             old_n = parse_carrier_list(old) if present else None
             new_n = parse_carrier_list(new)
+        elif spec and spec.kind == "bool":
+            old_n = _as_bool(old) if present else None
+            parsed_new = _as_bool(new)
+            new_n = parsed_new if parsed_new is not None else new
         else:
             old_n, new_n = old, new
         if present:
-            if spec is not None and spec.kind == "front_port" and spec.default == "" and new_n in ("", None):
+            if ((spec is not None and spec.kind == "front_port" and spec.default == "" and new_n in ("", None))
+                    or (spec is not None and spec.name == "ExitNode" and new_n in ("", None))):
                 out[name] = None
             elif old_n != new_n:
                 out[name] = new_n

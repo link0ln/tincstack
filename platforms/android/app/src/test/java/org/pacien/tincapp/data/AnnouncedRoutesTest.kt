@@ -145,4 +145,48 @@ class AnnouncedRoutesTest {
     assertEquals(null, AnnouncedRoutes.normalise(CidrAddress("::ffff:192.0.2.5", 64)))
     assertEquals(null, AnnouncedRoutes.normalise(CidrAddress("::ffff:192.0.2.5", 129)))
   }
+
+  @Test
+  fun routeDefaultTrafficFalseDropsDefaultRouteAndExitPeersAreListed() {
+    val parsed = AnnouncedRoutes.parse(dump + listOf("0.0.0.0/0#50 owner exit2"))
+    assertEquals(listOf("euvds", "exit2"), AnnouncedRoutes.exitPeers(parsed, "phone"))
+
+    val noDefault = pool.copy(routeDefaultTraffic = false, bypassLan = true)
+    val selected = AnnouncedRoutes.select(parsed, "phone", everyone + "exit2", noDefault)
+    assertEquals(listOf(cidr("192.168.1.0/24")), selected)
+    assertFalse(AnnouncedRoutes.isFullTunnelV4(selected))
+  }
+
+  @Test
+  fun bypassLanExcludesRfc1918AndCollidingLocalSubnetsWhilePreservingFullTunnelAndDns() {
+    val cfg = pool.copy(bypassLan = true, routeDefaultTraffic = true)
+    val parsed = AnnouncedRoutes.parse(dump)
+    // Phone's physical Wi-Fi is 192.168.88.0/24: remote LAN 192.168.1.0/24 stays routed!
+    val routes = AnnouncedRoutes.select(
+      parsed,
+      "phone",
+      everyone,
+      cfg,
+      localSubnets = listOf(cidr("192.168.88.0/24")),
+    )
+    assertTrue(AnnouncedRoutes.isFullTunnelV4(routes))
+    assertTrue(routes.none { r -> AnnouncedRoutes.LAN_BYPASS_V4.any { ex -> AnnouncedRoutes.covers(ex, r) } })
+    assertTrue(routes.any { r -> AnnouncedRoutes.covers(r, cidr("1.1.1.1/32")) })
+    assertTrue(routes.any { r -> AnnouncedRoutes.covers(r, cidr("8.8.8.8/32")) })
+    assertTrue(routes.contains(cidr("192.168.1.0/24")))
+
+    val applied = AnnouncedRoutes.apply(cfg, routes)
+    assertEquals(AnnouncedRoutes.FULL_TUNNEL_DNS, applied.dnsServers)
+
+    // When phone's physical Wi-Fi IS 192.168.1.0/24, colliding local LAN is excluded
+    val colliding = AnnouncedRoutes.select(
+      parsed,
+      "phone",
+      everyone,
+      cfg,
+      localSubnets = listOf(cidr("192.168.1.0/24")),
+    )
+    assertFalse(colliding.contains(cidr("192.168.1.0/24")))
+    assertTrue(AnnouncedRoutes.isFullTunnelV4(colliding))
+  }
 }

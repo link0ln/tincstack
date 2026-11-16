@@ -548,6 +548,18 @@ class PeersTab(QtWidgets.QWidget):
             )
         )
         menu.addSeparator()
+        rec_mp = menu.addAction(f"⚡ Recycle slow multipath legs ({n.name})")
+        rec_mp.triggered.connect(
+            lambda _checked=False, p=n.name, nt=net: ctx.pool.run(
+                ctx.tc.multipath_recycle, nt, p, "slow",
+                tag=f"mp-recycle-{nt}-{p}",
+                on_done=lambda res: (
+                    ctx.status((res.stdout or res.stderr or f"Recycled slow legs for {p}").strip()),
+                    self.sample_async(),
+                ),
+                on_error=lambda m: ctx.status(f"{p}: recycle failed: {m}"),
+            )
+        )
         rec = menu.addAction(f"⟳ Reconnect {n.name} now")
         rec.triggered.connect(
             lambda _checked=False, p=n.name: QtCore.QTimer.singleShot(
@@ -813,10 +825,21 @@ class PeersTab(QtWidgets.QWidget):
             self._pop_route_cell(k)        # the previous exit's toggle changes too
         with yaml_config._MEM_LOCK:
             prev = nc.full_tunnel
+            prev_exit = nc.options.get("ExitNode")
             nc.full_tunnel = node.name if on else ""
+            if on and node.name.lower() != "auto":
+                nc.options["ExitNode"] = node.name
+            else:
+                nc.options.pop("ExitNode", None)
             saved_ok = ctx.save_config()
             if not saved_ok:
                 nc.full_tunnel = prev
+                if prev_exit is not None:
+                    nc.options["ExitNode"] = prev_exit
+                else:
+                    nc.options.pop("ExitNode", None)
+        if hasattr(ctx, "network"):
+            ctx.network.reload()
         if not saved_ok:
             self._table(self._snaps.get(net))
             return
@@ -960,6 +983,20 @@ class NetworkTab(QtWidgets.QWidget):
         self.autostart = QtWidgets.QCheckBox("Autostart")
         head.addStretch(); head.addWidget(self.autostart)
         left.addLayout(head)
+
+        ft_row = QtWidgets.QHBoxLayout()
+        ft_row.addWidget(QtWidgets.QLabel("Full-Tunnel:"))
+        self.ft_exit = QtWidgets.QComboBox()
+        self.ft_exit.setMinimumWidth(140)
+        self.ft_exit.setToolTip("Route default traffic (0.0.0.0/0, ::/0) via 'auto', a specific peer, or 'off'")
+        ft_row.addWidget(self.ft_exit)
+        self.bypass_lan = QtWidgets.QCheckBox("Bypass LAN")
+        self.bypass_lan.setToolTip(
+            "Keep private RFC1918/link-local IPv4 ranges and local NIC subnets outside full-tunnel VPN"
+        )
+        ft_row.addWidget(self.bypass_lan)
+        ft_row.addStretch()
+        left.addLayout(ft_row)
         self.opts = QtWidgets.QTableWidget(0, 2)
         self.opts.setHorizontalHeaderLabels(["Option", "Value"])
         self.opts.horizontalHeader().setStretchLastSection(True)
@@ -1032,9 +1069,17 @@ class NetworkTab(QtWidgets.QWidget):
         self.opts.setRowCount(0)
         self.nodes.clear()
         self.host_name.clear(); self.host_edit.clear()
+        self.ft_exit.clear()
         if not nc:
             return
         self.autostart.setChecked(nc.autostart)
+        self.bypass_lan.setChecked(bool(nc.bypass_lan))
+        ft_choices = ["off", "auto"] + sorted(h for h in nc.hosts if h != nc.node_name)
+        cur_ft = (nc.full_tunnel or "").strip()
+        if cur_ft and cur_ft not in ft_choices:
+            ft_choices.append(cur_ft)
+        self.ft_exit.addItems(ft_choices)
+        self.ft_exit.setCurrentText(cur_ft if cur_ft else "off")
         for line in options_to_conf(nc.options).splitlines():
             if " = " in line:
                 k, v = line.split(" = ", 1)
@@ -1266,6 +1311,30 @@ class NetworkTab(QtWidgets.QWidget):
                 new_opts["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
             else:
                 new_opts.pop("ConnectTo", None)
+        ft_choice = self.ft_exit.currentText().strip()
+        new_ft = "" if ft_choice in ("", "off") else ft_choice
+        new_bypass = bool(self.bypass_lan.isChecked())
+        net = self.ctx.cur_net()
+        if new_ft and net:
+            other_active = self.ctx.rt.active_full_tunnel_net(exclude=net)
+            other_cfg = next(
+                (oname for oname, onc in self.ctx.app.networks.items()
+                 if oname != net and (onc.full_tunnel or "").strip()),
+                None,
+            )
+            conflict = other_active or other_cfg
+            if conflict:
+                self.ctx.status(f"full tunnel already enabled on '{conflict}'")
+                QtWidgets.QMessageBox.warning(
+                    self, "Full tunnel conflict",
+                    f"Full tunnel is already enabled on network '{conflict}'.\n\n"
+                    f"Disable it on '{conflict}' before enabling it on '{net}'."
+                )
+                return
+        if new_ft and new_ft.lower() != "auto":
+            new_opts["ExitNode"] = new_ft
+        elif new_opts.get("ExitNode") and (not new_ft or new_opts.get("ExitNode") == (nc.full_tunnel or "").strip()):
+            new_opts.pop("ExitNode", None)
         errs = transports.validate(new_opts)
         if errs:
             self.ctx.status("not saved: " + "; ".join(errs))
@@ -1274,7 +1343,12 @@ class NetworkTab(QtWidgets.QWidget):
             nc.options = new_opts
             nc.autostart = self.autostart.isChecked()
             nc.wintun_mtu = mtu
+            nc.full_tunnel = new_ft
+            nc.bypass_lan = new_bypass
             self.ctx.save_config("config saved (restart network to apply)")
+        net = self.ctx.cur_net()
+        if net and self.ctx.admin and self.ctx._running.get(net):
+            self.ctx.pool.run(self.ctx.rt.full_tunnel_sync, net, tag=f"fulltunnel-{net}", rerun=True)
         self.reload()
         if hasattr(self.ctx, "transports"):
             self.ctx.transports.reload()
@@ -1353,6 +1427,19 @@ class TransportsTab(QtWidgets.QWidget):
             if "MultipathMode" in delta:
                 mp_mode = str(delta["MultipathMode"] or "off")
                 self.ctx.pool.run(self.ctx.tc.multipath_mode, net, mp_mode, tag=f"mp-mode-{net}")
+            if "TcpAutoPacing" in delta:
+                ap = transports._as_bool(delta["TcpAutoPacing"])
+                if ap is not None:
+                    self.ctx.pool.run(
+                        self.ctx.tc.multipath_pacing, net, "all", "auto" if ap else "off",
+                        tag=f"mp-pacing-auto-{net}",
+                    )
+            if "TcpMaxPacingRate" in delta:
+                mr = max(0, int(delta["TcpMaxPacingRate"] or 0))
+                self.ctx.pool.run(
+                    self.ctx.tc.multipath_pacing, net, "all", str(mr),
+                    tag=f"mp-pacing-rate-{net}",
+                )
             self.ctx.pool.run(
                 self.ctx.tc.reload, net,
                 tag=f"reload-tr-{net}",

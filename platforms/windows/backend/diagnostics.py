@@ -2094,6 +2094,10 @@ class DiagWebServer:
                     if parsed.path == "/api/config":
                         self._send_json(server_ref.build_config(net))
                         return
+                    if parsed.path == "/api/doctor":
+                        probe = str(qs.get("probe", ["0"])[0] or "0").strip().lower() in ("1", "true", "yes")
+                        self._send_json(server_ref.build_doctor(net, probe=probe))
+                        return
                     if parsed.path == "/api/export":
                         bundle = server_ref.build_export_bundle(net)
                         safe_net = net if (net and is_valid_net_name(net)) else "all"
@@ -2259,6 +2263,15 @@ class DiagWebServer:
                     tool = str(payload.get("tool") or payload.get("kind") or "").strip()
                     res = server_ref.prober.run_probe(target_net, tool, payload)
                     self._send_json(res)
+                    return
+
+                if parsed.path == "/api/doctor/fix":
+                    target_net = net or server_ref._default_net()
+                    if target_net and not is_valid_net_name(target_net, server_ref.app_fn()):
+                        self._send_json({"ok": False, "error": "Invalid network name"}, status=400)
+                        return
+                    res = server_ref.build_doctor(target_net, probe=True, fix=True)
+                    self._send_json(res, status=200 if res.get("ok", True) else 400)
                     return
 
                 if parsed.path == "/api/action":
@@ -2574,6 +2587,11 @@ class DiagWebServer:
             },
             "full_tunnel": ft_exit,
             "full_tunnel_info": {"exit_node": ft_exit, "state": ft_state},
+            "bypass_lan": bool(nc.bypass_lan) if nc else True,
+            "route_default_traffic": True,
+            "exit_node": str(nc.options.get("ExitNode") or "") if nc else "",
+            "tcp_auto_pacing": (transports._as_bool(nc.options.get("TcpAutoPacing")) is not False) if nc else True,
+            "tcp_max_pacing_rate": int(transports.effective(nc.options).get("TcpMaxPacingRate", 0) or 0) if nc else 0,
             "os_summary": f"MTU: {(nc.wintun_mtu or 1400) if nc else 1400} · Routes: {len(active_routes)}" + (f" · FT: {ft_state}" if ft_state else ""),
             "system_info": {
                 "OS": f"{platform.system()} {platform.release()}",
@@ -2667,12 +2685,23 @@ class DiagWebServer:
             autostart = nc.autostart if nc else False
             wintun_mtu = (nc.wintun_mtu or 1400) if nc else 1400
             full_tunnel = nc.full_tunnel if nc else ""
+            bypass_lan = bool(nc.bypass_lan) if nc else True
+            eff = transports.effective(nc.options) if nc else {}
+            parsed_ap = transports._as_bool(eff.get("TcpAutoPacing", True))
+            tcp_auto_pacing = True if parsed_ap is None else parsed_ap
+            tcp_max_pacing_rate = int(eff.get("TcpMaxPacingRate", 0) or 0)
+            exit_node = str(eff.get("ExitNode") or "")
         return {
             "ok": True,
             "net": target_net,
             "autostart": autostart,
             "wintun_mtu": wintun_mtu,
             "full_tunnel": full_tunnel,
+            "bypass_lan": bypass_lan,
+            "route_default_traffic": True,
+            "exit_node": exit_node,
+            "tcp_auto_pacing": tcp_auto_pacing,
+            "tcp_max_pacing_rate": tcp_max_pacing_rate,
             "transports": str(tr_val),
             "preferred_transports": str(pref_val),
             "options": safe_opts,
@@ -2680,6 +2709,17 @@ class DiagWebServer:
             "hosts": hosts_copy,
             "raw_yaml": raw_yaml,
         }
+
+    def build_doctor(self, net: str = "", probe: bool = False, fix: bool = False) -> dict[str, Any]:
+        app = self.app_fn()
+        if net and not is_valid_net_name(net, app):
+            raise ValueError(f"Invalid network name: {net!r}")
+        target_net = net or self._default_net()
+        if not target_net or not is_valid_net_name(target_net, app):
+            return {"ok": False, "status": "ERROR", "error": "No valid network configured", "issues": [], "connections": [], "peers": []}
+        res = self.tc.doctor(target_net, probe=probe, fix=fix)
+        res["net"] = target_net
+        return res
 
     def build_export_bundle(self, net: str = "") -> dict[str, Any]:
         app = self.app_fn()
@@ -2789,6 +2829,60 @@ class DiagWebServer:
                 return False, "Missing peer name", {}
             res = self.tc.switch_peer_transport(net, peer)
             return res.ok, f"Reconnected {peer}", {}
+        if action == "multipath_recycle":
+            peer = str(payload.get("peer") or "all").strip() or "all"
+            mode = str(payload.get("mode") or "slow").strip() or "slow"
+            res = self.tc.multipath_recycle(net, peer=peer, mode=mode)
+            msg = (res.stdout + " " + res.stderr).strip() or f"Recycled multipath legs ({peer}, {mode})"
+            return res.ok, msg, {}
+        if action in ("doctor_probe", "doctor_fix"):
+            do_fix = action == "doctor_fix"
+            doc = self.build_doctor(net, probe=True, fix=do_fix)
+            return bool(doc.get("ok", True)), f"Doctor: {doc.get('status', 'OK')}", {"doctor": doc}
+        if action == "set_pacing":
+            if not nc:
+                return False, "Network not found", {}
+            peer = str(payload.get("peer") or "all").strip() or "all"
+            auto_on = payload.get("auto_pacing")
+            max_rate = payload.get("max_pacing_rate")
+
+            def _mut_pacing(cur_app: yaml_config.AppConfig, _disk: dict) -> tuple[bool, int]:
+                cur_nc = cur_app.net(net)
+                if not cur_nc:
+                    raise ValueError("Network not found")
+                cand_opts = copy.deepcopy(cur_nc.options)
+                if auto_on is not None:
+                    b = transports._as_bool(auto_on)
+                    if b is None:
+                        raise ValueError("auto_pacing must be boolean")
+                    cand_opts["TcpAutoPacing"] = bool(b)
+                if max_rate is not None:
+                    r_int = max(0, int(max_rate))
+                    if r_int > 0:
+                        cand_opts["TcpMaxPacingRate"] = r_int
+                    else:
+                        cand_opts.pop("TcpMaxPacingRate", None)
+                errs = transports.validate(cand_opts)
+                if errs:
+                    raise ValueError("; ".join(errs))
+                cur_nc.options = cand_opts
+                eff_p = transports.effective(cand_opts)
+                eff_ap = transports._as_bool(eff_p.get("TcpAutoPacing", True))
+                return (True if eff_ap is None else eff_ap), int(eff_p.get("TcpMaxPacingRate", 0) or 0)
+
+            try:
+                eff_auto, eff_rate = self._atomic_mutate(app, _mut_pacing)
+            except (ValueError, yaml_config.ConfigError) as e:
+                return False, str(e), {}
+            self._notify_config_changed(net, action)
+            self.tc.reload(net)
+            self.tc.multipath_pacing(net, peer=peer, arg="auto" if eff_auto else "off")
+            if max_rate is not None:
+                self.tc.multipath_pacing(net, peer=peer, arg=str(eff_rate))
+            return True, f"TcpAutoPacing={'yes' if eff_auto else 'no'}, max_rate={eff_rate} B/s", {
+                "tcp_auto_pacing": eff_auto,
+                "tcp_max_pacing_rate": eff_rate,
+            }
         if action in ("switch_transport", "peer_transport"):
             peer = str(payload.get("peer") or "").strip()
             carrier = str(payload.get("carrier") or payload.get("transport") or "auto").strip()
@@ -2895,12 +2989,17 @@ class DiagWebServer:
                     if conflict:
                         raise ValueError(f"Full tunnel is already enabled on '{conflict}'")
                 cur_nc.full_tunnel = peer if enable else ""
+                if enable and peer and peer.lower() != "auto":
+                    cur_nc.options["ExitNode"] = peer
+                else:
+                    cur_nc.options.pop("ExitNode", None)
 
             try:
                 self._atomic_mutate(app, _mut_ft)
             except (ValueError, yaml_config.ConfigError) as e:
                 return False, str(e), {}
             self._notify_config_changed(net, action)
+            self.tc.reload(net)
             msg = self.runtime.full_tunnel_sync(net) if self.runtime else "saved"
             return True, msg, {}
         if action in ("save_host", "peer_save_host"):
@@ -2959,7 +3058,7 @@ class DiagWebServer:
             self._notify_config_changed(net, action)
             self.tc.reload(net)
             return True, f"Deleted and blocked host '{host}'", {}
-        if action == "save_settings":
+        if action in ("save_settings", "set_routing"):
             if not nc:
                 return False, "Network not found", {}
             tr_str = str(payload.get("transports") or "").strip()
@@ -2976,20 +3075,49 @@ class DiagWebServer:
                         if conflict:
                             raise ValueError(f"Full tunnel is already enabled on '{conflict}'")
                 cand_opts = copy.deepcopy(cur_nc.options)
-                if tr_str:
-                    cand_opts["Transports"] = transports.parse_carrier_list(tr_str)
-                else:
-                    cand_opts.pop("Transports", None)
-                if pref_str:
-                    cand_opts["PreferredTransports"] = transports.parse_carrier_list(pref_str)
-                else:
-                    cand_opts.pop("PreferredTransports", None)
+                if "transports" in payload:
+                    if tr_str:
+                        cand_opts["Transports"] = transports.parse_carrier_list(tr_str)
+                    else:
+                        cand_opts.pop("Transports", None)
+                if "preferred_transports" in payload:
+                    if pref_str:
+                        cand_opts["PreferredTransports"] = transports.parse_carrier_list(pref_str)
+                    else:
+                        cand_opts.pop("PreferredTransports", None)
+                if "tcp_auto_pacing" in payload:
+                    b_ap = transports._as_bool(payload.get("tcp_auto_pacing"))
+                    if b_ap is None:
+                        raise ValueError("tcp_auto_pacing must be boolean")
+                    cand_opts["TcpAutoPacing"] = bool(b_ap)
+                if "tcp_max_pacing_rate" in payload:
+                    rate_val = max(0, int(payload.get("tcp_max_pacing_rate") or 0))
+                    if rate_val > 0:
+                        cand_opts["TcpMaxPacingRate"] = rate_val
+                    else:
+                        cand_opts.pop("TcpMaxPacingRate", None)
+                if "exit_node" in payload:
+                    ex = str(payload.get("exit_node") or "").strip()
+                    if ex and ex.lower() != "auto":
+                        cand_opts["ExitNode"] = ex
+                    else:
+                        cand_opts.pop("ExitNode", None)
+                elif "full_tunnel" in payload:
+                    wanted_ft = str(payload.get("full_tunnel") or "").strip()
+                    if wanted_ft and wanted_ft.lower() != "auto":
+                        cand_opts["ExitNode"] = wanted_ft
+                    else:
+                        cand_opts.pop("ExitNode", None)
                 errs = transports.validate(cand_opts)
                 if errs:
                     raise ValueError("; ".join(errs))
                 cur_nc.options = cand_opts
                 if "full_tunnel" in payload:
                     cur_nc.full_tunnel = str(payload.get("full_tunnel") or "").strip()
+                if "bypass_lan" in payload:
+                    bl = transports._as_bool(payload.get("bypass_lan"))
+                    if bl is not None:
+                        cur_nc.bypass_lan = bl
 
             try:
                 self._atomic_mutate(app, _mut_settings)
@@ -2997,6 +3125,10 @@ class DiagWebServer:
                 return False, str(e), {}
             self._notify_config_changed(net, action)
             self.tc.reload(net)
+            if "tcp_auto_pacing" in payload:
+                self.tc.multipath_pacing(net, "all", "auto" if transports._as_bool(payload.get("tcp_auto_pacing")) else "off")
+            if "tcp_max_pacing_rate" in payload:
+                self.tc.multipath_pacing(net, "all", str(max(0, int(payload.get("tcp_max_pacing_rate") or 0))))
             if self.runtime:
                 self.runtime.full_tunnel_sync(net)
             return True, "Настройки транспорта и маршрутизации сохранены", {}

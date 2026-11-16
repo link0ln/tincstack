@@ -363,7 +363,7 @@ static int clamp_single_hop_mtu(const node_t *hop, int mtu) {
 		mtu = MIN(mtu, hop->maxmtu);
 	}
 
-	if(hop->connection && hop->connection->transport && hop->connection->transport->send_datagram) {
+	if(multipath_node_has_datagram_carrier(hop)) {
 		mtu = MIN(mtu, 1119);
 	}
 
@@ -396,7 +396,7 @@ static int clamp_relay_leg_mtu(const node_t *n, int mtu) {
 		mtu = MIN(mtu, n->nexthop->minmtu);
 	}
 
-	if(n->connection && n->connection->transport && n->connection->transport->send_datagram) {
+	if(multipath_node_has_datagram_carrier(n)) {
 		mtu = MIN(mtu, 1119);
 	}
 

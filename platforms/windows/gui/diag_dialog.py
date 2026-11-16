@@ -38,6 +38,162 @@ SECURITY_WARNING_TEXT = (
 )
 
 
+class _DoctorPoolPanel(QtWidgets.QWidget):
+    """Doctor & multipath connection pool inspector inside DiagnosticsDialog."""
+
+    def __init__(
+        self,
+        server: DiagWebServer | None,
+        net: str,
+        pool: Any,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.server = server
+        self.net = net
+        self.pool = pool
+
+        lay = QtWidgets.QVBoxLayout(self)
+        top = QtWidgets.QHBoxLayout()
+        self.summary_lbl = QtWidgets.QLabel("Doctor status: not run yet")
+        self.summary_lbl.setWordWrap(True)
+        top.addWidget(self.summary_lbl, stretch=1)
+
+        self.run_btn = QtWidgets.QPushButton("🩺 Run Doctor")
+        self.probe_btn = QtWidgets.QPushButton("📡 Deep Probe")
+        self.fix_btn = QtWidgets.QPushButton("🛠 Auto-Fix")
+        self.recycle_btn = QtWidgets.QPushButton("⚡ Recycle Slow")
+        self.run_btn.clicked.connect(lambda: self.run_doctor(probe=False, fix=False))
+        self.probe_btn.clicked.connect(lambda: self.run_doctor(probe=True, fix=False))
+        self.fix_btn.clicked.connect(lambda: self.run_doctor(probe=True, fix=True))
+        self.recycle_btn.clicked.connect(self.recycle_slow_legs)
+        for btn in (self.run_btn, self.probe_btn, self.fix_btn, self.recycle_btn):
+            top.addWidget(btn)
+        lay.addLayout(top)
+
+        self.pool_table = QtWidgets.QTableWidget(0, 8)
+        self.pool_table.setHorizontalHeaderLabels(
+            ["Peer", "Role", "Carrier", "Endpoint", "Score", "RTT (ms)", "Pacing", "State"]
+        )
+        self.pool_table.verticalHeader().setVisible(False)
+        self.pool_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.pool_table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.pool_table, stretch=2)
+
+        self.issues_view = QtWidgets.QPlainTextEdit()
+        self.issues_view.setReadOnly(True)
+        self.issues_view.setFont(_MONO)
+        self.issues_view.setMaximumHeight(130)
+        lay.addWidget(self.issues_view, stretch=1)
+
+    def _set_busy(self, busy: bool) -> None:
+        for btn in (self.run_btn, self.probe_btn, self.fix_btn, self.recycle_btn):
+            btn.setEnabled(not busy)
+
+    def run_doctor(self, probe: bool = False, fix: bool = False) -> None:
+        if self.server is None:
+            self.summary_lbl.setText("Doctor unavailable: diagnostics server is None")
+            return
+        self._set_busy(True)
+        self.summary_lbl.setText("Running tinc doctor…")
+        if self.pool is not None:
+            self.pool.run(
+                self.server.build_doctor,
+                self.net,
+                probe,
+                fix,
+                tag=f"gui-doctor-{self.net}",
+                on_done=self._apply_doctor,
+                on_error=lambda m: (self._set_busy(False), self.summary_lbl.setText(f"Doctor failed: {m}")),
+            )
+            return
+        try:
+            res = self.server.build_doctor(self.net, probe=probe, fix=fix)
+        except Exception as exc:
+            self._set_busy(False)
+            self.summary_lbl.setText(f"Doctor failed: {exc}")
+            return
+        self._apply_doctor(res)
+
+    def _apply_doctor(self, res: dict[str, Any]) -> None:
+        self._set_busy(False)
+        status = str(res.get("status") or ("OK" if res.get("ok") else "ERROR"))
+        mode = str(res.get("multipath_mode") or "-")
+        conns = list(res.get("connections") or [])
+        issues = list(res.get("issues") or [])
+        err = str(res.get("error") or "").strip()
+        summary = f"Status: {status} | mode={mode} | legs={len(conns)} | issues={len(issues)}"
+        if err:
+            summary += f" | error={err}"
+        self.summary_lbl.setText(summary)
+
+        self.pool_table.setRowCount(len(conns))
+        for r, cn in enumerate(conns):
+            rtt_ms = cn.get("rtt_ms")
+            min_rtt = cn.get("min_rtt_ms")
+            rtt_str = f"{rtt_ms:.1f}/{min_rtt:.1f}" if isinstance(rtt_ms, (int, float)) and isinstance(min_rtt, (int, float)) else "-"
+            pm = cn.get("pacing_mbps")
+            pcap = cn.get("pacing_cap_mbps")
+            if isinstance(pm, (int, float)) and isinstance(pcap, (int, float)) and pcap > 0:
+                pacing_str = f"{pm:.1f}/{pcap:.1f}M"
+            elif isinstance(pm, (int, float)) and pm > 0:
+                pacing_str = f"{pm:.1f}M"
+            else:
+                pacing_str = "auto"
+            flags = []
+            if cn.get("active"):
+                flags.append("ACTIVE")
+            if cn.get("canary"):
+                flags.append("CANARY")
+            if cn.get("degraded"):
+                flags.append("DEGRADED")
+            vals = [
+                str(cn.get("peer") or ""),
+                str(cn.get("role") or ""),
+                str(cn.get("carrier") or ""),
+                str(cn.get("ep") or ""),
+                str(cn.get("score") if cn.get("score") is not None else "-"),
+                rtt_str,
+                pacing_str,
+                " ".join(flags) or ("idle" if cn.get("verified") else "unverified"),
+            ]
+            for c, val in enumerate(vals):
+                self.pool_table.setItem(r, c, QtWidgets.QTableWidgetItem(val))
+
+        if issues:
+            lines = [
+                f"[{it.get('severity', '?')}] {it.get('component', '')} {it.get('peer', '')}: "
+                f"{it.get('message', '')} ({it.get('hint', '')})"
+                for it in issues
+            ]
+            self.issues_view.setPlainText("\n".join(lines))
+        else:
+            self.issues_view.setPlainText("[OK] No transport, routing, buffer, or reachability issues detected.")
+
+    def recycle_slow_legs(self) -> None:
+        if self.server is None:
+            return
+        self._set_busy(True)
+        if self.pool is not None:
+            self.pool.run(
+                self.server.handle_action,
+                self.net,
+                "multipath_recycle",
+                {"peer": "all", "mode": "slow"},
+                tag=f"gui-mp-recycle-{self.net}",
+                on_done=lambda res: (
+                    self._set_busy(False),
+                    self.summary_lbl.setText(str(res[1]) if len(res) > 1 else "Recycled slow legs"),
+                    self.run_doctor(probe=False, fix=False),
+                ),
+                on_error=lambda m: (self._set_busy(False), self.summary_lbl.setText(f"Recycle failed: {m}")),
+            )
+            return
+        _ok, msg, _extra = self.server.handle_action(self.net, "multipath_recycle", {"peer": "all", "mode": "slow"})
+        self._set_busy(False)
+        self.summary_lbl.setText(msg)
+
+
 class DiagnosticsDialog(QtWidgets.QDialog):
     """Manage the opt-in Diagnostic Web Server and inspect/mark incidents."""
 
@@ -206,6 +362,12 @@ class DiagnosticsDialog(QtWidgets.QDialog):
         self.log_view.setFont(_MONO)
         log_lay.addWidget(self.log_view, stretch=1)
         self.diag_tabs.addTab(log_page, "💥 Stacktraces & Logs")
+
+        self.doctor_panel = _DoctorPoolPanel(self.server, self.net, self.pool, self)
+        self.pool_table = self.doctor_panel.pool_table
+        self.run_doctor = self.doctor_panel.run_doctor
+        self.recycle_slow_legs = self.doctor_panel.recycle_slow_legs
+        self.diag_tabs.addTab(self.doctor_panel, "🩺 Doctor & Pool")
 
         lay.addWidget(self.diag_tabs, stretch=1)
 

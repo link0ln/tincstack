@@ -198,7 +198,7 @@ textarea.code-editor {
       <input type="checkbox" id="auto-refresh" checked> Авто (2.5с)
     </label>
     <button class="sm" onclick="refreshAll()">🔄 Обновить</button>
-    <button class="sm" onclick="logoutDiag()" title="Выйти из диагностической веб-панели">🚪 Выйти</button>
+    <button class="sm" onclick="logoutDiag()" title="Выйти из веб-панели диагностики">🚪 Выйти</button>
   </div>
 </header>
 
@@ -317,6 +317,36 @@ textarea.code-editor {
 
   <!-- TAB 3: DIAGNOSTIC TOOLS -->
   <div id="tab-tools" class="tab-pane">
+    <div class="card" style="margin-bottom:14px;">
+      <h3>
+        <span>🩺 Doctor &amp; Multi-Transport Pool (<code>tinc doctor</code>) <span id="doctor-status-badge" class="badge">—</span></span>
+        <div class="row" style="margin:0;">
+          <button class="sm primary" onclick="loadDoctor(false)">🩺 Run Doctor</button>
+          <button class="sm" onclick="loadDoctor(true)">🔍 Deep Probe (--probe)</button>
+          <button class="sm warn-btn" onclick="runDoctorFix()">🔧 Auto-Fix (--fix)</button>
+          <button class="sm" onclick="runAction('multipath_recycle', {peer:'all', mode:'slow'}).then(() => setTimeout(() => loadDoctor(false), 600))">↻ Recycle Slow</button>
+        </div>
+      </h3>
+      <div id="doctor-issues-list" style="margin-bottom:10px;font-size:12.5px;color:var(--muted);">Нажмите «Run Doctor» для анализа пула транспорта, маршрутов и RTT...</div>
+      <div class="table-wrap" style="max-height:240px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Пир</th>
+              <th>Носитель</th>
+              <th>Score</th>
+              <th>Min RTT</th>
+              <th>Cwnd</th>
+              <th>Pacing / TX</th>
+              <th>AutoPacing</th>
+              <th>Статус / Действие</th>
+            </tr>
+          </thead>
+          <tbody id="doctor-legs-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="grid grid-2" style="margin-bottom:14px;">
       <div class="card">
         <h3>1. Внутритуннельный пробник (In-Tunnel ICMP Ping / Traceroute / PMTU Sweep)</h3>
@@ -435,6 +465,16 @@ textarea.code-editor {
           <select id="cfg-full-tunnel" style="flex:1;">
             <option value="">Выключено (только подсети VPN)</option>
           </select>
+        </div>
+        <div class="row">
+          <label style="width:170px;">Auto-Pacing (AIMD):</label>
+          <label><input type="checkbox" id="cfg-auto-pacing" checked> Авто-потолок <code>TcpAutoPacing</code> + канарейка 15м</label>
+          <input type="number" id="cfg-max-pacing" min="0" max="250000000" step="250000" placeholder="Лимит B/s (0 = авто)" style="width:155px;" title="TcpMaxPacingRate в байт/сек (0 = только AIMD)">
+        </div>
+        <div class="row">
+          <label style="width:170px;">Локальные сети (LAN):</label>
+          <label><input type="checkbox" id="cfg-bypass-lan" checked> Bypass LAN (прямой доступ к RFC1918 без туннеля)</label>
+          <label id="android-route-default-wrap" style="display:none;"><input type="checkbox" id="cfg-route-default" checked> RouteDefaultTraffic (0.0.0.0/0)</label>
         </div>
         <div class="row" id="android-extra-settings" style="display:none;">
           <label><input type="checkbox" id="cfg-reconnect-net"> Переподключать при смене сети (Wi-Fi/LTE)</label>
@@ -566,12 +606,13 @@ function switchTab(tab, btn) {
   document.getElementById("tab-" + tab).classList.add("active");
   document.querySelectorAll("nav.tabs button").forEach(b => b.classList.remove("active"));
   if (btn) btn.classList.add("active");
+  if (tab === "tools") loadDoctor(false);
   if (tab === "logs") refreshLogs();
   if (tab === "controls") loadConfigTab();
 }
 
 async function apiGet(path) {
-  const r = await fetch(path, {cache: "no-store"});
+  const r = await fetch(path, {cache: "no-store", credentials: "same-origin"});
   if (r.status === 401) {
     window.location.reload();
     throw new Error("Authentication required");
@@ -584,9 +625,10 @@ async function apiPost(path, body) {
   const r = await fetch(path, {
     method: "POST",
     headers: {"Content-Type": "application/json", "X-Diag-CSRF": "1"},
+    credentials: "same-origin",
     body: JSON.stringify(body || {})
   });
-  if (r.status === 401 && path !== "/api/login") {
+  if (r.status === 401) {
     window.location.reload();
     throw new Error("Authentication required");
   }
@@ -595,7 +637,12 @@ async function apiPost(path, body) {
 
 async function logoutDiag() {
   try {
-    await apiPost("/api/logout", {});
+    await fetch("/api/logout", {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "X-Diag-CSRF": "1"},
+      credentials: "same-origin",
+      body: "{}"
+    });
   } catch (_) {}
   window.location.reload();
 }
@@ -628,54 +675,24 @@ function renderOverview(d) {
   // Networks dropdown
   const sel = document.getElementById("net-select");
   const nets = d.networks || [];
-  if (sel.options.length !== nets.length || Array.from(sel.options).some((o, i) => o.value !== nets[i])) {
-    sel.textContent = "";
-    nets.forEach(n => {
-      const opt = document.createElement("option");
-      opt.value = String(n);
-      opt.textContent = String(n);
-      opt.selected = (n === d.net);
-      sel.appendChild(opt);
-    });
-  } else {
-    Array.from(sel.options).forEach(opt => { opt.selected = (opt.value === d.net); });
+  if (sel.options.length !== nets.length || Array.from(sel.options).some((o,i) => o.value !== nets[i])) {
+    sel.innerHTML = nets.map(n => `<option value="${esc(n)}" ${n===d.net?'selected':''}>${esc(n)}</option>`).join("");
   }
 
   // Fleet links
-  const portNum = parseInt(d.diag_port || location.port || "8655", 10) || 8655;
+  const port = parseInt(d.diag_port || location.port || 8655, 10) || 8655;
   const nodes = d.nodes || [];
-  const fleetContainer = document.getElementById("fleet-links");
-  fleetContainer.textContent = "";
-  const safeIpRe = /^[0-9a-fA-F:.]+$/;
-  const fleetNodes = nodes.filter(n => n.vpn_address && safeIpRe.test(String(n.vpn_address)));
-  if (fleetNodes.length === 0) {
-    const emptySpan = document.createElement("span");
-    emptySpan.style.color = "var(--muted)";
-    emptySpan.textContent = "Нет нод с известным VPN IP";
-    fleetContainer.appendChild(emptySpan);
-  } else {
-    fleetNodes.forEach(n => {
-      const isLocalSelf = n.is_self && (location.hostname === "127.0.0.1" || location.hostname === "localhost" || location.hostname === "::1" || location.hostname === "[::1]");
-      const hostForUrl = String(n.vpn_address).includes(":") ? `[${n.vpn_address}]` : String(n.vpn_address);
-      const url = isLocalSelf ? `http://127.0.0.1:${portNum}/` : `http://${hostForUrl}:${portNum}/`;
-      const a = document.createElement("a");
-      a.className = n.is_self ? "fleet-link self" : "fleet-link";
-      a.href = url;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      a.title = `Открыть диагностическую панель ${n.name} (${url})`;
-      const dot = n.is_self ? "★ " : (n.reachable ? "🟢 " : "⚪ ");
-      a.appendChild(document.createTextNode(dot));
-      const bEl = document.createElement("b");
-      bEl.textContent = String(n.name || "");
-      a.appendChild(bEl);
-      a.appendChild(document.createTextNode(" "));
-      const codeEl = document.createElement("code");
-      codeEl.textContent = String(n.vpn_address);
-      a.appendChild(codeEl);
-      fleetContainer.appendChild(a);
-    });
-  }
+  const fleetHtml = nodes.filter(n => n.vpn_address).map(n => {
+    const rawIp = String(n.vpn_address || "").split("/")[0].trim();
+    if (!/^[0-9a-fA-F:.]+$/.test(rawIp)) return "";
+    const hostPart = rawIp.includes(":") ? `[${rawIp}]` : rawIp;
+    const isLocalSelf = n.is_self && (location.hostname === "127.0.0.1" || location.hostname === "localhost" || location.hostname === "::1");
+    const url = isLocalSelf ? `http://127.0.0.1:${port}/` : `http://${hostPart}:${port}/`;
+    const cls = n.is_self ? "fleet-link self" : "fleet-link";
+    const dot = n.is_self ? "★" : (n.reachable ? "🟢" : "⚪");
+    return `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="Открыть диагностическую панель ${esc(n.name)} (${esc(url)})">${dot} <b>${esc(n.name)}</b> <code>${esc(n.vpn_address)}</code></a>`;
+  }).filter(Boolean).join("");
+  document.getElementById("fleet-links").innerHTML = fleetHtml || "<span style='color:var(--muted)'>Нет нод с известным VPN IP</span>";
 
   // Top stat cards
   document.getElementById("st-vpn-ip").textContent = d.self_vpn_ip || "—";
@@ -745,10 +762,9 @@ function renderIncidents() {
 function renderPeersTable(d) {
   const tbody = document.getElementById("peers-tbody");
   const nodes = d.nodes || [];
-  const choices = ["auto", "quic", "https", "obfs", "sf", "sftcp", "plain"];
+  const choices = ["auto", "quic", "h3", "https", "ws", "obfs", "sf", "sftcp", "dco", "plain"];
   tbody.innerHTML = nodes.map(n => {
     const safeName = esc(n.name);
-    const safeVpnIp = esc(n.vpn_address || "");
     const linkBadge = n.is_self ? `<span class="badge info">★ this node</span>` :
       (n.link === "direct-udp" ? `<span class="badge ok">● direct UDP</span>` :
        n.link === "direct-tcp" ? `<span class="badge warn">◐ direct TCP</span>` :
@@ -757,8 +773,8 @@ function renderPeersTable(d) {
 
     const trBadge = n.transport ? `<span class="badge purple">${esc(n.transport)}</span>` : "—";
     const pref = n.preferred_transport || "auto";
-    const selHtml = n.is_self ? "—" : `<select data-peer-action="transport" data-peer="${safeName}">
-      ${choices.map(c => `<option value="${c}" ${c===pref?'selected':''}>${c === 'auto' ? 'auto' : '📌 ' + c}</option>`).join("")}
+    const selHtml = n.is_self ? "—" : `<select class="peer-transport-sel" data-peer="${safeName}">
+      ${choices.map(c => `<option value="${esc(c)}" ${c===pref?'selected':''}>${c === 'auto' ? 'auto' : '📌 ' + esc(c)}</option>`).join("")}
     </select>`;
 
     const isNoDirect = Boolean(n.no_direct || (n.status && n.status.no_direct));
@@ -780,7 +796,8 @@ function renderPeersTable(d) {
       <button class="sm" data-peer-action="info" data-peer="${safeName}" title="tinc info">ℹ️ Info</button>
       <button class="sm" data-peer-action="edit-host" data-peer="${safeName}" title="Редактировать конфиг хоста">✏️ Host</button>
       <button class="sm warn-btn" data-peer-action="reconnect" data-peer="${safeName}" title="Переподключить ноду">🔌 Reconnect</button>
-      <button class="sm" data-peer-action="ping" data-peer="${safeName}" data-vpn-ip="${safeVpnIp}" title="Ping внутри VPN">📡 Ping</button>
+      <button class="sm" data-peer-action="recycle" data-peer="${safeName}" title="Zero-drop ресайкл деградировавших ног multipath">↻ Recycle</button>
+      <button class="sm" data-peer-action="ping" data-peer="${safeName}" data-vpn-ip="${esc(n.vpn_address || "")}" title="Ping внутри VPN">📡 Ping</button>
     `;
 
     const rowStyle = (!n.is_self && isNoDirect) ? ` style="background:rgba(245,158,11,0.10);"` : "";
@@ -794,8 +811,6 @@ function renderPeersTable(d) {
 
     const rttNum = Number(n.rtt || 0);
     const pmtuNum = Number(n.pmtu || 0);
-    const pmtuMin = esc(n.pmtu_min);
-    const pmtuMax = esc(n.pmtu_max);
 
     return `<tr${rowStyle}>
       <td>${nameHtml}</td>
@@ -807,7 +822,7 @@ function renderPeersTable(d) {
       <td>${selHtml}</td>
       <td>${viaCell}</td>
       <td>${rttNum > 0 ? rttNum.toFixed(1) + " ms" : "—"}</td>
-      <td>${pmtuNum > 0 ? `${esc(pmtuNum)} <span style="color:var(--muted)">(${pmtuMin}..${pmtuMax})</span>` : "—"}</td>
+      <td>${pmtuNum > 0 ? `${esc(pmtuNum)} <span style="color:var(--muted)">(${esc(n.pmtu_min)}..${esc(n.pmtu_max)})</span>` : "—"}</td>
       <td>↓${fmtBytes(n.rx_bytes)} / ↑${fmtBytes(n.tx_bytes)}</td>
       <td><span style="font-size:11.5px;color:var(--muted);">${flags.join(" ") || "—"}</span></td>
       <td><code>${esc((n.subnets || []).join(", ") || "—")}</code></td>
@@ -816,72 +831,24 @@ function renderPeersTable(d) {
   }).join("");
 }
 
-(function bindPeersTableDelegation() {
-  const tbody = document.getElementById("peers-tbody");
-  if (!tbody) return;
-  tbody.addEventListener("change", function(ev) {
-    const sel = ev.target.closest("select[data-peer-action='transport']");
-    if (!sel) return;
-    setPeerTransport(sel.dataset.peer || "", sel.value);
-  });
-  tbody.addEventListener("click", function(ev) {
-    const btn = ev.target.closest("button[data-peer-action]");
-    if (!btn) return;
-    const peer = btn.dataset.peer || "";
-    const act = btn.dataset.peerAction;
-    if (act === "toggle-direct") {
-      togglePeerDirect(peer, btn.dataset.noDirect === "true");
-    } else if (act === "info") {
-      showPeerInfo(peer);
-    } else if (act === "edit-host") {
-      editPeerHost(peer);
-    } else if (act === "reconnect") {
-      runAction("peer_reconnect", {peer});
-    } else if (act === "ping") {
-      quickPingPeer(btn.dataset.vpnIp || "", peer);
-    }
-  });
-})();
-
 function populateProbeDropdowns(d) {
   const nodes = (d.nodes || []).filter(n => !n.is_self);
-  const vpnNodes = nodes.filter(n => n.vpn_address);
   const vpnSel = document.getElementById("probe-vpn-peer");
+  const vpnNodes = nodes.filter(n => n.vpn_address);
   if (vpnSel.options.length !== vpnNodes.length + 1) {
-    const prevVal = vpnSel.value;
-    vpnSel.textContent = "";
-    const defOpt = document.createElement("option");
-    defOpt.value = "";
-    defOpt.textContent = "— Выберите ноду —";
-    vpnSel.appendChild(defOpt);
-    vpnNodes.forEach(n => {
-      const opt = document.createElement("option");
-      opt.value = String(n.vpn_address);
-      opt.textContent = `${n.name} (${n.vpn_address})`;
-      if (opt.value === prevVal) opt.selected = true;
-      vpnSel.appendChild(opt);
-    });
-    if (!document.getElementById("probe-vpn-ip").value && vpnNodes[0]) {
+    vpnSel.innerHTML = `<option value="">— Выберите ноду —</option>` +
+      vpnNodes.map(n => `<option value="${esc(n.vpn_address)}">${esc(n.name)} (${esc(n.vpn_address)})</option>`).join("");
+    if (!document.getElementById("probe-vpn-ip").value && vpnNodes[0] && vpnNodes[0].vpn_address) {
       document.getElementById("probe-vpn-ip").value = vpnNodes[0].vpn_address;
     }
   }
   const extSel = document.getElementById("probe-ext-peer");
   if (extSel.options.length !== nodes.length + 1) {
-    const prevExt = extSel.value;
-    extSel.textContent = "";
-    const defOpt = document.createElement("option");
-    defOpt.value = "";
-    defOpt.textContent = "— Выберите ноду —";
-    extSel.appendChild(defOpt);
-    nodes.forEach(n => {
-      const addr = n.configured_address || n.address || "";
-      const opt = document.createElement("option");
-      opt.value = String(n.name || "");
-      opt.dataset.addr = String(addr);
-      opt.textContent = `${n.name} (${addr || "—"})`;
-      if (opt.value === prevExt) opt.selected = true;
-      extSel.appendChild(opt);
-    });
+    extSel.innerHTML = `<option value="">— Выберите ноду —</option>` +
+      nodes.map(n => {
+        const addr = n.configured_address || n.address || "";
+        return `<option value="${esc(n.name)}" data-addr="${esc(addr)}">${esc(n.name)} (${esc(addr || "—")})</option>`;
+      }).join("");
     if (!document.getElementById("probe-ext-host").value && nodes[0]) {
       document.getElementById("probe-ext-host").value = nodes[0].configured_address || nodes[0].address || "";
     }
@@ -1048,15 +1015,10 @@ async function runProbe(kind) {
 
 async function showPeerInfo(peer) {
   document.getElementById("modal-title").textContent = "Информация о ноде: " + peer;
-  const modalBody = document.getElementById("modal-body");
-  modalBody.textContent = "";
-  const pre = document.createElement("pre");
-  pre.className = "console";
-  pre.textContent = "Загрузка...";
-  modalBody.appendChild(pre);
+  document.getElementById("modal-body").innerHTML = `<pre class="console">Загрузка...</pre>`;
   document.getElementById("modal-backdrop").style.display = "flex";
   const res = await apiPost("/api/action", {net: STATE.net, action: "peer_info", peer});
-  pre.textContent = res.output || res.message || "Нет данных";
+  document.getElementById("modal-body").innerHTML = `<pre class="console">${esc(res.output || res.message || "Нет данных")}</pre>`;
 }
 
 async function editPeerHost(peer) {
@@ -1064,33 +1026,20 @@ async function editPeerHost(peer) {
   const cfg = await apiGet("/api/config" + q);
   const bodyText = (cfg.hosts && cfg.hosts[peer]) || "";
   document.getElementById("modal-title").textContent = "Конфигурация хоста: " + peer;
-  const modalBody = document.getElementById("modal-body");
-  modalBody.textContent = "";
-
-  const p = document.createElement("p");
-  p.style.color = "var(--muted)";
-  p.style.fontSize = "12px";
-  p.style.marginTop = "0";
-  p.textContent = "Опции хоста (Address, Port, QuicPort, HttpsPort, ObfsPort, Subnet, PreferredTransports и ключи):";
-  modalBody.appendChild(p);
-
-  const ta = document.createElement("textarea");
-  ta.id = "modal-host-text";
-  ta.className = "code-editor";
-  ta.style.minHeight = "240px";
-  ta.value = bodyText;
-  modalBody.appendChild(ta);
-
-  const row = document.createElement("div");
-  row.className = "row";
-  row.style.marginTop = "10px";
-  const btn = document.createElement("button");
-  btn.className = "primary";
-  btn.textContent = "💾 Сохранить хост и перезагрузить tincd";
-  btn.addEventListener("click", () => savePeerHost(peer));
-  row.appendChild(btn);
-  modalBody.appendChild(row);
-
+  document.getElementById("modal-body").innerHTML = `
+    <p style="color:var(--muted);font-size:12px;margin-top:0;">Опции хоста (Address, Port, QuicPort, HttpsPort, ObfsPort, Subnet, PreferredTransports и ключи):</p>
+    <textarea id="modal-host-text" class="code-editor" style="min-height:240px;"></textarea>
+    <div class="row" style="margin-top:10px;">
+      <button class="primary" id="modal-save-host-btn" data-peer="${esc(peer)}">💾 Сохранить хост и перезагрузить tincd</button>
+    </div>
+  `;
+  document.getElementById("modal-host-text").value = bodyText;
+  const saveBtn = document.getElementById("modal-save-host-btn");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", function() {
+      savePeerHost(this.dataset.peer || "");
+    });
+  }
   document.getElementById("modal-backdrop").style.display = "flex";
 }
 
@@ -1103,6 +1052,86 @@ async function savePeerHost(peer) {
 
 function closeModal() {
   document.getElementById("modal-backdrop").style.display = "none";
+}
+
+async function loadDoctor(deepProbe=false) {
+  const badge = document.getElementById("doctor-status-badge");
+  const listEl = document.getElementById("doctor-issues-list");
+  const tbody = document.getElementById("doctor-legs-tbody");
+  if (badge) { badge.textContent = deepProbe ? "PROBING..." : "CHECKING..."; badge.className = "badge info"; }
+  try {
+    const q = `?net=${encodeURIComponent(STATE.net)}&probe=${deepProbe ? 1 : 0}`;
+    const d = await apiGet("/api/doctor" + q);
+    renderDoctor(d);
+  } catch (e) {
+    if (badge) { badge.textContent = "ERROR"; badge.className = "badge err"; }
+    if (listEl) listEl.textContent = "Ошибка Doctor: " + e.message;
+    if (tbody) tbody.innerHTML = "";
+  }
+}
+
+async function runDoctorFix() {
+  try {
+    const d = await apiPost("/api/doctor/fix", {net: STATE.net});
+    renderDoctor(d);
+    showToast(`Doctor auto-fix: ${d.status || "OK"}`, d.status === "CRITICAL" || d.status === "ERROR");
+    refreshAll();
+  } catch (e) {
+    showToast("Ошибка auto-fix: " + e.message, true);
+  }
+}
+
+function renderDoctor(d) {
+  const badge = document.getElementById("doctor-status-badge");
+  const listEl = document.getElementById("doctor-issues-list");
+  const tbody = document.getElementById("doctor-legs-tbody");
+  const st = String((d && d.status) || "UNKNOWN").toUpperCase();
+  if (badge) {
+    badge.textContent = st;
+    badge.className = "badge " + (st === "HEALTHY" ? "ok" : (st === "DEGRADED" ? "warn" : "err"));
+  }
+  const issues = (d && d.issues) || [];
+  if (listEl) {
+    if (d && d.error && !issues.length) {
+      listEl.innerHTML = `<span style="color:var(--err);">${esc(d.error)}</span>`;
+    } else if (!issues.length) {
+      listEl.innerHTML = `<span style="color:var(--ok);">✓ Пул соединений, маршруты и несущие здоровы (mode=${esc(d.multipath_mode || "-")}).</span>`;
+    } else {
+      listEl.innerHTML = issues.map(i => {
+        const cls = i.severity === "CRIT" ? "err" : (i.severity === "WARN" ? "warn" : "info");
+        return `<div style="margin-bottom:4px;"><span class="badge ${cls}">${esc(i.severity || "INFO")}</span> <b>${esc(i.peer || "-")}</b> (${esc(i.component || "")}): ${esc(i.message || "")}${i.hint ? ` <span style="color:var(--muted)">→ ${esc(i.hint)}</span>` : ""}</div>`;
+      }).join("");
+    }
+  }
+  const conns = (d && d.connections) || [];
+  const peersMap = {};
+  ((d && d.peers) || []).forEach(p => { if (p && p.name) peersMap[p.name] = p; });
+  if (tbody) {
+    tbody.innerHTML = conns.map(c => {
+      const peer = String(c.peer || "");
+      const pInfo = peersMap[peer] || {};
+      const sc = c.score != null ? Number(c.score) : 100;
+      const scCls = sc >= 80 ? "ok" : (sc >= 50 ? "warn" : "err");
+      const rtt = Number(c.min_rtt_ms || -1) > 0 ? `${Number(c.min_rtt_ms).toFixed(1)} ms` : "—";
+      const pbps = Number(c.pacing_mbps || 0) > 0 ? `${Number(c.pacing_mbps).toFixed(1)} Mbps` : "—";
+      const apBps = Number(pInfo.auto_pacing_Bps || 0);
+      const apStr = apBps > 0 ? `${(apBps * 8 / 1e6).toFixed(1)} Mbps` : (pInfo.auto_pacing === false ? "off" : "auto");
+      const flags = [];
+      if (c.primary) flags.push("primary");
+      if (c.canary) flags.push("🐥canary");
+      if (c.degraded) flags.push("⚠️degraded");
+      return `<tr>
+        <td><b>${esc(peer)}</b></td>
+        <td><span class="badge purple">${esc(c.carrier || "-")}</span></td>
+        <td><span class="badge ${scCls}">${sc}</span></td>
+        <td>${rtt}</td>
+        <td>${esc(c.cwnd ?? "—")}</td>
+        <td>${pbps}</td>
+        <td>${esc(apStr)}</td>
+        <td>${esc(flags.join(" ") || "ok")} <button class="sm" data-recycle-peer="${esc(peer)}">↻ Recycle</button></td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="8" style="color:var(--muted);">Нет активных транспортных ног в пуле</td></tr>`;
+  }
 }
 
 async function loadConfigTab() {
@@ -1118,28 +1147,46 @@ async function loadConfigTab() {
   const peerNamesSet = new Set();
   ((STATE.overview && STATE.overview.nodes) || []).filter(n => !n.is_self && n.name).forEach(n => peerNamesSet.add(String(n.name)));
   Object.keys(cfg.hosts || {}).filter(h => h && h !== selfName).forEach(h => peerNamesSet.add(String(h)));
-  if (cfg.full_tunnel) peerNamesSet.add(String(cfg.full_tunnel));
+  const ftVal = String(cfg.full_tunnel || "");
+  if (ftVal && ftVal !== "auto") peerNamesSet.add(ftVal);
+
   ftSel.textContent = "";
   const offOpt = document.createElement("option");
   offOpt.value = "";
   offOpt.textContent = "Выключено (только подсети VPN)";
+  offOpt.selected = (ftVal === "");
   ftSel.appendChild(offOpt);
+
+  const autoOpt = document.createElement("option");
+  autoOpt.value = "auto";
+  autoOpt.textContent = "Автоматически (любой доступный выход 0.0.0.0/0)";
+  autoOpt.selected = (ftVal === "auto");
+  ftSel.appendChild(autoOpt);
+
   Array.from(peerNamesSet).sort().forEach(name => {
     const opt = document.createElement("option");
     opt.value = name;
     opt.textContent = "Весь трафик (0.0.0.0/0) через " + name;
-    opt.selected = (cfg.full_tunnel === name);
+    opt.selected = (ftVal === name);
     ftSel.appendChild(opt);
   });
 
+  document.getElementById("cfg-bypass-lan").checked = cfg.bypass_lan !== false;
+  document.getElementById("cfg-auto-pacing").checked = cfg.tcp_auto_pacing !== false;
+  document.getElementById("cfg-max-pacing").value = Number(cfg.tcp_max_pacing_rate || 0);
+
   const androidBox = document.getElementById("android-extra-settings");
+  const androidRdWrap = document.getElementById("android-route-default-wrap");
   if (STATE.overview && STATE.overview.platform === "android") {
     androidBox.style.display = "flex";
+    if (androidRdWrap) androidRdWrap.style.display = "inline-flex";
+    document.getElementById("cfg-route-default").checked = cfg.route_default_traffic !== false;
     document.getElementById("cfg-reconnect-net").checked = !!cfg.reconnect_on_net_change;
     document.getElementById("cfg-pause-lock").checked = !!cfg.disconnect_on_screen_off;
     document.getElementById("cfg-low-power").checked = !!cfg.low_power_mode;
   } else {
     androidBox.style.display = "none";
+    if (androidRdWrap) androidRdWrap.style.display = "none";
   }
 }
 
@@ -1150,6 +1197,10 @@ async function saveTransportSettings() {
     transports: document.getElementById("cfg-transports").value.trim(),
     preferred_transports: document.getElementById("cfg-pref-transports").value.trim(),
     full_tunnel: document.getElementById("cfg-full-tunnel").value,
+    bypass_lan: document.getElementById("cfg-bypass-lan").checked,
+    route_default_traffic: document.getElementById("cfg-route-default").checked,
+    tcp_auto_pacing: document.getElementById("cfg-auto-pacing").checked,
+    tcp_max_pacing_rate: parseInt(document.getElementById("cfg-max-pacing").value || "0", 10) || 0,
     reconnect_on_net_change: document.getElementById("cfg-reconnect-net").checked,
     disconnect_on_screen_off: document.getElementById("cfg-pause-lock").checked,
     low_power_mode: document.getElementById("cfg-low-power").checked
@@ -1207,6 +1258,45 @@ function renderLogText() {
   const el = document.getElementById("log-console");
   el.textContent = filtered.join("\n") || "(пусто)";
   el.scrollTop = el.scrollHeight;
+}
+
+const peersTbodyEl = document.getElementById("peers-tbody");
+if (peersTbodyEl) {
+  peersTbodyEl.addEventListener("change", (ev) => {
+    const sel = ev.target.closest("select.peer-transport-sel");
+    if (sel && sel.dataset.peer) {
+      setPeerTransport(sel.dataset.peer, sel.value);
+    }
+  });
+  peersTbodyEl.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-peer-action]");
+    if (!btn) return;
+    const peer = btn.dataset.peer || "";
+    const act = btn.dataset.peerAction || "";
+    if (act === "toggle-direct") {
+      togglePeerDirect(peer, btn.dataset.noDirect === "true");
+    } else if (act === "edit-host") {
+      editPeerHost(peer);
+    } else if (act === "info") {
+      showPeerInfo(peer);
+    } else if (act === "reconnect") {
+      runAction("peer_reconnect", {peer});
+    } else if (act === "recycle") {
+      runAction("multipath_recycle", {peer, mode: "slow"});
+    } else if (act === "ping") {
+      quickPingPeer(btn.dataset.vpnIp || "", peer);
+    }
+  });
+}
+
+const docLegsTbody = document.getElementById("doctor-legs-tbody");
+if (docLegsTbody) {
+  docLegsTbody.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-recycle-peer]");
+    if (!btn) return;
+    await runAction("multipath_recycle", {peer: btn.dataset.recyclePeer || "all", mode: "slow"});
+    setTimeout(() => loadDoctor(false), 600);
+  });
 }
 
 setInterval(() => {

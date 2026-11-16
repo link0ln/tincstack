@@ -204,6 +204,7 @@ const char *transport_accept_string(char *buf);
    drops never advances the walk (net.c terminate_connection). */
 #define TRANSPORT_STICKY_FAILURES 3
 const transport_t *transport_current(struct outgoing_t *outgoing);
+int transport_pool_candidates(const struct node_t *n, transport_id_t out[TRANSPORT_MAX]);
 bool transport_next_candidate(struct outgoing_t *outgoing);
 void transport_candidate_activated(struct outgoing_t *outgoing, const struct connection_t *c);
 

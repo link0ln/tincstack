@@ -334,6 +334,36 @@ textarea.code-editor {
 
   <!-- TAB 3: DIAGNOSTIC TOOLS -->
   <div id="tab-tools" class="tab-pane">
+    <div class="card" style="margin-bottom:14px;">
+      <h3>
+        <span>🩺 Doctor &amp; Multi-Transport Pool (<code>tinc doctor</code>) <span id="doctor-status-badge" class="badge">—</span></span>
+        <div class="row" style="margin:0;">
+          <button class="sm primary" onclick="loadDoctor(false)">🩺 Run Doctor</button>
+          <button class="sm" onclick="loadDoctor(true)">🔍 Deep Probe (--probe)</button>
+          <button class="sm warn-btn" onclick="runDoctorFix()">🔧 Auto-Fix (--fix)</button>
+          <button class="sm" onclick="runAction('multipath_recycle', {peer:'all', mode:'slow'}).then(() => setTimeout(() => loadDoctor(false), 600))">↻ Recycle Slow</button>
+        </div>
+      </h3>
+      <div id="doctor-issues-list" style="margin-bottom:10px;font-size:12.5px;color:var(--muted);">Нажмите «Run Doctor» для анализа пула транспорта, маршрутов и RTT...</div>
+      <div class="table-wrap" style="max-height:240px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Пир</th>
+              <th>Носитель</th>
+              <th>Score</th>
+              <th>Min RTT</th>
+              <th>Cwnd</th>
+              <th>Pacing / TX</th>
+              <th>AutoPacing</th>
+              <th>Статус / Действие</th>
+            </tr>
+          </thead>
+          <tbody id="doctor-legs-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="grid grid-2" style="margin-bottom:14px;">
       <div class="card">
         <h3>1. Внутритуннельный пробник (In-Tunnel ICMP Ping / Traceroute / PMTU Sweep)</h3>
@@ -453,9 +483,20 @@ textarea.code-editor {
             <option value="">Выключено (только подсети VPN)</option>
           </select>
         </div>
+        <div class="row">
+          <label style="width:170px;">Auto-Pacing (AIMD):</label>
+          <label><input type="checkbox" id="cfg-auto-pacing" checked> Авто-потолок <code>TcpAutoPacing</code> + канарейка 15м</label>
+          <input type="number" id="cfg-max-pacing" min="0" max="250000000" step="250000" placeholder="Лимит B/s (0 = авто)" style="width:155px;" title="TcpMaxPacingRate в байт/сек (0 = только AIMD)">
+        </div>
+        <div class="row">
+          <label style="width:170px;">Локальные сети (LAN):</label>
+          <label><input type="checkbox" id="cfg-bypass-lan" checked> Bypass LAN (прямой доступ к RFC1918 без туннеля)</label>
+          <label id="android-route-default-wrap" style="display:none;"><input type="checkbox" id="cfg-route-default" checked> RouteDefaultTraffic (0.0.0.0/0)</label>
+        </div>
         <div class="row" id="android-extra-settings" style="display:none;">
           <label><input type="checkbox" id="cfg-reconnect-net"> Переподключать при смене сети (Wi-Fi/LTE)</label>
-          <label><input type="checkbox" id="cfg-pause-lock"> Пауза при выключении экрана</label>
+          <label><input type="checkbox" id="cfg-pause-lock"> Пауза при выключении экрана (кроме воспроизведения аудио)</label>
+          <label><input type="checkbox" id="cfg-low-power"> Экономия батареи (Leaf-режим без транзитного релея)</label>
         </div>
         <div class="row">
           <button class="primary" onclick="saveTransportSettings()">💾 Сохранить и применить настройки</button>
@@ -532,6 +573,7 @@ let STATE = {
   net: "",
   overview: null,
   rawLogs: "",
+  baseRawYaml: "",
   activeTab: "overview"
 };
 
@@ -581,6 +623,7 @@ function switchTab(tab, btn) {
   document.getElementById("tab-" + tab).classList.add("active");
   document.querySelectorAll("nav.tabs button").forEach(b => b.classList.remove("active"));
   if (btn) btn.classList.add("active");
+  if (tab === "tools") loadDoctor(false);
   if (tab === "logs") refreshLogs();
   if (tab === "controls") loadConfigTab();
 }
@@ -770,6 +813,7 @@ function renderPeersTable(d) {
       <button class="sm" data-peer-action="info" data-peer="${safeName}" title="tinc info">ℹ️ Info</button>
       <button class="sm" data-peer-action="edit-host" data-peer="${safeName}" title="Редактировать конфиг хоста">✏️ Host</button>
       <button class="sm warn-btn" data-peer-action="reconnect" data-peer="${safeName}" title="Переподключить ноду">🔌 Reconnect</button>
+      <button class="sm" data-peer-action="recycle" data-peer="${safeName}" title="Zero-drop ресайкл деградировавших ног multipath">↻ Recycle</button>
       <button class="sm" data-peer-action="ping" data-peer="${safeName}" data-vpn-ip="${esc(n.vpn_address || "")}" title="Ping внутри VPN">📡 Ping</button>
     `;
 
@@ -1027,25 +1071,139 @@ function closeModal() {
   document.getElementById("modal-backdrop").style.display = "none";
 }
 
+async function loadDoctor(deepProbe=false) {
+  const badge = document.getElementById("doctor-status-badge");
+  const listEl = document.getElementById("doctor-issues-list");
+  const tbody = document.getElementById("doctor-legs-tbody");
+  if (badge) { badge.textContent = deepProbe ? "PROBING..." : "CHECKING..."; badge.className = "badge info"; }
+  try {
+    const q = `?net=${encodeURIComponent(STATE.net)}&probe=${deepProbe ? 1 : 0}`;
+    const d = await apiGet("/api/doctor" + q);
+    renderDoctor(d);
+  } catch (e) {
+    if (badge) { badge.textContent = "ERROR"; badge.className = "badge err"; }
+    if (listEl) listEl.textContent = "Ошибка Doctor: " + e.message;
+    if (tbody) tbody.innerHTML = "";
+  }
+}
+
+async function runDoctorFix() {
+  try {
+    const d = await apiPost("/api/doctor/fix", {net: STATE.net});
+    renderDoctor(d);
+    showToast(`Doctor auto-fix: ${d.status || "OK"}`, d.status === "CRITICAL" || d.status === "ERROR");
+    refreshAll();
+  } catch (e) {
+    showToast("Ошибка auto-fix: " + e.message, true);
+  }
+}
+
+function renderDoctor(d) {
+  const badge = document.getElementById("doctor-status-badge");
+  const listEl = document.getElementById("doctor-issues-list");
+  const tbody = document.getElementById("doctor-legs-tbody");
+  const st = String((d && d.status) || "UNKNOWN").toUpperCase();
+  if (badge) {
+    badge.textContent = st;
+    badge.className = "badge " + (st === "HEALTHY" ? "ok" : (st === "DEGRADED" ? "warn" : "err"));
+  }
+  const issues = (d && d.issues) || [];
+  if (listEl) {
+    if (d && d.error && !issues.length) {
+      listEl.innerHTML = `<span style="color:var(--err);">${esc(d.error)}</span>`;
+    } else if (!issues.length) {
+      listEl.innerHTML = `<span style="color:var(--ok);">✓ Пул соединений, маршруты и несущие здоровы (mode=${esc(d.multipath_mode || "-")}).</span>`;
+    } else {
+      listEl.innerHTML = issues.map(i => {
+        const cls = i.severity === "CRIT" ? "err" : (i.severity === "WARN" ? "warn" : "info");
+        return `<div style="margin-bottom:4px;"><span class="badge ${cls}">${esc(i.severity || "INFO")}</span> <b>${esc(i.peer || "-")}</b> (${esc(i.component || "")}): ${esc(i.message || "")}${i.hint ? ` <span style="color:var(--muted)">→ ${esc(i.hint)}</span>` : ""}</div>`;
+      }).join("");
+    }
+  }
+  const conns = (d && d.connections) || [];
+  const peersMap = {};
+  ((d && d.peers) || []).forEach(p => { if (p && p.name) peersMap[p.name] = p; });
+  if (tbody) {
+    tbody.innerHTML = conns.map(c => {
+      const peer = String(c.peer || "");
+      const pInfo = peersMap[peer] || {};
+      const sc = c.score != null ? Number(c.score) : 100;
+      const scCls = sc >= 80 ? "ok" : (sc >= 50 ? "warn" : "err");
+      const rtt = Number(c.min_rtt_ms || -1) > 0 ? `${Number(c.min_rtt_ms).toFixed(1)} ms` : "—";
+      const pbps = Number(c.pacing_mbps || 0) > 0 ? `${Number(c.pacing_mbps).toFixed(1)} Mbps` : "—";
+      const apBps = Number(pInfo.auto_pacing_Bps || 0);
+      const apStr = apBps > 0 ? `${(apBps * 8 / 1e6).toFixed(1)} Mbps` : (pInfo.auto_pacing === false ? "off" : "auto");
+      const flags = [];
+      if (c.primary) flags.push("primary");
+      if (c.canary) flags.push("🐥canary");
+      if (c.degraded) flags.push("⚠️degraded");
+      return `<tr>
+        <td><b>${esc(peer)}</b></td>
+        <td><span class="badge purple">${esc(c.carrier || "-")}</span></td>
+        <td><span class="badge ${scCls}">${sc}</span></td>
+        <td>${rtt}</td>
+        <td>${esc(c.cwnd ?? "—")}</td>
+        <td>${pbps}</td>
+        <td>${esc(apStr)}</td>
+        <td>${esc(flags.join(" ") || "ok")} <button class="sm" data-recycle-peer="${esc(peer)}">↻ Recycle</button></td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="8" style="color:var(--muted);">Нет активных транспортных ног в пуле</td></tr>`;
+  }
+}
+
 async function loadConfigTab() {
   const q = "?net=" + encodeURIComponent(STATE.net);
   const cfg = await apiGet("/api/config" + q);
   document.getElementById("cfg-transports").value = cfg.transports || "";
   document.getElementById("cfg-pref-transports").value = cfg.preferred_transports || "";
-  document.getElementById("raw-yaml-editor").value = cfg.raw_yaml || "";
+  STATE.baseRawYaml = cfg.raw_yaml || "";
+  document.getElementById("raw-yaml-editor").value = STATE.baseRawYaml;
 
   const ftSel = document.getElementById("cfg-full-tunnel");
-  const peers = (STATE.overview && STATE.overview.nodes || []).filter(n => !n.is_self);
-  ftSel.innerHTML = `<option value="">Выключено (только подсети VPN)</option>` +
-    peers.map(n => `<option value="${esc(n.name)}" ${cfg.full_tunnel===n.name?'selected':''}>Весь трафик (0.0.0.0/0) через ${esc(n.name)}</option>`).join("");
+  const selfName = (STATE.overview && STATE.overview.self_node) || (cfg.options && cfg.options.Name && cfg.options.Name[0]) || "";
+  const peerNamesSet = new Set();
+  ((STATE.overview && STATE.overview.nodes) || []).filter(n => !n.is_self && n.name).forEach(n => peerNamesSet.add(String(n.name)));
+  Object.keys(cfg.hosts || {}).filter(h => h && h !== selfName).forEach(h => peerNamesSet.add(String(h)));
+  const ftVal = String(cfg.full_tunnel || "");
+  if (ftVal && ftVal !== "auto") peerNamesSet.add(ftVal);
+
+  ftSel.textContent = "";
+  const offOpt = document.createElement("option");
+  offOpt.value = "";
+  offOpt.textContent = "Выключено (только подсети VPN)";
+  offOpt.selected = (ftVal === "");
+  ftSel.appendChild(offOpt);
+
+  const autoOpt = document.createElement("option");
+  autoOpt.value = "auto";
+  autoOpt.textContent = "Автоматически (любой доступный выход 0.0.0.0/0)";
+  autoOpt.selected = (ftVal === "auto");
+  ftSel.appendChild(autoOpt);
+
+  Array.from(peerNamesSet).sort().forEach(name => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = "Весь трафик (0.0.0.0/0) через " + name;
+    opt.selected = (ftVal === name);
+    ftSel.appendChild(opt);
+  });
+
+  document.getElementById("cfg-bypass-lan").checked = cfg.bypass_lan !== false;
+  document.getElementById("cfg-auto-pacing").checked = cfg.tcp_auto_pacing !== false;
+  document.getElementById("cfg-max-pacing").value = Number(cfg.tcp_max_pacing_rate || 0);
 
   const androidBox = document.getElementById("android-extra-settings");
+  const androidRdWrap = document.getElementById("android-route-default-wrap");
   if (STATE.overview && STATE.overview.platform === "android") {
     androidBox.style.display = "flex";
+    if (androidRdWrap) androidRdWrap.style.display = "inline-flex";
+    document.getElementById("cfg-route-default").checked = cfg.route_default_traffic !== false;
     document.getElementById("cfg-reconnect-net").checked = !!cfg.reconnect_on_net_change;
     document.getElementById("cfg-pause-lock").checked = !!cfg.disconnect_on_screen_off;
+    document.getElementById("cfg-low-power").checked = !!cfg.low_power_mode;
   } else {
     androidBox.style.display = "none";
+    if (androidRdWrap) androidRdWrap.style.display = "none";
   }
 }
 
@@ -1056,8 +1214,13 @@ async function saveTransportSettings() {
     transports: document.getElementById("cfg-transports").value.trim(),
     preferred_transports: document.getElementById("cfg-pref-transports").value.trim(),
     full_tunnel: document.getElementById("cfg-full-tunnel").value,
+    bypass_lan: document.getElementById("cfg-bypass-lan").checked,
+    route_default_traffic: document.getElementById("cfg-route-default").checked,
+    tcp_auto_pacing: document.getElementById("cfg-auto-pacing").checked,
+    tcp_max_pacing_rate: parseInt(document.getElementById("cfg-max-pacing").value || "0", 10) || 0,
     reconnect_on_net_change: document.getElementById("cfg-reconnect-net").checked,
-    disconnect_on_screen_off: document.getElementById("cfg-pause-lock").checked
+    disconnect_on_screen_off: document.getElementById("cfg-pause-lock").checked,
+    low_power_mode: document.getElementById("cfg-low-power").checked
   };
   const res = await apiPost("/api/action", body);
   showToast(res.message || "Настройки сохранены", !res.ok);
@@ -1067,8 +1230,14 @@ async function saveTransportSettings() {
 
 async function saveRawYaml() {
   const raw_yaml = document.getElementById("raw-yaml-editor").value;
-  const res = await apiPost("/api/action", {net: STATE.net, action: "save_raw_yaml", raw_yaml});
+  const res = await apiPost("/api/action", {
+    net: STATE.net,
+    action: "save_raw_yaml",
+    raw_yaml,
+    base_yaml: STATE.baseRawYaml || ""
+  });
   showToast(res.message || "YAML сохранён", !res.ok);
+  if (res.ok) await loadConfigTab();
   refreshAll();
 }
 
@@ -1129,9 +1298,21 @@ if (peersTbodyEl) {
       showPeerInfo(peer);
     } else if (act === "reconnect") {
       runAction("peer_reconnect", {peer});
+    } else if (act === "recycle") {
+      runAction("multipath_recycle", {peer, mode: "slow"});
     } else if (act === "ping") {
       quickPingPeer(btn.dataset.vpnIp || "", peer);
     }
+  });
+}
+
+const docLegsTbody = document.getElementById("doctor-legs-tbody");
+if (docLegsTbody) {
+  docLegsTbody.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-recycle-peer]");
+    if (!btn) return;
+    await runAction("multipath_recycle", {peer: btn.dataset.recyclePeer || "all", mode: "slow"});
+    setTimeout(() => loadDoctor(false), 600);
   });
 }
 

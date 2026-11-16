@@ -511,8 +511,15 @@ object DiagManager {
     if (!isKnownValidNet(netName)) {
       return 1 to listOf("Invalid network name")
     }
+    testCliRunnerOverride?.let { runner ->
+      return try {
+        runner(netName, args.toList())
+      } catch (e: Exception) {
+        1 to listOf(e.message ?: "tinc cli failed")
+      }
+    }
     return try {
-      val yamlFile = AppPaths.tincYamlFile(netName)
+      val yamlFile = yamlFileForNet(netName)
       val stanza = TincYaml(yamlFile).resolveNetwork(netName)
       val cmd = ArrayList<String>(args.size + 4)
       cmd.add(AppPaths.tinc().absolutePath)
@@ -1181,6 +1188,11 @@ object DiagManager {
   }
 
   @Volatile internal var testKnownNetsOverride: Set<String>? = null
+  @Volatile internal var testYamlDirOverride: File? = null
+  @Volatile internal var testCliRunnerOverride: ((String, List<String>) -> Pair<Int, List<String>>)? = null
+
+  private fun yamlFileForNet(netName: String): File =
+    testYamlDirOverride?.let { File(File(it, netName), TincYaml.FILE_NAME) } ?: AppPaths.tincYamlFile(netName)
 
   internal fun isKnownValidNet(net: String): Boolean {
     if (!isSafeNetSyntax(net)) return false
@@ -3068,11 +3080,16 @@ object DiagManager {
   )
 
   private fun resolveFullTunnelPeer(yaml: TincYaml, stanza: String): String {
+    if (!TincYaml.asTincBoolean(yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC), true)) {
+      return ""
+    }
+    val exitNode = yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_EXIT_NODE)?.trim().orEmpty()
+    if (exitNode.isNotEmpty()) return exitNode
     val redirectGw = yaml.optionValue(stanza, "RedirectGateway")?.trim().orEmpty()
     if (redirectGw.isNotEmpty()) return redirectGw
     val ftField = (yaml.networkMapPublic(stanza)["full_tunnel"] as? String)?.trim().orEmpty()
     if (ftField.isNotEmpty()) return ftField
-    return ""
+    return "auto"
   }
 
   private fun maybeReloadOrRebuildActiveVpn(
@@ -3157,8 +3174,8 @@ object DiagManager {
   private fun defaultNet(): String {
     val candidate = try {
       TincVpnService.getCurrentNetName() ?: Networks.list().firstOrNull().orEmpty()
-    } catch (_: Exception) {
-      ""
+    } catch (_: Throwable) {
+      testKnownNetsOverride?.firstOrNull().orEmpty()
     }
     return if (isSafeNetSyntax(candidate)) candidate else ""
   }
@@ -3200,11 +3217,16 @@ object DiagManager {
     var selfNode = ""
     var myVpnIp = ""
     var fullTunnelPeer = ""
+    var bypassLan = true
+    var routeDefaultTraffic = true
+    var exitNode = ""
+    var tcpAutoPacing = true
+    var tcpMaxPacingRate = 0L
     var activeRoutes: List<String> = emptyList()
     var cfgIfaceAddrs: List<String> = emptyList()
     if (targetNet.isNotEmpty()) {
       try {
-        val f = AppPaths.tincYamlFile(targetNet)
+        val f = yamlFileForNet(targetNet)
         if (f.isFile) {
           val yaml = TincYaml(f)
           val stanza = yaml.resolveNetwork(targetNet)
@@ -3212,6 +3234,11 @@ object DiagManager {
           cfgIfaceAddrs = yaml.optionValues(stanza, VpnInterfaceConfiguration.KEY_ADDRESSES) +
             yaml.optionValues(stanza, "Ifconfig")
           fullTunnelPeer = resolveFullTunnelPeer(yaml, stanza)
+          bypassLan = TincYaml.asTincBoolean(yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_BYPASS_LAN), true)
+          routeDefaultTraffic = TincYaml.asTincBoolean(yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC), true)
+          exitNode = yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_EXIT_NODE)?.trim().orEmpty()
+          tcpAutoPacing = TincYaml.asTincBoolean(yaml.optionValue(stanza, "TcpAutoPacing"), true)
+          tcpMaxPacingRate = yaml.optionValue(stanza, "TcpMaxPacingRate")?.trim()?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
           val hostsMap = (yaml.networkMapPublic(stanza)["hosts"] as? Map<*, *>).orEmpty()
           for ((k, v) in hostsMap) {
             val hName = k.toString()
@@ -3332,6 +3359,11 @@ object DiagManager {
       ),
       "full_tunnel" to fullTunnelPeer,
       "full_tunnel_info" to mapOf("exit_node" to fullTunnelPeer, "state" to ftState),
+      "bypass_lan" to bypassLan,
+      "route_default_traffic" to routeDefaultTraffic,
+      "exit_node" to exitNode,
+      "tcp_auto_pacing" to tcpAutoPacing,
+      "tcp_max_pacing_rate" to tcpMaxPacingRate,
       "os_summary" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}",
       "system_info" to mapOf(
         "OS" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
@@ -3414,12 +3446,17 @@ object DiagManager {
     var prefVal = ""
     var trVal = ""
     var fullTunnelPeer = ""
+    var bypassLan = true
+    var routeDefaultTraffic = true
+    var exitNode = ""
+    var tcpAutoPacing = true
+    var tcpMaxPacingRate = 0L
     var reconnectOnNet = true
     var disconnectScreenOff = false
     var lowPower = false
     if (targetNet.isNotEmpty()) {
       try {
-        val f = AppPaths.tincYamlFile(targetNet)
+        val f = yamlFileForNet(targetNet)
         if (f.isFile) {
           rawYaml = redactYamlSecrets(f.readText())
           val yaml = TincYaml(f)
@@ -3437,6 +3474,11 @@ object DiagManager {
           prefVal = yaml.optionValues(stanza, "PreferredTransports").joinToString(", ")
           trVal = yaml.optionValues(stanza, "Transports").joinToString(", ")
           fullTunnelPeer = resolveFullTunnelPeer(yaml, stanza)
+          bypassLan = TincYaml.asTincBoolean(yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_BYPASS_LAN), true)
+          routeDefaultTraffic = TincYaml.asTincBoolean(yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC), true)
+          exitNode = yaml.optionValue(stanza, VpnInterfaceConfiguration.KEY_EXIT_NODE)?.trim().orEmpty()
+          tcpAutoPacing = TincYaml.asTincBoolean(yaml.optionValue(stanza, "TcpAutoPacing"), true)
+          tcpMaxPacingRate = yaml.optionValue(stanza, "TcpMaxPacingRate")?.trim()?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
           reconnectOnNet = TincYaml.asTincBoolean(yaml.optionValue(stanza, "ReconnectOnNetworkChange"), true)
           disconnectScreenOff = TincYaml.asTincBoolean(yaml.optionValue(stanza, "DisconnectOnScreenOff"), false)
           lowPower = TincYaml.asTincBoolean(yaml.optionValue(stanza, "LowPowerMode"), false)
@@ -3450,12 +3492,71 @@ object DiagManager {
       "transports" to trVal,
       "preferred_transports" to prefVal,
       "full_tunnel" to fullTunnelPeer,
+      "bypass_lan" to bypassLan,
+      "route_default_traffic" to routeDefaultTraffic,
+      "exit_node" to exitNode,
+      "tcp_auto_pacing" to tcpAutoPacing,
+      "tcp_max_pacing_rate" to tcpMaxPacingRate,
       "reconnect_on_net_change" to reconnectOnNet,
       "disconnect_on_screen_off" to disconnectScreenOff,
       "low_power_mode" to lowPower,
       "options" to optionsMap,
       "hosts" to hostsMap,
       "raw_yaml" to rawYaml,
+    )
+  }
+
+  @Suppress("UNCHECKED_CAST")
+  fun buildDoctor(net: String = "", probe: Boolean = false, fix: Boolean = false): Map<String, Any?> {
+    if (net.isNotEmpty() && !isKnownValidNet(net)) {
+      return mapOf(
+        "ok" to false,
+        "status" to "ERROR",
+        "error" to "Invalid or unknown network name",
+        "issues" to emptyList<Any>(),
+        "connections" to emptyList<Any>(),
+        "peers" to emptyList<Any>(),
+      )
+    }
+    val targetNet = net.ifEmpty { defaultNet() }
+    if (targetNet.isEmpty() || !isKnownValidNet(targetNet)) {
+      return mapOf(
+        "ok" to false,
+        "status" to "ERROR",
+        "error" to "No valid network configured",
+        "issues" to emptyList<Any>(),
+        "connections" to emptyList<Any>(),
+        "peers" to emptyList<Any>(),
+      )
+    }
+    val args = mutableListOf("doctor", "--json")
+    if (probe) args.add("--probe")
+    if (fix) args.add("--fix")
+    val timeoutMs = if (probe || fix) 25_000L else 8_000L
+    val (rc, lines) = runTincCli(targetNet, timeoutMs, *args.toTypedArray())
+    val raw = lines.joinToString("\n").trim()
+    val parsed = try {
+      if (raw.startsWith("{")) JsonCodec.parse(raw) as? Map<String, Any?> else null
+    } catch (_: Exception) {
+      null
+    }
+    if (parsed != null) {
+      val res = LinkedHashMap<String, Any?>(parsed)
+      val st = res["status"]?.toString().orEmpty()
+      if (!res.containsKey("ok")) {
+        res["ok"] = rc == 0 || (st.isNotEmpty() && st != "DOWN")
+      }
+      res["net"] = targetNet
+      return res
+    }
+    return mapOf(
+      "ok" to false,
+      "net" to targetNet,
+      "status" to "DOWN",
+      "error" to raw.ifEmpty { "doctor exited with rc=$rc" },
+      "issues" to emptyList<Any>(),
+      "connections" to emptyList<Any>(),
+      "peers" to emptyList<Any>(),
     )
   }
 
@@ -3653,22 +3754,85 @@ object DiagManager {
           runTincCli(targetNet, 3500L, "reload")
           true to mapOf("ok" to true, "message" to "Deleted and blocked host '$host'")
         }
-        "save_settings" -> {
+        "multipath_recycle" -> {
+          val peerRaw = (payload["peer"]?.toString() ?: "all").trim().ifEmpty { "all" }
+          if (peerRaw != "all" && !isSafeNodeName(peerRaw)) {
+            return false to mapOf("ok" to false, "message" to "Invalid peer name '$peerRaw'")
+          }
+          val mode = (payload["mode"]?.toString() ?: "slow").trim().lowercase()
+          if (mode != "slow" && mode != "all") {
+            return false to mapOf("ok" to false, "message" to "Invalid recycle mode '$mode'")
+          }
+          val (rc, lines) = runTincCli(targetNet, 6000L, "multipath", "recycle", peerRaw, mode)
+          val msg = lines.joinToString("\n").trim().ifEmpty { "Recycled multipath legs ($peerRaw, $mode)" }
+          (rc == 0) to mapOf("ok" to (rc == 0), "message" to msg)
+        }
+        "doctor_probe", "doctor_fix" -> {
+          val doc = buildDoctor(targetNet, probe = true, fix = (action == "doctor_fix"))
+          val okDoc = (doc["ok"] as? Boolean) ?: true
+          okDoc to mapOf("ok" to okDoc, "message" to "Doctor: ${doc["status"] ?: "OK"}", "doctor" to doc)
+        }
+        "set_pacing" -> {
           if (targetNet.isEmpty() || !isKnownValidNet(targetNet)) {
             return false to mapOf("ok" to false, "message" to "Invalid network")
           }
-          val yamlFile = AppPaths.tincYamlFile(targetNet)
+          val peerRaw = (payload["peer"]?.toString() ?: "all").trim().ifEmpty { "all" }
+          if (peerRaw != "all" && !isSafeNodeName(peerRaw)) {
+            return false to mapOf("ok" to false, "message" to "Invalid peer name '$peerRaw'")
+          }
+          val yamlFile = yamlFileForNet(targetNet)
+          val yaml = TincYaml(yamlFile)
+          val stanza = yaml.resolveNetwork(targetNet)
+          val updates = LinkedHashMap<String, List<String>?>()
+          val autoRaw = payload["auto_pacing"] ?: payload["tcp_auto_pacing"]
+          if (autoRaw != null) {
+            val autoOn = autoRaw as? Boolean ?: autoRaw.toString().toBooleanStrictOrNull()
+              ?: return false to mapOf("ok" to false, "message" to "auto_pacing must be boolean")
+            updates["TcpAutoPacing"] = if (autoOn) null else listOf("no")
+          }
+          val rateRaw = payload["max_pacing_rate"] ?: payload["tcp_max_pacing_rate"]
+          if (rateRaw != null) {
+            val rate = (rateRaw as? Number)?.toLong() ?: rateRaw.toString().toLongOrNull()
+              ?: return false to mapOf("ok" to false, "message" to "max_pacing_rate must be an integer")
+            if (rate < 0L || rate > 250_000_000L) {
+              return false to mapOf("ok" to false, "message" to "max_pacing_rate must be 0..250000000")
+            }
+            updates["TcpMaxPacingRate"] = if (rate > 0L) listOf(rate.toString()) else null
+          }
+          if (updates.isNotEmpty()) {
+            yaml.setOptions(stanza, updates)
+          }
+          val effAuto = TincYaml.asTincBoolean(yaml.optionValue(stanza, "TcpAutoPacing"), true)
+          val effRate = yaml.optionValue(stanza, "TcpMaxPacingRate")?.trim()?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+          runTincCli(targetNet, 3500L, "reload")
+          runTincCli(targetNet, 3500L, "multipath", "pacing", peerRaw, if (effAuto) "auto" else "off")
+          if (rateRaw != null) {
+            runTincCli(targetNet, 3500L, "multipath", "pacing", peerRaw, effRate.toString())
+          }
+          true to mapOf(
+            "ok" to true,
+            "message" to "TcpAutoPacing=${if (effAuto) "yes" else "no"}, max_rate=$effRate B/s",
+            "tcp_auto_pacing" to effAuto,
+            "tcp_max_pacing_rate" to effRate,
+          )
+        }
+        "save_settings", "set_routing", "full_tunnel" -> {
+          if (targetNet.isEmpty() || !isKnownValidNet(targetNet)) {
+            return false to mapOf("ok" to false, "message" to "Invalid network")
+          }
+          val yamlFile = yamlFileForNet(targetNet)
           val yaml = TincYaml(yamlFile)
           val stanza = yaml.resolveNetwork(targetNet)
           val beforeIfaceCfg = try { VpnInterfaceConfiguration.fromTincYaml(yamlFile, targetNet) } catch (_: Exception) { null }
-          val trStr = (payload["transports"]?.toString() ?: "").trim()
-          val prefStr = (payload["preferred_transports"]?.toString() ?: "").trim()
-          val trList = trStr.split(Regex("[\\s,;]+")).map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
-          val prefList = prefStr.split(Regex("[\\s,;]+")).map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
-          val updates = mutableMapOf<String, List<String>?>(
-            "Transports" to trList,
-            "PreferredTransports" to prefList,
-          )
+          val updates = linkedMapOf<String, List<String>?>()
+          if (payload.containsKey("transports")) {
+            val trStr = (payload["transports"]?.toString() ?: "").trim()
+            updates["Transports"] = trStr.split(Regex("[\\s,;]+")).map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
+          }
+          if (payload.containsKey("preferred_transports")) {
+            val prefStr = (payload["preferred_transports"]?.toString() ?: "").trim()
+            updates["PreferredTransports"] = prefStr.split(Regex("[\\s,;]+")).map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { null }
+          }
           if (payload.containsKey("reconnect_on_net_change")) {
             val reconn = payload["reconnect_on_net_change"]?.toString()?.toBooleanStrictOrNull() ?: true
             updates["ReconnectOnNetworkChange"] = if (reconn) null else listOf("no")
@@ -3681,39 +3845,85 @@ object DiagManager {
             val lowPwr = payload["low_power_mode"]?.toString()?.toBooleanStrictOrNull() ?: false
             updates["LowPowerMode"] = if (lowPwr) listOf("yes") else null
           }
-          if (payload.containsKey("full_tunnel")) {
-            val exitPeer = (payload["full_tunnel"]?.toString() ?: "").trim()
-            if (exitPeer.isNotEmpty() && !isSafeNodeName(exitPeer)) {
-              return false to mapOf("ok" to false, "message" to "Invalid full-tunnel exit node '$exitPeer'")
-            }
-            val currentRoutes = yaml.optionValues(stanza, VpnInterfaceConfiguration.KEY_ROUTES)
-              .map { it.trim() }
-              .filter { it.isNotEmpty() }
-              .toMutableList()
-            if (exitPeer.isNotEmpty()) {
-              if (currentRoutes.isEmpty()) {
-                val pool = yaml.optionValue(stanza, "AddressPool")?.trim().orEmpty()
-                if (pool.isNotEmpty()) currentRoutes.add(pool)
-              }
-              if (currentRoutes.none { it.substringBefore(' ').trim() == "0.0.0.0/0" }) {
-                currentRoutes.add("0.0.0.0/0")
-              }
-              if (currentRoutes.none { it.substringBefore(' ').trim() == "::/0" }) {
-                currentRoutes.add("::/0")
-              }
-              updates["RedirectGateway"] = listOf(exitPeer)
-              updates[VpnInterfaceConfiguration.KEY_ROUTES] = currentRoutes
+          if (payload.containsKey("bypass_lan")) {
+            val bl = payload["bypass_lan"] as? Boolean ?: payload["bypass_lan"]?.toString()?.toBooleanStrictOrNull() ?: true
+            updates[VpnInterfaceConfiguration.KEY_BYPASS_LAN] = if (bl) null else listOf("no")
+          }
+          val effRouteDefault = if (payload.containsKey("route_default_traffic")) {
+            payload["route_default_traffic"] as? Boolean ?: payload["route_default_traffic"]?.toString()?.toBooleanStrictOrNull() ?: true
+          } else {
+            null
+          }
+          if (effRouteDefault != null) {
+            updates[VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC] = if (effRouteDefault) null else listOf("no")
+          }
+          val hasFullTunnelArg = payload.containsKey("full_tunnel") || action == "full_tunnel"
+          if (hasFullTunnelArg) {
+            val exitPeer = if (payload.containsKey("full_tunnel")) {
+              (payload["full_tunnel"]?.toString() ?: "").trim()
             } else {
-              val remaining = currentRoutes.filterNot {
-                it.substringBefore(' ').trim() in DEFAULT_ROUTE_PREFIXES
-              }
+              val en = payload["enable"] as? Boolean ?: payload["enable"]?.toString()?.toBooleanStrictOrNull() ?: false
+              if (en) (payload["peer"]?.toString() ?: "auto").trim().ifEmpty { "auto" } else ""
+            }
+            if (exitPeer.isEmpty()) {
+              val remaining = yaml.optionValues(stanza, VpnInterfaceConfiguration.KEY_ROUTES)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it.substringBefore(' ').trim() !in DEFAULT_ROUTE_PREFIXES }
+              updates[VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC] = listOf("no")
+              updates[VpnInterfaceConfiguration.KEY_EXIT_NODE] = null
               updates["RedirectGateway"] = null
               updates[VpnInterfaceConfiguration.KEY_ROUTES] = remaining.ifEmpty { null }
+            } else if (exitPeer.equals("auto", ignoreCase = true)) {
+              updates[VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC] = if (effRouteDefault == false) listOf("no") else null
+              updates[VpnInterfaceConfiguration.KEY_EXIT_NODE] = null
+              updates["RedirectGateway"] = null
+            } else {
+              if (!isSafeNodeName(exitPeer)) {
+                return false to mapOf("ok" to false, "message" to "Invalid full-tunnel exit node '$exitPeer'")
+              }
+              updates[VpnInterfaceConfiguration.KEY_ROUTE_DEFAULT_TRAFFIC] = if (effRouteDefault == false) listOf("no") else null
+              updates[VpnInterfaceConfiguration.KEY_EXIT_NODE] = listOf(exitPeer)
+              updates["RedirectGateway"] = listOf(exitPeer)
             }
+          } else if (payload.containsKey("exit_node")) {
+            val ex = (payload["exit_node"]?.toString() ?: "").trim()
+            if (ex.isEmpty() || ex.equals("auto", ignoreCase = true)) {
+              updates[VpnInterfaceConfiguration.KEY_EXIT_NODE] = null
+            } else if (!isSafeNodeName(ex)) {
+              return false to mapOf("ok" to false, "message" to "Invalid ExitNode '$ex'")
+            } else {
+              updates[VpnInterfaceConfiguration.KEY_EXIT_NODE] = listOf(ex)
+            }
+          }
+          var pacingChanged = false
+          val apRaw = payload["tcp_auto_pacing"]
+          if (apRaw != null) {
+            val ap = apRaw as? Boolean ?: apRaw.toString().toBooleanStrictOrNull()
+              ?: return false to mapOf("ok" to false, "message" to "tcp_auto_pacing must be boolean")
+            updates["TcpAutoPacing"] = if (ap) null else listOf("no")
+            pacingChanged = true
+          }
+          val mrRaw = payload["tcp_max_pacing_rate"]
+          if (mrRaw != null) {
+            val mr = (mrRaw as? Number)?.toLong() ?: mrRaw.toString().toLongOrNull()
+              ?: return false to mapOf("ok" to false, "message" to "tcp_max_pacing_rate must be an integer")
+            if (mr < 0L || mr > 250_000_000L) {
+              return false to mapOf("ok" to false, "message" to "tcp_max_pacing_rate must be 0..250000000")
+            }
+            updates["TcpMaxPacingRate"] = if (mr > 0L) listOf(mr.toString()) else null
+            pacingChanged = true
           }
           yaml.setOptions(stanza, updates)
           val afterIfaceCfg = try { VpnInterfaceConfiguration.fromTincYaml(yamlFile, targetNet) } catch (_: Exception) { null }
           maybeReloadOrRebuildActiveVpn(targetNet, beforeIfaceCfg, afterIfaceCfg)
+          if (pacingChanged) {
+            val effAuto = TincYaml.asTincBoolean(yaml.optionValue(stanza, "TcpAutoPacing"), true)
+            val effRate = yaml.optionValue(stanza, "TcpMaxPacingRate")?.trim()?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+            runTincCli(targetNet, 3500L, "multipath", "pacing", "all", if (effAuto) "auto" else "off")
+            if (mrRaw != null) {
+              runTincCli(targetNet, 3500L, "multipath", "pacing", "all", effRate.toString())
+            }
+          }
           true to mapOf("ok" to true, "message" to "Saved network settings")
         }
         "save_raw_yaml" -> {
@@ -3964,6 +4174,10 @@ object DiagManager {
             sendJson(buildLogs(net, source, lines))
           }
           "/api/config" -> sendJson(buildConfig(net))
+          "/api/doctor" -> {
+            val probe = qs["probe"]?.lowercase() in setOf("1", "true", "yes")
+            sendJson(buildDoctor(net, probe = probe, fix = false))
+          }
           "/api/export" -> {
             val bundle = buildExportBundle(net)
             val safeLabel = if (net.isEmpty()) "all" else net.replace(Regex("[^A-Za-z0-9_.-]"), "_")
@@ -4149,6 +4363,12 @@ object DiagManager {
             val targetNet = postNet.ifEmpty { defaultNet() }
             val tool = (payload["tool"] ?: payload["kind"] ?: "").toString().trim()
             sendJson(runProbe(targetNet, tool, payload))
+          }
+          "/api/doctor/fix" -> {
+            val targetNet = postNet.ifEmpty { defaultNet() }
+            val doc = buildDoctor(targetNet, probe = true, fix = true)
+            val okDoc = (doc["ok"] as? Boolean) ?: true
+            sendJson(doc, status = if (okDoc) 200 else 500)
           }
           "/api/action" -> {
             val targetNet = postNet.ifEmpty { defaultNet() }

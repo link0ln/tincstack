@@ -81,6 +81,7 @@ typedef struct node_path_t {
 extern multipath_mode_t multipath_mode;
 extern int multipath_target_connections;
 extern uint32_t multipath_tcp_max_pacing_rate;
+extern bool multipath_tcp_auto_pacing;
 extern multipath_uplink_t multipath_uplinks[MAX_UPLINKS];
 extern int multipath_uplink_count;
 extern uint32_t multipath_current_flow_hash;
@@ -112,6 +113,14 @@ void multipath_node_del_connection(struct node_t *n, struct connection_t *c);
 void multipath_maintain(void);
 uint32_t multipath_calc_socket_pacing_rate(uint32_t node_budget_Bps, int pool_conns, int active_tx_conns);
 void multipath_apply_node_tcp_pacing(struct node_t *n, struct connection_t *tx_conn, size_t tx_bytes);
+bool multipath_node_has_datagram_carrier(const struct node_t *n);
+bool multipath_node_auto_pacing_enabled(const struct node_t *n);
+bool multipath_pkt_is_latency_sensitive(const struct vpn_packet_t *pkt);
+uint8_t multipath_conn_health_score(const struct node_t *n, const struct connection_t *c, uint32_t best_rtt_us);
+uint8_t multipath_udp_path_score(const struct node_t *n, const struct node_path_t *p, uint32_t best_rtt_us);
+void multipath_record_dial_result(struct node_t *n, struct connection_t *c, bool ok);
+void multipath_handle_conn_degraded(struct node_t *n, struct connection_t *c);
+void multipath_step_auto_pacing(struct node_t *n);
 
 /* Per-node UDP path tracking & probing */
 void multipath_record_udp_rx(struct node_t *n, int uplink_idx, int sock_idx,

@@ -27,6 +27,8 @@
 
 #include "system.h"
 
+struct connection_t;
+
 #ifdef HAVE_QUIC
 
 #include "net.h"
@@ -53,6 +55,8 @@ bool quic_udp_try(listen_socket_t *ls, const uint8_t *buf, size_t len, const soc
    datagram ceiling, so the caller treats it exactly like EMSGSIZE and lets
    tinc's MTU probing converge (docs/transports.md §9.5). */
 bool quic_send_datagram(struct connection_t *c, const void *buf, size_t len, size_t *excess);
+bool quic_get_conn_diag(const struct connection_t *c, uint32_t *rtt_us, uint32_t *min_rtt_us,
+                        uint32_t *cwnd, uint64_t *pacing_bps, uint32_t *pkt_lost, uint32_t *pkt_sent);
 void quic_batch_begin(void);
 void quic_batch_end(void);
 
@@ -64,6 +68,11 @@ void quic_batch_end(void);
 
 #else
 
+static inline bool quic_get_conn_diag(const struct connection_t *c, uint32_t *rtt_us, uint32_t *min_rtt_us,
+                                      uint32_t *cwnd, uint64_t *pacing_bps, uint32_t *pkt_lost, uint32_t *pkt_sent) {
+	(void)c; (void)rtt_us; (void)min_rtt_us; (void)cwnd; (void)pacing_bps; (void)pkt_lost; (void)pkt_sent;
+	return false;
+}
 static inline void quic_batch_begin(void) {}
 static inline void quic_batch_end(void) {}
 

@@ -78,7 +78,7 @@ SHELL_SCRIPTS := testing/baseline/build.sh testing/nat-sim/lab.sh testing/nat-si
                  platforms/android/docker/ui-join.sh
 
 .PHONY: check unit build-core build-baseline build-lab smoke nat-quick nat-full laptop \
-        validate-nat dpi-baseline lint secrets clean promote vpn-diag vpn-bench vpn-fix
+        validate-nat dpi-baseline lint secrets clean promote vpn-diag vpn-bench vpn-fix vpn-watch
 
 check: unit build-core build-baseline smoke validate-nat nat-quick dpi-baseline
 	@echo "make check: OK (run id $(RUN); lab results under testing/*/results/run/$(RUN)/)"
@@ -151,3 +151,6 @@ vpn-bench:
 
 vpn-fix:
 	./tools/vpn-diag --probe --fix
+
+vpn-watch:
+	./tools/vpn-diag --watch --probe

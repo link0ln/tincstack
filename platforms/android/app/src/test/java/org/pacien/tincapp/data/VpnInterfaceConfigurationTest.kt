@@ -103,6 +103,26 @@ class VpnInterfaceConfigurationTest {
     assertNull(cfg.mtu)
     assertTrue(cfg.reconnectOnNetworkChange)
     assertFalse(cfg.disconnectOnScreenOff) // off unless asked for
+    assertTrue(cfg.routeDefaultTraffic)
+    assertTrue(cfg.bypassLan)
+    assertNull(cfg.exitNode)
+  }
+
+  @Test
+  fun routingOptionsDefaultAndOverrideCleanly() {
+    val cfg = VpnInterfaceConfiguration.fromTincYaml(file("""
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      InterfaceAddress: 10.210.0.3/24
+      |      RouteDefaultTraffic: no
+      |      BypassLan: no
+      |      ExitNode: exit_eu
+      |""".trimMargin()), "mynet")
+    assertFalse(cfg.routeDefaultTraffic)
+    assertFalse(cfg.bypassLan)
+    assertEquals("exit_eu", cfg.exitNode)
   }
 
   @Test

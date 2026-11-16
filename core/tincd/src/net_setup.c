@@ -237,6 +237,14 @@ static void load_one_node(const char *name) {
 		n->tcp_max_pacing_rate = 0;
 	}
 
+	bool node_auto_pacing = false;
+
+	if(get_config_bool(lookup_config(&config, "TcpAutoPacing"), &node_auto_pacing)) {
+		n->tcp_auto_pacing_override = node_auto_pacing ? 1 : -1;
+	} else {
+		n->tcp_auto_pacing_override = 0;
+	}
+
 	multipath_apply_node_tcp_pacing(n, NULL, 0);
 
 	if(is_new && n != myself) {
@@ -511,6 +519,28 @@ bool setup_myself_reloadable(void) {
 
 	get_config_bool(lookup_config(&config_tree, "DirectOnly"), &directonly);
 	get_config_bool(lookup_config(&config_tree, "LocalDiscovery"), &localdiscovery);
+
+	char *exit_val = NULL;
+	char *new_exit = NULL;
+
+	if(get_config_string(lookup_config(&config_tree, "ExitNode"), &exit_val) && exit_val) {
+		if(*exit_val && strcasecmp(exit_val, "auto") != 0 && strcasecmp(exit_val, "default") != 0) {
+			new_exit = xstrdup(exit_val);
+		}
+
+		free(exit_val);
+	}
+
+	if((preferred_exit_node == NULL) != (new_exit == NULL) ||
+	                (preferred_exit_node && new_exit && strcmp(preferred_exit_node, new_exit) != 0)) {
+		free(preferred_exit_node);
+		preferred_exit_node = new_exit;
+		subnet_cache_flush_tables();
+		logger(DEBUG_ALWAYS, LOG_INFO, "ExitNode priority set to %s",
+		       preferred_exit_node ? preferred_exit_node : "auto");
+	} else {
+		free(new_exit);
+	}
 
 	bool prev_low_power = low_power_mode;
 	low_power_mode = false;
@@ -910,6 +940,7 @@ void device_enable(void) {
 		autoif_up();
 	} else {
 		execute_script("tinc-up", &env);
+		autoif_ensure_routes();
 	}
 
 	environment_exit(&env);

@@ -29,6 +29,7 @@
 #include "ipv6.h"
 #include "logger.h"
 #include "meta.h"
+#include "multipath.h"
 #include "net.h"
 #include "protocol.h"
 #include "route.h"
@@ -434,7 +435,7 @@ static uint16_t clamp_hop_carrier_mtu(const node_t *hop, uint16_t mtu) {
 		mtu = hop->maxmtu;
 	}
 
-	if(hop->connection && hop->connection->transport && hop->connection->transport->send_datagram && mtu > 1119) {
+	if(multipath_node_has_datagram_carrier(hop) && mtu > 1119) {
 		mtu = 1119;
 	}
 

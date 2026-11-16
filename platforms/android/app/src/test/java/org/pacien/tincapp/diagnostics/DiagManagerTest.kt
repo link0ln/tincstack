@@ -28,6 +28,7 @@ import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 import java.lang.reflect.Proxy
 import java.net.ServerSocket
 import java.net.Socket
@@ -744,6 +745,82 @@ class DiagManagerTest {
       DiagManager.stopServer(persist = false)
       DiagManager.resetAuthForTests()
       assertFalse(DiagManager.isEnabled())
+    }
+  }
+
+  @Test
+  fun doctorApiAndRoutingPacingSettingsRoundTrip() {
+    DiagManager.resetAuthForTests()
+    val netDir = File(tmp.root, "mynet").apply { mkdirs() }
+    val yamlFile = File(netDir, org.pacien.tincapp.data.TincYaml.FILE_NAME)
+    yamlFile.writeText(
+      """
+      |networks:
+      |  mynet:
+      |    options:
+      |      Name: phone
+      |      Ifconfig: 10.200.0.5/24
+      |""".trimMargin() + "\n"
+    )
+    val cliCalls = mutableListOf<List<String>>()
+    DiagManager.testKnownNetsOverride = setOf("mynet")
+    DiagManager.testYamlDirOverride = tmp.root
+    DiagManager.testCliRunnerOverride = { _, args ->
+      cliCalls.add(args)
+      if (args.firstOrNull() == "doctor") {
+        0 to listOf(
+          """{"status":"HEALTHY","multipath_mode":"flowhash","connections":[{"peer":"gw1","role":"latency","carrier":"quic","score":95,"rtt_ms":21.5}],"issues":[]}"""
+        )
+      } else {
+        0 to listOf("ok")
+      }
+    }
+    val freePort = ServerSocket(0).use { it.localPort }
+    val origin = "http://127.0.0.1:$freePort"
+    try {
+      val (started, _) = DiagManager.startServer(freePort)
+      assertTrue(started)
+      val pwd = DiagManager.getPassword()
+      val authHeaders = mapOf(
+        "Authorization" to "Bearer $pwd",
+        "Origin" to origin,
+        "X-Diag-CSRF" to "1",
+        "Content-Type" to "application/json",
+      )
+
+      val docResp = sendHttp(freePort, "GET", "/api/doctor?net=mynet&probe=1", headers = authHeaders)
+      assertEquals(200, docResp.status)
+      assertTrue(docResp.body.contains("HEALTHY"))
+      assertTrue(cliCalls.any { it.contains("doctor") && it.contains("--probe") })
+
+      val fixResp = sendHttp(freePort, "POST", "/api/doctor/fix", headers = authHeaders, body = """{"net":"mynet"}""")
+      assertEquals(200, fixResp.status)
+      assertTrue(cliCalls.any { it.contains("doctor") && it.contains("--fix") })
+
+      val saveResp = sendHttp(
+        freePort,
+        "POST",
+        "/api/action",
+        headers = authHeaders,
+        body = """{"net":"mynet","action":"save_settings","transports":"quic,https","preferred_transports":"quic","full_tunnel":"exit_eu","bypass_lan":false,"route_default_traffic":false,"tcp_auto_pacing":false,"tcp_max_pacing_rate":5000000}""",
+      )
+      assertEquals(200, saveResp.status)
+      assertTrue(cliCalls.any { it == listOf("multipath", "pacing", "all", "off") })
+      assertTrue(cliCalls.any { it == listOf("multipath", "pacing", "all", "5000000") })
+
+      val cfgResp = sendHttp(freePort, "GET", "/api/config?net=mynet", headers = authHeaders)
+      assertEquals(200, cfgResp.status)
+      val parsedCfg = DiagManager.JsonCodec.parse(cfgResp.body) as Map<*, *>
+      assertEquals(false, parsedCfg["bypass_lan"])
+      assertEquals(false, parsedCfg["route_default_traffic"])
+      assertEquals(false, parsedCfg["tcp_auto_pacing"])
+      assertEquals(5000000L, (parsedCfg["tcp_max_pacing_rate"] as Number).toLong())
+    } finally {
+      DiagManager.testCliRunnerOverride = null
+      DiagManager.testYamlDirOverride = null
+      DiagManager.testKnownNetsOverride = null
+      DiagManager.stopServer(persist = false)
+      DiagManager.resetAuthForTests()
     }
   }
 }

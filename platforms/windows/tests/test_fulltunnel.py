@@ -721,4 +721,78 @@ def test_same_ifindex_nexthop_change_and_crash_journal_cleanup(tmp_path):
     assert pinned(s) == []
 
 
+def test_resolve_exit_node_auto_priority_and_fallback():
+    exit_hi = node("exit_hi", "198.51.100.10", reachable=True, distance=1)
+    exit_lo = node("exit_lo", "198.51.100.11", reachable=True, distance=1)
+    snap = NetworkSnapshot(
+        net="tincstack",
+        nodes={OWN: node(OWN, "MYSELF", distance=0), "exit_hi": exit_hi, "exit_lo": exit_lo},
+        subnets=[
+            Subnet("10.8.179.3", OWN),
+            Subnet("0.0.0.0/0#50", "exit_hi"),
+            Subnet("0.0.0.0/0#10", "exit_lo"),
+        ],
+    )
+    snap.attach_subnets()
+    assert ft.resolve_exit_node(snap, "auto", {}) == "exit_lo"
+    assert ft.resolve_exit_node(snap, "auto", {"ExitNode": "exit_hi"}) == "exit_hi"
+    # If preferred ExitNode is unreachable, fall back to best reachable exit
+    exit_hi.status["reachable"] = False
+    assert ft.resolve_exit_node(snap, "auto", {"ExitNode": "exit_hi"}) == "exit_lo"
+
+
+def test_bypass_lan_pins_split_cleanup_and_yaml_default(tmp_path):
+    jpath = str(tmp_path / "ft-bypass-journal.json")
+    s = FakeSystem()
+    t = ft.FullTunnel(
+        net="tincstack",
+        exit_node="auto",
+        aliases=["tincstack"],
+        system=s,
+        journal_path=jpath,
+        bypass_lan=True,
+    )
+    snap = snapshot()
+    t.step(snap, OPTIONS, HOSTS, OWN)
+    assert s.prefixes_on(TUN) == ["0.0.0.0/1", "128.0.0.0/1"]
+    # 172.16.0.0/12 and 169.254.0.0/16 bypassed cleanly; 10.8.179.0/24 carved out of 10.0.0.0/8;
+    # on-link 192.168.1.0/24 carved out of 192.168.0.0/16 so LAN stays reachable via PHYS
+    phys_pfxs = set(s.prefixes_on(PHYS))
+    assert "172.16.0.0/12" in phys_pfxs
+    assert "169.254.0.0/16" in phys_pfxs
+    assert "192.168.0.0/24" in phys_pfxs and "192.168.1.0/24" in phys_pfxs
+    assert "10.0.0.0/8" not in phys_pfxs and "10.8.179.0/24" not in phys_pfxs
+
+    t.stop()
+    assert s.prefixes_on(TUN) == []
+    assert "172.16.0.0/12" not in s.prefixes_on(PHYS)
+
+    # Crash simulation: re-apply and run cleanup_journal
+    t2 = ft.FullTunnel(
+        net="tincstack",
+        exit_node="auto",
+        aliases=["tincstack"],
+        system=s,
+        journal_path=jpath,
+        bypass_lan=True,
+    )
+    t2.step(snap, OPTIONS, HOSTS, OWN)
+    assert "172.16.0.0/12" in s.prefixes_on(PHYS)
+    cleaned = ft.cleanup_journal(jpath, s, ["tincstack"])
+    assert any("LAN bypass" in msg for msg in cleaned)
+    assert "172.16.0.0/12" not in s.prefixes_on(PHYS)
+
+    # YAML round-trip omits bypass_lan when True (default) and preserves False
+    cfg_path = tmp_path / "tinc.yaml"
+    yc.save_text(str(cfg_path), "networks:\n  n1:\n    options:\n      Name: win\n")
+    app = yc.load(str(cfg_path))
+    assert app.net("n1").bypass_lan is True
+    yc.save(app)
+    assert "bypass_lan" not in cfg_path.read_text(encoding="utf-8")
+    app.net("n1").bypass_lan = False
+    yc.save(app)
+    assert yc.load(str(cfg_path)).net("n1").bypass_lan is False
+
+
+
 

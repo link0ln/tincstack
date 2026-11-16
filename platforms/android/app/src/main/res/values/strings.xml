@@ -309,4 +309,25 @@
 	<string name="about_text_format">Version %1$s\n\nMesh VPN client for tincstack networks: the tinc 1.1 core, one tinc.yaml per network, invitations and per-app routing.\n\nBased on Tinc Mesh VPN by Euxane P. TRAN-GIRARD.\n© 2017–2024 Euxane P. TRAN-GIRARD and contributors; © 2026 tincstack contributors.\nFree software under the GNU General Public License v3 or later.</string>
 	<string name="crash_title">tincstack closed unexpectedly</string>
 	<string name="crash_message">What happened is in the app log.</string>
+
+	<!-- v0.5.55 routing, pacing & connection doctor -->
+	<string name="setting_routing_title">Full-tunnel &amp; LAN bypass</string>
+	<string name="routing_summary_split">Split-tunnel only (default route off)</string>
+	<string name="routing_summary_full_format">Exit: %1$s · %2$s</string>
+	<string name="routing_bypass_lan_on">Bypass LAN</string>
+	<string name="routing_bypass_lan_off">All RFC1918 in tunnel</string>
+	<string name="routing_route_default_label">Route internet traffic (0.0.0.0/0) via VPN</string>
+	<string name="routing_bypass_lan_label">Bypass local LAN / RFC1918 subnets</string>
+	<string name="routing_exit_node_label">Preferred exit node</string>
+	<string name="routing_exit_auto">Automatic (best reachable exit)</string>
+	<string name="routing_saved">Routing settings saved</string>
+	<string name="multipath_auto_pacing_label">AIMD auto TCP pacing ceiling (15m +10% canary)</string>
+	<string name="multipath_max_pacing_label">Max TCP pacing cap (B/s, 0 = unlimited)</string>
+	<string name="setting_doctor_title">Connection Doctor &amp; Pool</string>
+	<string name="setting_doctor_summary">Inspect multipath scores, RTT, pacing, and auto-fix</string>
+	<string name="doctor_running">Running tinc doctor…</string>
+	<string name="doctor_action_probe">Deep Probe</string>
+	<string name="doctor_action_fix">Auto-Fix Slow</string>
+	<string name="peer_recycle_action">Recycle slow multipath legs</string>
+	<string name="peer_recycled_format">Recycled slow legs for %1$s</string>
 </resources>

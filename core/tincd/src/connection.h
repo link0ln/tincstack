@@ -172,6 +172,10 @@ typedef struct connection_t {
 	time_t prev_tx_sec;             /* previous 1s TX byte window timestamp */
 	uint32_t cur_tx_bytes;          /* payload bytes queued on this connection in last_tx_sec */
 	uint32_t prev_tx_bytes;         /* payload bytes queued in last_tx_sec - 1 */
+	uint32_t peak_tx_Bps;           /* peak healthy 1s TX rate in bytes/sec (for AutoPacing backoff) */
+	time_t peak_tx_at;              /* timestamp when peak_tx_Bps was last updated */
+	uint8_t health_score;           /* unified 0..100 link health score */
+	bool is_canary;                 /* true while selected for +10% TcpAutoPacing probe */
 } connection_t;
 
 extern list_t connection_list;

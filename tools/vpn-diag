@@ -34,6 +34,11 @@ DEFAULT_TOPOLOGY_PATHS = [
     Path("/etc/tincstack/vpn-diag.json"),
     Path.home() / ".config/tincstack/vpn-diag.json",
 ]
+DEFAULT_STATE_FILE = Path.home() / ".cache/tincstack/vpn-diag-state.json"
+DEFAULT_EVENTS_FILE = Path.home() / ".cache/tincstack/vpn-diag-events.jsonl"
+STAGE2_CRIT_THRESHOLD = 3
+STAGE2_RESTART_COOLDOWN_SEC = 900.0
+EVENTS_MAX_BYTES = 2 * 1024 * 1024
 
 
 def find_ssh_agent() -> str | None:
@@ -730,13 +735,17 @@ def print_text_summary(
             p_conns = [c for c in conns if c.get("peer") == p["name"]]
             carriers = sorted({c.get("carrier", "?") for c in p_conns})
             rtts = [c.get("min_rtt_ms") for c in p_conns if (c.get("min_rtt_ms") or -1) > 0]
+            scores = [c.get("score") for c in p_conns if c.get("score") is not None]
             rtt_span = f"{min(rtts):.1f}..{max(rtts):.1f}ms" if rtts else "-"
+            score_s = f" score={min(scores)}..{max(scores)}" if scores else ""
+            ap_bps = p.get("auto_pacing_Bps") or 0
+            ap_s = f" autopacing={ap_bps * 8.0 / 1e6:.1f}Mbps" if ap_bps > 0 else ""
             probe_s = ""
             if "probe_ok" in p:
                 probe_s = f" ping56={'ok' if p['probe_ok'] else 'FAIL'}({p.get('probe_rtt_ms', -1):.1f}ms) mtu1280={p.get('probe_mtu1280_ok')}"
             print(
                 f"  -> peer {p['name']:12s} conns={len(p_conns)} carriers={','.join(carriers) or '-'} "
-                f"min_rtt={rtt_span} udp={p.get('udp_ok')} mtu={p.get('mtu')}{probe_s}"
+                f"min_rtt={rtt_span}{score_s}{ap_s} udp={p.get('udp_ok')} mtu={p.get('mtu')}{probe_s}"
             )
         for pg in nr.get("pings", []):
             avg = f"{pg['avg_ms']:.1f}ms" if pg["avg_ms"] is not None else "-"
@@ -772,35 +781,11 @@ def print_text_summary(
                 print(f"         -> {iss['hint']}")
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Mesh-wide VPN diagnostics and semi-automatic fix tool")
-    ap.add_argument("--topology", help="Path to vpn-diag topology JSON")
-    ap.add_argument("--probe", action="store_true", help="Run active in-tunnel ICMP/PMTU probes and ping checks")
-    ap.add_argument("--bench", action="store_true", help="Run direct WAN vs VPN latency & throughput benchmarks")
-    ap.add_argument("--fix", action="store_true", help="Semi-automatically repair slow ECMP legs, missing routes, or stale connections")
-    ap.add_argument("--yes", "-y", action="store_true", help="Auto-confirm --fix actions without prompting")
-    ap.add_argument("--json", action="store_true", help="Print full JSON report")
-    args = ap.parse_args()
-
-    try:
-        topo, topo_path = load_topology(args.topology)
-    except Exception as exc:
-        print(f"vpn-diag: failed to load topology: {exc}", file=sys.stderr)
-        return 1
-
-    nodes = topo.get("nodes") or detect_local_tinc_node()
-    if not nodes:
-        print("vpn-diag: no topology file found and no local `tinc` binary on PATH.", file=sys.stderr)
-        return 1
-
-    agent_sock = find_ssh_agent()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(len(nodes), 1)) as ex:
-        futs = [ex.submit(collect_node, n, agent_sock, args.probe) for n in nodes]
-        node_results = [f.result() for f in futs]
-
-    sni_results = check_sni_urls(topo.get("sni_urls", []))
-    bench_result = run_benchmark(topo["bench"]) if (args.bench and topo.get("bench")) else None
-
+def aggregate_issues(
+    node_results: list[dict[str, Any]],
+    sni_results: list[dict[str, Any]],
+    bench_result: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     all_issues: list[dict[str, Any]] = []
     for nr in node_results:
         for iss in nr.get("issues", []):
@@ -813,6 +798,7 @@ def main() -> int:
                 "severity": iss.get("severity", "WARN"),
                 "component": iss.get("component", "doctor"),
                 "node": f"{nr['name']}->{iss.get('peer', '-')}",
+                "node_name": nr["name"],
                 "message": iss.get("message", ""),
                 "hint": iss.get("hint", ""),
             })
@@ -825,6 +811,347 @@ def main() -> int:
                 "message": f"SNI endpoint {s['url']} returned HTTP {s['code']} (expected {s['expect']}): {s['err']}",
                 "hint": "Inspect Angie sni-mux/http.d config and backend port",
             })
+    if bench_result:
+        all_issues.extend(bench_result.get("issues", []))
+    return all_issues
+
+
+def gather_mesh_state(
+    nodes: list[dict[str, Any]],
+    sni_urls: list[dict[str, Any]],
+    agent_sock: str | None,
+    do_probe: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(len(nodes), 1)) as ex:
+        futs = [ex.submit(collect_node, n, agent_sock, do_probe) for n in nodes]
+        node_results = [f.result() for f in futs]
+    sni_results = check_sni_urls(sni_urls)
+    return node_results, sni_results, aggregate_issues(node_results, sni_results)
+
+
+def classify_health(all_issues: list[dict[str, Any]]) -> str:
+    crits = sum(1 for i in all_issues if i.get("severity") == "CRIT")
+    warns = sum(1 for i in all_issues if i.get("severity") == "WARN")
+    if crits > 0:
+        return "UNHEALTHY"
+    if warns > 0:
+        return "DEGRADED"
+    return "HEALTHY"
+
+
+def node_has_critical_failure(nr: dict[str, Any]) -> bool:
+    if not nr.get("ssh_ok", True):
+        return False
+    for iss in nr.get("issues", []):
+        if iss.get("severity") == "CRIT":
+            return True
+    doc = nr.get("doctor") or {}
+    if doc.get("status") in ("CRITICAL", "ERROR", "DOWN"):
+        return True
+    for iss in doc.get("issues", []):
+        if iss.get("severity") == "CRIT":
+            return True
+    return False
+
+
+def load_watch_state(path: Path) -> dict[str, Any]:
+    default_state: dict[str, Any] = {
+        "last_status": "UNKNOWN",
+        "last_issue_key": "",
+        "last_alert_ts": 0.0,
+        "crit_streak": {},
+        "last_restart_ts": {},
+    }
+    try:
+        if path.is_file():
+            with path.open("r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                default_state.update(loaded)
+    except Exception:
+        pass
+    return default_state
+
+
+def save_watch_state(path: Path, state: dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def append_watch_event(events_path: Path, event: dict[str, Any]) -> None:
+    try:
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        if events_path.is_file() and events_path.stat().st_size > EVENTS_MAX_BYTES:
+            data = events_path.read_bytes()[-EVENTS_MAX_BYTES // 2 :]
+            nl = data.find(b"\n")
+            if nl >= 0:
+                data = data[nl + 1 :]
+            events_path.write_bytes(data)
+        with events_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def resolve_alert_config(topo: dict[str, Any]) -> dict[str, Any]:
+    raw = topo.get("alerts") if isinstance(topo.get("alerts"), dict) else {}
+    return {
+        "telegram_bot_token": str(os.environ.get("VPN_DIAG_TG_BOT_TOKEN") or raw.get("telegram_bot_token") or "").strip(),
+        "telegram_chat_id": str(os.environ.get("VPN_DIAG_TG_CHAT_ID") or raw.get("telegram_chat_id") or "").strip(),
+        "webhook_url": str(os.environ.get("VPN_DIAG_WEBHOOK_URL") or raw.get("webhook_url") or "").strip(),
+        "repeat_crit_sec": float(raw.get("repeat_crit_sec", 0) or 0),
+    }
+
+
+def _http_post_json(url: str, payload: dict[str, Any], timeout: float = 8.0) -> tuple[bool, str]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 300, f"HTTP {resp.status}"
+    except (urllib.error.URLError, OSError) as exc:
+        return False, str(exc)
+
+
+def send_alert(
+    topo: dict[str, Any],
+    subject: str,
+    body: str,
+    http_post_fn: Any = _http_post_json,
+) -> list[dict[str, Any]]:
+    cfg = resolve_alert_config(topo)
+    deliveries: list[dict[str, Any]] = []
+    text = f"[tincstack] {subject}\n{body}".strip()
+
+    if cfg["telegram_bot_token"] and cfg["telegram_chat_id"]:
+        tg_url = f"https://api.telegram.org/bot{cfg['telegram_bot_token']}/sendMessage"
+        ok, info = http_post_fn(tg_url, {"chat_id": cfg["telegram_chat_id"], "text": text})
+        deliveries.append({"channel": "telegram", "ok": ok, "info": info})
+
+    if cfg["webhook_url"]:
+        ok, info = http_post_fn(cfg["webhook_url"], {"subject": subject, "text": text})
+        deliveries.append({"channel": "webhook", "ok": ok, "info": info})
+
+    return deliveries
+
+
+def run_watch_iteration(
+    topo: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    agent_sock: str | None,
+    do_probe: bool,
+    state: dict[str, Any],
+    *,
+    now_ts: float | None = None,
+    gather_fn: Any = gather_mesh_state,
+    run_node_fn: Any = run_on_node,
+    alert_fn: Any = send_alert,
+    events_path: Path | None = None,
+) -> dict[str, Any]:
+    ts = float(now_ts if now_ts is not None else time.time())
+    sni_urls = topo.get("sni_urls", [])
+    node_results, sni_results, all_issues = gather_fn(nodes, sni_urls, agent_sock, do_probe)
+
+    soft_fixes: list[dict[str, Any]] = []
+    hard_restarts: list[dict[str, Any]] = []
+    alerts_sent: list[dict[str, Any]] = []
+
+    actions = collect_fixes(node_results, topo)
+    if actions:
+        node_map = {n["name"]: n for n in nodes if "name" in n}
+        for act in actions:
+            ncfg = node_map.get(act["node"], {"name": act["node"], "ssh": "local"})
+            rc, out, err = run_node_fn(ncfg, act["cmd"], agent_sock, timeout=30.0)
+            soft_fixes.append({
+                "stage": 1,
+                "id": act["id"],
+                "node": act["node"],
+                "cmd": act["cmd"],
+                "rc": rc,
+                "output": (out + err).strip(),
+            })
+        # Re-verify immediately after Stage 1 zero-drop fixes
+        node_results, sni_results, all_issues = gather_fn(nodes, sni_urls, agent_sock, do_probe)
+
+    crit_streak = dict(state.get("crit_streak") or {})
+    last_restart_ts = dict(state.get("last_restart_ts") or {})
+    node_map = {n["name"]: n for n in nodes if "name" in n}
+
+    for nr in node_results:
+        nname = nr["name"]
+        ncfg = node_map.get(nname, {})
+        has_crit = node_has_critical_failure(nr)
+        if not has_crit:
+            crit_streak[nname] = 0
+            continue
+
+        streak = int(crit_streak.get(nname, 0)) + 1
+        crit_streak[nname] = streak
+        container = ncfg.get("container")
+        if not container or streak < STAGE2_CRIT_THRESHOLD:
+            continue
+
+        last_r = float(last_restart_ts.get(nname, 0.0) or 0.0)
+        if last_r > 0.0 and ts - last_r < STAGE2_RESTART_COOLDOWN_SEC:
+            continue
+
+        docker_bin = ncfg.get("docker_bin", "docker")
+        restart_cmd = f"{docker_bin} restart {shlex.quote(str(container))}"
+        rc_r, out_r, err_r = run_node_fn(ncfg, restart_cmd, agent_sock, timeout=45.0)
+        last_restart_ts[nname] = ts
+        crit_streak[nname] = 0
+        hard_restarts.append({
+            "stage": 2,
+            "node": nname,
+            "container": container,
+            "cmd": restart_cmd,
+            "rc": rc_r,
+            "output": (out_r + err_r).strip(),
+        })
+        if rc_r == 0:
+            for rchk in ncfg.get("route_checks", []):
+                rcmd = rchk.get("restore_cmd")
+                if rcmd:
+                    run_node_fn(ncfg, str(rcmd), agent_sock, timeout=20.0)
+
+    if hard_restarts:
+        node_results, sni_results, all_issues = gather_fn(nodes, sni_urls, agent_sock, do_probe)
+
+    status = classify_health(all_issues)
+    prev_status = str(state.get("last_status", "UNKNOWN"))
+    issue_sigs = sorted(f"{i.get('severity')}:{i.get('node')}:{i.get('component')}" for i in all_issues)
+    issue_key = "|".join(issue_sigs)
+    prev_issue_key = str(state.get("last_issue_key", ""))
+    cfg_alert = resolve_alert_config(topo)
+    repeat_due = (
+        status == "UNHEALTHY"
+        and cfg_alert["repeat_crit_sec"] > 0
+        and (ts - float(state.get("last_alert_ts", 0.0) or 0.0)) >= cfg_alert["repeat_crit_sec"]
+    )
+
+    lines_summary = [f"- [{i.get('severity')}] {i.get('node')}:{i.get('component')}: {i.get('message')}" for i in all_issues[:8]]
+    if soft_fixes or hard_restarts:
+        fix_desc = ", ".join(f"{f['node']}:stage{f['stage']}({f['cmd']})" for f in (soft_fixes + hard_restarts))
+        auto_tag = f"AUTO-FIXED -> {status}" if status == "HEALTHY" else f"REMEDIATED -> {status}"
+        if status != prev_status or hard_restarts or issue_key != prev_issue_key:
+            alerts_sent.extend(
+                alert_fn(topo, auto_tag, f"Actions: {fix_desc}\n" + "\n".join(lines_summary))
+            )
+            state["last_alert_ts"] = ts
+    elif status in ("DEGRADED", "UNHEALTHY") and (
+        status != prev_status or issue_key != prev_issue_key or repeat_due
+    ):
+        alerts_sent.extend(alert_fn(topo, f"Mesh {status}", "\n".join(lines_summary)))
+        state["last_alert_ts"] = ts
+    elif status == "HEALTHY" and prev_status in ("DEGRADED", "UNHEALTHY"):
+        alerts_sent.extend(alert_fn(topo, "Mesh RECOVERED -> HEALTHY", f"All {len(nodes)} node(s) healthy."))
+        state["last_alert_ts"] = ts
+
+    state["last_status"] = status
+    state["last_issue_key"] = issue_key
+    state["crit_streak"] = crit_streak
+    state["last_restart_ts"] = last_restart_ts
+
+    event_rec = {
+        "ts": ts,
+        "status": status,
+        "prev_status": prev_status,
+        "crit": sum(1 for i in all_issues if i.get("severity") == "CRIT"),
+        "warn": sum(1 for i in all_issues if i.get("severity") == "WARN"),
+        "soft_fixes": soft_fixes,
+        "hard_restarts": hard_restarts,
+        "alerts": alerts_sent,
+        "issues": lines_summary,
+    }
+    if events_path is not None and (status != prev_status or soft_fixes or hard_restarts or issue_key != prev_issue_key):
+        append_watch_event(events_path, event_rec)
+
+    return event_rec
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Mesh-wide VPN diagnostics and semi-automatic fix tool")
+    ap.add_argument("--topology", help="Path to vpn-diag topology JSON")
+    ap.add_argument("--probe", action="store_true", help="Run active in-tunnel ICMP/PMTU probes and ping checks")
+    ap.add_argument("--bench", action="store_true", help="Run direct WAN vs VPN latency & throughput benchmarks")
+    ap.add_argument("--fix", action="store_true", help="Semi-automatically repair slow ECMP legs, missing routes, or stale connections")
+    ap.add_argument("--yes", "-y", action="store_true", help="Auto-confirm --fix actions without prompting")
+    ap.add_argument("--watch", action="store_true", help="Run continuous autonomous self-healing watchdog loop")
+    ap.add_argument("--interval", type=int, default=90, help="Watchdog check interval in seconds (min 15, default 90)")
+    ap.add_argument("--state-file", default=str(DEFAULT_STATE_FILE), help="Watchdog persistent state JSON path")
+    ap.add_argument("--events-file", default=str(DEFAULT_EVENTS_FILE), help="Watchdog incident history JSONL path")
+    ap.add_argument("--test-alert", action="store_true", help="Send a test Telegram/Webhook alert and exit")
+    ap.add_argument("--json", action="store_true", help="Print full JSON report")
+    args = ap.parse_args()
+
+    try:
+        topo, topo_path = load_topology(args.topology)
+    except Exception as exc:
+        print(f"vpn-diag: failed to load topology: {exc}", file=sys.stderr)
+        return 1
+
+    if args.test_alert:
+        res = send_alert(topo, "Test Alert", f"Test notification from vpn-diag (topology={topo_path})")
+        if not res:
+            print("vpn-diag: no alerts configured (set alerts.telegram_bot_token/telegram_chat_id or webhook_url)", file=sys.stderr)
+            return 1
+        print(json.dumps(res, indent=2))
+        return 0 if all(r["ok"] for r in res) else 1
+
+    nodes = topo.get("nodes") or detect_local_tinc_node()
+    if not nodes:
+        print("vpn-diag: no topology file found and no local `tinc` binary on PATH.", file=sys.stderr)
+        return 1
+
+    agent_sock = find_ssh_agent()
+
+    if args.watch:
+        interval = max(15, int(args.interval))
+        state_path = Path(args.state_file).expanduser()
+        events_path = Path(args.events_file).expanduser()
+        state = load_watch_state(state_path)
+        print(f"vpn-diag --watch started (interval={interval}s, topology={topo_path or 'local'})", flush=True)
+        while True:
+            try:
+                rec = run_watch_iteration(
+                    topo,
+                    nodes,
+                    agent_sock,
+                    args.probe,
+                    state,
+                    events_path=events_path,
+                )
+                save_watch_state(state_path, state)
+                ts_s = time.strftime("%Y-%m-%d %H:%M:%S")
+                print(
+                    f"[{ts_s}] status={rec['status']} crit={rec['crit']} warn={rec['warn']} "
+                    f"soft_fixes={len(rec['soft_fixes'])} hard_restarts={len(rec['hard_restarts'])}",
+                    flush=True,
+                )
+            except KeyboardInterrupt:
+                return 0
+            except Exception as exc:
+                print(f"[watch error] {exc}", file=sys.stderr, flush=True)
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                return 0
+
+    node_results, sni_results, all_issues = gather_mesh_state(
+        nodes, topo.get("sni_urls", []), agent_sock, args.probe
+    )
+    bench_result = run_benchmark(topo["bench"]) if (args.bench and topo.get("bench")) else None
     if bench_result:
         all_issues.extend(bench_result.get("issues", []))
 

@@ -169,6 +169,27 @@ object Tinc {
     Executor.call(newCommand(netName).withArguments("multipath", "uplink", "del", name.trim()))
       .thenApply { }
 
+  fun multipathRecycle(netName: String, peer: String = "all", mode: String = "slow"): CompletableFuture<String> {
+    val p = peer.trim().ifEmpty { "all" }
+    val m = mode.trim().ifEmpty { "slow" }
+    return Executor.call(newCommand(netName).withArguments("multipath", "recycle", p, m))
+      .thenApply { it.joinToString("\n") }
+  }
+
+  fun multipathPacing(netName: String, peer: String = "all", arg: String = "auto"): CompletableFuture<String> {
+    val p = peer.trim().ifEmpty { "all" }
+    val a = arg.trim().ifEmpty { "auto" }
+    return Executor.call(newCommand(netName).withArguments("multipath", "pacing", p, a))
+      .thenApply { it.joinToString("\n") }
+  }
+
+  fun doctor(netName: String, probe: Boolean = false, fix: Boolean = false): CompletableFuture<String> {
+    val cmd = newCommand(netName).withArguments("doctor", "--json")
+    if (probe) cmd.withArguments("--probe")
+    if (fix) cmd.withArguments("--fix")
+    return Executor.call(cmd).thenApply { it.joinToString("\n") }
+  }
+
   fun log(netName: String, level: Int? = null): Process =
     Executor.run(newCommand(netName)
       .withArguments("log")

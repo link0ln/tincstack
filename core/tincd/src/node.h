@@ -171,6 +171,16 @@ typedef struct node_t {
 	uint8_t udp_probe_seq;                  /* per-node unconfirmed UDP address rotation counter */
 	uint8_t sptps_cooldown;                 /* per-attempt randomized SPTPS retry timeout (24..36s) */
 	uint32_t tcp_max_pacing_rate;           /* aggregate per-peer TCP pacing budget in bytes/sec (0 = use global/unlimited) */
+	time_t mp_carrier_backoff_until[8];     /* per-transport_id_t secondary dial backoff until timestamp */
+	uint8_t mp_carrier_failures[8];         /* consecutive secondary pre-activation failures per carrier */
+	uint32_t auto_pacing_budget_Bps;        /* AIMD learned per-peer TCP pacing budget in bytes/sec (0 = inactive) */
+	uint32_t auto_pacing_policer_Bps;       /* last detected per-flow policer ceiling in bytes/sec */
+	time_t auto_pacing_last_backoff_at;     /* debounce timestamp for 0.85x AIMD reductions */
+	time_t auto_pacing_next_probe_at;       /* next scheduled +10% canary probe timestamp */
+	time_t auto_pacing_canary_started_at;   /* start time of active canary probe window */
+	struct connection_t *auto_pacing_canary;/* secondary connection currently probing +10% */
+	bool auto_pacing_canary_tested;         /* true if heavy TX hit the active canary leg */
+	int8_t tcp_auto_pacing_override;        /* 0 = inherit global TcpAutoPacing, 1 = on, -1 = off */
 } node_t;
 
 extern struct node_t *myself;

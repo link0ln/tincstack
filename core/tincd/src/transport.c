@@ -873,6 +873,101 @@ const transport_t *transport_current(outgoing_t *outgoing) {
 	return &transports[outgoing->candidates[outgoing->transport_idx]];
 }
 
+static void append_pool_candidate(transport_id_t id, uint32_t peer, transport_id_t primary_id,
+                                  uint32_t *added, transport_id_t out[TRANSPORT_MAX], int *count) {
+	if(id >= TRANSPORT_TEST || *count >= TRANSPORT_MAX) {
+		return;
+	}
+
+	/* Single-flow UDP carriers (`sf`, `obfs`) demux by peer UDP endpoint rather
+	   than per-socket connection objects in n->connections. */
+	if(id == TRANSPORT_SF || id == TRANSPORT_OBFS) {
+		return;
+	}
+
+	/* Never mix cleartext `plain` or `sftcp` legs into a secondary pool when
+	   the primary connection runs over a masked carrier (`https`/`quic`), so
+	   traffic stays hidden and free of ISP :445 throttling. */
+	if((id == TRANSPORT_PLAIN || id == TRANSPORT_SFTCP) &&
+	                primary_id != TRANSPORT_PLAIN && primary_id != TRANSPORT_SFTCP) {
+		return;
+	}
+
+	uint32_t bit = TRANSPORT_BIT(id);
+
+	if(*added & bit) {
+		return;
+	}
+
+	if(!(peer & bit) || !transports[id].dial) {
+		return;
+	}
+
+	if(transports[id].init && !(transport_init_done & bit)) {
+		return;
+	}
+
+	out[(*count)++] = id;
+	*added |= bit;
+}
+
+int transport_pool_candidates(const node_t *n, transport_id_t out[TRANSPORT_MAX]) {
+	int count = 0;
+	uint32_t added = 0;
+
+	if(!n || !n->connection) {
+		return 0;
+	}
+
+	uint32_t peer = transport_node_mask(n);
+
+	if(peer & TRANSPORT_MASK_PLAIN) {
+		peer |= TRANSPORT_BIT(TRANSPORT_SFTCP);
+	}
+
+	transport_id_t primary_id = n->connection->transport ? n->connection->transport->id : TRANSPORT_PLAIN;
+
+	/* Explicit per-node PreferredTransports override takes priority (up to
+	   all masked carriers listed before `plain`). */
+	if(n->pref_transports_count > 0) {
+		for(int i = 0; i < n->pref_transports_count; i++) {
+			transport_id_t id = (transport_id_t)n->pref_transports[i];
+
+			if(id == TRANSPORT_PLAIN && primary_id != TRANSPORT_PLAIN) {
+				break;
+			}
+
+			append_pool_candidate(id, peer, primary_id, &added, out, &count);
+		}
+	} else if(transport_pref_explicit) {
+		for(int i = 0; i < transport_pref_count; i++) {
+			transport_id_t id = transport_pref[i];
+
+			if(id == TRANSPORT_PLAIN && primary_id != TRANSPORT_PLAIN) {
+				break;
+			}
+
+			append_pool_candidate(id, peer, primary_id, &added, out, &count);
+		}
+	} else {
+		static const transport_id_t auto_pool_order[] = {
+			TRANSPORT_QUIC, TRANSPORT_HTTPS, TRANSPORT_SFTCP, TRANSPORT_PLAIN
+		};
+
+		for(size_t i = 0; i < sizeof(auto_pool_order) / sizeof(auto_pool_order[0]); i++) {
+			append_pool_candidate(auto_pool_order[i], peer, primary_id, &added, out, &count);
+		}
+	}
+
+	/* Ensure at least the active primary carrier itself is included if dialable. */
+	if(primary_id < TRANSPORT_TEST && primary_id != TRANSPORT_SF && primary_id != TRANSPORT_OBFS &&
+	                transports[primary_id].dial && !(added & TRANSPORT_BIT(primary_id)) && count < TRANSPORT_MAX) {
+		out[count++] = primary_id;
+	}
+
+	return count;
+}
+
 bool transport_next_candidate(outgoing_t *outgoing) {
 	if(!outgoing->ncandidates) {
 		build_candidates(outgoing);

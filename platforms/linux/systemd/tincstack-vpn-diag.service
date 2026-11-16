@@ -1,0 +1,15 @@
+[Unit]
+Description=tincstack Autonomous Mesh Self-Healing Watchdog
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vpn-diag --watch --probe --interval 90
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

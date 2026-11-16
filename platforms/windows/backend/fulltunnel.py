@@ -55,6 +55,7 @@ SPLIT = ("0.0.0.0/1", "128.0.0.0/1")
 SPLIT_V6 = ("::/1", "8000::/1")
 DEFAULT_V4 = "0.0.0.0/0"
 DEFAULT_V6 = "::/0"
+LAN_BYPASS_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
 DEFAULT_TUNNEL_DNS = ("1.1.1.1", "8.8.8.8")
 INTERVAL = 3.0          # seconds between reconciliation passes
 RESOLVE_TTL = 300.0     # seconds a resolved ConnectTo hostname is reused
@@ -474,6 +475,8 @@ def _resolve_with_timeout(fn: Callable[[str], list[str]], host: str, timeout: fl
 def exit_ready(snap, exit_node: str) -> tuple[bool, str]:
     """(usable, reason): the exit node is reachable and still announces the
     default route. The reason is what the state line shows when it is not."""
+    if not exit_node:
+        return False, "no reachable peer announces 0.0.0.0/0"
     n = (getattr(snap, "nodes", {}) or {}).get(exit_node)
     if n is None:
         return False, f"{exit_node} is not in the network"
@@ -484,6 +487,71 @@ def exit_ready(snap, exit_node: str) -> tuple[bool, str]:
     if exit_node not in owners:
         return False, f"{exit_node} does not announce 0.0.0.0/0"
     return True, ""
+
+
+def resolve_exit_node(snap, configured_exit: str, options: dict | None = None) -> str:
+    """Resolve `configured_exit` ('auto' or specific peer name) against `snap`."""
+    want = str(configured_exit or "").strip()
+    if want.lower() != "auto":
+        return want
+    nodes = getattr(snap, "nodes", {}) or {}
+    pref = str((options or {}).get("ExitNode") or "").strip()
+    if pref and pref.lower() != "auto":
+        ok, _ = exit_ready(snap, pref)
+        if ok:
+            return pref
+    best_owner = ""
+    best_weight = 1 << 30
+    for s in (getattr(snap, "subnets", []) or []):
+        raw_sub = str(getattr(s, "subnet", "") or "")
+        if str(routes.parse_subnet(raw_sub)) != DEFAULT_V4:
+            continue
+        owner = str(getattr(s, "owner", "") or "")
+        nd = nodes.get(owner)
+        if not owner or nd is None or getattr(nd, "is_self", False) or not getattr(nd, "reachable", False):
+            continue
+        weight = 10
+        if "#" in raw_sub:
+            try:
+                weight = int(raw_sub.split("#", 1)[1].strip())
+            except ValueError:
+                weight = 10
+        if not best_owner or (weight, owner) < (best_weight, best_owner):
+            best_owner = owner
+            best_weight = weight
+    return best_owner
+
+
+def _exclude_ipv4_list(bases: Iterable[ipaddress.IPv4Network], excludes: Iterable[ipaddress.IPv4Network]) -> list[str]:
+    current = list(bases)
+    for ex in excludes:
+        next_list: list[ipaddress.IPv4Network] = []
+        for net in current:
+            if not net.overlaps(ex):
+                next_list.append(net)
+            elif ex.subnet_of(net) and net != ex:
+                next_list.extend(net.address_exclude(ex))
+            elif net.subnet_of(ex):
+                continue
+        current = next_list
+    return sorted({str(n) for n in current})
+
+
+def compute_lan_bypass_cidrs(snap, options: dict, local_nets: Iterable[str]) -> list[str]:
+    """Compute RFC1918/link-local prefixes to bypass full-tunnel split routes,
+    subtracting on-link `local_nets` and active VPN mesh subnets so internal VPN
+    peers stay reachable through the tunnel."""
+    local_v4 = _nets(local_nets)
+    vpn_v4 = [n for n in vpn_networks(snap, options) if 0 < n.prefixlen <= 32]
+    for s in (getattr(snap, "subnets", []) or []):
+        n = routes.parse_subnet(getattr(s, "subnet", ""))
+        if n is None or n.version != 4 or n.prefixlen == 0 or str(n) in SPLIT:
+            continue
+        if any(n.overlaps(ln) for ln in local_v4):
+            continue
+        vpn_v4.append(n)
+    bases = [ipaddress.ip_network(p) for p in LAN_BYPASS_V4]
+    return _exclude_ipv4_list(bases, [*local_v4, *vpn_v4])
 
 
 # ---- the reconciler ------------------------------------------------------------
@@ -636,6 +704,14 @@ def cleanup_journal(journal_path: str, system: System | None,
             ok6, _ = system.delete_route(f"{ip6}/128", int(item["ifindex"]), via6)
             if ok6:
                 log.append(f"full tunnel: cleaned journaled pin {ip6}/128")
+        for item in data.get("lan_pins") or []:
+            if not isinstance(item, dict) or not item.get("prefix") or item.get("ifindex") is None:
+                continue
+            lp = str(item["prefix"])
+            via_l = str(item.get("via") or "")
+            ok_l, _ = system.delete_route(lp, int(item["ifindex"]), via_l)
+            if ok_l:
+                log.append(f"full tunnel: cleaned journaled LAN bypass {lp}")
     try:
         os.remove(journal_path)
     except OSError:
@@ -652,8 +728,10 @@ class FullTunnel:
     clock: Callable[[], float] = time.monotonic
     journal_path: str = ""
     resolve_timeout: float = RESOLVE_TIMEOUT
+    bypass_lan: bool = False
     pins: dict = field(default_factory=dict)        # ipv4 -> Gateway it is pinned through
     pins_v6: dict = field(default_factory=dict)     # ipv6 -> Gateway it is pinned through
+    lan_pins: dict = field(default_factory=dict)    # cidr -> Gateway for Bypass LAN
     split_if: int | None = None                     # adapter the split routes are on
     state: str = "starting"
     _resolved: dict = field(default_factory=dict)   # host -> (expiry, [ip])
@@ -667,6 +745,7 @@ class FullTunnel:
         *,
         extra_pins: dict | None = None,
         extra_pins_v6: dict | None = None,
+        extra_lan_pins: dict | None = None,
         split_if: int | None = None,
         v6_if: int | None = None,
         dns_if: int | None = None,
@@ -681,6 +760,9 @@ class FullTunnel:
         eff_pins_v6 = dict(self.pins_v6)
         if extra_pins_v6:
             eff_pins_v6.update(extra_pins_v6)
+        eff_lan_pins = dict(self.lan_pins)
+        if extra_lan_pins:
+            eff_lan_pins.update(extra_lan_pins)
         eff_split = self.split_if if split_if is None else split_if
         eff_v6 = self._v6_if if v6_if is None else v6_if
         eff_dns = self._dns_if if dns_if is None else dns_if
@@ -693,6 +775,7 @@ class FullTunnel:
             and not eff_guid
             and not eff_pins
             and not eff_pins_v6
+            and not eff_lan_pins
         ):
             try:
                 os.remove(self.journal_path)
@@ -713,6 +796,10 @@ class FullTunnel:
             "pins_v6": [
                 {"ip": ip6, "ifindex": gw.ifindex, "via": gw.via}
                 for ip6, gw in sorted(eff_pins_v6.items())
+            ],
+            "lan_pins": [
+                {"prefix": pfx, "ifindex": gw.ifindex, "via": gw.via}
+                for pfx, gw in sorted(eff_lan_pins.items())
             ],
         }
         try:
@@ -914,8 +1001,29 @@ class FullTunnel:
             ok, msg = sysm.delete_route(f"{ip}/32", old_gw.ifindex, old_gw.via)
             log.append(f"full tunnel: unpinned stale {ip}" if ok else f"full tunnel: unpinning {ip}: {msg}")
 
+        # 1b. Bypass LAN (keep non-VPN RFC1918 & local subnets direct via physical gateway)
+        want_lan = compute_lan_bypass_cidrs(snap, options, local) if self.bypass_lan else []
+        want_lan_set = set(want_lan)
+        if want_lan:
+            intended_lan = {pfx: gw for pfx in want_lan}
+            if intended_lan != self.lan_pins:
+                self._write_journal(extra_lan_pins=intended_lan)
+            for pfx in want_lan:
+                have_l = self.lan_pins.get(pfx)
+                if have_l == gw and has_route(table, pfx, gw.ifindex, gw.via):
+                    continue
+                if have_l is not None and have_l != gw:
+                    sysm.delete_route(pfx, have_l.ifindex, have_l.via)
+                ok_l, _ = sysm.add_route(pfx, gw.ifindex, gw.via)
+                if ok_l:
+                    self.lan_pins[pfx] = gw
+        for pfx in sorted(set(self.lan_pins) - want_lan_set):
+            old_gw = self.lan_pins.pop(pfx)
+            sysm.delete_route(pfx, old_gw.ifindex, old_gw.via)
+
         # 2. then the split routes, and only when the exit can take them
-        usable, why = exit_ready(snap, self.exit_node)
+        active_exit = resolve_exit_node(snap, self.exit_node, options)
+        usable, why = exit_ready(snap, active_exit)
         missing = sorted(ip for ip in must if ip in failed)
         if missing:
             self._remove_split(log)
@@ -1055,7 +1163,7 @@ class FullTunnel:
                 self._dns_guid = tun_guid
                 self._dns_alias = tun_alias
         self._write_journal()
-        self._set_state(f"active via {self.exit_node}", log)
+        self._set_state(f"active via {active_exit}", log)
         return log
 
     def stop(self) -> list[str]:
@@ -1077,11 +1185,14 @@ class FullTunnel:
             ok6, msg6 = self.system.delete_route(f"{ip6}/128", gw6.ifindex, gw6.via)
             if not ok6:
                 log.append(f"full tunnel: unpinning {ip6}: {msg6}")
+        for pfx, gw_l in sorted(self.lan_pins.items()):
+            self.system.delete_route(pfx, gw_l.ifindex, gw_l.via)
         total_pins = len(self.pins) + len(self.pins_v6)
         if total_pins:
             log.append(f"full tunnel: removed {total_pins} pin(s)")
         self.pins.clear()
         self.pins_v6.clear()
+        self.lan_pins.clear()
         self._write_journal()
         self.state = "off"
         return log
