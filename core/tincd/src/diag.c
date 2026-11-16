@@ -998,13 +998,22 @@ bool diag_intercept_ipv4(node_t *source, vpn_packet_t *packet) {
 			return false;
 		}
 
+		uint16_t ip_off_net;
+		memcpy(&ip_off_net, ip + 6, 2);
+		uint16_t ip_off = ntohs(ip_off_net);
+
+		if((ip_off & IP_OFFMASK) != 0) {
+			return false;
+		}
+
 		uint8_t *icmp_ptr = ip + ihl;
 		size_t icmp_len = packet->len - eth_sz - ihl;
 		uint8_t icmp_type = icmp_ptr[0];
 		uint8_t icmp_code = icmp_ptr[1];
 
 		/* 1. Incoming Echo Request addressed to us */
-		if(icmp_type == ICMP_ECHO && icmp_code == 0 && source != myself) {
+		if(icmp_type == ICMP_ECHO && icmp_code == 0 && source != myself &&
+		                (ip_off & (IP_MF | IP_OFFMASK)) == 0) {
 			ipv4_t my_ip;
 
 			if(!diag_my_ipv4(&my_ip) || memcmp(ip + 16, &my_ip, 4) != 0) {
@@ -1032,6 +1041,8 @@ bool diag_intercept_ipv4(node_t *source, vpn_packet_t *packet) {
 			memcpy(ip + 12, ip + 16, 4);
 			memcpy(ip + 16, tmp_ip, 4);
 
+			ip[6] = 0; /* clear DF on Echo Reply (RFC 792 / Linux behavior) */
+			ip[7] = 0;
 			ip[8] = 64; /* reset TTL */
 			ip[10] = 0;
 			ip[11] = 0;

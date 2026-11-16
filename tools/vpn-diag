@@ -738,11 +738,12 @@ def print_text_summary(
             scores = [c.get("score") for c in p_conns if c.get("score") is not None]
             rtt_span = f"{min(rtts):.1f}..{max(rtts):.1f}ms" if rtts else "-"
             score_s = f" score={min(scores)}..{max(scores)}" if scores else ""
-            ap_bps = p.get("auto_pacing_Bps") or 0
+            ap_bps = p.get("auto_budget_Bps") or p.get("auto_pacing_Bps") or 0
             ap_s = f" autopacing={ap_bps * 8.0 / 1e6:.1f}Mbps" if ap_bps > 0 else ""
             probe_s = ""
             if "probe_ok" in p:
-                probe_s = f" ping56={'ok' if p['probe_ok'] else 'FAIL'}({p.get('probe_rtt_ms', -1):.1f}ms) mtu1280={p.get('probe_mtu1280_ok')}"
+                mtu_lbl = f"ptb({p['probe_mtu_ptb']})" if p.get("probe_mtu_ptb") else str(p.get("probe_mtu1280_ok"))
+                probe_s = f" ping56={'ok' if p['probe_ok'] else 'FAIL'}({p.get('probe_rtt_ms', -1):.1f}ms) mtu1280={mtu_lbl}"
             print(
                 f"  -> peer {p['name']:12s} conns={len(p_conns)} carriers={','.join(carriers) or '-'} "
                 f"min_rtt={rtt_span}{score_s}{ap_s} udp={p.get('udp_ok')} mtu={p.get('mtu')}{probe_s}"

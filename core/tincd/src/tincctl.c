@@ -2691,6 +2691,21 @@ static void doctor_analyze(doctor_report_t *rep) {
 		}
 
 		if(nd->direct) {
+			bool single_udp_carrier = false;
+			bool has_quic_carrier = false;
+
+			for(int c = 0; c < rep->conns_n; c++) {
+				const doctor_conn_t *cn = &rep->conns[c];
+
+				if(!strcmp(cn->peer, nd->name) && cn->active) {
+					if(!strcasecmp(cn->carrier, "obfs") || !strcasecmp(cn->carrier, "sf")) {
+						single_udp_carrier = true;
+					} else if(!strcasecmp(cn->carrier, "quic")) {
+						has_quic_carrier = true;
+					}
+				}
+			}
+
 			if(!nd->tcponly && !nd->no_direct) {
 				if(!nd->udp_ok) {
 					doctor_add_issue(rep, "WARN", "udp", nd->name,
@@ -2706,23 +2721,22 @@ static void doctor_analyze(doctor_report_t *rep) {
 					}
 
 					if(nd->minmtu > 0 && nd->mtu > 0 && nd->mtu < 1280) {
-						doctor_add_issue(rep, "WARN", "mtu", nd->name,
-						                 "Lower interface/route MTU to <= %d",
-						                 "Peer '%s' probed PMTU is low (%d < 1280)",
-						                 nd->name, nd->mtu);
+						if(has_quic_carrier && nd->mtu >= 1119) {
+							doctor_add_issue(rep, "INFO", "mtu", nd->name,
+							                 "QUIC carrier ceiling is 1119B; TCPMSS clamping and inner UDP fragmentation handle larger packets automatically",
+							                 "Peer '%s' uses QUIC datagram MTU %d",
+							                 nd->name, nd->mtu);
+						} else {
+							char mtu_hint[128];
+							snprintf(mtu_hint, sizeof(mtu_hint),
+							         "Lower interface/route MTU to <= %d or verify TCPMSS clamping",
+							         nd->mtu);
+							doctor_add_issue(rep, "WARN", "mtu", nd->name,
+							                 mtu_hint,
+							                 "Peer '%s' probed PMTU is low (%d < 1280)",
+							                 nd->name, nd->mtu);
+						}
 					}
-				}
-			}
-
-			bool single_udp_carrier = false;
-
-			for(int c = 0; c < rep->conns_n; c++) {
-				const doctor_conn_t *cn = &rep->conns[c];
-
-				if(!strcmp(cn->peer, nd->name) && cn->active &&
-				                (!strcasecmp(cn->carrier, "obfs") || !strcasecmp(cn->carrier, "sf"))) {
-					single_udp_carrier = true;
-					break;
 				}
 			}
 
@@ -2958,9 +2972,10 @@ static void doctor_print_json(const doctor_report_t *rep) {
 		       nd->auto_budget_Bps, nd->policer_Bps);
 
 		if(nd->probed) {
-			printf(", \"probe_ok\": %s, \"probe_rtt_ms\": %.3f, \"probe_mtu1280_ok\": %s",
+			printf(", \"probe_ok\": %s, \"probe_rtt_ms\": %.3f, \"probe_mtu1280_ok\": %s, \"probe_mtu_ptb\": %d",
 			       nd->probe_ok ? "true" : "false", nd->probe_rtt_ms,
-			       nd->probe_mtu_checked ? (nd->probe_mtu_ok ? "true" : "false") : "null");
+			       nd->probe_mtu_checked ? (nd->probe_mtu_ok ? "true" : "false") : "null",
+			       (nd->probe_mtu_checked && !nd->probe_mtu_ok && nd->probe_mtu_type == 3) ? nd->probe_mtu_next : 0);
 		}
 
 		printf("}%s\n", (i + 1 < rep->nodes_n) ? "," : "");
@@ -3039,7 +3054,13 @@ static void doctor_print_text(const doctor_report_t *rep) {
 			printf(" ping56=%s(%.1fms)", nd->probe_ok ? "ok" : "FAIL", nd->probe_rtt_ms);
 
 			if(nd->probe_mtu_checked) {
-				printf(" mtu1280=%s", nd->probe_mtu_ok ? "ok" : "BLACKHOLE");
+				if(nd->probe_mtu_ok) {
+					printf(" mtu1280=ok");
+				} else if(nd->probe_mtu_type == 3 && nd->probe_mtu_next > 0) {
+					printf(" mtu1280=ptb(%d)", nd->probe_mtu_next);
+				} else {
+					printf(" mtu1280=BLACKHOLE");
+				}
 			}
 		}
 
@@ -3182,7 +3203,7 @@ static int cmd_doctor(int argc, char *argv[]) {
 				for(int att = 0; att < 2; att++) {
 					m_type = -1;
 					m_mtu = 0;
-					rc1280 = run_diag_ping_query(nd->vpn_ip, 1280, 64, 1, 1500,
+					rc1280 = run_diag_ping_query(nd->vpn_ip, 1252, 64, 1, 1500,
 					                             r_from, sizeof(r_from),
 					                             r_node, sizeof(r_node),
 					                             &m_type, &m_code, &m_rtt, &m_ttl, &m_mtu);

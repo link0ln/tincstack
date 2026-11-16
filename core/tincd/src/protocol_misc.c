@@ -500,16 +500,24 @@ bool mtu_info_h(connection_t *c, const char *request) {
 		return true;
 	}
 
-	if(!from->status.udp_confirmed) {
-		mtu = clamp_relay_leg_mtu(from, mtu);
-	}
+	/* Only let `from`'s active nexthop update our provisional MTU for `from`,
+	   and never let a relayed MTU_INFO clobber a direct stream neighbor whose
+	   path does not depend on UDP carrier MTU ceilings. */
+	if(from->nexthop && c->node == from->nexthop &&
+	                !(from->connection && !from->status.udp_confirmed && !multipath_node_has_datagram_carrier(from))) {
+		int clamped_mtu = mtu;
 
-	/* If we don't know the current MTU for that node, use the one we received.
-	   Even if we're about to make our own measurements, the value we got from downstream nodes should be pretty close
-	   so it's a good idea to use it in the mean time. */
-	if(from->mtu != mtu && (from->minmtu != from->maxmtu || !from->status.udp_confirmed)) {
-		logger(DEBUG_TRAFFIC, LOG_INFO, "Using provisional MTU %d for node %s (%s)", mtu, from->name, from->hostname);
-		from->mtu = mtu;
+		if(!from->status.udp_confirmed) {
+			clamped_mtu = clamp_relay_leg_mtu(from, clamped_mtu);
+		}
+
+		/* If we don't know the current MTU for that node, use the one we received.
+		   Even if we're about to make our own measurements, the value we got from downstream nodes should be pretty close
+		   so it's a good idea to use it in the mean time. */
+		if(from->mtu != clamped_mtu && (from->minmtu != from->maxmtu || !from->status.udp_confirmed)) {
+			logger(DEBUG_TRAFFIC, LOG_INFO, "Using provisional MTU %d for node %s (%s)", clamped_mtu, from->name, from->hostname);
+			from->mtu = clamped_mtu;
+		}
 	}
 
 	node_t *to = lookup_node(to_name);
