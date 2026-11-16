@@ -19,6 +19,8 @@
 
 #include "system.h"
 
+#include <stdarg.h>
+
 #ifndef HAVE_WINDOWS
 #include <poll.h>
 #endif
@@ -46,6 +48,7 @@
 #include "yamlconf.h"
 #include "zeroconf.h"
 #include "top.h"
+#include "json.h"
 
 extern const char **yamlconf_network_names(yamlconf_t *yc);
 #include "version.h"
@@ -212,6 +215,10 @@ static void usage(bool status) {
 		        "                             Show or obtain the TLS certificate used by the\n"
 		        "                             https and quic transports. issue/renew need\n"
 		        "                             CertDomain and CloudflareToken to be set.\n"
+		        "  doctor [--probe] [--fix] [--json]\n"
+		        "                             Diagnose VPN links, carriers, ECMP skew, and buffers.\n"
+		        "  multipath [status|detail|recycle ...]\n"
+		        "                             Show or manage multipath uplinks and parallel links.\n"
 		        "  fsck                       Check the configuration files for problems.\n"
 		        "  sign [FILE]                Generate a signed version of a file.\n"
 		        "  verify NODE [FILE]         Verify that a file was signed by the given NODE.\n"
@@ -1844,6 +1851,85 @@ static int cmd_diag_port(int argc, char *argv[]) {
 	return 0;
 }
 
+static int run_diag_ping_query(const char *dst_ip, int size, int ttl, int df, int timeout_ms,
+                               char *from_ip, size_t from_len,
+                               char *node_name, size_t node_len,
+                               int *icmp_type, int *icmp_code,
+                               long *rtt_us, int *reply_ttl, int *next_mtu) {
+	if(from_ip && from_len) {
+		snprintf(from_ip, from_len, "-");
+	}
+
+	if(node_name && node_len) {
+		snprintf(node_name, node_len, "-");
+	}
+
+	if(icmp_type) {
+		*icmp_type = -1;
+	}
+
+	if(icmp_code) {
+		*icmp_code = -1;
+	}
+
+	if(rtt_us) {
+		*rtt_us = -1;
+	}
+
+	if(reply_ttl) {
+		*reply_ttl = 0;
+	}
+
+	if(next_mtu) {
+		*next_mtu = 0;
+	}
+
+	sendline(fd, "%d %d %s %d %d %d %d", CONTROL, REQ_DIAG_PING, dst_ip, size, ttl, df, timeout_ms);
+
+	char r_from[64] = "-";
+	char r_node[128] = "-";
+	int r_type = -1, r_code = -1, r_ttl = 0, r_mtu = 0;
+	long r_rtt = -1;
+
+	if(!recvline(fd, line, sizeof(line)) ||
+	                sscanf(line, "%d %d %d %63s %127s %d %d %ld %d %d",
+	                       &code, &req, &result, r_from, r_node,
+	                       &r_type, &r_code, &r_rtt, &r_ttl, &r_mtu) < 3 ||
+	                code != CONTROL || req != REQ_DIAG_PING) {
+		return -1;
+	}
+
+	if(from_ip && from_len) {
+		snprintf(from_ip, from_len, "%s", r_from);
+	}
+
+	if(node_name && node_len) {
+		snprintf(node_name, node_len, "%s", r_node);
+	}
+
+	if(icmp_type) {
+		*icmp_type = r_type;
+	}
+
+	if(icmp_code) {
+		*icmp_code = r_code;
+	}
+
+	if(rtt_us) {
+		*rtt_us = r_rtt;
+	}
+
+	if(reply_ttl) {
+		*reply_ttl = r_ttl;
+	}
+
+	if(next_mtu) {
+		*next_mtu = r_mtu;
+	}
+
+	return result;
+}
+
 static int cmd_diag_ping(int argc, char *argv[]) {
 	if(argc < 2 || argc > 6) {
 		fprintf(stderr, "Usage: diag-ping <dst_ip> [size] [ttl] [df] [timeout_ms]\n");
@@ -1860,33 +1946,77 @@ static int cmd_diag_ping(int argc, char *argv[]) {
 	int df = argc > 4 ? atoi(argv[4]) : 0;
 	int timeout_ms = argc > 5 ? atoi(argv[5]) : 2000;
 
-	sendline(fd, "%d %d %s %d %d %d %d", CONTROL, REQ_DIAG_PING, dst_ip, size, ttl, df, timeout_ms);
-
-	char from_ip[64] = "-";
-	char node_name[128] = "-";
+	char from_ip[64];
+	char node_name[128];
 	int icmp_type = -1, icmp_code = -1, reply_ttl = 0, next_mtu = 0;
 	long rtt_us = -1;
 
-	if(!recvline(fd, line, sizeof(line)) ||
-	                sscanf(line, "%d %d %d %63s %127s %d %d %ld %d %d",
-	                       &code, &req, &result, from_ip, node_name,
-	                       &icmp_type, &icmp_code, &rtt_us, &reply_ttl, &next_mtu) < 3 ||
-	                code != CONTROL || req != REQ_DIAG_PING) {
+	int rc = run_diag_ping_query(dst_ip, size, ttl, df, timeout_ms,
+	                             from_ip, sizeof(from_ip),
+	                             node_name, sizeof(node_name),
+	                             &icmp_type, &icmp_code, &rtt_us, &reply_ttl, &next_mtu);
+
+	if(rc < 0) {
 		fprintf(stderr, "Could not run diagnostic ping.\n");
 		return 1;
 	}
 
-	if(result == 0) {
+	if(rc == 0) {
 		printf("OK from=%s node=%s type=%d code=%d rtt_ms=%.3f ttl=%d mtu=%d\n",
 		       from_ip, node_name, icmp_type, icmp_code, (double)rtt_us / 1000.0, reply_ttl, next_mtu);
 		return 0;
-	} else if(result == 1) {
+	} else if(rc == 1) {
 		printf("TIMEOUT dst=%s ttl=%d size=%d\n", dst_ip, ttl, size);
 		return 1;
 	} else {
-		fprintf(stderr, "Diagnostic ping failed (error %d).\n", result);
+		fprintf(stderr, "Diagnostic ping failed (error %d).\n", rc);
 		return 1;
 	}
+}
+
+typedef void (*mp_line_cb_t)(int rres, const char *rest, void *ctx);
+
+static int query_multipath_stream(const char *argline, mp_line_cb_t cb, void *ctx, const char *err_label) {
+	sendline(fd, "%d %d %s", CONTROL, REQ_MULTIPATH, argline);
+
+	while(recvline(fd, line, sizeof(line))) {
+		int rcode = 0, rreq = 0, rres = -1;
+		int offset = 0;
+
+		if(sscanf(line, "%d %d %d%n", &rcode, &rreq, &rres, &offset) < 3 ||
+		                rcode != CONTROL || rreq != REQ_MULTIPATH) {
+			fprintf(stderr, "Unexpected response from tincd.\n");
+			return 1;
+		}
+
+		if(rres == 2) {
+			return 0;
+		}
+
+		if(rres < 0) {
+			if(rres == -2) {
+				fprintf(stderr, "Peer not found for %s.\n", err_label);
+			} else {
+				fprintf(stderr, "Multipath %s query failed (err=%d).\n", err_label, rres);
+			}
+
+			return 1;
+		}
+
+		const char *rest = line + offset;
+
+		while(*rest == ' ') {
+			rest++;
+		}
+
+		if(cb) {
+			cb(rres, rest, ctx);
+		} else {
+			printf("%s\n", rest);
+		}
+	}
+
+	return 1;
 }
 
 static int cmd_multipath(int argc, char *argv[]) {
@@ -1897,37 +2027,25 @@ static int cmd_multipath(int argc, char *argv[]) {
 	const char *subcmd = argc > 1 ? argv[1] : "status";
 
 	if(!strcasecmp(subcmd, "status")) {
-		sendline(fd, "%d %d status", CONTROL, REQ_MULTIPATH);
+		return query_multipath_stream("status", NULL, NULL, "status");
+	}
 
-		while(recvline(fd, line, sizeof(line))) {
-			int rcode = 0, rreq = 0, rres = -1;
-			int offset = 0;
+	if(!strcasecmp(subcmd, "detail")) {
+		return query_multipath_stream("detail", NULL, NULL, "detail");
+	}
 
-			if(sscanf(line, "%d %d %d%n", &rcode, &rreq, &rres, &offset) < 3 ||
-			                rcode != CONTROL || rreq != REQ_MULTIPATH) {
-				fprintf(stderr, "Unexpected response from tincd.\n");
-				return 1;
-			}
+	if(!strcasecmp(subcmd, "recycle")) {
+		char argbuf[256];
 
-			if(rres == 2) {
-				return 0;
-			}
-
-			if(rres < 0) {
-				fprintf(stderr, "Multipath status query failed.\n");
-				return 1;
-			}
-
-			const char *rest = line + offset;
-
-			while(*rest == ' ') {
-				rest++;
-			}
-
-			printf("%s\n", rest);
+		if(argc >= 4) {
+			snprintf(argbuf, sizeof(argbuf), "recycle %s %s", argv[2], argv[3]);
+		} else if(argc == 3) {
+			snprintf(argbuf, sizeof(argbuf), "recycle %s", argv[2]);
+		} else {
+			snprintf(argbuf, sizeof(argbuf), "recycle all slow");
 		}
 
-		return 1;
+		return query_multipath_stream(argbuf, NULL, NULL, "recycle");
 	}
 
 	if(!strcasecmp(subcmd, "mode")) {
@@ -1985,8 +2103,1088 @@ static int cmd_multipath(int argc, char *argv[]) {
 		return 0;
 	}
 
-	fprintf(stderr, "Usage: multipath [status | mode <mode> [conns] | uplink add|del ...]\n");
+	fprintf(stderr, "Usage: multipath [status | detail | recycle [peer|all] [slow|all] | mode <mode> [conns] | uplink add|del ...]\n");
 	return 1;
+}
+
+#define DOCTOR_MAX_UPLINKS 16
+#define DOCTOR_MAX_NODES 64
+#define DOCTOR_MAX_CONNS 256
+#define DOCTOR_MAX_ISSUES 128
+#define DOCTOR_MAX_CONNECTTO 32
+
+typedef struct doctor_uplink_t {
+	int idx;
+	char name[64];
+	char state[16];
+	int weight;
+	int backup;
+	unsigned long long tx;
+	unsigned long long rx;
+} doctor_uplink_t;
+
+typedef struct doctor_node_t {
+	char name[128];
+	int reachable;
+	int direct;
+	char via[128];
+	char nexthop[128];
+	char vpn_ip[64];
+	int conns;
+	int udp_ok;
+	double udp_rtt_ms;
+	int udp_paths;
+	int udp_unans;
+	char udp_ep[160];
+	int mtu;
+	int minmtu;
+	int maxmtu;
+	int tcponly;
+	int no_direct;
+	char pref[128];
+	unsigned long rx_seq;
+	unsigned long rx_ok;
+	unsigned long long in_pkts;
+	unsigned long long out_pkts;
+	int primary_uplink;
+	bool probed;
+	bool probe_ok;
+	double probe_rtt_ms;
+	bool probe_mtu_checked;
+	bool probe_mtu_ok;
+	int probe_mtu_next;
+	int probe_mtu_type;
+} doctor_node_t;
+
+typedef struct doctor_conn_t {
+	char peer[128];
+	char role[16];
+	char dir[8];
+	int fd;
+	int active;
+	int verified;
+	int uplink;
+	char carrier[32];
+	char ep[160];
+	long age_s;
+	long last_ping_s;
+	unsigned long outbuf;
+	unsigned long txbuf;
+	double rtt_ms;
+	double min_rtt_ms;
+	unsigned int cwnd;
+	unsigned int retrans;
+	unsigned int segs_out;
+	double pacing_mbps;
+	double pacing_cap_mbps;
+	int slot;
+	int degraded;
+} doctor_conn_t;
+
+typedef struct doctor_issue_t {
+	char sev[8];
+	char comp[64];
+	char peer[128];
+	char msg[512];
+	char hint[512];
+} doctor_issue_t;
+
+typedef struct doctor_report_t {
+	char self_name[128];
+	char vpn_ip[64];
+	char mode[32];
+	int target_conns;
+	int uplink_count;
+	long maxoutbuf;
+	char conf_transports[128];
+	char conf_pref_transports[128];
+	char conf_mp_mode[32];
+	int conf_mp_conns;
+	long conf_maxoutbuf;
+	char connect_to[DOCTOR_MAX_CONNECTTO][128];
+	int connect_to_count;
+	doctor_uplink_t uplinks[DOCTOR_MAX_UPLINKS];
+	int uplinks_n;
+	doctor_node_t nodes[DOCTOR_MAX_NODES];
+	int nodes_n;
+	doctor_conn_t conns[DOCTOR_MAX_CONNS];
+	int conns_n;
+	doctor_issue_t issues[DOCTOR_MAX_ISSUES];
+	int issues_n;
+	int crit_count;
+	int warn_count;
+	int fix_promoted;
+	int fix_recycled;
+} doctor_report_t;
+
+static bool kv_get(const char *src, const char *key, char *dst, size_t dlen) {
+	if(!src || !key || !dst || dlen == 0) {
+		return false;
+	}
+
+	dst[0] = '\0';
+	size_t klen = strlen(key);
+	const char *p = src;
+
+	while(*p) {
+		while(*p == ' ' || *p == '\t') {
+			p++;
+		}
+
+		if(!*p) {
+			break;
+		}
+
+		const char *end = p;
+
+		while(*end && *end != ' ' && *end != '\t') {
+			end++;
+		}
+
+		size_t tlen = (size_t)(end - p);
+
+		if(tlen > klen && !strncmp(p, key, klen) && p[klen] == '=') {
+			size_t vlen = tlen - klen - 1;
+
+			if(vlen >= dlen) {
+				vlen = dlen - 1;
+			}
+
+			memcpy(dst, p + klen + 1, vlen);
+			dst[vlen] = '\0';
+			return true;
+		}
+
+		p = end;
+	}
+
+	return false;
+}
+
+static int kv_get_int(const char *src, const char *key, int defval) {
+	char tmp[64];
+	return kv_get(src, key, tmp, sizeof(tmp)) ? atoi(tmp) : defval;
+}
+
+static long kv_get_long(const char *src, const char *key, long defval) {
+	char tmp[64];
+	return kv_get(src, key, tmp, sizeof(tmp)) ? atol(tmp) : defval;
+}
+
+static unsigned long kv_get_ulong(const char *src, const char *key, unsigned long defval) {
+	char tmp[64];
+	return kv_get(src, key, tmp, sizeof(tmp)) ? strtoul(tmp, NULL, 10) : defval;
+}
+
+static unsigned long long kv_get_ullong(const char *src, const char *key, unsigned long long defval) {
+	char tmp[64];
+	return kv_get(src, key, tmp, sizeof(tmp)) ? strtoull(tmp, NULL, 10) : defval;
+}
+
+static double kv_get_double(const char *src, const char *key, double defval) {
+	char tmp[64];
+	return kv_get(src, key, tmp, sizeof(tmp)) ? atof(tmp) : defval;
+}
+
+static void doctor_collect_cb(int rres, const char *rest, void *ctx) {
+	(void)rres;
+	doctor_report_t *rep = ctx;
+
+	if(!rep || !rest || !*rest) {
+		return;
+	}
+
+	char kind[32] = "";
+
+	if(sscanf(rest, "%31s", kind) != 1) {
+		return;
+	}
+
+	if(!strcmp(kind, "summary")) {
+		kv_get(rest, "name", rep->self_name, sizeof(rep->self_name));
+		kv_get(rest, "vpn_ip", rep->vpn_ip, sizeof(rep->vpn_ip));
+		kv_get(rest, "mode", rep->mode, sizeof(rep->mode));
+		rep->target_conns = kv_get_int(rest, "target_conns", 1);
+		rep->uplink_count = kv_get_int(rest, "uplinks", 0);
+		rep->maxoutbuf = kv_get_long(rest, "maxoutbuf", 0);
+	} else if(!strcmp(kind, "uplink") && rep->uplinks_n < DOCTOR_MAX_UPLINKS) {
+		doctor_uplink_t *u = &rep->uplinks[rep->uplinks_n++];
+		memset(u, 0, sizeof(*u));
+		u->idx = kv_get_int(rest, "idx", -1);
+		kv_get(rest, "name", u->name, sizeof(u->name));
+		kv_get(rest, "state", u->state, sizeof(u->state));
+		u->weight = kv_get_int(rest, "weight", 100);
+		u->backup = kv_get_int(rest, "backup", 0);
+		u->tx = kv_get_ullong(rest, "tx", 0);
+		u->rx = kv_get_ullong(rest, "rx", 0);
+	} else if(!strcmp(kind, "node") && rep->nodes_n < DOCTOR_MAX_NODES) {
+		doctor_node_t *nd = &rep->nodes[rep->nodes_n++];
+		memset(nd, 0, sizeof(*nd));
+		kv_get(rest, "name", nd->name, sizeof(nd->name));
+		nd->reachable = kv_get_int(rest, "reachable", 0);
+		nd->direct = kv_get_int(rest, "direct", 0);
+		kv_get(rest, "via", nd->via, sizeof(nd->via));
+		kv_get(rest, "nexthop", nd->nexthop, sizeof(nd->nexthop));
+		kv_get(rest, "vpn_ip", nd->vpn_ip, sizeof(nd->vpn_ip));
+		nd->conns = kv_get_int(rest, "conns", 0);
+		nd->udp_ok = kv_get_int(rest, "udp_ok", 0);
+		nd->udp_rtt_ms = kv_get_double(rest, "udp_rtt_ms", -1.0);
+		nd->udp_paths = kv_get_int(rest, "udp_paths", 0);
+		nd->udp_unans = kv_get_int(rest, "udp_unans", 0);
+		kv_get(rest, "udp_ep", nd->udp_ep, sizeof(nd->udp_ep));
+		nd->mtu = kv_get_int(rest, "mtu", 0);
+		nd->minmtu = kv_get_int(rest, "minmtu", 0);
+		nd->maxmtu = kv_get_int(rest, "maxmtu", 0);
+		nd->tcponly = kv_get_int(rest, "tcponly", 0);
+		nd->no_direct = kv_get_int(rest, "no_direct", 0);
+		kv_get(rest, "pref", nd->pref, sizeof(nd->pref));
+		nd->rx_seq = kv_get_ulong(rest, "rx_seq", 0);
+		nd->rx_ok = kv_get_ulong(rest, "rx_ok", 0);
+		nd->in_pkts = kv_get_ullong(rest, "in_pkts", 0);
+		nd->out_pkts = kv_get_ullong(rest, "out_pkts", 0);
+		nd->primary_uplink = kv_get_int(rest, "primary_uplink", -1);
+	} else if(!strcmp(kind, "conn") && rep->conns_n < DOCTOR_MAX_CONNS) {
+		doctor_conn_t *cn = &rep->conns[rep->conns_n++];
+		memset(cn, 0, sizeof(*cn));
+		kv_get(rest, "peer", cn->peer, sizeof(cn->peer));
+		kv_get(rest, "role", cn->role, sizeof(cn->role));
+		kv_get(rest, "dir", cn->dir, sizeof(cn->dir));
+		cn->fd = kv_get_int(rest, "fd", -1);
+		cn->active = kv_get_int(rest, "active", 0);
+		cn->verified = kv_get_int(rest, "verified", 0);
+		cn->uplink = kv_get_int(rest, "uplink", -1);
+		kv_get(rest, "carrier", cn->carrier, sizeof(cn->carrier));
+		kv_get(rest, "ep", cn->ep, sizeof(cn->ep));
+		cn->age_s = kv_get_long(rest, "age_s", -1);
+		cn->last_ping_s = kv_get_long(rest, "last_ping_s", -1);
+		cn->outbuf = kv_get_ulong(rest, "outbuf", 0);
+		cn->txbuf = kv_get_ulong(rest, "txbuf", 0);
+		cn->rtt_ms = kv_get_double(rest, "rtt_ms", -1.0);
+		cn->min_rtt_ms = kv_get_double(rest, "min_rtt_ms", -1.0);
+		cn->cwnd = (unsigned int)kv_get_ulong(rest, "cwnd", 0);
+		cn->retrans = (unsigned int)kv_get_ulong(rest, "retrans", 0);
+		cn->segs_out = (unsigned int)kv_get_ulong(rest, "segs_out", 0);
+		cn->pacing_mbps = kv_get_double(rest, "pacing_mbps", -1.0);
+		cn->pacing_cap_mbps = kv_get_double(rest, "pacing_cap_mbps", 0.0);
+		cn->slot = kv_get_int(rest, "slot", -1);
+		cn->degraded = kv_get_int(rest, "degraded", 0);
+	}
+}
+
+static void doctor_recycle_cb(int rres, const char *rest, void *ctx) {
+	(void)rres;
+	doctor_report_t *rep = ctx;
+
+	if(!rep || !rest) {
+		return;
+	}
+
+	if(!strncmp(rest, "promoted=", 9)) {
+		rep->fix_promoted = kv_get_int(rest, "promoted", rep->fix_promoted);
+		rep->fix_recycled = kv_get_int(rest, "recycled", rep->fix_recycled);
+	}
+}
+
+static void doctor_add_issue(doctor_report_t *rep, const char *sev, const char *comp,
+                             const char *peer, const char *hint, const char *fmt, ...) {
+	if(!rep || rep->issues_n >= DOCTOR_MAX_ISSUES) {
+		return;
+	}
+
+	doctor_issue_t *iss = &rep->issues[rep->issues_n++];
+	memset(iss, 0, sizeof(*iss));
+	snprintf(iss->sev, sizeof(iss->sev), "%s", sev ? sev : "INFO");
+	snprintf(iss->comp, sizeof(iss->comp), "%s", comp ? comp : "vpn");
+	snprintf(iss->peer, sizeof(iss->peer), "%s", peer ? peer : "-");
+	snprintf(iss->hint, sizeof(iss->hint), "%s", hint ? hint : "");
+
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(iss->msg, sizeof(iss->msg), fmt, ap);
+	va_end(ap);
+
+	if(!strcmp(iss->sev, "CRIT")) {
+		rep->crit_count++;
+	} else if(!strcmp(iss->sev, "WARN")) {
+		rep->warn_count++;
+	}
+}
+
+static FILE *open_server_conf_fp(void) {
+	if(yamlconf_path && yamlconf_global) {
+		char *text = yamlconf_options_text(yamlconf_global, netname);
+		FILE *f = yamlconf_content_fp(text ? text : "");
+		free(text);
+		return f;
+	}
+
+	if(!tinc_conf) {
+		return NULL;
+	}
+
+	return fopen(tinc_conf, "r");
+}
+
+static void append_csv_opt(char *dst, size_t dlen, const char *val) {
+	if(!dst || dlen == 0 || !val || !*val) {
+		return;
+	}
+
+	size_t cur = strlen(dst);
+
+	if(cur == 0) {
+		snprintf(dst, dlen, "%s", val);
+		return;
+	}
+
+	if(cur + 1 < dlen) {
+		snprintf(dst + cur, dlen - cur, ",%s", val);
+	}
+}
+
+static void doctor_read_local_conf(doctor_report_t *rep) {
+	FILE *f = open_server_conf_fp();
+
+	if(!f) {
+		return;
+	}
+
+	char cfgline[1024];
+
+	while(fgets(cfgline, sizeof(cfgline), f)) {
+		char *p = cfgline;
+
+		while(*p == ' ' || *p == '\t') {
+			p++;
+		}
+
+		if(!*p || *p == '#' || *p == '\r' || *p == '\n') {
+			continue;
+		}
+
+		size_t klen = strcspn(p, "\t =");
+		char *val = p + klen;
+		val += strspn(val, "\t ");
+
+		if(*val == '=') {
+			val++;
+			val += strspn(val, "\t ");
+		}
+
+		if(!rstrip(val)) {
+			continue;
+		}
+
+		p[klen] = '\0';
+
+		if(!strcasecmp(p, "ConnectTo") && rep->connect_to_count < DOCTOR_MAX_CONNECTTO) {
+			snprintf(rep->connect_to[rep->connect_to_count++], 128, "%s", val);
+		} else if(!strcasecmp(p, "Transports")) {
+			append_csv_opt(rep->conf_transports, sizeof(rep->conf_transports), val);
+		} else if(!strcasecmp(p, "PreferredTransports")) {
+			append_csv_opt(rep->conf_pref_transports, sizeof(rep->conf_pref_transports), val);
+		} else if(!strcasecmp(p, "MultipathMode")) {
+			snprintf(rep->conf_mp_mode, sizeof(rep->conf_mp_mode), "%s", val);
+		} else if(!strcasecmp(p, "MultipathConnections")) {
+			rep->conf_mp_conns = atoi(val);
+		} else if(!strcasecmp(p, "MaxOutputBufferSize")) {
+			rep->conf_maxoutbuf = atol(val);
+		}
+	}
+
+	fclose(f);
+}
+
+static bool token_in_list(const char *list, const char *needle) {
+	if(!list || !*list || !strcmp(list, "-") || !needle || !*needle) {
+		return false;
+	}
+
+	const char *p = list;
+	size_t nlen = strlen(needle);
+
+	while(*p) {
+		while(*p && strchr(", \t\r\n", *p)) {
+			p++;
+		}
+
+		if(!*p) {
+			break;
+		}
+
+		const char *end = p;
+
+		while(*end && !strchr(", \t\r\n", *end)) {
+			end++;
+		}
+
+		if((size_t)(end - p) == nlen && !strncasecmp(p, needle, nlen)) {
+			return true;
+		}
+
+		p = end;
+	}
+
+	return false;
+}
+
+static bool first_token_of(const char *list, char *out, size_t olen) {
+	if(!out || olen == 0) {
+		return false;
+	}
+
+	out[0] = '\0';
+
+	if(!list || !*list || !strcmp(list, "-")) {
+		return false;
+	}
+
+	const char *p = list;
+
+	while(*p && strchr(", \t\r\n", *p)) {
+		p++;
+	}
+
+	if(!*p) {
+		return false;
+	}
+
+	const char *end = p;
+
+	while(*end && !strchr(", \t\r\n", *end)) {
+		end++;
+	}
+
+	size_t len = (size_t)(end - p);
+
+	if(len >= olen) {
+		len = olen - 1;
+	}
+
+	memcpy(out, p, len);
+	out[len] = '\0';
+	return len > 0;
+}
+
+static bool ends_with(const char *s, const char *suffix) {
+	if(!s || !suffix) {
+		return false;
+	}
+
+	size_t slen = strlen(s);
+	size_t xlen = strlen(suffix);
+	return slen >= xlen && !strcmp(s + slen - xlen, suffix);
+}
+
+static bool ep_is_loopback(const char *ep) {
+	if(!ep || !*ep) {
+		return false;
+	}
+
+	return !strncmp(ep, "127.", 4) || !strncmp(ep, "[::1]:", 6) || !strncmp(ep, "::1:", 4);
+}
+
+static bool doctor_is_connect_to(const doctor_report_t *rep, const char *peer) {
+	for(int i = 0; i < rep->connect_to_count; i++) {
+		if(!strcmp(rep->connect_to[i], peer)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void doctor_analyze(doctor_report_t *rep) {
+	if(rep->connect_to_count > 0 && !strcasecmp(rep->mode, "off")) {
+		doctor_add_issue(rep, "WARN", "multipath", "-",
+		                 "Set MultipathMode=flowhash and MultipathConnections=4 to mitigate ECMP skew and single-flow stalls",
+		                 "MultipathMode is 'off' while ConnectTo peers are configured (%d)",
+		                 rep->connect_to_count);
+	}
+
+	if(rep->maxoutbuf > 0 && rep->maxoutbuf < 16777216L) {
+		doctor_add_issue(rep, "WARN", "buffer", "-",
+		                 "Increase MaxOutputBufferSize to 33554432 (32 MiB) to prevent BDP burst packet drops",
+		                 "MaxOutputBufferSize is %ld bytes (< 16 MiB)",
+		                 rep->maxoutbuf);
+	}
+
+	for(int i = 0; i < rep->uplinks_n; i++) {
+		if(strcasecmp(rep->uplinks[i].state, "UP") != 0) {
+			doctor_add_issue(rep, "WARN", "uplink", rep->uplinks[i].name,
+			                 "Check interface/gateway for this uplink",
+			                 "Uplink %s (idx=%d) is %s",
+			                 rep->uplinks[i].name, rep->uplinks[i].idx, rep->uplinks[i].state);
+		}
+	}
+
+	for(int i = 0; i < rep->connect_to_count; i++) {
+		const char *target = rep->connect_to[i];
+		const doctor_node_t *found = NULL;
+
+		for(int j = 0; j < rep->nodes_n; j++) {
+			if(!strcmp(rep->nodes[j].name, target)) {
+				found = &rep->nodes[j];
+				break;
+			}
+		}
+
+		if(!found) {
+			doctor_add_issue(rep, "CRIT", "connect", target,
+			                 "Check host config/DNS/firewall and run 'tinc retry'",
+			                 "Configured ConnectTo peer '%s' is missing from node table",
+			                 target);
+		} else if(!found->reachable || !found->direct) {
+			doctor_add_issue(rep, "CRIT", "connect", target,
+			                 "Check carrier port/SNI/fingerprint and tincd logs; run 'tinc retry'",
+			                 "Configured ConnectTo peer '%s' is NOT directly connected (reachable=%d direct=%d via=%s)",
+			                 target, found->reachable, found->direct, found->via);
+		}
+	}
+
+	for(int i = 0; i < rep->nodes_n; i++) {
+		const doctor_node_t *nd = &rep->nodes[i];
+		bool is_ct = doctor_is_connect_to(rep, nd->name);
+
+		if(!nd->reachable) {
+			if(is_ct) {
+				continue;
+			}
+
+			doctor_add_issue(rep, "INFO", "peer", nd->name, "",
+			                 "Known peer '%s' is currently offline/unreachable",
+			                 nd->name);
+			continue;
+		}
+
+		if(!nd->direct && strcmp(nd->via, nd->name) != 0 && strcmp(nd->via, "-") != 0) {
+			doctor_add_issue(rep, "INFO", "relay", nd->name,
+			                 "Direct UDP hole-punching inactive or disabled; relaying via hub",
+			                 "Peer '%s' traffic routes via '%s' (nexthop=%s)",
+			                 nd->name, nd->via, nd->nexthop);
+		}
+
+		if(nd->direct) {
+			if(!nd->tcponly && !nd->no_direct) {
+				if(!nd->udp_ok) {
+					doctor_add_issue(rep, "WARN", "udp", nd->name,
+					                 "Traffic is relayed over meta TCP/TLS; check UDP NAT/firewall or set Transports=https if ISP drops UDP",
+					                 "Direct peer '%s' has udp_ok=0 (UDP path unconfirmed)",
+					                 nd->name);
+				} else {
+					if(nd->udp_unans >= 2) {
+						doctor_add_issue(rep, "WARN", "udp", nd->name,
+						                 "Check UDP packet loss on WAN; consider HTTPS carrier if persistent",
+						                 "Peer '%s' missed %d consecutive UDP keepalives",
+						                 nd->name, nd->udp_unans);
+					}
+
+					if(nd->minmtu > 0 && nd->mtu > 0 && nd->mtu < 1280) {
+						doctor_add_issue(rep, "WARN", "mtu", nd->name,
+						                 "Lower interface/route MTU to <= %d",
+						                 "Peer '%s' probed PMTU is low (%d < 1280)",
+						                 nd->name, nd->mtu);
+					}
+				}
+			}
+
+			bool single_udp_carrier = false;
+
+			for(int c = 0; c < rep->conns_n; c++) {
+				const doctor_conn_t *cn = &rep->conns[c];
+
+				if(!strcmp(cn->peer, nd->name) && cn->active &&
+				                (!strcasecmp(cn->carrier, "obfs") || !strcasecmp(cn->carrier, "sf"))) {
+					single_udp_carrier = true;
+					break;
+				}
+			}
+
+			if(is_ct && !nd->no_direct && !single_udp_carrier && rep->target_conns > 1 && nd->conns < rep->target_conns) {
+				doctor_add_issue(rep, "WARN", "multipath", nd->name,
+				                 "Wait for multipath timer (5s) or check peer logs/handshake errors",
+				                 "Multipath pool for '%s' is degraded (%d/%d connections)",
+				                 nd->name, nd->conns, rep->target_conns);
+			}
+		}
+
+		if(nd->probed) {
+			if(!nd->probe_ok) {
+				doctor_add_issue(rep, nd->direct ? "CRIT" : "WARN", "probe", nd->name,
+				                 "Verify kernel TUN/policy routes (ip route show table all) and firewall ICMP rules",
+				                 "In-tunnel diagnostic ping (56B) to '%s' (%s) timed out",
+				                 nd->name, nd->vpn_ip);
+			} else if(nd->probe_mtu_checked && !nd->probe_mtu_ok) {
+				if(nd->probe_mtu_type == 3 && nd->probe_mtu_next > 0) {
+					doctor_add_issue(rep, is_ct ? "WARN" : "INFO", "pmtu", nd->name,
+					                 "ICMP Packet-Too-Big is active; ensure TCPMSS clamping covers traffic toward this peer",
+					                 "Path MTU to '%s' (%s) is %d (< 1280); ICMP PTB working",
+					                 nd->name, nd->vpn_ip, nd->probe_mtu_next);
+				} else {
+					doctor_add_issue(rep, (is_ct || nd->direct) ? "CRIT" : "WARN", "pmtu", nd->name,
+					                 "Clamp TUN/policy-route MTU to 1280 or 1220 on router/VPS",
+					                 "PMTU blackhole to '%s' (%s): 56B OK (%.1f ms), 1280B DF=1 timed out",
+					                 nd->name, nd->vpn_ip, nd->probe_rtt_ms);
+				}
+			}
+		}
+
+		double best_min_rtt = -1.0;
+		double best_pacing_mbps = -1.0;
+		int active_with_rtt = 0;
+
+		for(int c = 0; c < rep->conns_n; c++) {
+			const doctor_conn_t *cn = &rep->conns[c];
+
+			if(strcmp(cn->peer, nd->name) != 0 || !cn->active) {
+				continue;
+			}
+
+			/* Ignore loopback proxy sockets and < 1 ms artifacts when computing WAN ECMP baseline */
+			if(!ep_is_loopback(cn->ep) && cn->min_rtt_ms >= 1.0) {
+				if(best_min_rtt < 0.0 || cn->min_rtt_ms < best_min_rtt) {
+					best_min_rtt = cn->min_rtt_ms;
+				}
+
+				if(cn->pacing_mbps > best_pacing_mbps) {
+					best_pacing_mbps = cn->pacing_mbps;
+				}
+
+				active_with_rtt++;
+			}
+		}
+
+		char expected_pref[64] = "";
+
+		if(!first_token_of(nd->pref, expected_pref, sizeof(expected_pref)) &&
+		                !first_token_of(rep->conf_pref_transports, expected_pref, sizeof(expected_pref))) {
+			first_token_of(rep->conf_transports, expected_pref, sizeof(expected_pref));
+		}
+
+		bool carrier_flagged = false;
+
+		for(int c = 0; c < rep->conns_n; c++) {
+			const doctor_conn_t *cn = &rep->conns[c];
+
+			if(strcmp(cn->peer, nd->name) != 0) {
+				continue;
+			}
+
+			if(cn->active && expected_pref[0] &&
+			                !token_in_list(nd->pref, cn->carrier) &&
+			                !token_in_list(rep->conf_pref_transports, cn->carrier) &&
+			                strcasecmp(cn->carrier, expected_pref) != 0) {
+				if(!carrier_flagged) {
+					bool tspu_445 = !strcmp(cn->carrier, "plain") && ends_with(cn->ep, ":445");
+					doctor_add_issue(rep, tspu_445 ? "CRIT" : "WARN", "carrier", nd->name,
+					                 "Check host TlsFingerprint/HttpsPort/HttpsSni, remote SNI mux, and run 'tinc retry'",
+					                 "Peer '%s' connection %s uses '%s' instead of preferred '%s'%s",
+					                 nd->name, cn->ep, cn->carrier, expected_pref,
+					                 tspu_445 ? " (ISP TSPU may throttle :445)" : "");
+					carrier_flagged = true;
+				}
+			} else if(cn->active && !carrier_flagged && !strcmp(cn->carrier, "plain") && ends_with(cn->ep, ":445")) {
+				doctor_add_issue(rep, "WARN", "carrier", nd->name,
+				                 "Consider switching WAN peer link to Transports=https on :443 with SNI",
+				                 "Peer '%s' uses unencrypted :445 (%s); ISP TSPU commonly throttles plain :445",
+				                 nd->name, cn->ep);
+				carrier_flagged = true;
+			}
+
+			if(cn->active && cn->last_ping_s > 60) {
+				doctor_add_issue(rep, "WARN", "stall", nd->name,
+				                 "Socket has no recent keepalive; disconnect or run 'tinc multipath recycle'",
+				                 "Connection %s (%s) to '%s' idle for %lds",
+				                 cn->ep, cn->role, nd->name, cn->last_ping_s);
+			}
+
+			if(cn->outbuf > 1048576UL || cn->txbuf > 1048576UL) {
+				doctor_add_issue(rep, "WARN", "outbuf", nd->name,
+				                 "Socket write queue congested; check uplink/ECMP skew or slow carrier",
+				                 "Peer '%s' %s (%s) queue pressure: outbuf=%lu txbuf=%lu",
+				                 nd->name, cn->ep, cn->role, cn->outbuf, cn->txbuf);
+			}
+
+			double ret_ratio = cn->segs_out > 0 ? (double)cn->retrans / (double)cn->segs_out : 0.0;
+			bool crushed_leg = (cn->cwnd > 0 && cn->cwnd <= 10) && (cn->pacing_mbps > 0.0 && cn->pacing_mbps < 1.5);
+
+			if(cn->segs_out >= 300 && (ret_ratio > 0.10 || (ret_ratio > 0.06 && crushed_leg))) {
+				double pct = 100.0 * ret_ratio;
+				doctor_add_issue(rep, "WARN", "tcp_retrans", nd->name,
+				                 "High TCP loss/retransmission on underlay path; run 'tinc multipath recycle' or check WAN",
+				                 "Peer '%s' %s (%s) retransmits: %u/%u (%.1f%%)",
+				                 nd->name, cn->ep, cn->role, cn->retrans, cn->segs_out, pct);
+			}
+
+			bool standalone_policed = (!ep_is_loopback(cn->ep) && cn->min_rtt_ms >= 1.0 &&
+			                           cn->segs_out >= 150 && ret_ratio > 0.025 &&
+			                           cn->cwnd > 0 && cn->cwnd <= 32 &&
+			                           cn->pacing_mbps > 0.0 && cn->pacing_mbps < 4.0);
+			bool rel_policed = (best_pacing_mbps >= 15.0 && !ep_is_loopback(cn->ep) &&
+			                    cn->min_rtt_ms >= 1.0 && cn->segs_out >= 300 &&
+			                    ret_ratio > 0.03 && cn->cwnd > 0 && cn->cwnd <= 75 &&
+			                    cn->pacing_mbps > 0.0 && cn->pacing_mbps < 12.0 &&
+			                    cn->pacing_mbps * 4.0 < best_pacing_mbps);
+			bool lt_bw_policed = (best_pacing_mbps >= 12.0 && !ep_is_loopback(cn->ep) &&
+			                      cn->min_rtt_ms >= 1.0 && cn->segs_out >= 800 &&
+			                      (cn->retrans >= 8 || ret_ratio > 0.005) &&
+			                      cn->cwnd > 0 && cn->cwnd <= 28 &&
+			                      cn->pacing_mbps > 0.0 && cn->pacing_mbps < 3.0 &&
+			                      cn->pacing_mbps * 4.0 < best_pacing_mbps);
+
+			if(cn->active && (cn->degraded || standalone_policed || rel_policed || lt_bw_policed ||
+			                  (cn->segs_out >= 300 && cn->cwnd > 0 && cn->cwnd < 4))) {
+				doctor_add_issue(rep, "WARN", "tcp_cwnd", nd->name,
+				                 "Underlay TCP leg throttled/policed; run 'tinc multipath recycle' or 'tinc doctor --fix'",
+				                 "Peer '%s' %s (%s, slot=%d) throttled: cwnd=%u pacing=%.2f Mbps (best=%.1f Mbps, retrans=%u/%u, degraded=%d)",
+				                 nd->name, cn->ep, cn->role, cn->slot, cn->cwnd, cn->pacing_mbps,
+				                 best_pacing_mbps > 0.0 ? best_pacing_mbps : cn->pacing_mbps,
+				                 cn->retrans, cn->segs_out, cn->degraded);
+			}
+
+			double rtt_tol_ms = best_min_rtt < 10.0 ? 15.0 : 25.0;
+
+			if(active_with_rtt >= 2 && cn->active && !ep_is_loopback(cn->ep) && cn->min_rtt_ms >= 1.0 &&
+			                best_min_rtt >= 1.0 && cn->min_rtt_ms > best_min_rtt + rtt_tol_ms &&
+			                cn->min_rtt_ms > best_min_rtt * 1.5) {
+				doctor_add_issue(rep, "WARN", "ecmp_skew", nd->name,
+				                 "Run 'tinc multipath recycle' or 'tinc doctor --fix' to re-dial slow ECMP leg",
+				                 "Slow ECMP leg to '%s' (%s %s): min_rtt=%.1f ms vs best=%.1f ms (+%.1f ms)",
+				                 nd->name, cn->ep, cn->role, cn->min_rtt_ms, best_min_rtt,
+				                 cn->min_rtt_ms - best_min_rtt);
+			}
+		}
+	}
+}
+
+static void print_json_str(const char *s) {
+	char *esc = json_escape(s ? s : "");
+	printf("\"%s\"", esc ? esc : "");
+	free(esc);
+}
+
+static void doctor_print_json(const doctor_report_t *rep) {
+	const char *status = rep->crit_count > 0 ? "UNHEALTHY" : (rep->warn_count > 0 ? "DEGRADED" : "HEALTHY");
+	printf("{\n");
+	printf("  \"status\": \"%s\",\n", status);
+	printf("  \"critical\": %d,\n", rep->crit_count);
+	printf("  \"warnings\": %d,\n", rep->warn_count);
+	printf("  \"fix_promoted\": %d,\n", rep->fix_promoted);
+	printf("  \"fix_recycled\": %d,\n", rep->fix_recycled);
+	printf("  \"node\": ");
+	print_json_str(rep->self_name);
+	printf(",\n  \"vpn_ip\": ");
+	print_json_str(rep->vpn_ip);
+	printf(",\n  \"multipath_mode\": ");
+	print_json_str(rep->mode);
+	printf(",\n  \"target_connections\": %d,\n", rep->target_conns);
+	printf("  \"max_output_buffer_size\": %ld,\n", rep->maxoutbuf);
+	printf("  \"config\": {\n");
+	printf("    \"transports\": ");
+	print_json_str(rep->conf_transports);
+	printf(",\n    \"preferred_transports\": ");
+	print_json_str(rep->conf_pref_transports);
+	printf(",\n    \"multipath_mode\": ");
+	print_json_str(rep->conf_mp_mode);
+	printf(",\n    \"multipath_connections\": %d,\n", rep->conf_mp_conns);
+	printf("    \"max_output_buffer_size\": %ld,\n", rep->conf_maxoutbuf);
+	printf("    \"connect_to\": [");
+
+	for(int i = 0; i < rep->connect_to_count; i++) {
+		if(i > 0) {
+			printf(", ");
+		}
+
+		print_json_str(rep->connect_to[i]);
+	}
+
+	printf("]\n  },\n  \"uplinks\": [\n");
+
+	for(int i = 0; i < rep->uplinks_n; i++) {
+		const doctor_uplink_t *u = &rep->uplinks[i];
+		printf("    {\"idx\": %d, \"name\": ", u->idx);
+		print_json_str(u->name);
+		printf(", \"state\": ");
+		print_json_str(u->state);
+		printf(", \"weight\": %d, \"backup\": %s, \"tx\": %llu, \"rx\": %llu}%s\n",
+		       u->weight, u->backup ? "true" : "false", u->tx, u->rx,
+		       (i + 1 < rep->uplinks_n) ? "," : "");
+	}
+
+	printf("  ],\n  \"peers\": [\n");
+
+	for(int i = 0; i < rep->nodes_n; i++) {
+		const doctor_node_t *nd = &rep->nodes[i];
+		printf("    {\"name\": ");
+		print_json_str(nd->name);
+		printf(", \"reachable\": %s, \"direct\": %s, \"via\": ",
+		       nd->reachable ? "true" : "false", nd->direct ? "true" : "false");
+		print_json_str(nd->via);
+		printf(", \"vpn_ip\": ");
+		print_json_str(nd->vpn_ip);
+		printf(", \"conns\": %d, \"udp_ok\": %s, \"udp_rtt_ms\": %.3f, \"udp_unans\": %d, \"mtu\": %d, \"tcponly\": %s, \"pref\": ",
+		       nd->conns, nd->udp_ok ? "true" : "false", nd->udp_rtt_ms, nd->udp_unans, nd->mtu,
+		       nd->tcponly ? "true" : "false");
+		print_json_str(nd->pref);
+		printf(", \"rx_seq\": %lu, \"rx_ok\": %lu, \"in_pkts\": %llu, \"out_pkts\": %llu",
+		       nd->rx_seq, nd->rx_ok, nd->in_pkts, nd->out_pkts);
+
+		if(nd->probed) {
+			printf(", \"probe_ok\": %s, \"probe_rtt_ms\": %.3f, \"probe_mtu1280_ok\": %s",
+			       nd->probe_ok ? "true" : "false", nd->probe_rtt_ms,
+			       nd->probe_mtu_checked ? (nd->probe_mtu_ok ? "true" : "false") : "null");
+		}
+
+		printf("}%s\n", (i + 1 < rep->nodes_n) ? "," : "");
+	}
+
+	printf("  ],\n  \"connections\": [\n");
+
+	for(int i = 0; i < rep->conns_n; i++) {
+		const doctor_conn_t *cn = &rep->conns[i];
+		printf("    {\"peer\": ");
+		print_json_str(cn->peer);
+		printf(", \"role\": ");
+		print_json_str(cn->role);
+		printf(", \"dir\": ");
+		print_json_str(cn->dir);
+		printf(", \"carrier\": ");
+		print_json_str(cn->carrier);
+		printf(", \"ep\": ");
+		print_json_str(cn->ep);
+		printf(", \"active\": %s, \"verified\": %s, \"uplink\": %d, \"age_s\": %ld, \"last_ping_s\": %ld, \"outbuf\": %lu, \"txbuf\": %lu, \"rtt_ms\": %.1f, \"min_rtt_ms\": %.1f, \"cwnd\": %u, \"retrans\": %u, \"segs_out\": %u, \"pacing_mbps\": %.2f, \"pacing_cap_mbps\": %.2f, \"slot\": %d, \"degraded\": %s}%s\n",
+		       cn->active ? "true" : "false",
+		       cn->verified ? "true" : "false",
+		       cn->uplink, cn->age_s, cn->last_ping_s, cn->outbuf, cn->txbuf,
+		       cn->rtt_ms, cn->min_rtt_ms, cn->cwnd, cn->retrans, cn->segs_out, cn->pacing_mbps,
+		       cn->pacing_cap_mbps, cn->slot, cn->degraded ? "true" : "false",
+		       (i + 1 < rep->conns_n) ? "," : "");
+	}
+
+	printf("  ],\n  \"issues\": [\n");
+
+	for(int i = 0; i < rep->issues_n; i++) {
+		const doctor_issue_t *iss = &rep->issues[i];
+		printf("    {\"severity\": ");
+		print_json_str(iss->sev);
+		printf(", \"component\": ");
+		print_json_str(iss->comp);
+		printf(", \"peer\": ");
+		print_json_str(iss->peer);
+		printf(", \"message\": ");
+		print_json_str(iss->msg);
+		printf(", \"hint\": ");
+		print_json_str(iss->hint);
+		printf("}%s\n", (i + 1 < rep->issues_n) ? "," : "");
+	}
+
+	printf("  ]\n}\n");
+}
+
+static void doctor_print_text(const doctor_report_t *rep) {
+	const char *status = rep->crit_count > 0 ? "UNHEALTHY" : (rep->warn_count > 0 ? "DEGRADED" : "HEALTHY");
+	printf("tinc doctor [%s] node=%s vpn_ip=%s mode=%s target_conns=%d maxoutbuf=%ld\n",
+	       status, rep->self_name[0] ? rep->self_name : "-",
+	       rep->vpn_ip[0] ? rep->vpn_ip : "-",
+	       rep->mode[0] ? rep->mode : "-",
+	       rep->target_conns, rep->maxoutbuf);
+
+	if(rep->fix_promoted > 0 || rep->fix_recycled > 0) {
+		printf("  auto-fix: promoted=%d recycled=%d slow/unhealthy connection(s)\n",
+		       rep->fix_promoted, rep->fix_recycled);
+	}
+
+	for(int i = 0; i < rep->nodes_n; i++) {
+		const doctor_node_t *nd = &rep->nodes[i];
+
+		if(!nd->reachable && !doctor_is_connect_to(rep, nd->name)) {
+			continue;
+		}
+
+		printf("  peer %-16s reach=%d direct=%d via=%-12s ip=%-15s conns=%d udp=%s(%.1fms,unans=%d) mtu=%d tcponly=%d",
+		       nd->name, nd->reachable, nd->direct, nd->via, nd->vpn_ip,
+		       nd->conns, nd->udp_ok ? "yes" : "no", nd->udp_rtt_ms, nd->udp_unans,
+		       nd->mtu, nd->tcponly);
+
+		if(nd->probed) {
+			printf(" ping56=%s(%.1fms)", nd->probe_ok ? "ok" : "FAIL", nd->probe_rtt_ms);
+
+			if(nd->probe_mtu_checked) {
+				printf(" mtu1280=%s", nd->probe_mtu_ok ? "ok" : "BLACKHOLE");
+			}
+		}
+
+		printf("\n");
+
+		for(int c = 0; c < rep->conns_n; c++) {
+			const doctor_conn_t *cn = &rep->conns[c];
+
+			if(strcmp(cn->peer, nd->name) != 0) {
+				continue;
+			}
+
+			char pacing_buf[48];
+
+			if(cn->pacing_cap_mbps > 0.0) {
+				snprintf(pacing_buf, sizeof(pacing_buf), "%.1f/%.1fMbps", cn->pacing_mbps, cn->pacing_cap_mbps);
+			} else {
+				snprintf(pacing_buf, sizeof(pacing_buf), "%.1fMbps", cn->pacing_mbps);
+			}
+
+			printf("    %-7s %-3s carrier=%-6s ep=%-22s rtt=%.1f/%.1fms cwnd=%-3u retrans=%u/%-6u pacing=%s obuf=%lu/%lu ping=%lds slot=%d%s\n",
+			       cn->role, cn->dir, cn->carrier, cn->ep,
+			       cn->rtt_ms, cn->min_rtt_ms, cn->cwnd,
+			       cn->retrans, cn->segs_out, pacing_buf,
+			       cn->outbuf, cn->txbuf, cn->last_ping_s,
+			       cn->slot, cn->degraded ? " [DEGRADED]" : "");
+		}
+	}
+
+	if(rep->issues_n == 0) {
+		printf("  [OK] No transport, ECMP, buffer, or reachability problems detected.\n");
+	} else {
+		for(int i = 0; i < rep->issues_n; i++) {
+			const doctor_issue_t *iss = &rep->issues[i];
+			printf("  [%-4s] (%s:%s) %s\n", iss->sev, iss->comp, iss->peer, iss->msg);
+
+			if(iss->hint[0]) {
+				printf("         -> %s\n", iss->hint);
+			}
+		}
+	}
+}
+
+static int cmd_doctor(int argc, char *argv[]) {
+	bool do_probe = false;
+	bool do_fix = false;
+	bool json_out = false;
+	bool fail_on_warn = false;
+
+	for(int i = 1; i < argc; i++) {
+		if(!strcmp(argv[i], "--probe") || !strcmp(argv[i], "-p")) {
+			do_probe = true;
+		} else if(!strcmp(argv[i], "--fix")) {
+			do_fix = true;
+		} else if(!strcmp(argv[i], "--json") || !strcmp(argv[i], "-j")) {
+			json_out = true;
+		} else if(!strcmp(argv[i], "--strict") || !strcmp(argv[i], "--fail-on-warn")) {
+			fail_on_warn = true;
+		} else if(!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+			printf("Usage: %s doctor [--probe] [--fix] [--json] [--strict]\n"
+			       "  --probe   Send active in-tunnel 56B and 1280B DF=1 diagnostic pings to reachable peers\n"
+			       "  --fix     Zero-drop recycle slow/unhealthy multipath connections\n"
+			       "  --json    Output machine-readable JSON\n"
+			       "  --strict  Exit non-zero on warnings as well as critical issues\n",
+			       program_name);
+			return 0;
+		} else {
+			fprintf(stderr, "Unknown option for doctor: %s\n", argv[i]);
+			return 1;
+		}
+	}
+
+	if(!connect_tincd(!json_out)) {
+		if(json_out) {
+			printf("{\"status\":\"DOWN\",\"critical\":1,\"warnings\":0,\"issues\":[{\"severity\":\"CRIT\",\"component\":\"daemon\",\"peer\":\"-\",\"message\":\"Could not connect to running tincd control socket\",\"hint\":\"Start or inspect tincd service/container\"}]}\n");
+		}
+
+		return 1;
+	}
+
+	doctor_report_t *rep = xzalloc(sizeof(*rep));
+	doctor_read_local_conf(rep);
+
+	if(query_multipath_stream("detail", doctor_collect_cb, rep, "detail") != 0) {
+		free(rep);
+		return 1;
+	}
+
+	if(do_fix) {
+		if(query_multipath_stream("recycle all slow", doctor_recycle_cb, rep, "recycle") == 0) {
+			int saved_promoted = rep->fix_promoted;
+			int saved_recycled = rep->fix_recycled;
+			rep->uplinks_n = 0;
+			rep->nodes_n = 0;
+			rep->conns_n = 0;
+			rep->fix_promoted = saved_promoted;
+			rep->fix_recycled = saved_recycled;
+			query_multipath_stream("detail", doctor_collect_cb, rep, "detail");
+		}
+	}
+
+	if(do_probe) {
+		for(int i = 0; i < rep->nodes_n; i++) {
+			doctor_node_t *nd = &rep->nodes[i];
+
+			if(!nd->reachable || !strcmp(nd->vpn_ip, "-") || !nd->vpn_ip[0]) {
+				continue;
+			}
+
+			char r_from[64], r_node[128];
+			int itype = -1, icode = -1, rttl = 0, nmtu = 0;
+			long rtt_us = -1;
+
+			nd->probed = true;
+			int rc56 = -1;
+
+			for(int att = 0; att < 2; att++) {
+				rc56 = run_diag_ping_query(nd->vpn_ip, 56, 64, 0, 1500,
+				                           r_from, sizeof(r_from),
+				                           r_node, sizeof(r_node),
+				                           &itype, &icode, &rtt_us, &rttl, &nmtu);
+
+				if(rc56 == 0) {
+					break;
+				}
+			}
+
+			nd->probe_ok = (rc56 == 0);
+			nd->probe_rtt_ms = (rc56 == 0 && rtt_us >= 0) ? (double)rtt_us / 1000.0 : -1.0;
+
+			nd->probe_mtu_type = -1;
+
+			if(nd->probe_ok) {
+				int m_type = -1, m_code = -1, m_ttl = 0, m_mtu = 0;
+				long m_rtt = -1;
+				int rc1280 = -1;
+
+				for(int att = 0; att < 2; att++) {
+					m_type = -1;
+					m_mtu = 0;
+					rc1280 = run_diag_ping_query(nd->vpn_ip, 1280, 64, 1, 1500,
+					                             r_from, sizeof(r_from),
+					                             r_node, sizeof(r_node),
+					                             &m_type, &m_code, &m_rtt, &m_ttl, &m_mtu);
+
+					if(rc1280 == 0 && m_type == 0) {
+						break;
+					}
+				}
+
+				nd->probe_mtu_checked = true;
+				nd->probe_mtu_ok = (rc1280 == 0 && m_type == 0);
+				nd->probe_mtu_next = m_mtu;
+				nd->probe_mtu_type = (rc1280 == 0) ? m_type : -1;
+			}
+		}
+	}
+
+	doctor_analyze(rep);
+
+	if(json_out) {
+		doctor_print_json(rep);
+	} else {
+		doctor_print_text(rep);
+	}
+
+	int rc = 0;
+
+	if(rep->crit_count > 0 || (fail_on_warn && rep->warn_count > 0)) {
+		rc = 1;
+	}
+
+	free(rep);
+	return rc;
 }
 
 size_t rstrip(char *value) {
@@ -2219,6 +3417,7 @@ const var_t variables[] = {
 	{"PublicKey", VAR_HOST | VAR_OBSOLETE},
 	{"PublicKeyFile", VAR_SERVER | VAR_HOST | VAR_OBSOLETE},
 	{"Subnet", VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
+	{"TcpMaxPacingRate", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"TCPOnly", VAR_SERVER | VAR_HOST | VAR_SAFE},
 	{"TlsFingerprint", VAR_HOST | VAR_SAFE},
 	{"Transports", VAR_SERVER | VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
@@ -4229,6 +5428,8 @@ static const struct {
 	{"diag-port", cmd_diag_port, false},
 	{"diag-ping", cmd_diag_ping, false},
 	{"multipath", cmd_multipath, false},
+	{"doctor", cmd_doctor, false},
+	{"diag", cmd_doctor, false},
 	{"config", cmd_config, true},
 	{"add", cmd_config, false},
 	{"del", cmd_config, false},

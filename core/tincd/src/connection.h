@@ -154,6 +154,24 @@ typedef struct connection_t {
 	bool host_digest_valid;
 	time_t activated_at;            /* timestamp when ACK activated this connection */
 	bool post_activate_verified;    /* true once post-ACK traffic arrived (guards against DPI post-handshake freeze) */
+	uint32_t tcp_min_rtt_us;        /* cached Linux TCP_INFO tcpi_min_rtt in us (0 = unknown) */
+	uint32_t tcp_rtt_us;            /* cached Linux TCP_INFO tcpi_rtt in us */
+	uint32_t tcp_cwnd;              /* cached Linux TCP_INFO tcpi_snd_cwnd */
+	uint64_t tcp_pacing_bps;        /* cached Linux TCP_INFO tcpi_pacing_rate in bits/s */
+	uint32_t tcp_segs_out;          /* cached Linux TCP_INFO tcpi_segs_out */
+	uint32_t tcp_total_retrans;     /* cached Linux TCP_INFO tcpi_total_retrans */
+	uint32_t tcp_prev_segs_out;     /* previous maintenance sample of tcpi_segs_out */
+	uint32_t tcp_prev_retrans;      /* previous maintenance sample of tcpi_total_retrans */
+	time_t tcp_diag_at;             /* last second TCP_INFO was sampled */
+	bool tcp_degraded;              /* true when active severe window loss + collapsed cwnd indicates throttling */
+	uint8_t tcp_bad_windows;        /* consecutive 5s maintenance windows with severe active loss + collapsed cwnd */
+	uint32_t relay_slot;            /* per-node slot index for deterministic multi-hop ECMP striping */
+	uint32_t target_pacing_rate;    /* computed per-socket TCP pacing target in bytes/sec (0 = unlimited) */
+	uint32_t applied_pacing_rate;   /* last SO_MAX_PACING_RATE value applied via setsockopt (0 = unlimited) */
+	time_t last_tx_sec;             /* timestamp when data was last selected/queued on this connection */
+	time_t prev_tx_sec;             /* previous 1s TX byte window timestamp */
+	uint32_t cur_tx_bytes;          /* payload bytes queued on this connection in last_tx_sec */
+	uint32_t prev_tx_bytes;         /* payload bytes queued in last_tx_sec - 1 */
 } connection_t;
 
 extern list_t connection_list;

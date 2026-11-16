@@ -165,7 +165,9 @@ void free_connection(connection_t *c) {
 	io_del(&c->io);
 
 	if(c->socket > 0) {
-		if(c->status.tarpit) {
+		if(c->status.tarpit && !c->status.no_tarpit && !c->outgoing &&
+		                !c->status.we_dialled && !c->status.multipath_sub &&
+		                !c->status.web_front) {
 			tarpit(c->socket);
 		} else {
 			closesocket(c->socket);

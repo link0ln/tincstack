@@ -820,6 +820,7 @@ bool transport_plain_dial(connection_t *c) {
 	/* Now that there is a working socket, register this connection. */
 
 	c->status.connecting = true;
+	c->status.we_dialled = true;
 
 	connection_add(c);
 
@@ -914,6 +915,7 @@ begin:
 
 	connection_t *c = new_connection();
 	c->outgoing = outgoing;
+	c->status.we_dialled = true;
 	memcpy(&c->address, sa, SALEN(sa->sa));
 	memcpy(&c->base_address, sa, SALEN(sa->sa));
 	c->status.udp_fallback = fallback;

@@ -595,6 +595,7 @@ int reload_configuration(void) {
 	}
 
 	load_all_nodes();
+	multipath_maintain();
 	setup_blocked_nodes();
 	setup_no_direct_nodes();
 

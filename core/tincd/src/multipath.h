@@ -23,7 +23,7 @@ struct vpn_packet_t;
 
 #define MAX_UPLINKS               8
 #define MAX_NODE_PATHS            4
-#define MAX_MULTIPATH_CONNECTIONS 4
+#define MAX_MULTIPATH_CONNECTIONS 8
 
 typedef enum multipath_mode_t {
 	MULTIPATH_OFF = 0,       /* Single connection, single path (legacy) */
@@ -80,8 +80,10 @@ typedef struct node_path_t {
 
 extern multipath_mode_t multipath_mode;
 extern int multipath_target_connections;
+extern uint32_t multipath_tcp_max_pacing_rate;
 extern multipath_uplink_t multipath_uplinks[MAX_UPLINKS];
 extern int multipath_uplink_count;
+extern uint32_t multipath_current_flow_hash;
 
 /* Lifecycle & configuration */
 void multipath_read_config(void);
@@ -108,6 +110,8 @@ void multipath_peer_promoted_solo(struct connection_t *c);
 void multipath_node_add_connection(struct node_t *n, struct connection_t *c);
 void multipath_node_del_connection(struct node_t *n, struct connection_t *c);
 void multipath_maintain(void);
+uint32_t multipath_calc_socket_pacing_rate(uint32_t node_budget_Bps, int pool_conns, int active_tx_conns);
+void multipath_apply_node_tcp_pacing(struct node_t *n, struct connection_t *tx_conn, size_t tx_bytes);
 
 /* Per-node UDP path tracking & probing */
 void multipath_record_udp_rx(struct node_t *n, int uplink_idx, int sock_idx,

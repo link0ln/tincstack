@@ -223,6 +223,587 @@ static void test_multipath_promote_survivor_teardown_and_af_unknown(void **state
 	free_node(from_node);
 }
 
+static void test_multipath_flowhash_slot_consistency_and_degraded_redirect(void **state) {
+	(void)state;
+	node_t *n = new_node("peer_slots");
+	connection_t *conns[4];
+
+	for(int i = 0; i < 4; i++) {
+		conns[i] = new_connection();
+		conns[i]->name = xstrdup("peer_slots");
+		conns[i]->node = n;
+		conns[i]->status.active = true;
+		conns[i]->socket = -1;
+		conns[i]->tcp_min_rtt_us = 40000;
+		conns[i]->tcp_diag_at = now.tv_sec;
+		multipath_node_add_connection(n, conns[i]);
+		assert_int_equal((uint32_t)i, conns[i]->relay_slot);
+	}
+
+	n->connection = conns[0];
+	multipath_mode = MULTIPATH_FLOWHASH;
+	multipath_target_connections = 4;
+
+	vpn_packet_t pkts[64];
+	connection_t *chosen_before[64];
+	int hits[4] = {0, 0, 0, 0};
+
+	for(int i = 0; i < 64; i++) {
+		memset(&pkts[i], 0, sizeof(pkts[i]));
+		uint8_t raw[14 + 40] = {
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x08, 0x00,
+			0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00,
+			0x40, 0x06, 0x00, 0x00, 10, 0, 0, 1,
+			10, 0, 0, 2,
+			0x00, 0x00, 0x01, 0xbb, 0x00, 0x00, 0x00, 0x01,
+			0x00, 0x00, 0x00, 0x02, 0x50, 0x10, 0x10, 0x00,
+			0x00, 0x00, 0x00, 0x00
+		};
+		uint16_t sport = (uint16_t)(10000 + i);
+		raw[14 + 20] = (uint8_t)(sport >> 8);
+		raw[14 + 21] = (uint8_t)(sport & 0xff);
+		memcpy(DATA(&pkts[i]), raw, sizeof(raw));
+		pkts[i].len = sizeof(raw);
+
+		connection_t *out[2] = {NULL, NULL};
+		assert_int_equal(1, multipath_select_connections(n, &pkts[i], out));
+		chosen_before[i] = out[0];
+
+		for(int c = 0; c < 4; c++) {
+			if(out[0] == conns[c]) {
+				hits[c]++;
+			}
+		}
+	}
+
+	for(int c = 0; c < 4; c++) {
+		assert_true(hits[c] > 0);
+	}
+
+	/* Degrading slot 2 must redirect slot-2 flows cleanly WITHOUT shifting any
+	   healthy flow on slots 0, 1, or 3 (zero intra-flow reordering). */
+	conns[2]->tcp_degraded = true;
+
+	for(int i = 0; i < 64; i++) {
+		connection_t *out[2] = {NULL, NULL};
+		assert_int_equal(1, multipath_select_connections(n, &pkts[i], out));
+
+		if(chosen_before[i] == conns[2]) {
+			assert_ptr_not_equal(conns[2], out[0]);
+		} else {
+			assert_ptr_equal(chosen_before[i], out[0]);
+		}
+	}
+
+	/* Deleting slot 2 from n->connections must likewise preserve slots 0, 1, and 3 */
+	multipath_node_del_connection(n, conns[2]);
+
+	for(int i = 0; i < 64; i++) {
+		connection_t *out[2] = {NULL, NULL};
+		assert_int_equal(1, multipath_select_connections(n, &pkts[i], out));
+
+		if(chosen_before[i] != conns[2]) {
+			assert_ptr_equal(chosen_before[i], out[0]);
+		}
+	}
+
+	/* Re-adding a replacement connection must reuse lowest free slot 2 and preserve others */
+	connection_t *c2_new = new_connection();
+	c2_new->name = xstrdup("peer_slots");
+	c2_new->node = n;
+	c2_new->status.active = true;
+	c2_new->socket = -1;
+	c2_new->tcp_min_rtt_us = 40000;
+	c2_new->tcp_diag_at = now.tv_sec;
+	multipath_node_add_connection(n, c2_new);
+	assert_int_equal(2, c2_new->relay_slot);
+
+	for(int i = 0; i < 64; i++) {
+		connection_t *out[2] = {NULL, NULL};
+		assert_int_equal(1, multipath_select_connections(n, &pkts[i], out));
+
+		if(chosen_before[i] == conns[2]) {
+			assert_ptr_equal(c2_new, out[0]);
+		} else {
+			assert_ptr_equal(chosen_before[i], out[0]);
+		}
+	}
+
+	multipath_node_del_connection(n, c2_new);
+	multipath_node_del_connection(n, conns[0]);
+	multipath_node_del_connection(n, conns[1]);
+	multipath_node_del_connection(n, conns[3]);
+	n->connection = NULL;
+	free_connection(c2_new);
+
+	for(int i = 0; i < 4; i++) {
+		free_connection(conns[i]);
+	}
+
+	free_node(n);
+	multipath_mode = MULTIPATH_FAILOVER;
+	multipath_target_connections = 1;
+}
+
+static void test_multipath_tspu_policed_leg_exclusion_and_sticky_latch(void **state) {
+	(void)state;
+	node_t *n = new_node("peer_tspu");
+	connection_t *conns[6];
+
+	for(int i = 0; i < 6; i++) {
+		conns[i] = new_connection();
+		conns[i]->name = xstrdup("peer_tspu");
+		conns[i]->node = n;
+		conns[i]->status.active = true;
+		conns[i]->socket = -1;
+		conns[i]->tcp_min_rtt_us = 39000;
+		conns[i]->tcp_diag_at = now.tv_sec;
+		multipath_node_add_connection(n, conns[i]);
+	}
+
+	conns[0]->tcp_segs_out = 41000;
+	conns[0]->tcp_total_retrans = 2600;
+	conns[0]->tcp_cwnd = 14;
+	conns[0]->tcp_pacing_bps = 950000ULL;
+
+	conns[1]->tcp_segs_out = 90000;
+	conns[1]->tcp_total_retrans = 2700;
+	conns[1]->tcp_cwnd = 674;
+	conns[1]->tcp_pacing_bps = 109000000ULL;
+
+	conns[2]->tcp_segs_out = 15000;
+	conns[2]->tcp_total_retrans = 1060;
+	conns[2]->tcp_cwnd = 50;
+	conns[2]->tcp_pacing_bps = 5470000ULL;
+
+	conns[3]->tcp_segs_out = 10500;
+	conns[3]->tcp_total_retrans = 1380;
+	conns[3]->tcp_cwnd = 18;
+	conns[3]->tcp_pacing_bps = 1260000ULL;
+
+	/* Low-loss app_limited healthy leg must stay enabled */
+	conns[4]->tcp_segs_out = 2000;
+	conns[4]->tcp_total_retrans = 0;
+	conns[4]->tcp_cwnd = 18;
+	conns[4]->tcp_pacing_bps = 8400000ULL;
+
+	conns[5]->tcp_segs_out = 5000;
+	conns[5]->tcp_total_retrans = 100;
+	conns[5]->tcp_cwnd = 180;
+	conns[5]->tcp_pacing_bps = 46500000ULL;
+
+	n->connection = conns[0];
+	multipath_mode = MULTIPATH_FLOWHASH;
+	multipath_target_connections = 6;
+
+	for(int i = 0; i < 64; i++) {
+		vpn_packet_t pkt = {0};
+		uint8_t raw[14 + 40] = {
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x08, 0x00,
+			0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00,
+			0x40, 0x06, 0x00, 0x00, 10, 0, 0, 1,
+			10, 0, 0, 2,
+			0x00, 0x00, 0x01, 0xbb, 0x00, 0x00, 0x00, 0x01,
+			0x00, 0x00, 0x00, 0x02, 0x50, 0x10, 0x10, 0x00,
+			0x00, 0x00, 0x00, 0x00
+		};
+		uint16_t sport = (uint16_t)(20000 + i);
+		raw[14 + 20] = (uint8_t)(sport >> 8);
+		raw[14 + 21] = (uint8_t)(sport & 0xff);
+		memcpy(DATA(&pkt), raw, sizeof(raw));
+		pkt.len = sizeof(raw);
+
+		connection_t *out[2] = {NULL, NULL};
+		assert_int_equal(1, multipath_select_connections(n, &pkt, out));
+		assert_true(out[0] == conns[1] || out[0] == conns[4] || out[0] == conns[5]);
+	}
+
+	assert_true(conns[0]->tcp_degraded);
+	assert_false(conns[1]->tcp_degraded);
+	assert_true(conns[2]->tcp_degraded);
+	assert_true(conns[3]->tcp_degraded);
+	assert_false(conns[4]->tcp_degraded);
+	assert_false(conns[5]->tcp_degraded);
+
+	/* Sticky zero-flap latch: even if fast siblings dip to 20 Mbps, conns[2] stays degraded */
+	conns[1]->tcp_pacing_bps = 20000000ULL;
+	conns[5]->tcp_pacing_bps = 20000000ULL;
+
+	vpn_packet_t pkt_chk = {0};
+	uint8_t raw_chk[14 + 40] = {
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x08, 0x00,
+		0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00,
+		0x40, 0x06, 0x00, 0x00, 10, 0, 0, 1,
+		10, 0, 0, 2,
+		0x4e, 0x22, 0x01, 0xbb, 0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x02, 0x50, 0x10, 0x10, 0x00,
+		0x00, 0x00, 0x00, 0x00
+	};
+	memcpy(DATA(&pkt_chk), raw_chk, sizeof(raw_chk));
+	pkt_chk.len = sizeof(raw_chk);
+
+	for(int i = 0; i < 64; i++) {
+		uint16_t sport = (uint16_t)(30000 + i);
+		DATA(&pkt_chk)[14 + 20] = (uint8_t)(sport >> 8);
+		DATA(&pkt_chk)[14 + 21] = (uint8_t)(sport & 0xff);
+		connection_t *out[2] = {NULL, NULL};
+		assert_int_equal(1, multipath_select_connections(n, &pkt_chk, out));
+		assert_true(out[0] == conns[1] || out[0] == conns[4] || out[0] == conns[5]);
+	}
+
+	assert_true(conns[2]->tcp_degraded);
+
+	for(int i = 0; i < 6; i++) {
+		multipath_node_del_connection(n, conns[i]);
+	}
+
+	n->connection = NULL;
+
+	for(int i = 0; i < 6; i++) {
+		free_connection(conns[i]);
+	}
+
+	free_node(n);
+	multipath_mode = MULTIPATH_FAILOVER;
+	multipath_target_connections = 1;
+}
+
+static void test_multipath_bbr_lt_bw_and_all_degraded_fallback(void **state) {
+	(void)state;
+	node_t *n = new_node("peer_ltbw");
+	connection_t *conns[3];
+
+	for(int i = 0; i < 3; i++) {
+		conns[i] = new_connection();
+		conns[i]->name = xstrdup("peer_ltbw");
+		conns[i]->node = n;
+		conns[i]->status.active = true;
+		conns[i]->socket = -1;
+		conns[i]->tcp_min_rtt_us = 42000;
+		conns[i]->tcp_diag_at = now.tv_sec;
+		multipath_node_add_connection(n, conns[i]);
+	}
+
+	/* conns[0]: BBRv1 lt_bw lockup (1% retrans >= 0.5%, cwnd=12 <= 24, pacing=0.8 Mbps < 2 Mbps) */
+	conns[0]->tcp_segs_out = 2000;
+	conns[0]->tcp_total_retrans = 20;
+	conns[0]->tcp_cwnd = 12;
+	conns[0]->tcp_pacing_bps = 800000ULL;
+
+	/* conns[1]: proven fast sibling (>= 30 Mbps) */
+	conns[1]->tcp_segs_out = 5000;
+	conns[1]->tcp_total_retrans = 5;
+	conns[1]->tcp_cwnd = 220;
+	conns[1]->tcp_pacing_bps = 45000000ULL;
+
+	/* conns[2]: zero-retrans app_limited sibling must remain healthy */
+	conns[2]->tcp_segs_out = 2000;
+	conns[2]->tcp_total_retrans = 0;
+	conns[2]->tcp_cwnd = 18;
+	conns[2]->tcp_pacing_bps = 8400000ULL;
+
+	n->connection = conns[0];
+	multipath_mode = MULTIPATH_FLOWHASH;
+	multipath_target_connections = 3;
+
+	for(int i = 0; i < 32; i++) {
+		vpn_packet_t pkt = {0};
+		uint8_t raw[14 + 40] = {
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x08, 0x00,
+			0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00,
+			0x40, 0x06, 0x00, 0x00, 10, 0, 0, 1,
+			10, 0, 0, 2,
+			0x00, 0x00, 0x01, 0xbb, 0x00, 0x00, 0x00, 0x01,
+			0x00, 0x00, 0x00, 0x02, 0x50, 0x10, 0x10, 0x00,
+			0x00, 0x00, 0x00, 0x00
+		};
+		uint16_t sport = (uint16_t)(40000 + i);
+		raw[14 + 20] = (uint8_t)(sport >> 8);
+		raw[14 + 21] = (uint8_t)(sport & 0xff);
+		memcpy(DATA(&pkt), raw, sizeof(raw));
+		pkt.len = sizeof(raw);
+
+		connection_t *out[2] = {NULL, NULL};
+		assert_int_equal(1, multipath_select_connections(n, &pkt, out));
+		assert_true(out[0] == conns[1] || out[0] == conns[2]);
+	}
+
+	assert_true(conns[0]->tcp_degraded);
+	assert_false(conns[1]->tcp_degraded);
+	assert_false(conns[2]->tcp_degraded);
+
+	/* When ALL connections are degraded, selector must fall back cleanly to usable[] */
+	conns[1]->tcp_degraded = true;
+	conns[2]->tcp_degraded = true;
+
+	vpn_packet_t pkt_all = {0};
+	uint8_t raw_all[14 + 40] = {
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x08, 0x00,
+		0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00,
+		0x40, 0x06, 0x00, 0x00, 10, 0, 0, 1,
+		10, 0, 0, 2,
+		0x9c, 0x41, 0x01, 0xbb, 0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x02, 0x50, 0x10, 0x10, 0x00,
+		0x00, 0x00, 0x00, 0x00
+	};
+	memcpy(DATA(&pkt_all), raw_all, sizeof(raw_all));
+	pkt_all.len = sizeof(raw_all);
+
+	connection_t *out_all[2] = {NULL, NULL};
+	assert_int_equal(1, multipath_select_connections(n, &pkt_all, out_all));
+	assert_non_null(out_all[0]);
+
+	for(int i = 0; i < 3; i++) {
+		multipath_node_del_connection(n, conns[i]);
+	}
+
+	n->connection = NULL;
+
+	for(int i = 0; i < 3; i++) {
+		free_connection(conns[i]);
+	}
+
+	free_node(n);
+	multipath_mode = MULTIPATH_FAILOVER;
+	multipath_target_connections = 1;
+}
+
+static void test_multipath_dynamic_tcp_pacing_and_high_loss_ecmp(void **state) {
+	(void)state;
+
+	assert_int_equal(0U, multipath_calc_socket_pacing_rate(0, 4, 1));
+	assert_int_equal(4500000U, multipath_calc_socket_pacing_rate(4500000U, 1, 1));
+	assert_int_equal(3000000U, multipath_calc_socket_pacing_rate(4500000U, 4, 1));
+	assert_int_equal(2250000U, multipath_calc_socket_pacing_rate(4500000U, 4, 2));
+	assert_int_equal(1500000U, multipath_calc_socket_pacing_rate(4500000U, 4, 3));
+	assert_int_equal(1125000U, multipath_calc_socket_pacing_rate(4500000U, 4, 4));
+
+	time_t saved_sec = now.tv_sec;
+	now.tv_sec = 1000;
+
+	node_t *n = new_node("peer_paced");
+	n->tcp_max_pacing_rate = 4500000U;
+	connection_t *conns[4];
+
+	for(int i = 0; i < 4; i++) {
+		conns[i] = new_connection();
+		conns[i]->name = xstrdup("peer_paced");
+		conns[i]->node = n;
+		conns[i]->status.active = true;
+		conns[i]->socket = -1;
+		conns[i]->tcp_min_rtt_us = 40000;
+		conns[i]->tcp_diag_at = now.tv_sec;
+		conns[i]->tcp_segs_out = 2000;
+		conns[i]->tcp_total_retrans = 120; /* 6% baseline cross-border loss */
+		conns[i]->tcp_cwnd = 60;
+		conns[i]->tcp_pacing_bps = 9000000ULL;
+		multipath_node_add_connection(n, conns[i]);
+	}
+
+	n->connection = conns[0];
+	multipath_mode = MULTIPATH_FLOWHASH;
+	multipath_target_connections = 4;
+
+	vpn_packet_t pkts[64];
+	int seen_slots[4] = {0, 0, 0, 0};
+	vpn_packet_t *pkt_for_slot[4] = {NULL, NULL, NULL, NULL};
+
+	for(int i = 0; i < 64; i++) {
+		memset(&pkts[i], 0, sizeof(pkts[i]));
+		uint8_t raw[14 + 40] = {
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x08, 0x00,
+			0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00,
+			0x40, 0x06, 0x00, 0x00, 10, 0, 0, 1,
+			10, 0, 0, 2,
+			0x00, 0x00, 0x01, 0xbb, 0x00, 0x00, 0x00, 0x01,
+			0x00, 0x00, 0x00, 0x02, 0x50, 0x10, 0x10, 0x00,
+			0x00, 0x00, 0x00, 0x00
+		};
+		uint16_t sport = (uint16_t)(50000 + i);
+		raw[14 + 20] = (uint8_t)(sport >> 8);
+		raw[14 + 21] = (uint8_t)(sport & 0xff);
+		memcpy(DATA(&pkts[i]), raw, sizeof(raw));
+		pkts[i].len = sizeof(raw);
+
+		uint32_t s = multipath_flow_hash(&pkts[i]) % 4U;
+
+		if(!pkt_for_slot[s]) {
+			pkt_for_slot[s] = &pkts[i];
+		}
+
+		seen_slots[s]++;
+	}
+
+	for(int s = 0; s < 4; s++) {
+		assert_true(seen_slots[s] > 0);
+		assert_non_null(pkt_for_slot[s]);
+	}
+
+	/* Light chatter (4 KB/s) + medium TV-like background streams (180 KB/s) with
+	   no heavy bulk flows must leave all legs at single_cap (3.0 MB/s). */
+	connection_t *out[2] = {NULL, NULL};
+
+	for(int s = 0; s < 4; s++) {
+		assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[s], out));
+		multipath_apply_node_tcp_pacing(n, out[0], 4000);
+	}
+
+	for(int s = 0; s < 4; s++) {
+		assert_int_equal(3000000U, conns[s]->target_pacing_rate);
+	}
+
+	/* 1 heavy bulk flow (800 KB/s on slot 0) + TV-like background (180 KB/s on slots 1,2)
+	   + chatter (4 KB/s on slot 3) -> heavy flow keeps single_cap (3.0 MB/s), light gets 1.5 MB/s */
+	now.tv_sec += 2;
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[1], out));
+	assert_ptr_equal(conns[1], out[0]);
+	multipath_apply_node_tcp_pacing(n, out[0], 180000);
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[2], out));
+	assert_ptr_equal(conns[2], out[0]);
+	multipath_apply_node_tcp_pacing(n, out[0], 180000);
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[3], out));
+	assert_ptr_equal(conns[3], out[0]);
+	multipath_apply_node_tcp_pacing(n, out[0], 4000);
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[0], out));
+	assert_ptr_equal(conns[0], out[0]);
+	multipath_apply_node_tcp_pacing(n, out[0], 800000);
+	assert_int_equal(3000000U, conns[0]->target_pacing_rate);
+	assert_int_equal(1500000U, conns[1]->target_pacing_rate);
+	assert_int_equal(1500000U, conns[2]->target_pacing_rate);
+	assert_int_equal(1500000U, conns[3]->target_pacing_rate);
+
+	/* 2 simultaneous heavy bulk flows (800 KB/s on slots 0,1) -> 4.5 MB/s / 2 = 2.25 MB/s (18 Mbps) */
+	now.tv_sec += 2;
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[0], out));
+	multipath_apply_node_tcp_pacing(n, out[0], 800000);
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[1], out));
+	multipath_apply_node_tcp_pacing(n, out[0], 800000);
+	assert_int_equal(2250000U, conns[0]->target_pacing_rate);
+	assert_int_equal(2250000U, conns[1]->target_pacing_rate);
+
+	/* Third + fourth simultaneous heavy bulk flows -> 1.125 MB/s (9 Mbps) */
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[2], out));
+	multipath_apply_node_tcp_pacing(n, out[0], 800000);
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[3], out));
+	multipath_apply_node_tcp_pacing(n, out[0], 800000);
+	assert_int_equal(1125000U, conns[0]->target_pacing_rate);
+	assert_int_equal(1125000U, conns[3]->target_pacing_rate);
+
+	/* Advancing +1s holds 1.125 MB/s smoothly via prev_tx_bytes without boundary jitter */
+	now.tv_sec += 1;
+	multipath_apply_node_tcp_pacing(n, conns[0], 1400);
+	assert_int_equal(1125000U, conns[0]->target_pacing_rate);
+
+	/* Advancing +2s with TV/chatter on conns[1..3] and bulk on conns[0] decays back to 3.0 MB/s */
+	now.tv_sec += 2;
+	multipath_apply_node_tcp_pacing(n, conns[1], 180000);
+	multipath_apply_node_tcp_pacing(n, conns[2], 4000);
+	multipath_apply_node_tcp_pacing(n, conns[3], 4000);
+	multipath_apply_node_tcp_pacing(n, conns[0], 800000);
+	assert_int_equal(3000000U, conns[0]->target_pacing_rate);
+
+	/* Condition D: high-loss (> 12%) ECMP tuple lagging healthy sibling under TcpMaxPacingRate */
+	conns[3]->tcp_segs_out = 2000;
+	conns[3]->tcp_total_retrans = 310; /* 15.5% > 12% */
+	conns[3]->tcp_cwnd = 35;
+	conns[3]->tcp_pacing_bps = 5200000ULL; /* 5.2 Mbps < 2/3 of 9.0 Mbps */
+
+	for(int i = 0; i < 64; i++) {
+		assert_int_equal(1, multipath_select_connections(n, &pkts[i], out));
+		assert_ptr_not_equal(conns[3], out[0]);
+	}
+
+	assert_true(conns[3]->tcp_degraded);
+	assert_false(conns[0]->tcp_degraded);
+	assert_false(conns[1]->tcp_degraded);
+	assert_false(conns[2]->tcp_degraded);
+
+	/* Metro WAN (1.8 ms vs 25.3 ms hair-pin): adaptive 15 ms tolerance excludes skewed WAN leg */
+	for(int i = 0; i < 4; i++) {
+		conns[i]->tcp_degraded = false;
+		conns[i]->tcp_segs_out = 2000;
+		conns[i]->tcp_total_retrans = 10;
+		conns[i]->tcp_cwnd = 120;
+		conns[i]->tcp_pacing_bps = 40000000ULL;
+		conns[i]->address.sa.sa_family = AF_INET;
+		conns[i]->address.in.sin_addr.s_addr = htonl(0x5057c827U); /* 80.87.200.39 */
+		conns[i]->tcp_min_rtt_us = (i == 3) ? 25300U : 1800U;
+	}
+
+	for(int i = 0; i < 64; i++) {
+		assert_int_equal(1, multipath_select_connections(n, &pkts[i], out));
+		assert_ptr_not_equal(conns[3], out[0]);
+	}
+
+	/* Loopback sockets (127.0.0.1, e.g. Angie local proxy) must NEVER be excluded or latched degraded */
+	for(int i = 0; i < 4; i++) {
+		conns[i]->tcp_degraded = false;
+		conns[i]->address.sa.sa_family = AF_INET;
+		conns[i]->address.in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		conns[i]->tcp_min_rtt_us = (i == 3) ? 25300U : 100U;
+	}
+
+	assert_int_equal(1, multipath_select_connections(n, pkt_for_slot[3], out));
+	assert_ptr_equal(conns[3], out[0]);
+	assert_false(conns[3]->tcp_degraded);
+
+	/* Late-life BBRv1 lt_bw lockup under TcpMaxPacingRate (23.2 Mbps sibling, 0.085% retrans) */
+	for(int i = 0; i < 4; i++) {
+		conns[i]->tcp_degraded = false;
+		conns[i]->address.sa.sa_family = AF_INET;
+		conns[i]->address.in.sin_addr.s_addr = htonl(0x5057c827U);
+		conns[i]->tcp_min_rtt_us = 40000U;
+		conns[i]->tcp_segs_out = 2000;
+		conns[i]->tcp_total_retrans = 5;
+		conns[i]->tcp_cwnd = 120;
+		conns[i]->tcp_pacing_bps = 23200000ULL;
+	}
+
+	conns[1]->tcp_total_retrans = 0;
+	conns[1]->tcp_cwnd = 18;
+	conns[1]->tcp_pacing_bps = 8400000ULL;
+
+	conns[2]->tcp_segs_out = 75000;
+	conns[2]->tcp_total_retrans = 64; /* 0.085%, >= 8 retrans */
+	conns[2]->tcp_cwnd = 20;
+	conns[2]->tcp_pacing_bps = 1790000ULL;
+
+	for(int i = 0; i < 64; i++) {
+		assert_int_equal(1, multipath_select_connections(n, &pkts[i], out));
+		assert_ptr_not_equal(conns[2], out[0]);
+	}
+
+	assert_true(conns[2]->tcp_degraded);
+	assert_false(conns[1]->tcp_degraded);
+
+	for(int i = 0; i < 4; i++) {
+		multipath_node_del_connection(n, conns[i]);
+	}
+
+	n->connection = NULL;
+
+	for(int i = 0; i < 4; i++) {
+		free_connection(conns[i]);
+	}
+
+	free_node(n);
+	multipath_mode = MULTIPATH_FAILOVER;
+	multipath_target_connections = 1;
+	now.tv_sec = saved_sec;
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_multipath_mode_parse_and_name),
@@ -230,6 +811,10 @@ int main(void) {
 		cmocka_unit_test(test_multipath_connection_pooling_and_failover),
 		cmocka_unit_test(test_multipath_udp_paths_scheduling),
 		cmocka_unit_test(test_multipath_promote_survivor_teardown_and_af_unknown),
+		cmocka_unit_test(test_multipath_flowhash_slot_consistency_and_degraded_redirect),
+		cmocka_unit_test(test_multipath_tspu_policed_leg_exclusion_and_sticky_latch),
+		cmocka_unit_test(test_multipath_bbr_lt_bw_and_all_degraded_fallback),
+		cmocka_unit_test(test_multipath_dynamic_tcp_pacing_and_high_loss_ecmp),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

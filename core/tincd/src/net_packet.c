@@ -90,6 +90,7 @@ static void send_udp_probe_packet(node_t *n, size_t len);
 unsigned replaywin = 1024;
 int multipath_current_rx_uplink = -1;
 static const vpn_packet_t *multipath_current_tx_pkt = NULL;
+uint32_t multipath_current_flow_hash = 0;
 static const sockaddr_t *current_udp_rx_addr = NULL;
 static int current_udp_rx_sock = -1;
 static int current_udp_rx_len = 0;
@@ -1040,10 +1041,14 @@ bool receive_tcppacket_sptps(connection_t *c, const char *data, size_t len) {
 			return true;
 		}
 
+		uint32_t prev_fh = multipath_current_flow_hash;
+		uint32_t pair_mix = ((uint32_t)from->id.x[0] ^ ((uint32_t)to->id.x[0] << 3)) & 0xffu;
+		multipath_current_flow_hash = 0x80000000u | ((c->relay_slot + pair_mix) & 0x7fffffffu);
 		const node_t *prev_relay_peer = current_relay_rx_peer;
 		current_relay_rx_peer = c->node;
 		send_sptps_data(to, from, 0, data, len);
 		current_relay_rx_peer = prev_relay_peer;
+		multipath_current_flow_hash = prev_fh;
 		try_tx(to, true);
 		return true;
 	}
@@ -1826,8 +1831,32 @@ static bool send_sptps_data_meta(node_t *to, node_t *from, int type, const void 
 		return false;
 	}
 
+	uint32_t saved_flow_hash = multipath_current_flow_hash;
+
+	if(!multipath_current_tx_pkt && !multipath_current_flow_hash && type != SPTPS_HANDSHAKE) {
+		uint32_t fh = 2166136261u;
+		const uint8_t *fb = (const uint8_t *)&from->id;
+		const uint8_t *tb = (const uint8_t *)&to->id;
+
+		for(size_t i = 0; i < sizeof(from->id); i++) {
+			fh ^= fb[i];
+			fh *= 16777619u;
+		}
+
+		for(size_t i = 0; i < sizeof(to->id); i++) {
+			fh ^= tb[i];
+			fh *= 16777619u;
+		}
+
+		fh ^= fh >> 16;
+		fh *= 0x85ebca6bu;
+		fh ^= fh >> 13;
+		multipath_current_flow_hash = fh ? fh : 1u;
+	}
+
 	connection_t *conns[2] = {NULL, NULL};
 	int nconns = (type == SPTPS_HANDSHAKE) ? 0 : multipath_select_connections(to->nexthop, multipath_current_tx_pkt, conns);
+	multipath_current_flow_hash = saved_flow_hash;
 
 	if(nconns <= 0) {
 		conns[0] = to->nexthop->connection;

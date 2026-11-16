@@ -1474,6 +1474,7 @@ bool https_dial(connection_t *c) {
 
 	c->socket = fd;
 	c->status.connecting = true;
+	c->status.we_dialled = true;
 
 	https_session_t *s = new_session(c, false);
 	s->state = HS_TCP_CONNECTING;

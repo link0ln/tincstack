@@ -19,6 +19,8 @@
 
 #include "system.h"
 
+#include <stddef.h>
+
 #ifdef HAVE_LINUX
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -54,6 +56,7 @@
 
 multipath_mode_t multipath_mode = MULTIPATH_FAILOVER;
 int multipath_target_connections = 1;
+uint32_t multipath_tcp_max_pacing_rate = 0;
 multipath_uplink_t multipath_uplinks[MAX_UPLINKS];
 int multipath_uplink_count = 0;
 
@@ -62,6 +65,285 @@ extern int multipath_current_rx_uplink;
 
 static timeout_t multipath_timer;
 static bool multipath_initialized = false;
+
+static bool connection_ping_overdue(const connection_t *c) {
+	return c && c->status.pinged && (now.tv_sec - c->last_ping_time > 5);
+}
+
+typedef struct mp_tcp_diag_t {
+	bool valid;
+	uint32_t rtt_us;
+	uint32_t min_rtt_us;
+	uint32_t snd_cwnd;
+	uint32_t total_retrans;
+	uint32_t segs_out;
+	uint64_t pacing_bps;
+} mp_tcp_diag_t;
+
+static bool connection_is_loopback(const connection_t *c) {
+	if(!c) {
+		return false;
+	}
+
+	if(c->address.sa.sa_family == AF_INET) {
+		return (ntohl(c->address.in.sin_addr.s_addr) >> 24) == 127U;
+	}
+
+	if(c->address.sa.sa_family == AF_INET6) {
+		return IN6_IS_ADDR_LOOPBACK(&c->address.in6.sin6_addr) ||
+		       (IN6_IS_ADDR_V4MAPPED(&c->address.in6.sin6_addr) &&
+		        c->address.in6.sin6_addr.s6_addr[12] == 127U);
+	}
+
+	return false;
+}
+
+static bool connection_has_wan_rtt(const connection_t *c) {
+	return c && !connection_is_loopback(c) && c->tcp_min_rtt_us >= 1000;
+}
+
+static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) {
+	if(!connection_has_wan_rtt(c)) {
+		return false;
+	}
+
+	/* Condition A: standalone TSPU ~0.5-3.5 Mbps policer */
+	if(c->tcp_segs_out >= 80 &&
+	                ((c->tcp_segs_out >= 150 && (uint64_t)c->tcp_total_retrans * 40ULL > (uint64_t)c->tcp_segs_out) ||
+	                 (c->tcp_segs_out < 150 && (uint64_t)c->tcp_total_retrans * 28ULL > (uint64_t)c->tcp_segs_out)) &&
+	                c->tcp_cwnd > 0 && c->tcp_cwnd <= 32 &&
+	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps < 4000000ULL) {
+		c->tcp_degraded = true;
+		return true;
+	}
+
+	/* Condition B: relative ECMP throttling vs proven fast sibling */
+	if(best_pacing_bps >= 15000000ULL && c->tcp_segs_out >= 300 &&
+	                (uint64_t)c->tcp_total_retrans * 33ULL > (uint64_t)c->tcp_segs_out &&
+	                c->tcp_cwnd > 0 && c->tcp_cwnd <= 75 &&
+	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps < 12000000ULL &&
+	                c->tcp_pacing_bps * 4ULL < best_pacing_bps) {
+		c->tcp_degraded = true;
+		return true;
+	}
+
+	/* Condition C: BBRv1 lt_bw / low-cwnd lockup (< 3 Mbps, cwnd <= 28) vs proven >= 12 Mbps sibling */
+	if(best_pacing_bps >= 12000000ULL && c->tcp_segs_out >= 800 &&
+	                (c->tcp_total_retrans >= 8 || (uint64_t)c->tcp_total_retrans * 200ULL > (uint64_t)c->tcp_segs_out) &&
+	                c->tcp_cwnd > 0 && c->tcp_cwnd <= 28 &&
+	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps < 3000000ULL &&
+	                c->tcp_pacing_bps * 4ULL < best_pacing_bps) {
+		c->tcp_degraded = true;
+		return true;
+	}
+
+	/* Condition D: high-loss (> 12%) ECMP tuple lagging healthy sibling (effective under TcpMaxPacingRate too) */
+	if(best_pacing_bps >= 8000000ULL && c->tcp_segs_out >= 400 &&
+	                (uint64_t)c->tcp_total_retrans * 25ULL > (uint64_t)c->tcp_segs_out * 3ULL &&
+	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps * 3ULL < best_pacing_bps * 2ULL) {
+		c->tcp_degraded = true;
+		return true;
+	}
+
+	return false;
+}
+
+#if defined(HAVE_LINUX) && defined(TCP_INFO)
+struct linux_tcp_info_minrtt {
+	uint8_t  tcpi_u8[8];
+	uint32_t tcpi_u32_a[24];
+	uint64_t tcpi_u64_a[4];
+	uint32_t tcpi_segs_out;
+	uint32_t tcpi_segs_in;
+	uint32_t tcpi_notsent_bytes;
+	uint32_t tcpi_min_rtt;
+};
+
+_Static_assert(offsetof(struct linux_tcp_info_minrtt, tcpi_u32_a) + 15 * sizeof(uint32_t) == 68,
+               "tcpi_rtt offset mismatch");
+_Static_assert(offsetof(struct linux_tcp_info_minrtt, tcpi_u32_a) + 18 * sizeof(uint32_t) == 80,
+               "tcpi_snd_cwnd offset mismatch");
+_Static_assert(offsetof(struct linux_tcp_info_minrtt, tcpi_u32_a) + 23 * sizeof(uint32_t) == 100,
+               "tcpi_total_retrans offset mismatch");
+_Static_assert(offsetof(struct linux_tcp_info_minrtt, tcpi_u64_a) == 104,
+               "tcpi_pacing_rate offset mismatch");
+_Static_assert(offsetof(struct linux_tcp_info_minrtt, tcpi_segs_out) == 136,
+               "tcpi_segs_out offset mismatch");
+_Static_assert(offsetof(struct linux_tcp_info_minrtt, tcpi_min_rtt) == 148,
+               "linux_tcp_info_minrtt offset mismatch");
+
+static bool query_connection_tcp_diag(connection_t *c, mp_tcp_diag_t *out) {
+	if(out) {
+		memset(out, 0, sizeof(*out));
+	}
+
+	if(!c || c->socket < 0 || !c->status.active) {
+		return false;
+	}
+
+	if(c->address.sa.sa_family != AF_INET && c->address.sa.sa_family != AF_INET6) {
+		return false;
+	}
+
+	if(c->transport && (c->transport->id == TRANSPORT_SF ||
+	                    c->transport->id == TRANSPORT_OBFS ||
+	                    c->transport->id == TRANSPORT_QUIC)) {
+		return false;
+	}
+
+	struct linux_tcp_info_minrtt ti;
+	socklen_t optlen = sizeof(ti);
+	memset(&ti, 0, sizeof(ti));
+
+	if(getsockopt(c->socket, IPPROTO_TCP, TCP_INFO, &ti, &optlen) != 0) {
+		return false;
+	}
+
+	if(out) {
+		if((size_t)optlen >= offsetof(struct linux_tcp_info_minrtt, tcpi_u64_a)) {
+			out->valid = true;
+			out->rtt_us = ti.tcpi_u32_a[15];
+			out->snd_cwnd = ti.tcpi_u32_a[18];
+			out->total_retrans = ti.tcpi_u32_a[23];
+		}
+
+		if((size_t)optlen >= offsetof(struct linux_tcp_info_minrtt, tcpi_segs_out)) {
+			/* tcpi_pacing_rate in Linux tcp_info is bytes/sec; convert to bits/sec safely. */
+			out->pacing_bps = ti.tcpi_u64_a[0] <= (UINT64_MAX / 8U) ? ti.tcpi_u64_a[0] * 8U : UINT64_MAX;
+		}
+
+		if((size_t)optlen >= offsetof(struct linux_tcp_info_minrtt, tcpi_segs_in)) {
+			out->segs_out = ti.tcpi_segs_out;
+		}
+
+		if((size_t)optlen >= sizeof(ti) && ti.tcpi_min_rtt > 0 && ti.tcpi_min_rtt < 10000000U) {
+			out->min_rtt_us = ti.tcpi_min_rtt;
+		}
+	}
+
+	return out ? out->valid : true;
+}
+
+static void refresh_connection_tcp_health(connection_t *c, bool sample_window) {
+	if(!c) {
+		return;
+	}
+
+	mp_tcp_diag_t td;
+
+	if(!query_connection_tcp_diag(c, &td)) {
+		(void)sample_window;
+		return;
+	}
+
+	c->tcp_diag_at = now.tv_sec;
+
+	if(td.min_rtt_us > 0) {
+		c->tcp_min_rtt_us = td.min_rtt_us;
+	}
+
+	c->tcp_rtt_us = td.rtt_us;
+	c->tcp_cwnd = td.snd_cwnd;
+	c->tcp_pacing_bps = td.pacing_bps;
+	c->tcp_segs_out = td.segs_out;
+	c->tcp_total_retrans = td.total_retrans;
+
+	bool standalone_policed = connection_check_policed(c, 0);
+
+	if(!sample_window) {
+		/* One-way latch only on the 1s packet path to avoid slot_ok flapping */
+		return;
+	}
+
+	bool win_policed = false;
+	bool win_healthy_fast = false;
+
+	if(c->tcp_prev_segs_out > 0 && td.segs_out >= c->tcp_prev_segs_out &&
+	                td.total_retrans >= c->tcp_prev_retrans) {
+		uint32_t d_segs = td.segs_out - c->tcp_prev_segs_out;
+		uint32_t d_ret = td.total_retrans - c->tcp_prev_retrans;
+		uint64_t cap_bps = (uint64_t)c->applied_pacing_rate * 8ULL;
+
+		if(cap_bps > 0) {
+			uint64_t bad_pacing_ceil = cap_bps / 2ULL < 8000000ULL ? cap_bps / 2ULL : 8000000ULL;
+			win_policed = (d_segs >= 40 && (uint64_t)d_ret * 10ULL > (uint64_t)d_segs &&
+			               td.snd_cwnd > 0 && td.snd_cwnd <= 32 &&
+			               td.pacing_bps > 0 && td.pacing_bps < bad_pacing_ceil);
+			win_healthy_fast = (d_segs >= 50 && (uint64_t)d_ret * 12ULL <= (uint64_t)d_segs &&
+			                    td.snd_cwnd >= 28 && td.pacing_bps * 4ULL >= cap_bps * 3ULL);
+		} else {
+			win_policed = (d_segs >= 40 && (uint64_t)d_ret * 16ULL > (uint64_t)d_segs &&
+			               td.snd_cwnd > 0 && td.snd_cwnd <= 40 &&
+			               td.pacing_bps > 0 && td.pacing_bps < 8000000ULL);
+			win_healthy_fast = (d_segs >= 50 && (uint64_t)d_ret * 50ULL <= (uint64_t)d_segs &&
+			                    td.snd_cwnd >= 80 && td.pacing_bps >= 15000000ULL);
+		}
+	}
+
+	c->tcp_prev_segs_out = td.segs_out;
+	c->tcp_prev_retrans = td.total_retrans;
+
+	if(win_policed) {
+		if(c->tcp_bad_windows < 10) {
+			c->tcp_bad_windows++;
+		}
+
+		if(c->tcp_bad_windows >= 2) {
+			c->tcp_degraded = true;
+		}
+	} else if(!standalone_policed &&
+	                (win_healthy_fast || (td.snd_cwnd >= 100 && td.pacing_bps >= 20000000ULL))) {
+		c->tcp_bad_windows = 0;
+		c->tcp_degraded = false;
+	}
+}
+
+static void refresh_connection_tcp_min_rtt(connection_t *c) {
+	refresh_connection_tcp_health(c, false);
+}
+#else
+static bool query_connection_tcp_diag(connection_t *c, mp_tcp_diag_t *out) {
+	(void)c;
+
+	if(out) {
+		memset(out, 0, sizeof(*out));
+	}
+
+	return false;
+}
+
+static void refresh_connection_tcp_health(connection_t *c, bool sample_window) {
+	(void)c;
+	(void)sample_window;
+}
+
+static void refresh_connection_tcp_min_rtt(connection_t *c) {
+	(void)c;
+}
+#endif
+
+static bool connection_is_wan_degraded(connection_t *c, uint32_t best_rtt, uint64_t best_pacing_bps, uint32_t rtt_tol_us) {
+	if(!c || connection_is_loopback(c) || best_rtt < 1000 || best_rtt == UINT32_MAX) {
+		return false;
+	}
+
+	(void)connection_check_policed(c, best_pacing_bps);
+
+	uint32_t eff_tol = (best_rtt < 10000 && rtt_tol_us > 15000) ? 15000 : rtt_tol_us;
+
+	if(connection_has_wan_rtt(c) && c->tcp_min_rtt_us > best_rtt + eff_tol &&
+	                (uint64_t)c->tcp_min_rtt_us * 2ULL > (uint64_t)best_rtt * 3ULL) {
+		return true;
+	}
+
+	size_t qbytes = (c->outbuf.len > c->outbuf.offset ? c->outbuf.len - c->outbuf.offset : 0) + c->transport_outbuf_len;
+
+	if(qbytes > 2097152 && c->tcp_rtt_us > best_rtt * 4 && c->tcp_rtt_us > best_rtt + 150000) {
+		c->tcp_degraded = true;
+	}
+
+	return c->tcp_degraded;
+}
 
 #ifdef HAVE_LINUX
 static int netlink_fd = -1;
@@ -870,6 +1152,13 @@ static void parse_multipath_interface_line(const char *val) {
 void multipath_read_config(void) {
 	multipath_mode = MULTIPATH_FAILOVER;
 	multipath_target_connections = 1;
+	multipath_tcp_max_pacing_rate = 0;
+
+	int pacing_Bps = 0;
+
+	if(get_config_int(lookup_config(&config_tree, "TcpMaxPacingRate"), &pacing_Bps) && pacing_Bps > 0) {
+		multipath_tcp_max_pacing_rate = (uint32_t)pacing_Bps;
+	}
 
 	char *mode_str = NULL;
 
@@ -1021,6 +1310,257 @@ static void exit_netlink_watcher(void) {
 }
 #endif /* HAVE_LINUX */
 
+/* ---- Adaptive Per-Node & Per-Socket TCP Pacing (SO_MAX_PACING_RATE) ------ */
+
+uint32_t multipath_calc_socket_pacing_rate(uint32_t node_budget_Bps, int pool_conns, int active_tx_conns) {
+	if(node_budget_Bps == 0) {
+		return 0;
+	}
+
+	uint32_t floor_rate = node_budget_Bps / MAX_MULTIPATH_CONNECTIONS;
+
+	if(floor_rate < 64000U) {
+		floor_rate = node_budget_Bps < 64000U ? node_budget_Bps : 64000U;
+	}
+
+	if(pool_conns <= 1) {
+		return node_budget_Bps;
+	}
+
+	if(active_tx_conns <= 1) {
+		uint32_t single = (uint32_t)(((uint64_t)node_budget_Bps * 2ULL) / 3ULL);
+		return single >= floor_rate ? single : floor_rate;
+	}
+
+	uint32_t share = node_budget_Bps / (uint32_t)active_tx_conns;
+	return share >= floor_rate ? share : floor_rate;
+}
+
+static bool connection_has_tcp_socket(const connection_t *c) {
+	if(!c || c->socket < 0) {
+		return false;
+	}
+
+	if(c->address.sa.sa_family != AF_INET && c->address.sa.sa_family != AF_INET6) {
+		return false;
+	}
+
+	if(c->transport && (c->transport->id == TRANSPORT_SF ||
+	                    c->transport->id == TRANSPORT_OBFS ||
+	                    c->transport->id == TRANSPORT_QUIC)) {
+		return false;
+	}
+
+	return true;
+}
+
+static void apply_one_conn_pacing(connection_t *c, uint32_t target) {
+	if(!c) {
+		return;
+	}
+
+	c->target_pacing_rate = target;
+
+	if(target == c->applied_pacing_rate) {
+		return;
+	}
+
+	if(!connection_has_tcp_socket(c)) {
+		return;
+	}
+
+#if defined(SOL_SOCKET) && defined(SO_MAX_PACING_RATE)
+	uint32_t opt = target ? target : UINT32_MAX;
+
+	if(setsockopt(c->socket, SOL_SOCKET, SO_MAX_PACING_RATE, &opt, sizeof(opt)) == 0) {
+		c->applied_pacing_rate = target;
+	}
+#else
+	c->applied_pacing_rate = target;
+#endif
+}
+
+/* Ignore light background streams below MAX(budget/8, 64 KB/s) as heavy TX
+   and subtract only their measured bytes from remaining pacing headroom. */
+
+static void conn_record_tx_bytes(connection_t *c, time_t cur_sec, size_t tx_bytes) {
+	if(!c || tx_bytes == 0) {
+		return;
+	}
+
+	if(c->last_tx_sec != cur_sec) {
+		if(c->last_tx_sec > 0 && cur_sec > c->last_tx_sec && cur_sec - c->last_tx_sec == 1) {
+			c->prev_tx_bytes = c->cur_tx_bytes;
+			c->prev_tx_sec = c->last_tx_sec;
+		} else {
+			c->prev_tx_bytes = 0;
+			c->prev_tx_sec = 0;
+		}
+
+		c->cur_tx_bytes = 0;
+		c->last_tx_sec = cur_sec;
+	}
+
+	if(tx_bytes >= (size_t)UINT32_MAX || c->cur_tx_bytes > UINT32_MAX - (uint32_t)tx_bytes) {
+		c->cur_tx_bytes = UINT32_MAX;
+	} else {
+		c->cur_tx_bytes += (uint32_t)tx_bytes;
+	}
+}
+
+static uint32_t conn_recent_tx_Bps(const connection_t *c, time_t cur_sec) {
+	if(!c || !c->status.active) {
+		return 0;
+	}
+
+	if(c->last_tx_sec == cur_sec) {
+		uint32_t prev = (c->prev_tx_sec > 0 && cur_sec > c->prev_tx_sec && cur_sec - c->prev_tx_sec == 1)
+		                ? c->prev_tx_bytes
+		                : 0;
+		return c->cur_tx_bytes >= prev ? c->cur_tx_bytes : prev;
+	}
+
+	if(c->last_tx_sec > 0 && cur_sec > c->last_tx_sec && cur_sec - c->last_tx_sec == 1) {
+		return c->cur_tx_bytes;
+	}
+
+	return 0;
+}
+
+static bool conn_is_heavy_tx(const connection_t *c, time_t cur_sec, uint32_t heavy_thresh) {
+	if(!c || !c->status.active) {
+		return false;
+	}
+
+	size_t qbytes = (c->outbuf.len > c->outbuf.offset ? c->outbuf.len - c->outbuf.offset : 0) +
+	                c->transport_outbuf_len;
+
+	return conn_recent_tx_Bps(c, cur_sec) >= heavy_thresh || qbytes >= 32768U;
+}
+
+static uint32_t clamp_rate_u32(uint64_t val, uint32_t lo, uint32_t hi) {
+	if(val < (uint64_t)lo) {
+		return lo;
+	}
+
+	if(val > (uint64_t)hi) {
+		return hi;
+	}
+
+	return (uint32_t)val;
+}
+
+void multipath_apply_node_tcp_pacing(node_t *n, connection_t *tx_conn, size_t tx_bytes) {
+	if(!n) {
+		return;
+	}
+
+	uint32_t budget = n->tcp_max_pacing_rate ? n->tcp_max_pacing_rate : multipath_tcp_max_pacing_rate;
+	time_t cur_sec = now.tv_sec > 0 ? now.tv_sec : 1;
+
+	if(tx_conn && tx_bytes > 0) {
+		conn_record_tx_bytes(tx_conn, cur_sec, tx_bytes);
+	}
+
+	if(budget == 0) {
+		if(tx_conn && tx_conn->applied_pacing_rate == 0 && tx_conn->target_pacing_rate == 0) {
+			return;
+		}
+
+		bool saw_p = false;
+
+		for list_each(connection_t, c, &n->connections) {
+			if(c == n->connection) {
+				saw_p = true;
+			}
+
+			apply_one_conn_pacing(c, 0);
+		}
+
+		if(n->connection && !saw_p) {
+			apply_one_conn_pacing(n->connection, 0);
+		}
+
+		return;
+	}
+
+	uint32_t floor_rate = budget / MAX_MULTIPATH_CONNECTIONS;
+
+	if(floor_rate < 64000U) {
+		floor_rate = budget < 64000U ? budget : 64000U;
+	}
+
+	uint32_t heavy_thresh = budget / 8U;
+
+	if(heavy_thresh < 65536U) {
+		heavy_thresh = 65536U;
+	}
+
+	int pool_conns = 0;
+	int heavy_cnt = 0;
+	uint64_t light_used = 0;
+	bool saw_primary = false;
+
+	for list_each(connection_t, c, &n->connections) {
+		if(c == n->connection) {
+			saw_primary = true;
+		}
+
+		if(!c->status.active) {
+			continue;
+		}
+
+		pool_conns++;
+
+		if(conn_is_heavy_tx(c, cur_sec, heavy_thresh)) {
+			heavy_cnt++;
+		} else {
+			light_used += conn_recent_tx_Bps(c, cur_sec);
+		}
+	}
+
+	if(n->connection && !saw_primary && n->connection->status.active) {
+		pool_conns++;
+
+		if(conn_is_heavy_tx(n->connection, cur_sec, heavy_thresh)) {
+			heavy_cnt++;
+		} else {
+			light_used += conn_recent_tx_Bps(n->connection, cur_sec);
+		}
+	}
+
+	int effective_pool = (multipath_mode != MULTIPATH_OFF && multipath_target_connections > pool_conns)
+	                     ? multipath_target_connections
+	                     : pool_conns;
+	uint32_t single_cap = (effective_pool <= 1)
+	                      ? budget
+	                      : clamp_rate_u32(((uint64_t)budget * 2ULL) / 3ULL, floor_rate, budget);
+
+	uint32_t heavy_target = single_cap;
+	uint32_t light_target = single_cap;
+
+	if(heavy_cnt >= 1) {
+		int denom_pool = effective_pool > heavy_cnt ? effective_pool : heavy_cnt;
+		uint64_t min_heavy_pool = ((uint64_t)budget * (uint64_t)heavy_cnt) / (uint64_t)denom_pool;
+		uint64_t rem_pool = (uint64_t)budget > light_used ? ((uint64_t)budget - light_used) : 0ULL;
+		uint64_t heavy_pool = rem_pool >= min_heavy_pool ? rem_pool : min_heavy_pool;
+		heavy_target = clamp_rate_u32(heavy_pool / (uint64_t)heavy_cnt, floor_rate, single_cap);
+
+		uint32_t denom = (uint32_t)(heavy_cnt < 2 ? 3 : (heavy_cnt + 1));
+		light_target = clamp_rate_u32((uint64_t)budget / (uint64_t)denom, floor_rate, single_cap);
+	}
+
+	for list_each(connection_t, c, &n->connections) {
+		uint32_t t = conn_is_heavy_tx(c, cur_sec, heavy_thresh) ? heavy_target : light_target;
+		apply_one_conn_pacing(c, t);
+	}
+
+	if(n->connection && !saw_primary) {
+		uint32_t t = conn_is_heavy_tx(n->connection, cur_sec, heavy_thresh) ? heavy_target : light_target;
+		apply_one_conn_pacing(n->connection, t);
+	}
+}
+
 /* ---- Multi-Connection Pool & Make-Before-Break Failover ------------------ */
 
 void multipath_node_add_connection(node_t *n, connection_t *c) {
@@ -1028,13 +1568,42 @@ void multipath_node_add_connection(node_t *n, connection_t *c) {
 		return;
 	}
 
+	bool used[MAX_MULTIPATH_CONNECTIONS];
+	memset(used, 0, sizeof(used));
+
 	for list_each(connection_t, existing, &n->connections) {
 		if(existing == c) {
 			return;
 		}
+
+		if(existing->relay_slot < MAX_MULTIPATH_CONNECTIONS) {
+			used[existing->relay_slot] = true;
+		}
+	}
+
+	uint32_t chosen_slot = MAX_MULTIPATH_CONNECTIONS;
+
+	for(uint32_t s = 0; s < MAX_MULTIPATH_CONNECTIONS; s++) {
+		if(!used[s]) {
+			chosen_slot = s;
+			break;
+		}
+	}
+
+	if(chosen_slot >= MAX_MULTIPATH_CONNECTIONS) {
+		chosen_slot = (n->next_relay_slot++) % MAX_MULTIPATH_CONNECTIONS;
+	}
+
+	c->relay_slot = chosen_slot;
+
+	uint8_t needed_hwm = (uint8_t)((chosen_slot % MAX_MULTIPATH_CONNECTIONS) + 1);
+
+	if(needed_hwm > n->mp_slot_hwm) {
+		n->mp_slot_hwm = needed_hwm;
 	}
 
 	list_insert_tail(&n->connections, c);
+	multipath_apply_node_tcp_pacing(n, NULL, 0);
 }
 
 void multipath_node_del_connection(node_t *n, connection_t *c) {
@@ -1043,6 +1612,11 @@ void multipath_node_del_connection(node_t *n, connection_t *c) {
 	}
 
 	list_delete(&n->connections, c);
+
+	if(n->connections.count == 0) {
+		n->mp_slot_hwm = 0;
+		n->next_relay_slot = 0;
+	}
 }
 
 static uint16_t extract_sockaddr_port(const sockaddr_t *sa) {
@@ -1196,7 +1770,7 @@ bool multipath_accept_secondary(node_t *n, connection_t *c) {
 
 	/* If n->connections already reached the cap, check if the oldest secondary
 	   or the primary is stale (e.g. missed keepalive or on a DOWN uplink). */
-	int max_conns = MAX(multipath_target_connections, 2);
+	int max_conns = MIN(MAX(multipath_target_connections + 2, 4), MAX_MULTIPATH_CONNECTIONS * 2);
 
 	if((int)n->connections.count >= max_conns) {
 		connection_t *victim = NULL;
@@ -1206,7 +1780,7 @@ bool multipath_accept_secondary(node_t *n, connection_t *c) {
 				continue;
 			}
 
-			if(!multipath_uplink_is_healthy(cand->uplink_idx) || cand->status.pinged) {
+			if(!multipath_uplink_is_healthy(cand->uplink_idx) || connection_ping_overdue(cand)) {
 				victim = cand;
 				break;
 			}
@@ -1227,6 +1801,7 @@ bool multipath_accept_secondary(node_t *n, connection_t *c) {
 	c->node = n;
 	c->status.multipath_sub = true;
 	c->edge = NULL;
+	refresh_connection_tcp_min_rtt(c);
 	multipath_node_add_connection(n, c);
 
 	/* If the existing primary connection is on a downed uplink or waiting on
@@ -1234,7 +1809,7 @@ bool multipath_accept_secondary(node_t *n, connection_t *c) {
 	   to primary right now! */
 	connection_t *old_primary = n->connection;
 	bool old_unhealthy = !multipath_uplink_is_healthy(old_primary->uplink_idx) ||
-	                     old_primary->status.pinged;
+	                     connection_ping_overdue(old_primary);
 
 	if(old_unhealthy && old_primary->edge) {
 		old_primary->status.multipath_sub = true;
@@ -1290,7 +1865,7 @@ bool multipath_promote_survivor(node_t *n, connection_t *dying) {
 				continue;
 			}
 
-			if(pass == 0 && (!multipath_uplink_is_healthy(cand->uplink_idx) || cand->status.pinged)) {
+			if(pass == 0 && (!multipath_uplink_is_healthy(cand->uplink_idx) || connection_ping_overdue(cand))) {
 				continue;
 			}
 
@@ -1619,6 +2194,18 @@ static bool connection_is_usable(const connection_t *c, bool allow_backup) {
 	return true;
 }
 
+static int finish_select_connections(node_t *n, connection_t *out[2], int count) {
+	if(count >= 1 && out[0]) {
+		multipath_apply_node_tcp_pacing(n, out[0], 0);
+	}
+
+	if(count >= 2 && out[1] && out[1] != out[0]) {
+		multipath_apply_node_tcp_pacing(n, out[1], 0);
+	}
+
+	return count;
+}
+
 int multipath_select_connections(node_t *n, const vpn_packet_t *pkt, connection_t *out[2]) {
 	out[0] = NULL;
 	out[1] = NULL;
@@ -1630,17 +2217,17 @@ int multipath_select_connections(node_t *n, const vpn_packet_t *pkt, connection_
 	if(multipath_mode == MULTIPATH_OFF || n->connections.count <= 1) {
 		if(n->connection) {
 			out[0] = n->connection;
-			return 1;
+			return finish_select_connections(n, out, 1);
 		}
 
 		return 0;
 	}
 
-	connection_t *cands[MAX_MULTIPATH_CONNECTIONS * 2];
-	int ncands = 0;
+	connection_t *usable[MAX_MULTIPATH_CONNECTIONS * 2] = {0};
+	int nusable = 0;
 
-	/* First collect healthy non-backup connections; if none, allow backup uplinks */
-	for(int pass = 0; pass < 2 && ncands == 0; pass++) {
+	/* First collect active non-backup connections; if none, allow backup uplinks */
+	for(int pass = 0; pass < 2 && nusable == 0; pass++) {
 		bool allow_backup = (pass == 1);
 
 		for list_each(connection_t, c, &n->connections) {
@@ -1648,40 +2235,147 @@ int multipath_select_connections(node_t *n, const vpn_packet_t *pkt, connection_
 				continue;
 			}
 
-			if(pass == 0 && c->status.pinged) {
+			if(pass == 0 && connection_ping_overdue(c)) {
 				continue;
 			}
 
-			if(ncands < (int)(sizeof(cands) / sizeof(cands[0]))) {
-				cands[ncands++] = c;
+			if(c->tcp_diag_at != now.tv_sec) {
+				refresh_connection_tcp_health(c, false);
+			}
+
+			if(nusable < (int)(sizeof(usable) / sizeof(usable[0]))) {
+				usable[nusable++] = c;
 			}
 		}
 	}
 
-	if(ncands == 0) {
+	if(nusable == 0) {
 		if(n->connection) {
 			out[0] = n->connection;
-			return 1;
+			return finish_select_connections(n, out, 1);
 		}
 
 		return 0;
 	}
 
-	if(ncands == 1 || multipath_mode == MULTIPATH_FAILOVER) {
-		out[0] = cands[0];
-		return 1;
+	uint32_t best_rtt = UINT32_MAX;
+	uint64_t best_pacing_bps = 0;
+	int wan_rtt_cnt = 0;
+
+	if(nusable > 1) {
+		for(int i = 0; i < nusable; i++) {
+			if(connection_has_wan_rtt(usable[i])) {
+				wan_rtt_cnt++;
+
+				if(usable[i]->tcp_min_rtt_us < best_rtt) {
+					best_rtt = usable[i]->tcp_min_rtt_us;
+				}
+			}
+
+			if(usable[i]->tcp_pacing_bps > best_pacing_bps) {
+				best_pacing_bps = usable[i]->tcp_pacing_bps;
+			}
+		}
+	}
+
+	/* Only compare WAN TCP paths when at least 2 non-loopback legs report >= 1 ms min_rtt;
+	   loopback proxy sockets stay untouched. */
+	bool has_wan = (wan_rtt_cnt >= 2 && best_rtt >= 1000 && best_rtt < UINT32_MAX);
+
+	connection_t *healthy[MAX_MULTIPATH_CONNECTIONS * 2] = {0};
+	int nhealthy = 0;
+
+	for(int i = 0; i < nusable; i++) {
+		if(!(has_wan && connection_is_wan_degraded(usable[i], best_rtt, best_pacing_bps, 30000))) {
+			healthy[nhealthy++] = usable[i];
+		}
+	}
+
+	if(nhealthy == 0) {
+		for(int i = 0; i < nusable; i++) {
+			healthy[nhealthy++] = usable[i];
+		}
+	}
+
+	if(nusable == 1 || multipath_mode == MULTIPATH_FAILOVER) {
+		out[0] = healthy[0];
+		return finish_select_connections(n, out, 1);
 	}
 
 	switch(multipath_mode) {
 	case MULTIPATH_REDUNDANT:
-		out[0] = cands[0];
-		out[1] = cands[1];
-		return 2;
+		out[0] = healthy[0];
+		out[1] = nhealthy >= 2 ? healthy[1] : (usable[0] != healthy[0] ? usable[0] : usable[1]);
+		return finish_select_connections(n, out, 2);
 
 	case MULTIPATH_FLOWHASH: {
-		uint32_t h = pkt ? multipath_flow_hash(pkt) : n->mp_rr_cursor++;
-		out[0] = cands[h % (uint32_t)ncands];
-		return 1;
+		uint32_t h;
+
+		if(pkt) {
+			h = multipath_flow_hash(pkt);
+		} else if(multipath_current_flow_hash & 0x80000000u) {
+			h = multipath_current_flow_hash & 0x7fffffffu;
+		} else if(multipath_current_flow_hash) {
+			h = multipath_current_flow_hash;
+		} else {
+			h = n->mp_rr_cursor++;
+		}
+
+		/* Consistent fixed-slot mapping: a degraded or closed slot never shifts
+		   healthy flows onto different sockets, preventing intra-flow TCP reordering. */
+		connection_t *slots[MAX_MULTIPATH_CONNECTIONS];
+		bool slot_ok[MAX_MULTIPATH_CONNECTIONS];
+		memset(slots, 0, sizeof(slots));
+		memset(slot_ok, 0, sizeof(slot_ok));
+
+		uint32_t max_slot_plus1 = 1;
+
+		for(int i = 0; i < nusable; i++) {
+			connection_t *c = usable[i];
+			uint32_t s = c->relay_slot % MAX_MULTIPATH_CONNECTIONS;
+			bool ok = !(has_wan && connection_is_wan_degraded(c, best_rtt, best_pacing_bps, 30000));
+
+			if(!slots[s] || (!slot_ok[s] && ok)) {
+				slots[s] = c;
+				slot_ok[s] = ok;
+			}
+
+			if(s + 1 > max_slot_plus1) {
+				max_slot_plus1 = s + 1;
+			}
+		}
+
+		if(max_slot_plus1 > n->mp_slot_hwm) {
+			n->mp_slot_hwm = (uint8_t)max_slot_plus1;
+		}
+
+		uint32_t width = n->mp_slot_hwm >= 2 ? n->mp_slot_hwm :
+		                 (max_slot_plus1 >= 2 ? max_slot_plus1 : (uint32_t)MAX_MULTIPATH_CONNECTIONS);
+
+		if(width > MAX_MULTIPATH_CONNECTIONS) {
+			width = MAX_MULTIPATH_CONNECTIONS;
+		}
+
+		uint32_t idx = h % width;
+
+		if(slots[idx] && slot_ok[idx]) {
+			out[0] = slots[idx];
+			return finish_select_connections(n, out, 1);
+		}
+
+		uint32_t alt_base = h / width;
+
+		for(uint32_t step = 0; step < width; step++) {
+			uint32_t alt = (alt_base + step) % width;
+
+			if(slots[alt] && slot_ok[alt]) {
+				out[0] = slots[alt];
+				return finish_select_connections(n, out, 1);
+			}
+		}
+
+		out[0] = slots[idx] ? slots[idx] : healthy[0];
+		return finish_select_connections(n, out, 1);
 	}
 
 	case MULTIPATH_SPLIT: {
@@ -1690,15 +2384,15 @@ int multipath_select_connections(node_t *n, const vpn_packet_t *pkt, connection_
 			n->mp_rr_cursor++;
 		}
 
-		out[0] = cands[n->mp_rr_cursor % (uint32_t)ncands];
-		return 1;
+		out[0] = healthy[n->mp_rr_cursor % (uint32_t)nhealthy];
+		return finish_select_connections(n, out, 1);
 	}
 
 	case MULTIPATH_OFF:
 	case MULTIPATH_FAILOVER:
 	default:
-		out[0] = cands[0];
-		return 1;
+		out[0] = healthy[0];
+		return finish_select_connections(n, out, 1);
 	}
 }
 
@@ -1777,7 +2471,18 @@ int multipath_select_udp_paths(node_t *n, const vpn_packet_t *pkt, node_path_t *
 		return 2;
 
 	case MULTIPATH_FLOWHASH: {
-		uint32_t h = pkt ? multipath_flow_hash(pkt) : n->mp_rr_cursor++;
+		uint32_t h;
+
+		if(pkt) {
+			h = multipath_flow_hash(pkt);
+		} else if(multipath_current_flow_hash & 0x80000000u) {
+			h = multipath_current_flow_hash & 0x7fffffffu;
+		} else if(multipath_current_flow_hash) {
+			h = multipath_current_flow_hash;
+		} else {
+			h = n->mp_rr_cursor++;
+		}
+
 		out[0] = cands[h % (uint32_t)ncands];
 		return 1;
 	}
@@ -1935,6 +2640,7 @@ static void dial_secondary_connection(outgoing_t *outgoing) {
 	c->transport = t;
 	c->uplink_idx = multipath_pick_next_uplink(n);
 	c->status.multipath_sub = true;
+	c->status.we_dialled = true;
 	connection_snapshot_host_config(c);
 
 	logger(DEBUG_CONNECTIONS, LOG_INFO,
@@ -1944,6 +2650,84 @@ static void dial_secondary_connection(outgoing_t *outgoing) {
 	if(!t->dial(c)) {
 		free_connection(c);
 	}
+}
+
+static void multipath_swap_primary(node_t *n, connection_t *new_primary) {
+	connection_t *old_c = n->connection;
+
+	if(old_c->outgoing && old_c->outgoing->timeout != -1 && !new_primary->outgoing) {
+		new_primary->outgoing = old_c->outgoing;
+		old_c->outgoing = NULL;
+	}
+
+	old_c->status.multipath_sub = true;
+	new_primary->status.multipath_sub = false;
+	n->connection = new_primary;
+
+	if(old_c->edge) {
+		multipath_transfer_edge(old_c, new_primary);
+	}
+}
+
+static connection_t *multipath_best_wan_conn(node_t *n, uint32_t rtt_tol_us, bool sample_window,
+                uint32_t *best_rtt_out, uint64_t *best_pacing_out, int *active_out) {
+	uint32_t best_rtt = UINT32_MAX;
+	uint64_t best_pacing = 0;
+	int active_cnt = 0;
+	int wan_rtt_cnt = 0;
+
+	for list_each(connection_t, c, &n->connections) {
+		if(!c->status.active || !multipath_uplink_is_healthy(c->uplink_idx)) {
+			continue;
+		}
+
+		active_cnt++;
+		refresh_connection_tcp_health(c, sample_window);
+
+		if(connection_has_wan_rtt(c)) {
+			wan_rtt_cnt++;
+
+			if(c->tcp_min_rtt_us < best_rtt) {
+				best_rtt = c->tcp_min_rtt_us;
+			}
+		}
+
+		if(c->tcp_pacing_bps > best_pacing) {
+			best_pacing = c->tcp_pacing_bps;
+		}
+	}
+
+	*best_rtt_out = best_rtt;
+	*best_pacing_out = best_pacing;
+	*active_out = active_cnt;
+
+	if(wan_rtt_cnt < 2 || best_rtt < 1000 || best_rtt == UINT32_MAX) {
+		return NULL;
+	}
+
+	connection_t *best_cand = NULL;
+
+	for list_each(connection_t, c, &n->connections) {
+		if(!c->status.active || !multipath_uplink_is_healthy(c->uplink_idx)) {
+			continue;
+		}
+
+		if(connection_is_wan_degraded(c, best_rtt, best_pacing, rtt_tol_us)) {
+			continue;
+		}
+
+		bool c_wan = connection_has_wan_rtt(c);
+		bool best_wan = best_cand ? connection_has_wan_rtt(best_cand) : false;
+
+		if(!best_cand ||
+		                (c_wan && !best_wan) ||
+		                (c_wan && best_wan && c->tcp_min_rtt_us < best_cand->tcp_min_rtt_us) ||
+		                (c->tcp_min_rtt_us == best_cand->tcp_min_rtt_us && c->tcp_pacing_bps > best_cand->tcp_pacing_bps)) {
+			best_cand = c;
+		}
+	}
+
+	return best_cand;
 }
 
 void multipath_maintain(void) {
@@ -1957,6 +2741,12 @@ void multipath_maintain(void) {
 		}
 	}
 
+	for splay_each(node_t, n, &node_tree) {
+		if(n != myself) {
+			multipath_apply_node_tcp_pacing(n, NULL, 0);
+		}
+	}
+
 	/* If the primary connection of any node is sitting on a DOWN uplink while a
 	   healthy secondary connection is ready in n->connections, swap them now! */
 	for splay_each(node_t, n, &node_tree) {
@@ -1967,26 +2757,100 @@ void multipath_maintain(void) {
 		if(!multipath_uplink_is_healthy(n->connection->uplink_idx)) {
 			for list_each(connection_t, cand, &n->connections) {
 				if(cand != n->connection && cand->status.active && multipath_uplink_is_healthy(cand->uplink_idx)) {
-					connection_t *old_c = n->connection;
-
-					if(old_c->outgoing && old_c->outgoing->timeout != -1 && !cand->outgoing) {
-						cand->outgoing = old_c->outgoing;
-						old_c->outgoing = NULL;
-					}
-
-					old_c->status.multipath_sub = true;
-					cand->status.multipath_sub = false;
-					n->connection = cand;
-
-					if(old_c->edge) {
-						multipath_transfer_edge(old_c, cand);
-					}
-
+					multipath_swap_primary(n, cand);
 					logger(DEBUG_CONNECTIONS, LOG_NOTICE,
 					       "multipath: switched primary connection of %s to healthy uplink %d",
 					       n->name, cand->uplink_idx);
 					break;
 				}
+			}
+		}
+	}
+
+	static time_t last_ecmp_recycle = 0;
+
+	for splay_each(node_t, n, &node_tree) {
+		if(!n->connection || n->connections.count < 2) {
+			continue;
+		}
+
+		uint32_t best_rtt = UINT32_MAX;
+		uint64_t best_pacing = 0;
+		int active_cnt = 0;
+		connection_t *best_cand = multipath_best_wan_conn(n, 30000, true, &best_rtt, &best_pacing, &active_cnt);
+
+		if(best_rtt < 1000 || best_rtt == UINT32_MAX) {
+			continue;
+		}
+
+		/* If primary connection landed on a congested/throttled ECMP leg, promote best_cand */
+		if(best_cand && best_cand != n->connection &&
+		                connection_is_wan_degraded(n->connection, best_rtt, best_pacing, 30000)) {
+			connection_t *old_c = n->connection;
+			multipath_swap_primary(n, best_cand);
+			logger(DEBUG_CONNECTIONS, LOG_NOTICE,
+			       "multipath: promoted healthier ECMP connection for %s (%.1f ms cwnd=%u vs %.1f ms cwnd=%u)",
+			       n->name, best_cand->tcp_min_rtt_us / 1000.0, best_cand->tcp_cwnd,
+			       old_c->tcp_min_rtt_us / 1000.0, old_c->tcp_cwnd);
+		}
+
+		/* Recycle at most 1 genuinely collapsed/skewed ECMP secondary connection per cooldown
+		   (30s when all legs are degraded and best_cand == NULL, 60s otherwise). */
+		bool we_maintain_pool = false;
+
+		for list_each(outgoing_t, og, &outgoing_list) {
+			if(og->node == n) {
+				we_maintain_pool = true;
+				break;
+			}
+		}
+
+		bool has_policed_sub = false;
+
+		for list_each(connection_t, cand, &n->connections) {
+			if(cand != n->connection && cand->status.active && cand->tcp_degraded) {
+				has_policed_sub = true;
+				break;
+			}
+		}
+
+		time_t recycle_cooldown = (!best_cand || has_policed_sub) ? 20 : 60;
+
+		if(we_maintain_pool && now.tv_sec - last_ecmp_recycle >= recycle_cooldown) {
+			connection_t *worst = NULL;
+
+			for list_each(connection_t, cand, &n->connections) {
+				if(cand == n->connection || !cand->status.active) {
+					continue;
+				}
+
+				bool cand_bad = best_cand
+				                ? connection_is_wan_degraded(cand, best_rtt, best_pacing, 30000)
+				                : (cand->tcp_degraded || connection_is_wan_degraded(cand, best_rtt, best_pacing, 30000));
+				time_t min_age = cand->tcp_degraded ? 20 : 45;
+
+				if(cand->activated_at > 0 && now.tv_sec - cand->activated_at >= min_age && cand_bad) {
+					if(!worst ||
+					                (cand->tcp_degraded && !worst->tcp_degraded) ||
+					                cand->tcp_min_rtt_us > worst->tcp_min_rtt_us ||
+					                (cand->tcp_min_rtt_us == worst->tcp_min_rtt_us && cand->tcp_pacing_bps < worst->tcp_pacing_bps)) {
+						worst = cand;
+					}
+				}
+			}
+
+			if(worst) {
+				last_ecmp_recycle = now.tv_sec;
+				logger(DEBUG_CONNECTIONS, LOG_NOTICE,
+				       "multipath: recycling degraded ECMP connection to %s (%s, %.1f ms vs best %.1f ms, cwnd=%u, pacing=%.2f Mbps)",
+				       n->name, worst->hostname ? worst->hostname : "?",
+				       worst->tcp_min_rtt_us / 1000.0, best_rtt / 1000.0,
+				       worst->tcp_cwnd, worst->tcp_pacing_bps / 1000000.0);
+				multipath_node_del_connection(n, worst);
+				worst->status.multipath_sub = false;
+				worst->status.no_tarpit = true;
+				worst->edge = NULL;
+				terminate_connection(worst, false);
 			}
 		}
 	}
@@ -2063,10 +2927,232 @@ void multipath_exit(void) {
 /* ---- Control Socket Handler (REQ_MULTIPATH) ------------------------------
    Format:
      CONTROL REQ_MULTIPATH status
+     CONTROL REQ_MULTIPATH detail
+     CONTROL REQ_MULTIPATH recycle [peer|all] [slow|all]
      CONTROL REQ_MULTIPATH mode <off|failover|flowhash|redundant|split> [connections]
      CONTROL REQ_MULTIPATH uplink add <name> <ip|-> <weight> <backup:0|1> <mark> <net_handle> <up:0|1>
      CONTROL REQ_MULTIPATH uplink del <name>
 */
+
+static void node_primary_ipv4_str(node_t *n, char *buf, size_t len) {
+	if(!buf || len == 0) {
+		return;
+	}
+
+	snprintf(buf, len, "-");
+
+	if(!n) {
+		return;
+	}
+
+	const subnet_t *best = NULL;
+
+	for splay_each(subnet_t, s, &n->subnet_tree) {
+		if(s->type != SUBNET_IPV4) {
+			continue;
+		}
+
+		if(!best || s->net.ipv4.prefixlength > best->net.ipv4.prefixlength) {
+			best = s;
+		}
+	}
+
+	if(!best) {
+		return;
+	}
+
+	char netstr[MAXNETSTR];
+
+	if(!net2str(netstr, sizeof(netstr), best)) {
+		return;
+	}
+
+	char *slash = strchr(netstr, '/');
+
+	if(slash) {
+		*slash = '\0';
+	}
+
+	char *hash = strchr(netstr, '#');
+
+	if(hash) {
+		*hash = '\0';
+	}
+
+	if(netstr[0]) {
+		snprintf(buf, len, "%s", netstr);
+	}
+}
+
+static void format_endpoint_token(const sockaddr_t *sa, char *buf, size_t len) {
+	if(!buf || len == 0) {
+		return;
+	}
+
+	snprintf(buf, len, "-");
+
+	if(!sa || (sa->sa.sa_family != AF_INET && sa->sa.sa_family != AF_INET6)) {
+		return;
+	}
+
+	char *addr = NULL;
+	char *port = NULL;
+	sockaddr2str(sa, &addr, &port);
+
+	if(addr && port && addr[0]) {
+		if(strchr(addr, ':') && addr[0] != '[') {
+			snprintf(buf, len, "[%s]:%s", addr, port);
+		} else {
+			snprintf(buf, len, "%s:%s", addr, port);
+		}
+
+		for(size_t i = 0; buf[i]; i++) {
+			if(buf[i] == ' ' || buf[i] == '\t') {
+				buf[i] = '_';
+			}
+		}
+	}
+
+	free(addr);
+	free(port);
+}
+
+static void format_node_pref_transports(const node_t *n, char *buf, size_t len) {
+	if(!buf || len == 0) {
+		return;
+	}
+
+	if(!n || n->pref_transports_count == 0) {
+		snprintf(buf, len, "-");
+		return;
+	}
+
+	size_t off = 0;
+	buf[0] = '\0';
+
+	for(uint8_t i = 0; i < n->pref_transports_count && i < 8; i++) {
+		const char *tname = transport_name((transport_id_t)n->pref_transports[i]);
+		int wrote = snprintf(buf + off, len - off, "%s%s", i > 0 ? "," : "", tname ? tname : "?");
+
+		if(wrote < 0 || (size_t)wrote >= len - off) {
+			break;
+		}
+
+		off += (size_t)wrote;
+	}
+
+	if(!buf[0]) {
+		snprintf(buf, len, "-");
+	}
+}
+
+static void emit_conn_detail(connection_t *ctl, const node_t *n, connection_t *conn, time_t now_sec) {
+	mp_tcp_diag_t td;
+	bool has_tcp = query_connection_tcp_diag(conn, &td);
+	uint32_t min_rtt_us = td.min_rtt_us ? td.min_rtt_us : conn->tcp_min_rtt_us;
+	double rtt_ms = (has_tcp && td.rtt_us > 0) ? (double)td.rtt_us / 1000.0 : -1.0;
+	double min_rtt_ms = min_rtt_us > 0 ? (double)min_rtt_us / 1000.0 : -1.0;
+	double pacing_mbps = (has_tcp && td.pacing_bps > 0) ? (double)td.pacing_bps / 1000000.0 : -1.0;
+	long age_s = (conn->activated_at > 0 && now_sec >= conn->activated_at) ? (long)(now_sec - conn->activated_at) : -1;
+	long last_ping_s = (conn->last_ping_time > 0 && now_sec >= conn->last_ping_time) ? (long)(now_sec - conn->last_ping_time) : -1;
+	unsigned long outbuf = (conn->outbuf.len > conn->outbuf.offset) ? (unsigned long)(conn->outbuf.len - conn->outbuf.offset) : 0;
+	unsigned long txbuf = (unsigned long)conn->transport_outbuf_len;
+	const char *carrier = (conn->transport && conn->transport->name) ? conn->transport->name : "plain";
+	const char *dir = (conn->outgoing || conn->status.we_dialled) ? "out" : "in";
+	const char *role = (conn == n->connection) ? "primary" : "sub";
+	double pacing_cap_mbps = conn->applied_pacing_rate > 0
+	                         ? (double)conn->applied_pacing_rate * 8.0 / 1000000.0
+	                         : (conn->target_pacing_rate > 0 ? (double)conn->target_pacing_rate * 8.0 / 1000000.0 : 0.0);
+	char ep[160];
+
+	format_endpoint_token(&conn->address, ep, sizeof(ep));
+	send_request(ctl,
+	             "%d %d 1 conn peer=%s role=%s dir=%s fd=%d active=%d verified=%d uplink=%d carrier=%s ep=%s age_s=%ld last_ping_s=%ld outbuf=%lu txbuf=%lu rtt_ms=%.1f min_rtt_ms=%.1f cwnd=%u retrans=%u segs_out=%u pacing_mbps=%.2f pacing_cap_mbps=%.2f slot=%u degraded=%d",
+	             CONTROL, REQ_MULTIPATH,
+	             n->name, role, dir, conn->socket,
+	             conn->status.active ? 1 : 0,
+	             conn->post_activate_verified ? 1 : 0,
+	             conn->uplink_idx, carrier, ep,
+	             age_s, last_ping_s, outbuf, txbuf,
+	             rtt_ms, min_rtt_ms,
+	             td.snd_cwnd, td.total_retrans, td.segs_out, pacing_mbps, pacing_cap_mbps,
+	             conn->relay_slot, conn->tcp_degraded ? 1 : 0);
+}
+
+static void recycle_node_conns(connection_t *ctl, node_t *n, bool all_secondary, int *promoted_out, int *recycled_out) {
+	if(!n || !n->connection || n->connections.count < 2) {
+		return;
+	}
+
+	uint32_t best_rtt = UINT32_MAX;
+	uint64_t best_pacing = 0;
+	int active_cnt = 0;
+	connection_t *best_cand = multipath_best_wan_conn(n, 25000, false, &best_rtt, &best_pacing, &active_cnt);
+
+	if(!multipath_uplink_is_healthy(n->connection->uplink_idx) && !best_cand) {
+		for list_each(connection_t, cand, &n->connections) {
+			if(cand != n->connection && cand->status.active && multipath_uplink_is_healthy(cand->uplink_idx)) {
+				best_cand = cand;
+				break;
+			}
+		}
+	}
+
+	if(best_cand && best_cand != n->connection &&
+	                (!multipath_uplink_is_healthy(n->connection->uplink_idx) ||
+	                 connection_is_wan_degraded(n->connection, best_rtt, best_pacing, 25000))) {
+		connection_t *old_c = n->connection;
+		double old_ms = old_c->tcp_min_rtt_us > 0 ? (double)old_c->tcp_min_rtt_us / 1000.0 : -1.0;
+		double new_ms = best_cand->tcp_min_rtt_us > 0 ? (double)best_cand->tcp_min_rtt_us / 1000.0 : -1.0;
+
+		multipath_swap_primary(n, best_cand);
+		logger(DEBUG_CONNECTIONS, LOG_NOTICE,
+		       "multipath: operator recycle promoted %s primary (%.1f ms -> %.1f ms, cwnd=%u)",
+		       n->name, old_ms, new_ms, best_cand->tcp_cwnd);
+		send_request(ctl, "%d %d 1 promoted peer=%s old_ms=%.1f new_ms=%.1f",
+		             CONTROL, REQ_MULTIPATH, n->name, old_ms, new_ms);
+		(*promoted_out)++;
+	}
+
+	connection_t *victims[MAX_MULTIPATH_CONNECTIONS * 2];
+	int nvictims = 0;
+
+	for list_each(connection_t, cand, &n->connections) {
+		if(cand == n->connection) {
+			continue;
+		}
+
+		bool wan_ready = (best_rtt >= 1000 && best_rtt != UINT32_MAX);
+		bool slow = !cand->status.active ||
+		            !multipath_uplink_is_healthy(cand->uplink_idx) ||
+		            cand->tcp_degraded ||
+		            (wan_ready && connection_is_wan_degraded(cand, best_rtt, best_pacing, 25000));
+
+		if((all_secondary || slow) && nvictims < MAX_MULTIPATH_CONNECTIONS * 2) {
+			victims[nvictims++] = cand;
+		}
+	}
+
+	for(int i = 0; i < nvictims; i++) {
+		connection_t *victim = victims[i];
+		char ep[160];
+		double v_ms = victim->tcp_min_rtt_us > 0 ? (double)victim->tcp_min_rtt_us / 1000.0 : -1.0;
+		double b_ms = best_rtt != UINT32_MAX ? (double)best_rtt / 1000.0 : -1.0;
+
+		format_endpoint_token(&victim->address, ep, sizeof(ep));
+		logger(DEBUG_CONNECTIONS, LOG_NOTICE,
+		       "multipath: operator recycling connection to %s (%s, %.1f ms vs best %.1f ms, cwnd=%u, pacing=%.2f Mbps)",
+		       n->name, ep, v_ms, b_ms, victim->tcp_cwnd, victim->tcp_pacing_bps / 1000000.0);
+		send_request(ctl, "%d %d 1 recycled peer=%s role=sub ep=%s min_rtt_ms=%.1f best_ms=%.1f",
+		             CONTROL, REQ_MULTIPATH, n->name, ep, v_ms, b_ms);
+		multipath_node_del_connection(n, victim);
+		victim->status.multipath_sub = false;
+		victim->status.no_tarpit = true;
+		victim->edge = NULL;
+		terminate_connection(victim, false);
+		(*recycled_out)++;
+	}
+}
 
 bool control_multipath_h(connection_t *c, const char *request) {
 	char subcmd[64] = "";
@@ -2117,6 +3203,176 @@ bool control_multipath_h(connection_t *c, const char *request) {
 			             n->connection ? n->connection->uplink_idx : -1);
 		}
 
+		return send_request(c, "%d %d 2", CONTROL, REQ_MULTIPATH);
+	}
+
+	if(!strcasecmp(subcmd, "detail")) {
+		char self_ip[64];
+		node_primary_ipv4_str(myself, self_ip, sizeof(self_ip));
+		send_request(c, "%d %d 0 summary name=%s vpn_ip=%s mode=%s target_conns=%d uplinks=%d maxoutbuf=%d",
+		             CONTROL, REQ_MULTIPATH,
+		             (myself && myself->name) ? myself->name : "-",
+		             self_ip,
+		             multipath_mode_name(multipath_mode),
+		             multipath_target_connections,
+		             multipath_uplink_count,
+		             maxoutbufsize);
+
+		for(int i = 0; i < MAX_UPLINKS; i++) {
+			multipath_uplink_t *u = &multipath_uplinks[i];
+
+			if(!u->in_use) {
+				continue;
+			}
+
+			send_request(c, "%d %d 1 uplink idx=%d name=%s state=%s weight=%d backup=%d mark=0x%x handle=%llu tx=%llu rx=%llu",
+			             CONTROL, REQ_MULTIPATH, i, u->name,
+			             u->is_up ? "UP" : "DOWN",
+			             u->weight, u->is_backup ? 1 : 0, u->fwmark,
+			             (unsigned long long)u->net_handle,
+			             (unsigned long long)u->tx_packets,
+			             (unsigned long long)u->rx_packets);
+		}
+
+		for splay_each(node_t, n, &node_tree) {
+			if(n == myself) {
+				continue;
+			}
+
+			int active_paths = 0;
+
+			for(int i = 0; i < MAX_NODE_PATHS; i++) {
+				if(n->paths[i].active && n->paths[i].confirmed) {
+					active_paths++;
+				}
+			}
+
+			int nconns = n->connections.count ? (int)n->connections.count : (n->connection ? 1 : 0);
+			bool has_primary_in_list = false;
+
+			if(n->connection && n->connections.count) {
+				for list_each(connection_t, cand, &n->connections) {
+					if(cand == n->connection) {
+						has_primary_in_list = true;
+						break;
+					}
+				}
+
+				if(!has_primary_in_list) {
+					nconns++;
+				}
+			}
+
+			char vpn_ip[64];
+			char prefb[128];
+			char udp_ep[160];
+			node_primary_ipv4_str(n, vpn_ip, sizeof(vpn_ip));
+			format_node_pref_transports(n, prefb, sizeof(prefb));
+			format_endpoint_token(&n->address, udp_ep, sizeof(udp_ep));
+
+			double udp_rtt_ms = (n->status.udp_confirmed && n->udp_ping_rtt >= 0)
+			                    ? (double)n->udp_ping_rtt / 1000.0
+			                    : -1.0;
+
+			send_request(c,
+			             "%d %d 1 node name=%s reachable=%d direct=%d via=%s nexthop=%s vpn_ip=%s conns=%d udp_ok=%d udp_rtt_ms=%.3f udp_paths=%d udp_unans=%d udp_ep=%s mtu=%d minmtu=%d maxmtu=%d tcponly=%d no_direct=%d pref=%s tx_seq=%u rx_seq=%u rx_ok=%u in_pkts=%llu out_pkts=%llu in_bytes=%llu out_bytes=%llu primary_uplink=%d tcp_pacing_Bps=%u",
+			             CONTROL, REQ_MULTIPATH,
+			             n->name,
+			             n->status.reachable ? 1 : 0,
+			             (n->connection != NULL || n->connections.count > 0) ? 1 : 0,
+			             (n->via && n->via->name) ? n->via->name : "-",
+			             (n->nexthop && n->nexthop->name) ? n->nexthop->name : "-",
+			             vpn_ip,
+			             nconns,
+			             n->status.udp_confirmed ? 1 : 0,
+			             udp_rtt_ms,
+			             active_paths,
+			             n->udp_ping_unanswered,
+			             udp_ep,
+			             (int)n->mtu,
+			             (int)n->minmtu,
+			             (int)n->maxmtu,
+			             node_tcponly(n) ? 1 : 0,
+			             (n->status.no_direct || n->remote_no_direct || node_is_no_direct(n->name)) ? 1 : 0,
+			             prefb,
+			             n->sent_seqno,
+			             n->received_seqno,
+			             n->received,
+			             (unsigned long long)n->in_packets,
+			             (unsigned long long)n->out_packets,
+			             (unsigned long long)n->in_bytes,
+			             (unsigned long long)n->out_bytes,
+			             n->connection ? n->connection->uplink_idx : -1,
+			             n->tcp_max_pacing_rate ? n->tcp_max_pacing_rate : multipath_tcp_max_pacing_rate);
+
+			bool emitted_primary = false;
+
+			for list_each(connection_t, conn, &n->connections) {
+				if(conn == n->connection) {
+					emitted_primary = true;
+				}
+
+				emit_conn_detail(c, n, conn, now.tv_sec);
+			}
+
+			if(n->connection && !emitted_primary) {
+				emit_conn_detail(c, n, n->connection, now.tv_sec);
+			}
+		}
+
+		return send_request(c, "%d %d 2", CONTROL, REQ_MULTIPATH);
+	}
+
+	if(!strcasecmp(subcmd, "recycle")) {
+		char arg1[128] = "all";
+		char arg2[64] = "slow";
+		int parsed = sscanf(request, "%*d %*d %*s %127s %63s", arg1, arg2);
+		bool target_all_peers = true;
+		bool all_secondary = false;
+		node_t *target_node = NULL;
+
+		if(parsed >= 1) {
+			if(!strcasecmp(arg1, "slow")) {
+				target_all_peers = true;
+				all_secondary = false;
+			} else if(!strcasecmp(arg1, "all")) {
+				target_all_peers = true;
+				all_secondary = (parsed >= 2 && !strcasecmp(arg2, "all"));
+			} else {
+				target_all_peers = false;
+				target_node = lookup_node(arg1);
+
+				if(!target_node || target_node == myself) {
+					return send_request(c, "%d %d -2", CONTROL, REQ_MULTIPATH);
+				}
+
+				if(parsed >= 2 && (!strcasecmp(arg2, "all") || !strcasecmp(arg2, "force"))) {
+					all_secondary = true;
+				}
+			}
+		}
+
+		int promoted = 0;
+		int recycled = 0;
+
+		if(target_all_peers) {
+			for splay_each(node_t, n, &node_tree) {
+				if(n == myself) {
+					continue;
+				}
+
+				recycle_node_conns(c, n, all_secondary, &promoted, &recycled);
+			}
+		} else {
+			recycle_node_conns(c, target_node, all_secondary, &promoted, &recycled);
+		}
+
+		if(recycled > 0) {
+			multipath_maintain();
+		}
+
+		send_request(c, "%d %d 0 promoted=%d recycled=%d",
+		             CONTROL, REQ_MULTIPATH, promoted, recycled);
 		return send_request(c, "%d %d 2", CONTROL, REQ_MULTIPATH);
 	}
 

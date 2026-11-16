@@ -129,6 +129,10 @@ bool send_tcppacket(connection_t *c, const vpn_packet_t *packet) {
 		return false;
 	}
 
+	if(c->node) {
+		multipath_apply_node_tcp_pacing(c->node, c, packet->len);
+	}
+
 	if(!send_request(c, "%d %d", PACKET, packet->len)) {
 		return false;
 	}
@@ -168,6 +172,10 @@ bool send_sptps_tcppacket(connection_t *c, const void *packet, size_t len) {
 	if(!connection_can_buffer(c, len + 128U)) {
 		c->status.remove_unused = true;
 		return false;
+	}
+
+	if(c->node) {
+		multipath_apply_node_tcp_pacing(c->node, c, len);
 	}
 
 	if(!send_request(c, "%d %lu", SPTPS_PACKET, (unsigned long)len)) {

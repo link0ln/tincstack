@@ -229,6 +229,16 @@ static void load_one_node(const char *name) {
 
 	transport_node_read_config(n, &config);
 
+	int node_pacing_Bps = 0;
+
+	if(get_config_int(lookup_config(&config, "TcpMaxPacingRate"), &node_pacing_Bps) && node_pacing_Bps > 0) {
+		n->tcp_max_pacing_rate = (uint32_t)node_pacing_Bps;
+	} else {
+		n->tcp_max_pacing_rate = 0;
+	}
+
+	multipath_apply_node_tcp_pacing(n, NULL, 0);
+
 	if(is_new && n != myself) {
 		n->status.no_direct = node_is_no_direct(name);
 	}

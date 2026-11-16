@@ -95,6 +95,8 @@ typedef struct node_t {
 	node_path_t paths[MAX_NODE_PATHS];      /* Confirmed / candidate UDP paths to this node (multipath.c) */
 	uint32_t mp_rr_cursor;                  /* Round-robin / burst cursor for multipath scheduling */
 	uint32_t mp_burst_pkts;                 /* Current burst packet count in MULTIPATH_SPLIT mode */
+	uint32_t next_relay_slot;               /* Monotonic per-node connection slot for multi-hop ECMP striping */
+	uint8_t mp_slot_hwm;                    /* High-water slot width (1..MAX_MULTIPATH_CONNECTIONS) for stable flowhash */
 
 	uint32_t sent_seqno;                    /* Sequence number last sent to this node */
 	uint32_t received_seqno;                /* Sequence number last received from this node */
@@ -168,6 +170,7 @@ typedef struct node_t {
 	int16_t nat_port_delta;                 /* learned sequential port allocation stride across NAT mappings */
 	uint8_t udp_probe_seq;                  /* per-node unconfirmed UDP address rotation counter */
 	uint8_t sptps_cooldown;                 /* per-attempt randomized SPTPS retry timeout (24..36s) */
+	uint32_t tcp_max_pacing_rate;           /* aggregate per-peer TCP pacing budget in bytes/sec (0 = use global/unlimited) */
 } node_t;
 
 extern struct node_t *myself;
