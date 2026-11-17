@@ -104,6 +104,15 @@ static bool connection_has_wan_rtt(const connection_t *c) {
 	return c && !connection_is_loopback(c) && c->tcp_min_rtt_us >= 1000;
 }
 
+static size_t conn_queue_bytes(const connection_t *c) {
+	if(!c) {
+		return 0;
+	}
+
+	size_t out_q = c->outbuf.len > c->outbuf.offset ? c->outbuf.len - c->outbuf.offset : 0;
+	return out_q + c->transport_outbuf_len;
+}
+
 static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) {
 	if(!connection_has_wan_rtt(c)) {
 		return false;
@@ -115,9 +124,8 @@ static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) 
 	                               ? (uint64_t)c->applied_pacing_rate * 4ULL
 	                               : 4000000ULL;
 
-	if(c->tcp_segs_out >= 80 &&
-	                ((c->tcp_segs_out >= 150 && (uint64_t)c->tcp_total_retrans * 40ULL > (uint64_t)c->tcp_segs_out) ||
-	                 (c->tcp_segs_out < 150 && (uint64_t)c->tcp_total_retrans * 28ULL > (uint64_t)c->tcp_segs_out)) &&
+	if(c->tcp_segs_out >= 250 &&
+	                (uint64_t)c->tcp_total_retrans * 40ULL > (uint64_t)c->tcp_segs_out &&
 	                c->tcp_cwnd > 0 && c->tcp_cwnd <= 32 &&
 	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps < policed_pacing_ceil) {
 		bool newly = !c->tcp_degraded;
@@ -151,7 +159,8 @@ static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) 
 	}
 
 	/* Condition D: high-loss (> 12%) ECMP tuple lagging healthy sibling (effective under TcpMaxPacingRate too) */
-	if(best_pacing_bps >= 8000000ULL && c->tcp_segs_out >= 400 &&
+	if(best_pacing_bps >= 8000000ULL && c->tcp_segs_out >= 1500 &&
+	                c->tcp_cwnd > 0 && c->tcp_cwnd <= 45 &&
 	                (uint64_t)c->tcp_total_retrans * 25ULL > (uint64_t)c->tcp_segs_out * 3ULL &&
 	                c->tcp_pacing_bps > 0 && c->tcp_pacing_bps * 3ULL < best_pacing_bps * 2ULL) {
 		c->tcp_degraded = true;
@@ -296,20 +305,20 @@ static void refresh_connection_tcp_health(connection_t *c, bool sample_window) {
 
 	bool win_policed = false;
 	bool win_healthy_fast = false;
+	uint64_t cur_cap_bps = (uint64_t)c->applied_pacing_rate * 8ULL;
 
 	if(c->tcp_prev_segs_out > 0 && td.segs_out >= c->tcp_prev_segs_out &&
 	                td.total_retrans >= c->tcp_prev_retrans) {
 		uint32_t d_segs = td.segs_out - c->tcp_prev_segs_out;
 		uint32_t d_ret = td.total_retrans - c->tcp_prev_retrans;
-		uint64_t cap_bps = (uint64_t)c->applied_pacing_rate * 8ULL;
 
-		if(cap_bps > 0) {
-			uint64_t bad_pacing_ceil = cap_bps / 2ULL < 8000000ULL ? cap_bps / 2ULL : 8000000ULL;
-			win_policed = (d_segs >= 40 && (uint64_t)d_ret * 10ULL > (uint64_t)d_segs &&
-			               td.snd_cwnd > 0 && td.snd_cwnd <= 32 &&
+		if(cur_cap_bps > 0) {
+			uint64_t bad_pacing_ceil = cur_cap_bps / 3ULL < 4000000ULL ? cur_cap_bps / 3ULL : 4000000ULL;
+			win_policed = (d_segs >= 80 && (uint64_t)d_ret * 8ULL > (uint64_t)d_segs &&
+			               td.snd_cwnd > 0 && td.snd_cwnd <= 24 &&
 			               td.pacing_bps > 0 && td.pacing_bps < bad_pacing_ceil);
-			win_healthy_fast = (d_segs >= 50 && (uint64_t)d_ret * 12ULL <= (uint64_t)d_segs &&
-			                    td.snd_cwnd >= 28 && td.pacing_bps * 4ULL >= cap_bps * 3ULL);
+			win_healthy_fast = (d_segs >= 25 && (uint64_t)d_ret * 20ULL <= (uint64_t)d_segs &&
+			                    td.snd_cwnd >= 30 && td.pacing_bps * 2ULL >= cur_cap_bps);
 		} else {
 			win_policed = (d_segs >= 40 && (uint64_t)d_ret * 16ULL > (uint64_t)d_segs &&
 			               td.snd_cwnd > 0 && td.snd_cwnd <= 40 &&
@@ -327,7 +336,7 @@ static void refresh_connection_tcp_health(connection_t *c, bool sample_window) {
 			c->tcp_bad_windows++;
 		}
 
-		if(c->tcp_bad_windows >= 2) {
+		if(c->tcp_bad_windows >= 3) {
 			bool newly = !c->tcp_degraded;
 			c->tcp_degraded = true;
 
@@ -336,7 +345,9 @@ static void refresh_connection_tcp_health(connection_t *c, bool sample_window) {
 			}
 		}
 	} else if(!standalone_policed &&
-	                (win_healthy_fast || (td.snd_cwnd >= 100 && td.pacing_bps >= 20000000ULL))) {
+	                (win_healthy_fast ||
+	                 (td.snd_cwnd >= 100 && td.pacing_bps >= 20000000ULL) ||
+	                 (cur_cap_bps > 0 && td.snd_cwnd >= 45 && td.pacing_bps * 2ULL >= cur_cap_bps))) {
 		c->tcp_bad_windows = 0;
 		c->tcp_degraded = false;
 	}
@@ -2895,24 +2906,55 @@ int multipath_select_connections(node_t *n, const vpn_packet_t *pkt, connection_
 		}
 
 		uint32_t idx = h % width;
+		connection_t *chosen = NULL;
 
 		if(slots[idx] && slot_ok[idx]) {
-			out[0] = slots[idx];
-			return finish_select_connections(n, out, 1);
-		}
+			chosen = slots[idx];
+		} else {
+			uint32_t alt_base = h / width;
 
-		uint32_t alt_base = h / width;
+			for(uint32_t step = 0; step < width; step++) {
+				uint32_t alt = (alt_base + step) % width;
 
-		for(uint32_t step = 0; step < width; step++) {
-			uint32_t alt = (alt_base + step) % width;
+				if(slots[alt] && slot_ok[alt]) {
+					chosen = slots[alt];
+					break;
+				}
+			}
 
-			if(slots[alt] && slot_ok[alt]) {
-				out[0] = slots[alt];
-				return finish_select_connections(n, out, 1);
+			if(!chosen) {
+				chosen = slots[idx] ? slots[idx] : healthy[0];
 			}
 		}
 
-		out[0] = slots[idx] ? slots[idx] : healthy[0];
+		/* Bypass bulk head-of-line bufferbloat in homogeneous stream pools for
+		   latency-sensitive packets (ICMP, DNS, small handshakes) when a
+		   low-queue healthy sibling exists. */
+		if(pkt && multipath_pkt_is_latency_sensitive(pkt) && chosen) {
+			size_t chosen_q = conn_queue_bytes(chosen);
+
+			if(chosen_q > 65536U) {
+				connection_t *best_lowq = NULL;
+				size_t best_q = SIZE_MAX;
+
+				for(int i = 0; i < nhealthy; i++) {
+					size_t hq = conn_queue_bytes(healthy[i]);
+
+					if(hq <= 65536U && hq * 2U < chosen_q &&
+					                (!best_lowq || hq < best_q ||
+					                 (hq == best_q && healthy[i]->health_score > best_lowq->health_score))) {
+						best_lowq = healthy[i];
+						best_q = hq;
+					}
+				}
+
+				if(best_lowq) {
+					chosen = best_lowq;
+				}
+			}
+		}
+
+		out[0] = chosen;
 		return finish_select_connections(n, out, 1);
 	}
 
@@ -3416,16 +3458,7 @@ void multipath_maintain(void) {
 			}
 		}
 
-		bool has_policed_sub = false;
-
-		for list_each(connection_t, cand, &n->connections) {
-			if(cand != n->connection && cand->status.active && cand->tcp_degraded) {
-				has_policed_sub = true;
-				break;
-			}
-		}
-
-		time_t recycle_cooldown = (!best_cand || has_policed_sub) ? 20 : 60;
+		time_t recycle_cooldown = !best_cand ? 25 : 60;
 
 		if(we_maintain_pool && now.tv_sec - last_ecmp_recycle >= recycle_cooldown) {
 			connection_t *worst = NULL;
@@ -3438,7 +3471,7 @@ void multipath_maintain(void) {
 				bool cand_bad = best_cand
 				                ? connection_is_wan_degraded(cand, best_rtt, best_pacing, 30000)
 				                : (cand->tcp_degraded || connection_is_wan_degraded(cand, best_rtt, best_pacing, 30000));
-				time_t min_age = cand->tcp_degraded ? 20 : 45;
+				time_t min_age = 45;
 
 				if(cand->activated_at > 0 && now.tv_sec - cand->activated_at >= min_age && cand_bad) {
 					if(!worst ||

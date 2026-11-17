@@ -1669,6 +1669,17 @@ bool ack_h(connection_t *c, const char *request) {
 	/* The peer's declaration stays on the peer's own edge (connection.h). */
 	c->options |= options & ~OPTION_DECLARED_INDIRECT;
 
+	/* Reset any provisional relay MTU (e.g. 1119 learned via an indirect QUIC
+	   hop while this peer was reconnecting) when its primary direct stream
+	   connection activates. */
+	if(!is_secondary_mp && !n->status.udp_confirmed &&
+	                !(c->transport && c->transport->send_datagram) &&
+	                !multipath_node_has_datagram_carrier(n) &&
+	                n->minmtu == 0 && n->mtu < MTU) {
+		n->mtu = MTU;
+		n->maxmtu = MTU;
+	}
+
 	if(get_config_int(lookup_config(c->config_tree, "PMTU"), &mtu) && mtu < n->mtu) {
 		n->mtu = mtu;
 	}

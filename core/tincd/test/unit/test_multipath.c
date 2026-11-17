@@ -890,8 +890,60 @@ static void test_multipath_health_score_and_latency_sensitivity(void **state) {
 	assert_true(multipath_conn_health_score(n, c_https, 35000U) <= 50);
 
 	multipath_node_del_connection(n, c_quic);
+
+	/* Homogeneous stream pool: latency-sensitive traffic bypasses congested outbuf > 64 KB
+	   while bulk TCP (> 320B) keeps its consistent flowhash slot. */
+	c_https->tcp_degraded = false;
+	c_https->outbuf.offset = 0;
+	c_https->outbuf.len = 200000;
+
+	connection_t *c_https2 = new_connection();
+	c_https2->name = xstrdup("peer_het");
+	c_https2->node = n;
+	c_https2->status.active = true;
+	c_https2->socket = -1;
+	c_https2->transport = &mock_https;
+	c_https2->address.sa.sa_family = AF_INET;
+	c_https2->address.in.sin_addr.s_addr = htonl(0x5057c827U);
+	c_https2->tcp_min_rtt_us = 35000U;
+	c_https2->tcp_pacing_bps = 25000000ULL;
+	c_https2->relay_slot = 1;
+	multipath_node_add_connection(n, c_https2);
+
+	vpn_packet_t bypass_pkt = {0};
+	memset(DATA(&bypass_pkt), 0, 1000);
+	DATA(&bypass_pkt)[12] = 0x08;
+	DATA(&bypass_pkt)[13] = 0x00;
+	DATA(&bypass_pkt)[14] = 0x45;
+	DATA(&bypass_pkt)[14 + 9] = 6; /* TCP */
+	int slot0_port = -1;
+
+	for(int i = 0; i < 64; i++) {
+		DATA(&bypass_pkt)[14 + 20] = (uint8_t)i;
+		bypass_pkt.len = 1000; /* Bulk TCP -> uses slot assignment directly */
+		assert_int_equal(1, multipath_select_connections(n, &bypass_pkt, out));
+
+		if(out[0] == c_https) {
+			slot0_port = i;
+			break;
+		}
+	}
+
+	assert_true(slot0_port >= 0);
+	DATA(&bypass_pkt)[14 + 20] = (uint8_t)slot0_port;
+	bypass_pkt.len = 64; /* Small interactive TCP on exact same 5-tuple bypasses congested c_https */
+	assert_int_equal(1, multipath_select_connections(n, &bypass_pkt, out));
+	assert_ptr_equal(c_https2, out[0]);
+
+	bypass_pkt.len = 1000; /* Bulk TCP stays pinned on slot 0 (c_https) */
+	assert_int_equal(1, multipath_select_connections(n, &bypass_pkt, out));
+	assert_ptr_equal(c_https, out[0]);
+
+	c_https->outbuf.len = 0;
+	multipath_node_del_connection(n, c_https2);
 	multipath_node_del_connection(n, c_https);
 	n->connection = NULL;
+	free_connection(c_https2);
 	free_connection(c_quic);
 	free_connection(c_https);
 	free_node(n);
