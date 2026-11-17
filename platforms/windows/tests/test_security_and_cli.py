@@ -232,3 +232,45 @@ def test_m_win_05_import_from_disk_handles_bat_cmd_and_tls_keys(tmp_path):
     assert nc.keys["tls_cert"] == "TLS_CERT_PEM"
     assert nc.keys["tls_key"] == "TLS_KEY_PEM"
     assert nc.keys["acme_account"] == "ACME_KEY_PEM"
+
+
+def test_no_undefined_names_in_python_sources():
+    """Every Python module/script under platforms/windows and tools/vpn-diag must compile
+    without undefined free-variable or default-arg references (catches NameError in GUI
+    menu lambdas even in headless environments where PySide6 is absent)."""
+    import builtins
+    import glob
+    import symtable
+
+    win_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    repo_root = os.path.dirname(os.path.dirname(win_dir))
+    py_files = sorted(glob.glob(os.path.join(win_dir, "**", "*.py"), recursive=True))
+    vpn_diag = os.path.join(repo_root, "tools", "vpn-diag")
+    if os.path.isfile(vpn_diag):
+        py_files.append(vpn_diag)
+
+    builtin_names = set(dir(builtins)) | {"__annotations__"}
+    implicit_allowed = {"__file__", "__class__"}
+    undefined: list[str] = []
+
+    def check_table(st: symtable.SymbolTable, enclosing_defs: set[str], path: str) -> None:
+        own_defs = {
+            s.get_name() for s in st.get_symbols()
+            if s.is_assigned() or s.is_imported() or s.is_parameter() or s.is_namespace()
+        }
+        child_enclosing = enclosing_defs if st.get_type() == "class" else (enclosing_defs | own_defs)
+        visible = enclosing_defs | own_defs | builtin_names | implicit_allowed
+        for s in st.get_symbols():
+            name = s.get_name()
+            if s.is_referenced() and not (s.is_assigned() or s.is_imported() or s.is_parameter() or s.is_namespace()):
+                if name not in visible:
+                    undefined.append(f"{os.path.relpath(path, repo_root)}:{st.get_lineno()} ({st.get_name()}): {name!r}")
+        for child in st.get_children():
+            check_table(child, child_enclosing, path)
+
+    for path in py_files:
+        with open(path, encoding="utf-8") as fh:
+            top = symtable.symtable(fh.read(), path, "exec")
+        check_table(top, set(), path)
+
+    assert not undefined, "Undefined names detected:\n" + "\n".join(undefined)

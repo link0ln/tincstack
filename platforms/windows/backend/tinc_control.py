@@ -73,6 +73,7 @@ class Node:
     transport: str = ""        # active carrier on this peer's connection (quic/https/obfs/sf/plain)
     supported_transports: list = field(default_factory=list)
     has_direct_conn: bool | None = None  # populated by NetworkSnapshot.attach_connections()
+    self_name: str = ""                  # local daemon node name (via == self_name on direct https/sftcp links)
 
     @property
     def reachable(self) -> bool:
@@ -128,7 +129,12 @@ class Node:
             return "direct-udp"
         if (
             self.nexthop == self.name
-            and (not self.via or self.via == self.name)
+            and not self.status.get("no_direct")
+            and (
+                not self.via
+                or self.via == self.name
+                or (self.self_name and self.via == self.self_name)
+            )
             and (
                 self.has_direct_conn is True
                 or (self.has_direct_conn is None and self.distance == 1)
@@ -172,7 +178,10 @@ class NetworkSnapshot:
                 n.subnets.append(s.subnet)
 
     def attach_connections(self) -> None:
+        self_name = next((k for k, v in self.nodes.items() if v.is_self), "")
         for name, n in self.nodes.items():
+            if self_name and not n.self_name:
+                n.self_name = self_name
             if n.is_self:
                 n.has_direct_conn = False
                 continue
@@ -325,6 +334,10 @@ class TincControl:
             except (IndexError, ValueError):
                 pass
             nodes[n.name] = n
+        self_name = next((k for k, v in nodes.items() if v.is_self), "")
+        if self_name:
+            for n in nodes.values():
+                n.self_name = self_name
         return nodes
 
     def parse_edges(self, text: str) -> list:

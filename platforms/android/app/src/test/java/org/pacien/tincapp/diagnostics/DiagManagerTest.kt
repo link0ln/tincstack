@@ -123,6 +123,22 @@ class DiagManagerTest {
       connLines = emptyList(),
     )
     assertEquals("relay", noConnSnap.nodes["ruvds"]!!.link)
+
+    // Direct TCPOnly/https connection prints `via <self>` in dump nodes: must classify as direct-tcp,
+    // while a peer reached through it at distance 2 stays relay.
+    val viaSelfDirectLine =
+      "ruvds id 010203 at 198.51.100.10 port 445 cipher 0 digest 0 maclength 0 compression 0 options 700000b " +
+        "status 0878 nexthop ruvds via phone distance 1 pmtu 1518 (min 0 max 1518) rx 10 1000 tx 12 1200 transports plain,https"
+    val viaSelfRelayedLine =
+      "leafB id 040506 at 198.51.100.22 port 444 cipher 0 digest 0 maclength 0 compression 0 options 700000b " +
+        "status 087a nexthop ruvds via phone distance 2 pmtu 1413 (min 0 max 1518) rx 10 1000 tx 10 1000 transports obfs,https"
+    val viaSelfSnap = DiagManager.buildSnapshotFromLines(
+      net = "mynet",
+      nodeLines = listOf(selfLine, viaSelfDirectLine, viaSelfRelayedLine),
+      connLines = listOf("ruvds at 198.51.100.10 port 443 options 700000b socket 6 status 102 transport https"),
+    )
+    assertEquals("direct-tcp", viaSelfSnap.nodes["ruvds"]!!.link)
+    assertEquals("relay", viaSelfSnap.nodes["leafB"]!!.link)
   }
 
   @Test

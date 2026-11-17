@@ -138,3 +138,35 @@ def test_relay_link_classification_and_diag_ping_payload_cap():
     assert seen_cmds[-1][-6:] == ["diag-ping", "10.0.0.2", "1472", "64", "0", "2000"]
 
 
+def test_https_direct_connection_with_via_self_classified_as_direct_tcp():
+    """On a direct TCPOnly/https link graph.c sets n->via = myself, so dump nodes
+    prints `via <self_name>`. A direct neighbour with an https connection must be
+    classified as `direct-tcp` rather than `relay`, while a peer reached behind it
+    at distance >= 2 remains `relay`."""
+    nodes_out = (
+        "demobook id 1a2b at MYSELF port 0 cipher 0 digest 0 maclength 0 compression 0 options 700000b status 0858 nexthop demobook via demobook distance 0 pmtu 1518 (min 0 max 1518) rx 0 0 tx 0 0\n"
+        "hub id 3c4d at 203.0.113.9 port 445 cipher 0 digest 0 maclength 0 compression 0 options 700000b status 0878 nexthop hub via demobook distance 1 pmtu 1518 (min 0 max 1518) rx 10 1000 tx 10 1000\n"
+        "exit_a id 5e6f at 198.51.100.2 port 444 cipher 0 digest 0 maclength 0 compression 0 options 700000b status 087a nexthop hub via demobook distance 2 pmtu 1413 (min 0 max 1518) rx 20 2000 tx 30 3000\n"
+    )
+    conns_out = "hub at 203.0.113.9 port 443 options 700000b socket 5 status 102 transport https\n"
+
+    def runner(cmd, timeout):
+        sub = cmd[cmd.index("-c") + 2:]
+        if sub == ["dump", "nodes"]:
+            return 0, nodes_out, ""
+        if sub == ["dump", "connections"]:
+            return 0, conns_out, ""
+        if sub in (["dump", "edges"], ["dump", "subnets"]):
+            return 0, "", ""
+        return 0, "", ""
+
+    ctl = tc.TincControl(tinc_exe="tinc", yaml_path="/x/tinc.yaml", runner=runner)
+    snap = ctl.snapshot("demo")
+    assert snap.nodes["demobook"].link == "self"
+    assert snap.nodes["hub"].link == "direct-tcp"
+    assert snap.nodes["hub"].transport == "https"
+    assert snap.nodes["exit_a"].link == "relay"
+    assert snap.nodes["exit_a"].nexthop == "hub"
+
+
+

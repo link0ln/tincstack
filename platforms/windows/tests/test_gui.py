@@ -909,6 +909,70 @@ def test_start_refreshes_materialized_zeroconf_identity_and_del_net_clears_wante
         QtWidgets.QApplication.processEvents()
 
 
+def test_peers_table_renders_multiple_peers_and_multipath_recycle_menu(qapp, tmp_path, monkeypatch):
+    """Regression test: PeersTab._table() must render every peer row (not abort on Row 1's
+    Transport menu) and triggering 'Recycle slow multipath legs' runs multipath_recycle."""
+    monkeypatch.setenv("TINCSTACK_BIN_DIR", str(tmp_path / "nobin"))
+    cfg = tmp_path / "tinc.yaml"
+    cfg.write_text(BASE_YAML, encoding="utf-8")
+
+    nodes_out = (
+        "demobook id 1 at MYSELF port 0 options 700000c status 0858 nexthop demobook via demobook distance 0 pmtu 1518 (min 0 max 1518) rx 0 0 tx 0 0\n"
+        "alpha id 2 at 198.51.100.2 port 655 options 700000b status 087a nexthop hub via demobook distance 2 pmtu 1413 (min 0 max 1518) rx 5 500 tx 6 600 transports obfs,https\n"
+        "beta id 3 at 198.51.100.3 port 655 options 700000c status 48da nexthop beta via beta distance 1 pmtu 1413 (min 1413 max 1413) rx 7 700 tx 8 800 transports plain,quic rtt 12.0\n"
+        "hub id 4 at 203.0.113.9 port 445 options 700000b status 0878 nexthop hub via demobook distance 1 pmtu 1518 (min 0 max 1518) rx 9 900 tx 10 1000 transports plain,https\n"
+    )
+    conns_out = (
+        "hub at 203.0.113.9 port 443 options 700000b socket 5 status 102 transport https\n"
+        "beta at 198.51.100.3 port 443 options 700000c socket -1 status 2 transport quic\n"
+    )
+
+    def multi_runner(cmd, timeout):
+        sub = cmd[cmd.index("-c") + 2:]
+        if sub[:2] == ["dump", "nodes"]:
+            return 0, nodes_out, ""
+        if sub[:2] == ["dump", "connections"]:
+            return 0, conns_out, ""
+        if sub[0] == "dump":
+            return 0, "", ""
+        if sub[:2] == ["multipath", "recycle"]:
+            return 0, "recycled slow legs\n", ""
+        return 0, "OK\n", ""
+
+    fake_calls = []
+
+    def recording_runner(cmd, timeout):
+        fake_calls.append(cmd)
+        return multi_runner(cmd, timeout)
+
+    w = tincmgr.MainWindow(str(cfg), runner=recording_runner, autostart=False)
+    try:
+        assert wait_until(lambda: w.peers.table.rowCount() == 4)
+        rows = {
+            w.peers.table.item(r, 0).text(): (
+                w.peers.table.item(r, 1).text(),
+                w.peers.table.cellWidget(r, tincmgr.PeersTab.COLS.index("Transport")),
+            )
+            for r in range(w.peers.table.rowCount())
+        }
+        assert set(rows) == {"demobook", "alpha", "beta", "hub"}
+        assert rows["demobook"][0] == tincmgr.LINK_LABEL["self"]
+        assert rows["alpha"][0] == tincmgr.LINK_LABEL["relay"]
+        assert rows["beta"][0] == tincmgr.LINK_LABEL["direct-udp"]
+        assert rows["hub"][0] == tincmgr.LINK_LABEL["direct-tcp"]
+        assert all(rows[p][1] is not None for p in ("alpha", "beta", "hub"))
+
+        tr_btn = rows["alpha"][1].findChildren(QtWidgets.QToolButton)[0]
+        recycle_act = next(a for a in tr_btn.menu().actions() if "Recycle slow multipath legs" in a.text())
+        recycle_act.trigger()
+        assert wait_until(lambda: any(c[-4:] == ["multipath", "recycle", "alpha", "slow"] for c in fake_calls))
+    finally:
+        w.timer.stop()
+        w.pool.wait_all()
+        w.deleteLater()
+        QtWidgets.QApplication.processEvents()
+
+
 
 
 

@@ -221,6 +221,7 @@ object DiagManager {
     var subnets: MutableList<String> = mutableListOf(),
     var transport: String = "",
     var hasDirectConn: Boolean = false,
+    var selfName: String = "",
   ) {
     val isSelf: Boolean get() = address == "MYSELF"
     val reachable: Boolean get() = isSelf || (status["reachable"] == true)
@@ -228,10 +229,12 @@ object DiagManager {
       get() {
         if (isSelf) return "self"
         if (!reachable) return "unreachable"
-        val relay = via != "-" && via != name
+        val noDirect = status["no_direct"] == true
+        val udpDirectVia = via == "-" || via == "" || via == name
+        val tcpDirectVia = udpDirectVia || (selfName.isNotEmpty() && via == selfName)
         return when {
-          status["udp_confirmed"] == true && !relay -> "direct-udp"
-          !relay && nexthop == name && hasDirectConn -> "direct-tcp"
+          status["udp_confirmed"] == true && !noDirect && udpDirectVia -> "direct-udp"
+          !noDirect && tcpDirectVia && nexthop == name && hasDirectConn -> "direct-tcp"
           else -> "relay"
         }
       }
@@ -355,6 +358,12 @@ object DiagManager {
         }
       }
       out[n.name] = n
+    }
+    val selfName = out.values.firstOrNull { it.isSelf }?.name ?: ""
+    if (selfName.isNotEmpty()) {
+      for (n in out.values) {
+        n.selfName = selfName
+      }
     }
     return out
   }

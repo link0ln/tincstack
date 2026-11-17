@@ -68,7 +68,11 @@ data class PeerStatus(
       return result
     }
 
-    fun parseNode(line: String, connections: Map<String, String> = emptyMap()): PeerStatus? {
+    fun parseNode(
+      line: String,
+      connections: Map<String, String> = emptyMap(),
+      selfName: String? = null,
+    ): PeerStatus? {
       val f = fields(line)
       if (f.size < 2 || f.after("status") == null) return null
       val name = f[0]
@@ -76,10 +80,14 @@ data class PeerStatus(
       val self = host == "MYSELF"
       val status = f.after("status")?.toLongOrNull(16)?.toInt() ?: 0
       val nexthop = f.after("nexthop")?.takeIf { it != "-" }
-      val via = f.after("via")?.takeIf { it != "-" }
+      val rawVia = f.after("via")?.takeIf { it != "-" }
+      val viaSelf = !self && selfName != null && rawVia == selfName
+      val via = if (viaSelf) null else rawVia
       val reachable = self || status and STATUS_REACHABLE != 0
-      val isDirectUdp = !self && reachable && (status and STATUS_UDP_CONFIRMED != 0) && (via == null || via == name)
-      val relay = if (isDirectUdp) null else listOfNotNull(via, nexthop).firstOrNull { it != name }
+      val noDirect = !self && (status and STATUS_NO_DIRECT != 0)
+      val isDirectUdp = !self && reachable && !noDirect && !viaSelf && (status and STATUS_UDP_CONFIRMED != 0) && (via == null || via == name)
+      val isDirectTcp = !self && reachable && !noDirect && nexthop == name && (via == null || via == name) && connections.containsKey(name)
+      val relay = if (isDirectUdp || isDirectTcp) null else listOfNotNull(via, nexthop).firstOrNull { it != name }
       return PeerStatus(
         name = name,
         self = self,
@@ -90,14 +98,18 @@ data class PeerStatus(
         via = if (reachable && !self) relay else null,
         rttMs = f.after("rtt")?.toDoubleOrNull(),
         transport = connections[name],
-        noDirect = !self && (status and STATUS_NO_DIRECT != 0),
+        noDirect = noDirect,
       )
     }
 
     /** Every node, this device first, then reachable before unreachable, then by name. */
     fun parse(nodeLines: List<String>, connectionLines: List<String>): List<PeerStatus> {
       val connections = parseConnections(connectionLines)
-      return nodeLines.mapNotNull { parseNode(it, connections) }
+      val selfName = nodeLines.firstNotNullOfOrNull { line ->
+        val f = fields(line)
+        if (f.size >= 2 && f.after("at") == "MYSELF") f[0] else null
+      }
+      return nodeLines.mapNotNull { parseNode(it, connections, selfName) }
         .sortedWith(compareBy({ !it.self }, { !it.reachable }, { it.name.lowercase() }))
     }
   }

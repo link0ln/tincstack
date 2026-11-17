@@ -118,4 +118,19 @@ class PeerStatusTest {
       PeerStatus.parseConnections(multiConn),
     )
   }
+
+  @Test
+  fun directHttpsViaSelfIsNotShownAsRelayedViaSelf() {
+    val httpsHub = "hub id 06 at 198.51.100.1 port 445 cipher 0 digest 0 maclength 0 compression 0 options 700000b " +
+      "status 0878 nexthop hub via phone distance 1 pmtu 1518 (min 0 max 1518) rx 10 1000 tx 12 1200 transports plain,https"
+    val behindHub = "exit_a id 07 at 198.51.100.2 port 444 cipher 0 digest 0 maclength 0 compression 0 options 700000b " +
+      "status 087a nexthop hub via phone distance 2 pmtu 1413 (min 0 max 1518) rx 20 2000 tx 30 3000 transports obfs,https"
+    val httpsConns = listOf("hub at 198.51.100.1 port 443 options 700000b socket 5 status 102 transport https")
+    val parsed = PeerStatus.parse(listOf(self, httpsHub, behindHub), httpsConns).associateBy { it.name }
+    assertNull(parsed["hub"]!!.via)
+    assertFalse(parsed["hub"]!!.directUdp)
+    assertEquals("https", parsed["hub"]!!.transport)
+    assertEquals("hub", parsed["exit_a"]!!.via)
+    assertFalse(parsed["exit_a"]!!.directUdp)
+  }
 }

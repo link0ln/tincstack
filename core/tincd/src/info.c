@@ -77,6 +77,7 @@ static int info_node(int fd, const char *item) {
 	uint64_t in_packets, in_bytes, out_packets, out_bytes;
 	char transports[4096] = "plain";
 	char tlsfp[4096] = "-";
+	char self_name[256] = "";
 
 	while(recvline(fd, line, sizeof(line))) {
 		int n = sscanf(line, "%d %d %4095s %4095s %4095s port %4095s %d %d %d %d %x %"PRIx32" %4095s %4095s %d %hd %hd %hd %ld %d %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" %4095s %4095s", &code, &req, node, id, host, port, &cipher, &digest, &maclength, &compression, &options, &status_union.raw, nexthop, via, &distance, &pmtu, &minmtu, &maxmtu, &last_state_change, &udp_ping_rtt, &in_packets, &in_bytes, &out_packets, &out_bytes, transports, tlsfp);
@@ -88,6 +89,10 @@ static int info_node(int fd, const char *item) {
 		if(n < 24) {
 			fprintf(stderr, "Unable to parse node dump from tincd.\n");
 			return 1;
+		}
+
+		if(!strcmp(host, "MYSELF")) {
+			snprintf(self_name, sizeof(self_name), "%s", node);
 		}
 
 		if(!strcmp(node, item)) {
@@ -102,8 +107,17 @@ static int info_node(int fd, const char *item) {
 	}
 
 	while(recvline(fd, line, sizeof(line))) {
-		if(sscanf(line, "%d %d %4095s", &code, &req, node) == 2) {
+		char d_node[256] = "";
+		char d_id[256] = "";
+		char d_host[256] = "";
+		int d_n = sscanf(line, "%d %d %255s %255s %255s", &code, &req, d_node, d_id, d_host);
+
+		if(d_n == 2) {
 			break;
+		}
+
+		if(d_n >= 5 && !strcmp(d_host, "MYSELF")) {
+			snprintf(self_name, sizeof(self_name), "%s", d_node);
 		}
 	}
 
@@ -185,15 +199,17 @@ static int info_node(int fd, const char *item) {
 	printf("Protocol:     %d.%d\n", PROT_MAJOR, OPTION_VERSION(options));
 	printf("Reachability: ");
 
+	bool via_self = (*self_name && !strcmp(via, self_name));
+
 	if(!strcmp(host, "MYSELF")) {
 		printf("can reach itself\n");
 	} else if(!status.reachable) {
 		printf("unreachable\n");
-	} else if(strcmp(via, item)) {
+	} else if(!via_self && strcmp(via, item)) {
 		printf("indirectly via %s\n", via);
 	} else if(!status.validkey) {
 		printf("unknown\n");
-	} else if(minmtu > 0) {
+	} else if(!via_self && minmtu > 0) {
 		printf("directly with UDP\nPMTU:         %d\n", pmtu);
 
 		if(udp_ping_rtt != -1) {

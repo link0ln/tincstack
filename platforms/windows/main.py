@@ -550,14 +550,8 @@ class PeersTab(QtWidgets.QWidget):
         menu.addSeparator()
         rec_mp = menu.addAction(f"⚡ Recycle slow multipath legs ({n.name})")
         rec_mp.triggered.connect(
-            lambda _checked=False, p=n.name, nt=net: ctx.pool.run(
-                ctx.tc.multipath_recycle, nt, p, "slow",
-                tag=f"mp-recycle-{nt}-{p}",
-                on_done=lambda res: (
-                    ctx.status((res.stdout or res.stderr or f"Recycled slow legs for {p}").strip()),
-                    self.sample_async(),
-                ),
-                on_error=lambda m: ctx.status(f"{p}: recycle failed: {m}"),
+            lambda _checked=False, p=n.name: QtCore.QTimer.singleShot(
+                0, lambda: self._recycle_peer_multipath(p)
             )
         )
         rec = menu.addAction(f"⟳ Reconnect {n.name} now")
@@ -703,6 +697,22 @@ class PeersTab(QtWidgets.QWidget):
         ctx.pool.run(self.tc.switch_peer_transport, net, peer_name,
                      tag=f"switch-tr-{net}-{peer_name}", on_done=done,
                      on_error=lambda m: ctx.status(f"{peer_name}: switch failed: {m}"))
+
+    def _recycle_peer_multipath(self, peer_name: str) -> None:
+        ctx, net = self.ctx, self.net
+        if not ctx or not net or not ctx._running.get(net, False):
+            return
+        diagnostics.log_app_event(f"Manual multipath recycle triggered for peer '{peer_name}' on network '{net}'")
+        ctx.status(f"Recycling slow multipath legs for {peer_name}…")
+        ctx.pool.run(
+            self.tc.multipath_recycle, net, peer_name, "slow",
+            tag=f"mp-recycle-{net}-{peer_name}",
+            on_done=lambda res: (
+                ctx.status((res.stdout or res.stderr or f"Recycled slow legs for {peer_name}").strip()),
+                self.sample_async(),
+            ),
+            on_error=lambda m: ctx.status(f"{peer_name}: recycle failed: {m}"),
+        )
 
     def _reconnect_peer(self, peer_name: str) -> None:
         ctx, net = self.ctx, self.net

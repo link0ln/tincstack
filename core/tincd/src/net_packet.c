@@ -2903,7 +2903,8 @@ bool punch_h(node_t *from, node_t *to, const char *request) {
 				return true;
 			}
 
-			if(from->connection && to->connection && from->connection->edge && to->connection->edge) {
+			if(from->connection && to->connection && from->connection->edge && to->connection->edge &&
+			                !node_tcponly(from) && !node_tcponly(to)) {
 				/* Both are direct meta neighbours of this relay: wait until both
 				   UDP addresses are confirmed rather than forwarding flag 0. */
 				logger(DEBUG_PROTOCOL, LOG_INFO, "Coordinated hole punch between %s and %s: not yet, no confirmed UDP address of %s", from->name, to->name,
