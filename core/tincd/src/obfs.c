@@ -134,6 +134,7 @@ struct obfs_link_t {
 	uint8_t dk_ipub[ECDH_SIZE]; /* initiator's public half remembered by responder */
 	time_t dk_sent;             /* when our pending offer went out */
 	time_t kex_done_at;         /* when DSEAL_KEX last installed a session key */
+	bool dk_peer_v1;            /* peer uses pre-v0.5.52 DSEAL_KEX v1 transcript */
 	bool dseal_used;            /* the direct path to this node is sealed with this link */
 	bool dseal_noted_old;       /* "bootstrap key only" was logged */
 	time_t dseal_old_since;     /* first unanswered sealed datagram to an older peer */
@@ -2913,6 +2914,20 @@ static size_t dseal_kex_transcript(uint8_t *out, const char *from, const char *t
 	return n + ECDH_SIZE;
 }
 
+static size_t dseal_kex_transcript_v1(uint8_t *out, const char *from, const char *to, int flag, const uint8_t pub[ECDH_SIZE]) {
+	static const char ctx[] = "tincstack-dseal-kex-v1";
+	size_t n = 0;
+	memcpy(out + n, ctx, sizeof(ctx));
+	n += sizeof(ctx);
+	memcpy(out + n, from, strlen(from) + 1);
+	n += strlen(from) + 1;
+	memcpy(out + n, to, strlen(to) + 1);
+	n += strlen(to) + 1;
+	out[n++] = (uint8_t)flag;
+	memcpy(out + n, pub, ECDH_SIZE);
+	return n + ECDH_SIZE;
+}
+
 static bool dseal_kex_send(obfs_link_t *l, int flag, const uint8_t pub[ECDH_SIZE], const uint8_t ipub[ECDH_SIZE]) {
 	node_t *n = l->node;
 
@@ -2927,7 +2942,9 @@ static bool dseal_kex_send(obfs_link_t *l, int flag, const uint8_t pub[ECDH_SIZE
 	}
 
 	uint8_t *msg = xmalloc(dseal_kex_msglen(myself->name, n->name));
-	size_t mlen = dseal_kex_transcript(msg, myself->name, n->name, flag, pub, ipub);
+	size_t mlen = l->dk_peer_v1
+	              ? dseal_kex_transcript_v1(msg, myself->name, n->name, flag, pub)
+	              : dseal_kex_transcript(msg, myself->name, n->name, flag, pub, ipub);
 	uint8_t sig[64];
 	bool ok = ecdsa_sign(myself->connection->ecdsa, msg, mlen, sig);
 	free(msg);
@@ -2943,7 +2960,7 @@ static bool dseal_kex_send(obfs_link_t *l, int flag, const uint8_t pub[ECDH_SIZE
 	b64encode_tinc(ipub, ipub64, ECDH_SIZE);
 	b64encode_tinc(sig, sig64, sizeof(sig));
 
-	if(flag == 0) {
+	if(flag == 0 || l->dk_peer_v1) {
 		return send_request(n->nexthop->connection, "%d %s %s %d %d %s %s", REQ_KEY, myself->name, n->name, DSEAL_KEX_REQ, flag, pub64, sig64);
 	}
 
@@ -3013,7 +3030,7 @@ bool dseal_kex_h(node_t *from, const char *request) {
 
 	int nitems = sscanf(request, "%*d %*s %*s %*d %d " MAX_STRING " " MAX_STRING " " MAX_STRING, &flag, pub64, sig64, ipub64);
 
-	if(nitems < 3 || flag < 0 || flag > 2 || (flag > 0 && nitems < 4)) {
+	if(nitems < 3 || flag < 0 || flag > 2) {
 		logger(DEBUG_ALWAYS, LOG_ERR, "Got bad %s from %s (%s)", "DSEAL_KEX", from->name, from->hostname);
 		return true;
 	}
@@ -3030,12 +3047,17 @@ bool dseal_kex_h(node_t *from, const char *request) {
 		return true;
 	}
 
-	if(flag == 0 && nitems == 3) {
+	bool has_ipub = (nitems >= 4);
+	bool peer_v1 = false;
+
+	if(has_ipub) {
+		if(strlen(ipub64) != 43 || b64decode_tinc(ipub64, ipub, 43) != ECDH_SIZE ||
+		                (flag == 0 && memcmp(ipub, pub, ECDH_SIZE) != 0)) {
+			logger(DEBUG_ALWAYS, LOG_ERR, "Got malformed %s ipub from %s (%s)", "DSEAL_KEX", from->name, from->hostname);
+			return true;
+		}
+	} else {
 		memcpy(ipub, pub, ECDH_SIZE);
-	} else if(strlen(ipub64) != 43 || b64decode_tinc(ipub64, ipub, 43) != ECDH_SIZE ||
-	                (flag == 0 && memcmp(ipub, pub, ECDH_SIZE) != 0)) {
-		logger(DEBUG_ALWAYS, LOG_ERR, "Got malformed %s ipub from %s (%s)", "DSEAL_KEX", from->name, from->hostname);
-		return true;
 	}
 
 	if(!node_read_ecdsa_public_key(from) || ecdsa_size(from->ecdsa) != sizeof(sig)) {
@@ -3045,6 +3067,13 @@ bool dseal_kex_h(node_t *from, const char *request) {
 	uint8_t *msg = xmalloc(dseal_kex_msglen(from->name, myself->name));
 	size_t mlen = dseal_kex_transcript(msg, from->name, myself->name, flag, pub, ipub);
 	bool ok = ecdsa_verify(from->ecdsa, msg, mlen, sig);
+
+	if(!ok && !has_ipub) {
+		mlen = dseal_kex_transcript_v1(msg, from->name, myself->name, flag, pub);
+		ok = ecdsa_verify(from->ecdsa, msg, mlen, sig);
+		peer_v1 = ok;
+	}
+
 	free(msg);
 
 	if(!ok) {
@@ -3061,6 +3090,8 @@ bool dseal_kex_h(node_t *from, const char *request) {
 	if(!l) {
 		return true;
 	}
+
+	l->dk_peer_v1 = peer_v1;
 
 	/* It speaks the exchange, so it is a current build even if its token has
 	   not reached us yet. */
@@ -3104,7 +3135,7 @@ bool dseal_kex_h(node_t *from, const char *request) {
 	case 1: {
 		/* Reject delayed/replayed responses whose signed ipub does not match
 		   our active ephemeral offer, preserving l->dk_ecdh for the matching reply. */
-		if(!l->dk_ecdh || memcmp(ipub, l->dk_pub, ECDH_SIZE) != 0) {
+		if(!l->dk_ecdh || (!peer_v1 && memcmp(ipub, l->dk_pub, ECDH_SIZE) != 0)) {
 			return true;
 		}
 
@@ -3128,7 +3159,7 @@ bool dseal_kex_h(node_t *from, const char *request) {
 	}
 
 	default:
-		if(l->next.valid && !memcmp(pub, l->dk_rpub, ECDH_SIZE) && !memcmp(ipub, l->dk_ipub, ECDH_SIZE)) {
+		if(l->next.valid && !memcmp(pub, l->dk_rpub, ECDH_SIZE) && (peer_v1 || !memcmp(ipub, l->dk_ipub, ECDH_SIZE))) {
 			dseal_kex_install(l);
 			memset(l->dk_rpub, 0, sizeof(l->dk_rpub));
 			memset(l->dk_ipub, 0, sizeof(l->dk_ipub));

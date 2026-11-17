@@ -2750,7 +2750,7 @@ static void doctor_analyze(doctor_report_t *rep) {
 
 		if(nd->probed) {
 			if(!nd->probe_ok) {
-				doctor_add_issue(rep, nd->direct ? "CRIT" : "WARN", "probe", nd->name,
+				doctor_add_issue(rep, (is_ct || nd->conns > 1) ? "CRIT" : "WARN", "probe", nd->name,
 				                 "Verify kernel TUN/policy routes (ip route show table all) and firewall ICMP rules",
 				                 "In-tunnel diagnostic ping (56B) to '%s' (%s) timed out",
 				                 nd->name, nd->vpn_ip);
@@ -2761,7 +2761,7 @@ static void doctor_analyze(doctor_report_t *rep) {
 					                 "Path MTU to '%s' (%s) is %d (< 1280); ICMP PTB working",
 					                 nd->name, nd->vpn_ip, nd->probe_mtu_next);
 				} else {
-					doctor_add_issue(rep, (is_ct || nd->direct) ? "CRIT" : "WARN", "pmtu", nd->name,
+					doctor_add_issue(rep, (is_ct || nd->conns > 1) ? "CRIT" : "WARN", "pmtu", nd->name,
 					                 "Clamp TUN/policy-route MTU to 1280 or 1220 on router/VPS",
 					                 "PMTU blackhole to '%s' (%s): 56B OK (%.1f ms), 1280B DF=1 timed out",
 					                 nd->name, nd->vpn_ip, nd->probe_rtt_ms);

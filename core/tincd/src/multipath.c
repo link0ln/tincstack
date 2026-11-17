@@ -113,9 +113,19 @@ static size_t conn_queue_bytes(const connection_t *c) {
 	return out_q + c->transport_outbuf_len;
 }
 
+static uint32_t conn_recent_tx_Bps(const connection_t *c, time_t cur_sec);
+
 static bool connection_check_policed(connection_t *c, uint64_t best_pacing_bps) {
 	if(!connection_has_wan_rtt(c)) {
 		return false;
+	}
+
+	/* Do not mistake Linux tcp_slow_start_after_idle / idle BBR cwnd decay
+	   on quiet live sockets for active TSPU policing. */
+	if(c->socket >= 0 &&
+	                conn_recent_tx_Bps(c, now.tv_sec > 0 ? now.tv_sec : 1) < 8192U &&
+	                conn_queue_bytes(c) < 4096U) {
+		return c->tcp_degraded;
 	}
 
 	/* Condition A: standalone TSPU ~0.5-3.5 Mbps policer */
