@@ -250,10 +250,18 @@ def test_no_undefined_names_in_python_sources():
         py_files.append(vpn_diag)
 
     builtin_names = set(dir(builtins)) | {"__annotations__"}
-    implicit_allowed = {"__file__", "__class__"}
+    implicit_allowed = {
+        "__file__",
+        "__class__",
+        "__classdict__",
+        "__conditional_annotations__",
+        "__generic_parameters__",
+    }
     undefined: list[str] = []
 
     def check_table(st: symtable.SymbolTable, enclosing_defs: set[str], path: str) -> None:
+        if st.get_name() == "__annotate__":
+            return
         own_defs = {
             s.get_name() for s in st.get_symbols()
             if s.is_assigned() or s.is_imported() or s.is_parameter() or s.is_namespace()
