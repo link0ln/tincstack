@@ -1091,13 +1091,16 @@ function renderDoctor(d) {
     badge.className = "badge " + (st === "HEALTHY" ? "ok" : (st === "DEGRADED" ? "warn" : "err"));
   }
   const issues = (d && d.issues) || [];
+  const tgHtml = (d && d.tier_gate)
+    ? `<div style="margin-bottom:6px;color:var(--accent);">⚖️ <b>TierGate</b>: state=<b>${esc(d.tier_state || "normal")}</b> active_tier=${esc(d.active_tier ?? 1)}/${esc(d.max_tier ?? 1)} transitions=${esc(d.tier_transitions ?? 0)} rejects=${esc(d.tier_rejects ?? 0)} redirects=${esc(d.tier_redirects ?? 0)}</div>`
+    : "";
   if (listEl) {
     if (d && d.error && !issues.length) {
-      listEl.innerHTML = `<span style="color:var(--err);">${esc(d.error)}</span>`;
+      listEl.innerHTML = tgHtml + `<span style="color:var(--err);">${esc(d.error)}</span>`;
     } else if (!issues.length) {
-      listEl.innerHTML = `<span style="color:var(--ok);">✓ Пул соединений, маршруты и несущие здоровы (mode=${esc(d.multipath_mode || "-")}).</span>`;
+      listEl.innerHTML = tgHtml + `<span style="color:var(--ok);">✓ Пул соединений, маршруты и несущие здоровы (mode=${esc(d.multipath_mode || "-")}).</span>`;
     } else {
-      listEl.innerHTML = issues.map(i => {
+      listEl.innerHTML = tgHtml + issues.map(i => {
         const cls = i.severity === "CRIT" ? "err" : (i.severity === "WARN" ? "warn" : "info");
         return `<div style="margin-bottom:4px;"><span class="badge ${cls}">${esc(i.severity || "INFO")}</span> <b>${esc(i.peer || "-")}</b> (${esc(i.component || "")}): ${esc(i.message || "")}${i.hint ? ` <span style="color:var(--muted)">→ ${esc(i.hint)}</span>` : ""}</div>`;
       }).join("");
@@ -1120,6 +1123,9 @@ function renderDoctor(d) {
       if (c.primary) flags.push("primary");
       if (c.canary) flags.push("🐥canary");
       if (c.degraded) flags.push("⚠️degraded");
+      if (pInfo.peer_tier != null && Number(pInfo.peer_tier) !== 1) flags.push(`T${pInfo.peer_tier}`);
+      if (pInfo.tier_quarantined) flags.push(`⚠️quarantine(${pInfo.tier_stable_s ?? 0}/${pInfo.tier_hold_s ?? 0}s)`);
+      if (pInfo.fallback_conn) flags.push("fallback");
       return `<tr>
         <td><b>${esc(peer)}</b></td>
         <td><span class="badge purple">${esc(c.carrier || "-")}</span></td>

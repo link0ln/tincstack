@@ -68,6 +68,8 @@ typedef union connection_status_t {
 		bool multipath_sub: 1;          /* 1 if secondary parallel connection in node_t->connections */
 		bool no_tarpit: 1;              /* 1 if closed cleanly (e.g. glare tie-break), never tarpit */
 		bool we_dialled: 1;             /* 1 if this connection was originally initiated by us */
+		bool tier_rejected: 1;          /* 1 if closed cleanly by TierGate admission/redirect policy */
+		bool tier_managed_by_peer: 1;   /* 1 if remote TierGate accepted fallback and manages failback */
 	};
 	uint32_t value;
 } connection_status_t;

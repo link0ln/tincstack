@@ -470,6 +470,9 @@ node_t *new_node(const char *name) {
 	n->mtu = MTU;
 	n->maxmtu = MTU;
 	n->udp_ping_rtt = -1;
+	n->peer_tier = 1;
+	n->tier_baseline_rtt_ms = -1;
+	n->tier_last_rtt_ms = -1;
 	n->name = xstrdup(name);
 	n->status.no_direct = node_is_no_direct(name);
 

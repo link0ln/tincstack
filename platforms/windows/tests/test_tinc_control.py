@@ -169,4 +169,30 @@ def test_https_direct_connection_with_via_self_classified_as_direct_tcp():
     assert snap.nodes["exit_a"].nexthop == "hub"
 
 
+def test_doctor_parses_tier_gate_fields():
+    payload = '{"status":"HEALTHY","tier_gate":true,"active_tier":2,"max_tier":2,"tier_state":"normal","tier_transitions":1,"tier_rejects":3,"tier_redirects":1,"peers":[{"name":"ruvds3","peer_tier":2,"tier_quarantined":false,"fallback_conn":false}],"connections":[],"issues":[]}'
+
+    def runner(cmd, timeout):
+        assert "doctor" in cmd and "--json" in cmd
+        return 0, payload, ""
+
+    ctl = tc.TincControl(tinc_exe="tinc", yaml_path="/x/tinc.yaml", runner=runner)
+    res = ctl.doctor("demo")
+    assert res["ok"] is True
+    assert res["tier_gate"] is True
+    assert res["active_tier"] == 2
+    assert res["tier_state"] == "normal"
+    assert res["tier_rejects"] == 3
+    assert res["peers"][0]["peer_tier"] == 2
+
+    def fallback_runner(cmd, timeout):
+        return 0, '{"status":"HEALTHY","peers":[],"connections":[],"issues":[]}', ""
+
+    ctl2 = tc.TincControl(tinc_exe="tinc", yaml_path="/x/tinc.yaml", runner=fallback_runner)
+    res2 = ctl2.doctor("demo")
+    assert res2["tier_gate"] is False
+    assert res2["active_tier"] == 1
+    assert res2["tier_state"] == "disabled"
+
+
 

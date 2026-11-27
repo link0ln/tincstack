@@ -264,6 +264,12 @@ def test_connect_to_hosts_reads_every_address_line():
     assert ft.connect_to_hosts({}, hosts) == []
 
 
+def test_connect_to_hosts_includes_fallback_connect_to():
+    opts = {"ConnectTo": "a", "FallbackConnectTo": ["b", "a"]}
+    hosts = {"a": "Address = 1.2.3.4 445\n", "b": "Address = 82.22.6.231 444\n"}
+    assert ft.connect_to_hosts(opts, hosts) == ["1.2.3.4", "82.22.6.231"]
+
+
 def test_maintainer_runs_passes_and_cleans_up_when_stopped():
     s = FakeSystem()
     t = tunnel(s)

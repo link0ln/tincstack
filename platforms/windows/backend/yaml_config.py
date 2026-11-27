@@ -136,7 +136,7 @@ _STR_OPTIONS = frozenset(k.lower() for k in (
     "Name", "Interface", "WintunInterface", "WintunAddress", "InterfaceAddress",
     "InterfaceRoute", "Ifconfig", "Subnet", "Address", "BindToAddress",
     "ListenAddress", "LocalDiscoveryAddress", "Cipher", "Digest",
-    "AddressPool", "ConnectTo", "NoDirectNodes", "BlockedNodes",
+    "AddressPool", "ConnectTo", "FallbackConnectTo", "NoDirectNodes", "BlockedNodes",
     "HttpsSni", "QuicSni", "QuicAlpn", "CertDomain", "CloudflareToken",
     "CloudflareApi", "AcmeContact", "AcmeDirectory", "AcmeCaFile",
     "Device", "DeviceType", "Mode", "AddressFamily", "Broadcast", "Forwarding",

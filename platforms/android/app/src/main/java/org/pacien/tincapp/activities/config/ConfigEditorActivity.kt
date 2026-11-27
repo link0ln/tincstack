@@ -1113,6 +1113,11 @@ class ConfigEditorActivity : BaseActivity() {
               .map { it.trim() }
               .filter { it.isNotEmpty() && it !in deletedNodesSnap }
             optChanges["ConnectTo"] = ct.ifEmpty { null }
+            val fb = optionValues(stanzaSnap, "FallbackConnectTo")
+              .flatMap { it.split(Regex("[\\s,;]+")) }
+              .map { it.trim() }
+              .filter { it.isNotEmpty() && it !in deletedNodesSnap }
+            optChanges["FallbackConnectTo"] = fb.ifEmpty { null }
           }
           for (k in removedOptionKeys) {
             optChanges[k] = null
@@ -1388,6 +1393,12 @@ class ConfigEditorActivity : BaseActivity() {
         description = "Routing metric weight for this node",
         defaultSuggestion = "10",
       ),
+      KeySpec(
+        name = "PeerTier",
+        description = "Admission priority tier for TierGate hubs (1=default, 2+=primary relay)",
+        defaultSuggestion = "1",
+        valuePresets = { listOf("1", "2", "3") },
+      ),
     )
 
     val OPTION_SPECS: List<KeySpec> = listOf(
@@ -1396,6 +1407,24 @@ class ConfigEditorActivity : BaseActivity() {
         description = "Peer nodes to dial on startup (tap a peer chip to toggle)",
         defaultSuggestion = "",
         valuePresets = { peers -> peers },
+      ),
+      KeySpec(
+        name = "FallbackConnectTo",
+        description = "Ordered emergency fallback peers when primary ConnectTo is unreachable (tap a peer chip to toggle)",
+        defaultSuggestion = "",
+        valuePresets = { peers -> peers },
+      ),
+      KeySpec(
+        name = "TierGate",
+        description = "Reject lower-tier direct peers while any higher-tier peer is healthy",
+        defaultSuggestion = "no",
+        valuePresets = BOOL_PRESETS,
+      ),
+      KeySpec(
+        name = "TierHoldBase",
+        description = "Base probation hold window in seconds for flapping higher-tier peers (5–600)",
+        defaultSuggestion = "45",
+        valuePresets = { listOf("15", "30", "45", "60") },
       ),
       KeySpec(
         name = "NoDirectNodes",

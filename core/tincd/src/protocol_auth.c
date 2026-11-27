@@ -40,6 +40,7 @@
 #include "rsa.h"
 #include "script.h"
 #include "sptps.h"
+#include "tier_gate.h"
 #include "utils.h"
 #include "xalloc.h"
 #include "random.h"
@@ -1494,6 +1495,10 @@ bool ack_h(connection_t *c, const char *request) {
 
 	n = lookup_node(c->name);
 
+	if(!tier_gate_check_admission(c, n, we_dialled)) {
+		return false;
+	}
+
 	if(!n) {
 		c->status.multipath_sub = false;
 		n = new_node(c->name);
@@ -1640,6 +1645,9 @@ bool ack_h(connection_t *c, const char *request) {
 	   walk afresh. */
 	if(c->outgoing) {
 		transport_candidate_activated(c->outgoing, c);
+		c->outgoing->ever_activated = true;
+		c->outgoing->dropped_since_ok = false;
+		c->outgoing->dial_attempts_failed = 0;
 	}
 
 	multipath_record_dial_result(n, c, true);
@@ -1712,6 +1720,7 @@ bool ack_h(connection_t *c, const char *request) {
 
 	if(is_secondary_mp || c->edge) {
 		obfs_session_start(c);
+		tier_gate_on_connection_activated(c, n);
 		return true;
 	}
 
@@ -1785,6 +1794,8 @@ bool ack_h(connection_t *c, const char *request) {
 	graph();
 
 	multipath_maintain();
+
+	tier_gate_on_connection_activated(c, n);
 
 	return true;
 }

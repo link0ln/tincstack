@@ -376,10 +376,14 @@ def host_addresses(host_text: str) -> list[str]:
 
 
 def connect_to_hosts(options: dict, hosts: dict) -> list[str]:
-    """Hostnames/addresses of the peers this node dials (ConnectTo), from their
-    host records. These have to be pinned before the first connection exists,
-    and again after a reconnect to a new address."""
-    names = transports.parse_node_list((options or {}).get("ConnectTo"))
+    """Hostnames/addresses of the peers this node dials (ConnectTo and
+    FallbackConnectTo), from their host records. These have to be pinned
+    before the first connection exists, and again after a reconnect."""
+    names: list[str] = []
+    for key in ("ConnectTo", "FallbackConnectTo"):
+        for n in transports.parse_node_list((options or {}).get(key)):
+            if n not in names:
+                names.append(n)
     if not names:
         return []
     out = []

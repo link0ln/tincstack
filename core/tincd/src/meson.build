@@ -191,6 +191,7 @@ src_tincd = [
   'raw_socket_device.c',
   'route.c',
   'subnet.c',
+  'tier_gate.c',
   'transport.c',
   'transport_table.c',
   'transport_sf.c',

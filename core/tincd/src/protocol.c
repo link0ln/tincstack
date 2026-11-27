@@ -196,7 +196,8 @@ bool receive_request(connection_t *c, const char *request) {
 		const request_entry_t *entry = get_request_entry(reqno);
 		logger(DEBUG_META, LOG_DEBUG, "Got %s from %s (%s): %s", entry->name, c->name, c->hostname, request);
 
-		if((c->allow_request != ALL) && (c->allow_request != reqno)) {
+		if((c->allow_request != ALL) && (c->allow_request != reqno) &&
+		                !(reqno == TERMREQ && c->allow_request == ACK)) {
 			logger(DEBUG_ALWAYS, LOG_ERR, "Unauthorized request from %s (%s)", c->name, c->hostname);
 			return false;
 		}

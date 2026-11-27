@@ -720,6 +720,13 @@ class TincControl:
             data = json.loads(text)
             if isinstance(data, dict):
                 data.setdefault("ok", rc == 0)
+                data.setdefault("tier_gate", False)
+                data.setdefault("active_tier", 1)
+                data.setdefault("max_tier", 1)
+                data.setdefault("tier_state", "disabled")
+                data.setdefault("tier_transitions", 0)
+                data.setdefault("tier_rejects", 0)
+                data.setdefault("tier_redirects", 0)
                 return data
         except ValueError:
             pass

@@ -44,17 +44,20 @@
 
 #include "system.h"
 
+#include "autoconnect.h"
 #include "connection.h"
 #include "edge.h"
 #include "graph.h"
 #include "list.h"
 #include "logger.h"
+#include "net.h"
 #include "netutl.h"
 #include "node.h"
 #include "obfs.h"
 #include "protocol.h"
 #include "script.h"
 #include "subnet.h"
+#include "tier_gate.h"
 #include "xalloc.h"
 #include "address_cache.h"
 
@@ -306,6 +309,13 @@ void sssp_bfs(void) {
 		}
 	}
 
+	for splay_each(node_t, n, &node_tree) {
+		if(n != myself && n->status.visited && !n->connection && n->status.indirect &&
+		                (n->status.udp_confirmed || n->status.udp_addr_confirmed || n->minmtu > 0)) {
+			tier_gate_reset_direct_path_state(n);
+		}
+	}
+
 	/* An SPTPS key exchange is carried by the meta channel, so it travels over
 	   whatever `nexthop' was when we started it. If that route has just changed
 	   -- the direct meta connection we were using went away and the peer is now
@@ -474,6 +484,10 @@ static void check_reachability(void) {
 		} else if(reachable_count > 0 && reachable_count == became_reachable_count) {
 			device_enable();
 		}
+	}
+
+	if((became_reachable_count > 0 || became_unreachable_count > 0) && (!autoconnect || low_power_mode)) {
+		fallback_on_reachability_change();
 	}
 }
 

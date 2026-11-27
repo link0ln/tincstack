@@ -93,7 +93,7 @@ RUN meson setup build-test --localstatedir=/var \
         -Dbuildtype=debug -Dminiupnpc=disabled -Dtests=enabled -Ddocs=disabled \
         -Dquic=${QUIC} \
     && TINC_AUTHN_REPORT_ONLY=1 meson test -C build-test --suite unit --print-errorlogs \
-        authn dnsrefresh traffic_shape multipath sptps_seqno key_quorum \
+        authn dnsrefresh traffic_shape multipath sptps_seqno key_quorum tier_gate \
         decoy httpc h3 quic_txq json subnet netutl fs proxy
 
 # Runtime image. Kept LAST so `docker build` with no --target produces it.

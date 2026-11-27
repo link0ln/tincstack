@@ -21,6 +21,7 @@
 #include "system.h"
 
 #include "address_cache.h"
+#include "autoconnect.h"
 #include "connection.h"
 #include "crypto.h"
 #include "graph.h"
@@ -30,6 +31,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "protocol.h"
+#include "tier_gate.h"
 #include "utils.h"
 
 #define TINC_TRANSPORT_DAEMON
@@ -45,8 +47,25 @@ bool send_termreq(connection_t *c) {
 }
 
 bool termreq_h(connection_t *c, const char *request) {
-	(void)c;
-	(void)request;
+	char reason[32] = "";
+	int act_tier = 0;
+	int peer_tier = 0;
+
+	if(request && sscanf(request, "%*d %31s %d %d", reason, &act_tier, &peer_tier) >= 1 &&
+	                !strcasecmp(reason, "tier_gate")) {
+		c->status.no_tarpit = true;
+		c->status.tier_rejected = true;
+		node_t *target = c->node ? c->node : (c->name ? lookup_node(c->name) : NULL);
+		logger(DEBUG_ALWAYS, LOG_NOTICE,
+		       "[TIER-GATE] Remote %s closed direct link (active_tier=%d, our_tier=%d); routing via primary hub",
+		       c->name ? c->name : "?", act_tier, peer_tier);
+
+		if(target) {
+			tier_gate_note_peer_rejected(target);
+			tier_gate_reset_direct_path_state(target);
+		}
+	}
+
 	return false;
 }
 
@@ -60,8 +79,20 @@ bool send_ping(connection_t *c) {
 bool ping_h(connection_t *c, const char *request) {
 	char arg[32] = "";
 
-	if(request && sscanf(request, "%*d %31s", arg) == 1 && !strcasecmp(arg, "solo")) {
-		multipath_peer_promoted_solo(c);
+	if(request && sscanf(request, "%*d %31s", arg) == 1) {
+		if(!strcasecmp(arg, "solo")) {
+			multipath_peer_promoted_solo(c);
+		} else if(!strcasecmp(arg, "tier_hold")) {
+			c->status.tier_managed_by_peer = true;
+			logger(DEBUG_ALWAYS, LOG_INFO,
+			       "[TIER-GATE] Fallback link to %s held under remote TierGate supervision",
+			       c->name ? c->name : "?");
+		} else if(!strcasecmp(arg, "tier_retry_primary")) {
+			logger(DEBUG_ALWAYS, LOG_NOTICE,
+			       "[TIER-GATE] Received wake request from %s to reconnect primary ConnectTo",
+			       c->name ? c->name : "?");
+			tier_gate_retry_primary_connectto();
+		}
 	}
 
 	return send_pong(c);
@@ -74,14 +105,20 @@ bool send_pong(connection_t *c) {
 bool pong_h(connection_t *c, const char *request) {
 	(void)request;
 	c->status.pinged = false;
+	tier_gate_on_pong(c);
 
 	/* Successful connection, reset timeout if this is an outgoing connection. */
 
-	if(c->outgoing && c->outgoing->timeout) {
-		c->outgoing->timeout = 0;
-		reset_address_cache(c->node->address_cache);
-		const sockaddr_t *cache_sa = c->base_address.sa.sa_family ? &c->base_address : &c->address;
-		add_recent_address(c->node->address_cache, cache_sa);
+	if(c->outgoing) {
+		c->outgoing->dropped_since_ok = false;
+		c->outgoing->dial_attempts_failed = 0;
+
+		if(c->outgoing->timeout) {
+			c->outgoing->timeout = 0;
+			reset_address_cache(c->node->address_cache);
+			const sockaddr_t *cache_sa = c->base_address.sa.sa_family ? &c->base_address : &c->address;
+			add_recent_address(c->node->address_cache, cache_sa);
+		}
 	}
 
 	return true;

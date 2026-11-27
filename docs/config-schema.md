@@ -910,3 +910,32 @@ Cloudflare code plus `acme-challenge` above.
   must not rely on comment round-tripping. Scalars that would not read back
   verbatim (leading `[`, `|`, `#`, `-`, quotes, `: `, outer blanks, control
   characters) are written double-quoted; empty maps/sequences as `{}`/`[]`.
+
+## Priority-tiered admission & automatic failover (`TierGate`, `PeerTier`, `TierHoldBase`, `FallbackConnectTo`)
+
+For hub-and-spoke transit topologies (for example RU clients → domestic transit
+hub `ruvds3` → foreign exit hub `euvds`, with automatic direct client → exit
+failover when the domestic hub goes down):
+
+- **`TierGate`** (server option, default `no`): enables priority-tiered
+  admission on an exit hub. While any peer with `PeerTier >= max_tier` is
+  connected and healthy (`!tier_quarantined`), `active_tier` rises to that tier
+  and direct connections from peers with `PeerTier < active_tier` are refused at
+  activation with `TERMREQ tier_gate`.
+- **`PeerTier`** (host option under `hosts.<name>`, default `1`, clamped
+  `0..100`): assigns a higher admission tier (`PeerTier = 2`) to trusted primary
+  transit relays (such as `ruvds3` on `euvds`).
+- **`TierHoldBase`** (server option, default `45`, clamped `5..600` seconds):
+  base hold-down window for BGP-style anti-flap probation when a disconnected
+  higher-tier peer reconnects (`1` flap → `base`, `2` → `2×base`, `3` →
+  `4×base`, `4+` → capped at `300s`), combined with penalty decay (`-15/s`
+  online, `-4/s` offline) and `2s` `PING tier_probe` RTT checks before
+  promoting `active_tier` back up and redirecting fallback clients via
+  make-before-break (`PING tier_retry_primary` → transit path check →
+  `TERMREQ tier_gate`).
+- **`FallbackConnectTo`** (server option, repeatable list, `VAR_SAFE`): ordered
+  fallback peer list on clients using `ConnectTo`. When all primary
+  `ConnectTo` peers fail or lose reachability to `FallbackConnectTo` for `>= 8s`,
+  `do_fallback_autoconnect()` prioritises `FallbackConnectTo` peers (then exit
+  nodes and other known mesh peers), ignoring `IndirectData = yes`, and lets a
+  `TierGate` peer manage the eventual failback seamlessly.

@@ -41,8 +41,10 @@
 #include "protocol.h"
 #include "script.h"
 #include "subnet.h"
+#include "tier_gate.h"
 #include "utils.h"
 #include "watchdog.h"
+#include "xalloc.h"
 #include "yamlconf.h"
 
 #define TINC_TRANSPORT_DAEMON
@@ -155,11 +157,43 @@ void terminate_connection(connection_t *c, bool report) {
 	bool post_activate_freeze = activated && !c->post_activate_verified && c->status.pinged;
 	/* The carrier's name outlives c (a static transport_t); c does not. */
 	const char *carrier = c->transport ? c->transport->name : "plain";
+	bool tier_rejected = c->status.tier_rejected;
+	node_t *c_node = c->node;
+	bool was_primary_node_conn = (c_node && c_node->connection == c);
 
-	if(c->node) {
-		if(!multipath_promote_survivor(c->node, c)) {
-			if(c->node->connection == c) {
-				c->node->connection = NULL;
+	if(c_node) {
+		if(tier_rejected && was_primary_node_conn) {
+			/* TierGate policy teardown: close any secondary multipath siblings too so
+			   multipath_promote_survivor() never keeps a rejected direct link up. */
+			size_t max_sibs = connection_list.count > 0 ? (size_t)connection_list.count : 1;
+			connection_t **sibs = xzalloc(max_sibs * sizeof(*sibs));
+			size_t nsibs = 0;
+
+			for list_each(connection_t, sib, &connection_list) {
+				if(sib != c && sib->status.multipath_sub && sib->node == c_node) {
+					if(nsibs < max_sibs) {
+						sibs[nsibs++] = sib;
+					}
+				}
+			}
+
+			for(size_t i = 0; i < nsibs; i++) {
+				if(connection_is_live(sibs[i])) {
+					sibs[i]->status.multipath_sub = false;
+					sibs[i]->status.no_tarpit = true;
+					sibs[i]->status.tier_rejected = true;
+					sibs[i]->edge = NULL;
+					sibs[i]->outgoing = NULL;
+					terminate_connection(sibs[i], false);
+				}
+			}
+
+			free(sibs);
+			multipath_node_del_connection(c_node, c);
+			c_node->connection = NULL;
+		} else if(!multipath_promote_survivor(c_node, c)) {
+			if(c_node->connection == c) {
+				c_node->connection = NULL;
 			}
 		}
 
@@ -177,9 +211,9 @@ void terminate_connection(connection_t *c, bool report) {
 
 			/* If the node is not reachable anymore but we remember it had an edge to us, clean it up */
 
-			if(report && !c->node->status.reachable) {
+			if(report && !c_node->status.reachable) {
 				edge_t *e;
-				e = lookup_edge(c->node, myself);
+				e = lookup_edge(c_node, myself);
 
 				if(e) {
 					if(!tunnelserver) {
@@ -190,9 +224,25 @@ void terminate_connection(connection_t *c, bool report) {
 				}
 			}
 		}
+
+		if(was_primary_node_conn && !c_node->connection) {
+			if(tier_rejected) {
+				tier_gate_reset_direct_path_state(c_node);
+			} else if(activated) {
+				tier_gate_on_peer_disconnected(c_node);
+			}
+		}
 	}
 
 	outgoing_t *outgoing = c->outgoing;
+	bool lost_primary_link = (outgoing && outgoing->from_config && activated &&
+	                          was_primary_node_conn && (!c_node || !c_node->connection) && !tier_rejected);
+
+	if(lost_primary_link) {
+		outgoing->dropped_since_ok = true;
+		tier_gate_clear_all_cooldowns();
+		fallback_schedule_immediate();
+	}
 
 	/* A dial that is given up before its connection was ever activated is
 	   what the carrier selector reads as "this carrier does not work", and
@@ -228,6 +278,17 @@ void terminate_connection(connection_t *c, bool report) {
 	/* Check if this was our outgoing connection */
 
 	if(outgoing) {
+		if(tier_rejected) {
+			if(!outgoing->from_config) {
+				timeout_del(&outgoing->ev);
+				list_delete(&outgoing_list, outgoing);
+				return;
+			}
+
+			retry_outgoing(outgoing);
+			return;
+		}
+
 		/* If the connection died before it was activated, the carrier we tried
 		   did not complete its handshake: let the selector decide whether to
 		   retry it (it worked before and has not failed
@@ -240,6 +301,15 @@ void terminate_connection(connection_t *c, bool report) {
 				logger(DEBUG_CONNECTIONS, LOG_INFO, "The dial was restarted by `tinc retry', not failed by the carrier: trying %s again",
 				       carrier);
 			} else {
+				if(outgoing->dial_attempts_failed < INT_MAX) {
+					outgoing->dial_attempts_failed++;
+				}
+
+				if(outgoing->from_config && outgoing->dial_attempts_failed == 1 &&
+				                (!c_node || !c_node->connection)) {
+					fallback_schedule_immediate();
+				}
+
 				if(post_activate_freeze) {
 					logger(DEBUG_CONNECTIONS, LOG_WARNING, "Connection to %s via %s froze immediately after handshake without post-ACK traffic; rotating carrier",
 					       outgoing->node ? outgoing->node->name : "peer", carrier);
@@ -600,6 +670,7 @@ int reload_configuration(void) {
 		n->status.has_address = false;
 		n->has_config_address = false;
 		n->in_config = (n == myself);
+		n->peer_tier = 1;
 	}
 
 	load_all_nodes();
@@ -811,6 +882,8 @@ void retry(void) {
 		n->punch_backoff_until = 0;
 	}
 
+	tier_gate_clear_all_cooldowns();
+
 	/* Kick the ping timeout handler */
 	timeout_set(&pingtimer, &(struct timeval) {
 		0, 0
@@ -822,6 +895,7 @@ void retry(void) {
 */
 int main_loop(void) {
 	last_periodic_run_time = now;
+	tier_gate_init();
 	timeout_add(&pingtimer, timeout_handler, &pingtimer, &(struct timeval) {
 		pingtimeout, jitter()
 	});

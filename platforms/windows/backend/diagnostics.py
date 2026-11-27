@@ -75,7 +75,7 @@ _FORBIDDEN_WEBUI_OPTIONS_LOWER = frozenset({"scriptsinterpreter", "scriptsextens
 _CANON_MULTI_OPTIONS: dict[str, str] = {
     k.lower(): k for k in (
         "Transports", "PreferredTransports", "NoDirectNodes", "BlockedNodes",
-        "ConnectTo", "Subnet", "Address", "InterfaceRoute", "InterfaceAddress",
+        "ConnectTo", "FallbackConnectTo", "Subnet", "Address", "InterfaceRoute", "InterfaceAddress",
         "Ifconfig", "AddressPool", "MultipathInterface", "BindToAddress",
         "ListenAddress", "LocalDiscoveryAddress",
     )
@@ -259,12 +259,12 @@ def _normalize_multi_options(opts: dict[str, Any]) -> dict[str, Any]:
                 merged[ck] = vals
             else:
                 merged.pop(ck, None)
-    for nk in ("NoDirectNodes", "BlockedNodes", "ConnectTo"):
+    for nk in ("NoDirectNodes", "BlockedNodes", "ConnectTo", "FallbackConnectTo"):
         if nk in merged:
             vals = transports.parse_node_list(merged[nk])
             if not vals:
                 merged.pop(nk, None)
-            elif nk == "ConnectTo" and len(vals) == 1:
+            elif nk in ("ConnectTo", "FallbackConnectTo") and len(vals) == 1:
                 merged[nk] = vals[0]
             else:
                 merged[nk] = vals
@@ -3041,11 +3041,12 @@ class DiagWebServer:
                 if not cur_nc:
                     raise ValueError("Network not found")
                 cur_nc.hosts.pop(host, None)
-                ct_list = [c for c in transports.parse_node_list(cur_nc.options.get("ConnectTo")) if c != host]
-                if ct_list:
-                    cur_nc.options["ConnectTo"] = ct_list[0] if len(ct_list) == 1 else ct_list
-                else:
-                    cur_nc.options.pop("ConnectTo", None)
+                for key in ("ConnectTo", "FallbackConnectTo"):
+                    val_list = [c for c in transports.parse_node_list(cur_nc.options.get(key)) if c != host]
+                    if val_list:
+                        cur_nc.options[key] = val_list[0] if len(val_list) == 1 else val_list
+                    else:
+                        cur_nc.options.pop(key, None)
                 blocked_list = transports.parse_node_list(cur_nc.options.get("BlockedNodes"))
                 if host not in blocked_list:
                     blocked_list.append(host)

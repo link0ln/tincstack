@@ -2172,6 +2172,13 @@ typedef struct doctor_node_t {
 	bool probe_mtu_ok;
 	int probe_mtu_next;
 	int probe_mtu_type;
+	int peer_tier;
+	int tier_quarantined;
+	int tier_penalty;
+	int tier_flaps;
+	int tier_stable_s;
+	int tier_hold_s;
+	int fallback_conn;
 } doctor_node_t;
 
 typedef struct doctor_conn_t {
@@ -2235,6 +2242,13 @@ typedef struct doctor_report_t {
 	int warn_count;
 	int fix_promoted;
 	int fix_recycled;
+	int tier_gate;
+	int active_tier;
+	int max_tier;
+	char tier_state[32];
+	unsigned int tier_transitions;
+	unsigned int tier_rejects;
+	unsigned int tier_redirects;
 } doctor_report_t;
 
 static bool kv_get(const char *src, const char *key, char *dst, size_t dlen) {
@@ -2327,6 +2341,13 @@ static void doctor_collect_cb(int rres, const char *rest, void *ctx) {
 		rep->target_conns = kv_get_int(rest, "target_conns", 1);
 		rep->uplink_count = kv_get_int(rest, "uplinks", 0);
 		rep->maxoutbuf = kv_get_long(rest, "maxoutbuf", 0);
+		rep->tier_gate = kv_get_int(rest, "tier_gate", 0);
+		rep->active_tier = kv_get_int(rest, "active_tier", 1);
+		rep->max_tier = kv_get_int(rest, "max_tier", 1);
+		kv_get(rest, "tier_state", rep->tier_state, sizeof(rep->tier_state));
+		rep->tier_transitions = (unsigned int)kv_get_ulong(rest, "tier_transitions", 0);
+		rep->tier_rejects = (unsigned int)kv_get_ulong(rest, "tier_rejects", 0);
+		rep->tier_redirects = (unsigned int)kv_get_ulong(rest, "tier_redirects", 0);
 	} else if(!strcmp(kind, "uplink") && rep->uplinks_n < DOCTOR_MAX_UPLINKS) {
 		doctor_uplink_t *u = &rep->uplinks[rep->uplinks_n++];
 		memset(u, 0, sizeof(*u));
@@ -2367,6 +2388,13 @@ static void doctor_collect_cb(int rres, const char *rest, void *ctx) {
 		nd->auto_pacing = kv_get_int(rest, "auto_pacing", 1);
 		nd->auto_budget_Bps = (unsigned int)kv_get_ulong(rest, "auto_budget_Bps", 0);
 		nd->policer_Bps = (unsigned int)kv_get_ulong(rest, "policer_Bps", 0);
+		nd->peer_tier = kv_get_int(rest, "peer_tier", 1);
+		nd->tier_quarantined = kv_get_int(rest, "tier_quarantined", 0);
+		nd->tier_penalty = kv_get_int(rest, "tier_penalty", 0);
+		nd->tier_flaps = kv_get_int(rest, "tier_flaps", 0);
+		nd->tier_stable_s = kv_get_int(rest, "tier_stable_s", 0);
+		nd->tier_hold_s = kv_get_int(rest, "tier_hold_s", 0);
+		nd->fallback_conn = kv_get_int(rest, "fallback_conn", 0);
 	} else if(!strcmp(kind, "conn") && rep->conns_n < DOCTOR_MAX_CONNS) {
 		doctor_conn_t *cn = &rep->conns[rep->conns_n++];
 		memset(cn, 0, sizeof(*cn));
@@ -2919,6 +2947,14 @@ static void doctor_print_json(const doctor_report_t *rep) {
 	print_json_str(rep->mode);
 	printf(",\n  \"target_connections\": %d,\n", rep->target_conns);
 	printf("  \"max_output_buffer_size\": %ld,\n", rep->maxoutbuf);
+	printf("  \"tier_gate\": %s,\n", rep->tier_gate ? "true" : "false");
+	printf("  \"active_tier\": %d,\n", rep->active_tier);
+	printf("  \"max_tier\": %d,\n", rep->max_tier);
+	printf("  \"tier_state\": ");
+	print_json_str(rep->tier_state[0] ? rep->tier_state : "disabled");
+	printf(",\n  \"tier_transitions\": %u,\n", rep->tier_transitions);
+	printf("  \"tier_rejects\": %u,\n", rep->tier_rejects);
+	printf("  \"tier_redirects\": %u,\n", rep->tier_redirects);
 	printf("  \"config\": {\n");
 	printf("    \"transports\": ");
 	print_json_str(rep->conf_transports);
@@ -2970,6 +3006,14 @@ static void doctor_print_json(const doctor_report_t *rep) {
 		       nd->rx_seq, nd->rx_ok, nd->in_pkts, nd->out_pkts,
 		       nd->tcp_pacing_Bps, nd->auto_pacing ? "true" : "false",
 		       nd->auto_budget_Bps, nd->policer_Bps);
+		printf(", \"peer_tier\": %d, \"tier_quarantined\": %s, \"tier_penalty\": %d, \"tier_flaps\": %d, \"tier_stable_s\": %d, \"tier_hold_s\": %d, \"fallback_conn\": %s",
+		       nd->peer_tier,
+		       nd->tier_quarantined ? "true" : "false",
+		       nd->tier_penalty,
+		       nd->tier_flaps,
+		       nd->tier_stable_s,
+		       nd->tier_hold_s,
+		       nd->fallback_conn ? "true" : "false");
 
 		if(nd->probed) {
 			printf(", \"probe_ok\": %s, \"probe_rtt_ms\": %.3f, \"probe_mtu1280_ok\": %s, \"probe_mtu_ptb\": %d",
@@ -3038,6 +3082,13 @@ static void doctor_print_text(const doctor_report_t *rep) {
 		       rep->fix_promoted, rep->fix_recycled);
 	}
 
+	if(rep->tier_gate) {
+		printf("  tier-gate: state=%s active_tier=%d/%d transitions=%u rejects=%u redirects=%u\n",
+		       rep->tier_state[0] ? rep->tier_state : "disabled",
+		       rep->active_tier, rep->max_tier,
+		       rep->tier_transitions, rep->tier_rejects, rep->tier_redirects);
+	}
+
 	for(int i = 0; i < rep->nodes_n; i++) {
 		const doctor_node_t *nd = &rep->nodes[i];
 
@@ -3049,6 +3100,17 @@ static void doctor_print_text(const doctor_report_t *rep) {
 		       nd->name, nd->reachable, nd->direct, nd->via, nd->vpn_ip,
 		       nd->conns, nd->udp_ok ? "yes" : "no", nd->udp_rtt_ms, nd->udp_unans,
 		       nd->mtu, nd->tcponly);
+
+		if(rep->tier_gate || nd->peer_tier != 1 || nd->tier_quarantined || nd->fallback_conn) {
+			printf(" tier=%d%s%s", nd->peer_tier,
+			       nd->tier_quarantined ? "(quarantine)" : "",
+			       nd->fallback_conn ? "(fallback)" : "");
+
+			if(nd->tier_quarantined) {
+				printf("[%ds/%ds,pen=%d,flaps=%d]",
+				       nd->tier_stable_s, nd->tier_hold_s, nd->tier_penalty, nd->tier_flaps);
+			}
+		}
 
 		if(nd->probed) {
 			printf(" ping56=%s(%.1fms)", nd->probe_ok ? "ok" : "FAIL", nd->probe_rtt_ms);
@@ -3352,6 +3414,10 @@ const var_t variables[] = {
 	{"Broadcast", VAR_SERVER | VAR_SAFE},
 	{"BroadcastSubnet", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
 	{"ConnectTo", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
+	{"FallbackConnectTo", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
+	{"TierGate", VAR_SERVER},
+	{"TierHoldBase", VAR_SERVER},
+	{"PeerTier", VAR_HOST | VAR_SAFE},
 	{"DecrementTTL", VAR_SERVER | VAR_SAFE},
 	{"Device", VAR_SERVER},
 	{"DeviceStandby", VAR_SERVER},

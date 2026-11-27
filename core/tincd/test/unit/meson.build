@@ -94,6 +94,10 @@ tests = {
     'code': 'test_key_quorum.c',
     'mock': ['send_request', 'send_req_key'],
   },
+  'tier_gate': {
+    'code': 'test_tier_gate.c',
+    'mock': ['send_request', 'send_ping', 'terminate_connection'],
+  },
 }
 
 # httpc.c is compiled only with OpenSSL (it is the ACME client's transport).

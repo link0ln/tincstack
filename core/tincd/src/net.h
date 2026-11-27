@@ -153,6 +153,10 @@ typedef struct outgoing_t {
 	   join-on-emulator.sh TRANSPORT=https). Cleared by every new dial. */
 	bool retry_requested;
 	bool from_config;
+	bool is_fallback;                       /* 1 if dialed by emergency fallback / FallbackConnectTo */
+	bool ever_activated;                    /* 1 if any connection for this outgoing_t ever activated */
+	bool dropped_since_ok;                  /* 1 if an active connection dropped and has not re-activated yet */
+	int dial_attempts_failed;               /* pre-activation dial failures since last activation */
 } outgoing_t;
 
 typedef struct ports_t {

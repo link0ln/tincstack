@@ -43,6 +43,7 @@
 #include "logger.h"
 #include "multipath.h"
 #include "names.h"
+#include "tier_gate.h"
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
@@ -3515,7 +3516,7 @@ void multipath_maintain(void) {
 		for list_each(outgoing_t, outgoing, &outgoing_list) {
 			node_t *n = outgoing->node;
 
-			if(!n || !n->connection || !n->status.reachable || n->status.no_direct || node_is_no_direct(n->name)) {
+			if(outgoing->is_fallback || !n || !n->connection || !n->status.reachable || n->status.no_direct || node_is_no_direct(n->name)) {
 				continue;
 			}
 
@@ -3873,14 +3874,21 @@ bool control_multipath_h(connection_t *c, const char *request) {
 	if(!strcasecmp(subcmd, "detail")) {
 		char self_ip[64];
 		node_primary_ipv4_str(myself, self_ip, sizeof(self_ip));
-		send_request(c, "%d %d 0 summary name=%s vpn_ip=%s mode=%s target_conns=%d uplinks=%d maxoutbuf=%d",
+		send_request(c, "%d %d 0 summary name=%s vpn_ip=%s mode=%s target_conns=%d uplinks=%d maxoutbuf=%d tier_gate=%d active_tier=%d max_tier=%d tier_state=%s tier_transitions=%u tier_rejects=%u tier_redirects=%u",
 		             CONTROL, REQ_MULTIPATH,
 		             (myself && myself->name) ? myself->name : "-",
 		             self_ip,
 		             multipath_mode_name(multipath_mode),
 		             multipath_target_connections,
 		             multipath_uplink_count,
-		             maxoutbufsize);
+		             maxoutbufsize,
+		             tier_gate_is_enabled() ? 1 : 0,
+		             tier_gate_active_tier(),
+		             tier_gate_max_tier(),
+		             tier_gate_state_name(),
+		             tier_gate_transitions_count(),
+		             tier_gate_rejects_count(),
+		             tier_gate_redirects_count());
 
 		for(int i = 0; i < MAX_UPLINKS; i++) {
 			multipath_uplink_t *u = &multipath_uplinks[i];
@@ -3939,7 +3947,7 @@ bool control_multipath_h(connection_t *c, const char *request) {
 			                    : -1.0;
 
 			send_request(c,
-			             "%d %d 1 node name=%s reachable=%d direct=%d via=%s nexthop=%s vpn_ip=%s conns=%d udp_ok=%d udp_rtt_ms=%.3f udp_paths=%d udp_unans=%d udp_ep=%s mtu=%d minmtu=%d maxmtu=%d tcponly=%d no_direct=%d pref=%s tx_seq=%u rx_seq=%u rx_ok=%u in_pkts=%llu out_pkts=%llu in_bytes=%llu out_bytes=%llu primary_uplink=%d tcp_pacing_Bps=%u auto_pacing=%d auto_budget_Bps=%u policer_Bps=%u",
+			             "%d %d 1 node name=%s reachable=%d direct=%d via=%s nexthop=%s vpn_ip=%s conns=%d udp_ok=%d udp_rtt_ms=%.3f udp_paths=%d udp_unans=%d udp_ep=%s mtu=%d minmtu=%d maxmtu=%d tcponly=%d no_direct=%d pref=%s tx_seq=%u rx_seq=%u rx_ok=%u in_pkts=%llu out_pkts=%llu in_bytes=%llu out_bytes=%llu primary_uplink=%d tcp_pacing_Bps=%u auto_pacing=%d auto_budget_Bps=%u policer_Bps=%u peer_tier=%d tier_quarantined=%d tier_penalty=%d tier_flaps=%d tier_stable_s=%d tier_hold_s=%d fallback_conn=%d",
 			             CONTROL, REQ_MULTIPATH,
 			             n->name,
 			             n->status.reachable ? 1 : 0,
@@ -3970,7 +3978,14 @@ bool control_multipath_h(connection_t *c, const char *request) {
 			             node_effective_pacing_budget(n),
 			             multipath_node_auto_pacing_enabled(n) ? 1 : 0,
 			             n->auto_pacing_budget_Bps,
-			             n->auto_pacing_policer_Bps);
+			             n->auto_pacing_policer_Bps,
+			             n->peer_tier,
+			             n->tier_quarantined ? 1 : 0,
+			             n->tier_penalty,
+			             n->tier_flap_count,
+			             n->tier_stable_sec,
+			             tier_gate_required_hold_sec(n->tier_flap_count, tier_gate_hold_base()),
+			             (n->connection && n->connection->outgoing && n->connection->outgoing->is_fallback) ? 1 : 0);
 
 			bool emitted_primary = false;
 

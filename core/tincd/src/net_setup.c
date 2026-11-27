@@ -23,6 +23,7 @@
 #include "system.h"
 
 #include "address_cache.h"
+#include "autoconnect.h"
 #include "cipher.h"
 #include "conf_net.h"
 #include "conf.h"
@@ -45,6 +46,7 @@
 #include "route.h"
 #include "script.h"
 #include "subnet.h"
+#include "tier_gate.h"
 #include "tls.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -251,6 +253,14 @@ static void load_one_node(const char *name) {
 		n->status.no_direct = node_is_no_direct(name);
 	}
 
+	int peer_tier = 1;
+
+	if(get_config_int(lookup_config(&config, "PeerTier"), &peer_tier)) {
+		n->peer_tier = CLAMP(peer_tier, 0, 100);
+	} else {
+		n->peer_tier = 1;
+	}
+
 	splay_empty_tree(&config);
 }
 
@@ -270,6 +280,7 @@ void load_all_nodes(void) {
 		}
 
 		setup_no_direct_nodes();
+		tier_gate_reload();
 		return;
 	}
 
@@ -291,6 +302,7 @@ void load_all_nodes(void) {
 
 	closedir(dir);
 	setup_no_direct_nodes();
+	tier_gate_reload();
 }
 
 char *get_name(void) {
@@ -329,6 +341,7 @@ bool setup_myself_reloadable(void) {
 	read_interpreter();
 	setup_blocked_nodes();
 	setup_no_direct_nodes();
+	tier_gate_reload();
 
 	free(scriptextension);
 
@@ -1599,6 +1612,8 @@ void close_network_connections(void) {
 	transport_exit();
 
 	dnsrefresh_exit();
+	fallback_exit();
+	tier_gate_exit();
 
 	exit_requests();
 	exit_edges();

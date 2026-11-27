@@ -204,6 +204,11 @@ void subnet_add(node_t *n, subnet_t *subnet) {
 
 	if(n) {
 		splay_insert(&n->subnet_tree, subnet);
+
+		if(n != myself && ((subnet->type == SUBNET_IPV4 && subnet->net.ipv4.prefixlength == 0) ||
+		                   (subnet->type == SUBNET_IPV6 && subnet->net.ipv6.prefixlength == 0))) {
+			n->was_exit_node = true;
+		}
 	}
 
 	subnet_cache_flush(subnet);

@@ -181,6 +181,26 @@ typedef struct node_t {
 	struct connection_t *auto_pacing_canary;/* secondary connection currently probing +10% */
 	bool auto_pacing_canary_tested;         /* true if heavy TX hit the active canary leg */
 	int8_t tcp_auto_pacing_override;        /* 0 = inherit global TcpAutoPacing, 1 = on, -1 = off */
+
+	/* Authoritative TierGate & Smart Anti-Flap Failover state (tier_gate.c) */
+	int peer_tier;                          /* Configured tier (0..100, default 1) */
+	int tier_penalty;                       /* Accumulated flap/anomaly penalty (0..10000) */
+	int tier_flap_count;                    /* Escalating flap counter (0..100) */
+	time_t tier_connected_since;            /* Timestamp when current primary session became active */
+	time_t tier_last_drop;                  /* Last time primary connection dropped */
+	time_t tier_last_decay;                 /* Last time penalty decay was applied */
+	time_t tier_last_probe_sent;            /* Last probation PING tier_probe sent timestamp */
+	time_t tier_last_probation_log;         /* Rate-limited probation status log timestamp */
+	struct timeval tier_probe_tx_tv;        /* Precise send time of inflight tier_probe PING */
+	bool tier_probe_inflight;               /* True while awaiting PONG for tier_probe */
+	int tier_baseline_rtt_ms;               /* EWMA baseline PING/PONG RTT in ms (-1 = unset) */
+	int tier_last_rtt_ms;                   /* Last measured tier_probe RTT in ms (-1 = unset) */
+	int tier_stable_sec;                    /* Consecutive clean connected seconds in current probation */
+	bool tier_quarantined;                  /* True while higher-tier peer is held in anti-flap probation */
+	time_t tier_redirect_grace_until;       /* Deadline for lower-tier peer make-before-break redirect */
+	time_t tier_rejected_until;             /* Client-side cooldown until next fallback attempt after TERMREQ tier_gate */
+	int tier_reject_streak;                 /* Consecutive TERMREQ tier_gate rejections for exponential backoff */
+	bool was_exit_node;                     /* True if peer ever announced 0.0.0.0/0 or ::/0 */
 } node_t;
 
 extern struct node_t *myself;

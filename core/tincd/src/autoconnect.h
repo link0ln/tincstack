@@ -22,5 +22,9 @@
 
 extern void do_autoconnect(void);
 extern void do_fallback_autoconnect(void);
+extern void fallback_schedule_immediate(void);
+extern void fallback_schedule_in(int delay_ms);
+extern void fallback_on_reachability_change(void);
+extern void fallback_exit(void);
 
 #endif

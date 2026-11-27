@@ -3555,6 +3555,13 @@ object DiagManager {
       if (!res.containsKey("ok")) {
         res["ok"] = rc == 0 || (st.isNotEmpty() && st != "DOWN")
       }
+      res.putIfAbsent("tier_gate", false)
+      res.putIfAbsent("active_tier", 1)
+      res.putIfAbsent("max_tier", 1)
+      res.putIfAbsent("tier_state", "disabled")
+      res.putIfAbsent("tier_transitions", 0)
+      res.putIfAbsent("tier_rejects", 0)
+      res.putIfAbsent("tier_redirects", 0)
       res["net"] = targetNet
       return res
     }
@@ -3758,7 +3765,8 @@ object DiagManager {
             val blocked = optionValues(stanza, "BlockedNodes").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
             if (host !in blocked) blocked.add(host)
             val ct = optionValues(stanza, "ConnectTo").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() && it != host }
-            setOptions(stanza, mapOf("BlockedNodes" to blocked, "ConnectTo" to ct.ifEmpty { null }))
+            val fb = optionValues(stanza, "FallbackConnectTo").flatMap { it.split(Regex("[\\s,;]+")) }.map { it.trim() }.filter { it.isNotEmpty() && it != host }
+            setOptions(stanza, mapOf("BlockedNodes" to blocked, "ConnectTo" to ct.ifEmpty { null }, "FallbackConnectTo" to fb.ifEmpty { null }))
           }
           runTincCli(targetNet, 3500L, "reload")
           true to mapOf("ok" to true, "message" to "Deleted and blocked host '$host'")
